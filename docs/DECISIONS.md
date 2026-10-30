@@ -35,3 +35,20 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 - **Why:** rustls 0.23 defaults to `aws-lc-rs`, while quinn and rcgen default to `ring`. With both
   compiled in, rustls cannot pick a provider automatically, and `aws-lc-sys` is a heavy C/CMake
   build on Windows and musl. `ring` alone covers TLS 1.3 for QUIC and HTTPS.
+
+## 2026-10-30: Spike A (audio loopback) passed; "added latency" means our pipeline only
+
+- **Result** (developer's Windows PC, WASAPI shared mode, Yeti X in, Realtek out, both 48 kHz f32,
+  480-frame periods): the full chain cpal → nnnoiseless → Opus 20 ms/64 kbps/FEC/DTX → decode → cpal
+  works with libopus built statically. Estimated end-to-end latency 77–82 ms, of which:
+  - devices (WASAPI engine + drivers): ~14 ms input + ~32 ms output ≈ 46 ms;
+  - Hermes pipeline (ring buffers, frame buffering, resampler/Opus/denoiser delays): ~31–36 ms.
+  DTX works (6.9–11.9 kbps in silence, ~53 kbps while talking); RNNoise voice probability 0.84 while
+  talking; no sustained underruns.
+- **What:** the Phase 0 criterion "< 60 ms added latency" is interpreted as latency added by Hermes,
+  excluding the OS audio devices, which every voice app pays. The spike counts as passed.
+- **Why:** cpal only offers WASAPI shared mode with fixed 10 ms periods, so the device part cannot be
+  reduced from our side; the part we control is well under 60 ms.
+- **Follow-up for `hermes-audio`:** playback sounded quiet on the developer's setup; the spike now has
+  a dBFS level meter and `--gain` to investigate. Consider the AGC from section 12.5 (step 4) if quiet
+  microphones turn out to be common.
