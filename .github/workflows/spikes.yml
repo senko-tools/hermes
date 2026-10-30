@@ -41,20 +41,33 @@ jobs:
         # No VC++ redistributable needed on the test machine.
         run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
 
+      - name: musl toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools pkg-config linux-libc-dev
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+
       - name: Static alsa-lib for musl (Linux)
         if: runner.os == 'Linux'
+        # Only audio-loopback needs it; quic-echo still builds if this fails.
+        continue-on-error: true
         # cpal needs libasound and Ubuntu ships no musl build of it. Built without dlopen,
         # so ALSA plugins (pulse/pipewire) are unavailable; config is read from /usr/share/alsa.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools pkg-config
           # The release tarball ships a generated ./configure; the git tree needs autoconf >= 2.72,
           # which ubuntu-latest does not have.
           mkdir "$RUNNER_TEMP/alsa-src"
           curl -fsSL "https://www.alsa-project.org/files/pub/lib/alsa-lib-$ALSA_LIB_VERSION.tar.bz2" \
             | tar -xj --strip-components=1 -C "$RUNNER_TEMP/alsa-src"
           cd "$RUNNER_TEMP/alsa-src"
-          CC=musl-gcc ./configure --prefix="$RUNNER_TEMP/alsa-musl" \
+          # musl-gcc hides /usr/include; give it just the kernel UAPI headers alsa-lib needs.
+          kh="$RUNNER_TEMP/kernel-headers"
+          mkdir -p "$kh"
+          ln -s /usr/include/linux "$kh/linux"
+          ln -s /usr/include/asm-generic "$kh/asm-generic"
+          ln -s /usr/include/x86_64-linux-gnu/asm "$kh/asm"
+          CC=musl-gcc CFLAGS="-O2 -isystem $kh" ./configure --prefix="$RUNNER_TEMP/alsa-musl" \
             --enable-static --disable-shared --without-libdl \
             --disable-python --disable-ucm --disable-topology \
             --with-configdir=/usr/share/alsa
@@ -64,27 +77,35 @@ jobs:
             echo "PKG_CONFIG_PATH=$RUNNER_TEMP/alsa-musl/lib/pkgconfig"
             echo "PKG_CONFIG_ALLOW_CROSS=1"
             echo "ALSA_STATIC=1"
-            echo "CC_x86_64_unknown_linux_musl=musl-gcc"
           } >> "$GITHUB_ENV"
 
       - name: Build
+        id: build
+        # Each spike is built on its own so one failure does not block the others.
         run: |
-          packages=()
-          for dir in spikes/*/; do packages+=(-p "$(basename "$dir")"); done
-          cargo build --release --locked --target ${{ matrix.target }} "${packages[@]}"
-
-      - name: Collect binaries
-        run: |
-          mkdir dist
           ext=""
           if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          mkdir dist
+          failed=""
           for dir in spikes/*/; do
-            cp "target/${{ matrix.target }}/release/$(basename "$dir")$ext" dist/
+            name="$(basename "$dir")"
+            if cargo build --release --locked --target ${{ matrix.target }} -p "$name"; then
+              cp "target/${{ matrix.target }}/release/$name$ext" dist/
+            else
+              failed="$failed $name"
+            fi
           done
           ls -l dist
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
           name: spikes-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+
+      - name: Report failed spikes
+        if: steps.build.outputs.failed != ''
+        run: |
+          echo "::error::failed to build:${{ steps.build.outputs.failed }}"
+          exit 1

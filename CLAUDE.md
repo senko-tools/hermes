@@ -37,4 +37,4 @@ phase checklists and is the source of truth for what to build next.
 
 ## Git
 - Commit messages: `area: what changed` (e.g. `server: add login endpoint`, `proto: add Message model`).
-- Push to the session's own branch only; the developer reviews and merges the pull request into `main`.
+- Push to the `dev` branch only; the developer reviews and merges the pull request from `dev` into `main`.

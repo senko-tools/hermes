@@ -27,3 +27,11 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 - **Note:** the musl build links a static alsa-lib without `dlopen`, so ALSA plugins (PulseAudio and
   PipeWire bridges) are not available to it. On such desktops it may only see raw `hw:` devices.
   The Windows build is the one that matters for Spike A.
+
+## 2026-10-30: rustls uses the `ring` crypto provider
+
+- **What:** the workspace `rustls` and `quinn` entries disable default features and enable `ring`
+  (rustls: `std`, `ring`, `logging`, `tls12`; quinn: `runtime-tokio`, `rustls-ring`, `log`).
+- **Why:** rustls 0.23 defaults to `aws-lc-rs`, while quinn and rcgen default to `ring`. With both
+  compiled in, rustls cannot pick a provider automatically, and `aws-lc-sys` is a heavy C/CMake
+  build on Windows and musl. `ring` alone covers TLS 1.3 for QUIC and HTTPS.

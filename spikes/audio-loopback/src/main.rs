@@ -28,6 +28,14 @@ struct Args {
     /// Skip nnnoiseless noise suppression.
     #[arg(long)]
     no_denoise: bool,
+    /// Extra microphone gain in dB (e.g. 12 = 4x louder), for testing quiet microphones.
+    #[arg(
+        long,
+        value_name = "DB",
+        default_value_t = 0.0,
+        allow_negative_numbers = true
+    )]
+    gain: f32,
     /// List audio devices and their default configs, then exit.
     #[arg(long)]
     list_devices: bool,
@@ -86,6 +94,7 @@ fn run(args: Args) -> Result<(), String> {
         input: device_info(&in_dev, &in_cfg),
         output: device_info(&out_dev, &out_cfg),
         denoise: !args.no_denoise,
+        gain_db: args.gain,
     };
 
     in_stream
