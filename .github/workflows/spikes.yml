@@ -1,0 +1,87 @@
+name: spikes
+
+# Builds the throwaway spike binaries in spikes/ for manual testing.
+# Run it from the Actions tab ("spikes" -> "Run workflow").
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ALSA_LIB_VERSION: v1.2.16.1
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Static CRT (Windows)
+        if: runner.os == 'Windows'
+        # No VC++ redistributable needed on the test machine.
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: Static alsa-lib for musl (Linux)
+        if: runner.os == 'Linux'
+        # cpal needs libasound and Ubuntu ships no musl build of it. Built without dlopen,
+        # so ALSA plugins (pulse/pipewire) are unavailable; config is read from /usr/share/alsa.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools autoconf automake libtool pkg-config
+          git clone --depth 1 --branch "$ALSA_LIB_VERSION" https://github.com/alsa-project/alsa-lib "$RUNNER_TEMP/alsa-src"
+          cd "$RUNNER_TEMP/alsa-src"
+          autoreconf -fi
+          CC=musl-gcc ./configure --prefix="$RUNNER_TEMP/alsa-musl" \
+            --enable-static --disable-shared --without-libdl \
+            --disable-python --disable-ucm --disable-topology \
+            --with-configdir=/usr/share/alsa
+          make -j"$(nproc)"
+          make install
+          {
+            echo "PKG_CONFIG_PATH=$RUNNER_TEMP/alsa-musl/lib/pkgconfig"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+            echo "ALSA_STATIC=1"
+            echo "CC_x86_64_unknown_linux_musl=musl-gcc"
+          } >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          packages=()
+          for dir in spikes/*/; do packages+=(-p "$(basename "$dir")"); done
+          cargo build --release --locked --target ${{ matrix.target }} "${packages[@]}"
+
+      - name: Collect binaries
+        run: |
+          mkdir dist
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          for dir in spikes/*/; do
+            cp "target/${{ matrix.target }}/release/$(basename "$dir")$ext" dist/
+          done
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: spikes-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error

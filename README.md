@@ -22,6 +22,8 @@ The full specification and build plan is [`PLAN.md`](PLAN.md). Deviations from i
 | [`hermes-tui`](crates/hermes-tui) | ratatui terminal client | GPL-3.0-or-later |
 | [`hermes-voicebot`](crates/hermes-voicebot) | Dev tool: headless voice client for testing | GPL-3.0-or-later |
 
+Phase 0 experiments live in [`spikes/`](spikes) (standalone binaries, not used by the real crates).
+
 ## Building
 
 Requires Rust 1.99 or newer.
