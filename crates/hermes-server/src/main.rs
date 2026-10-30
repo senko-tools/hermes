@@ -1,3 +1,7 @@
 //! Hermes chat server.
 
-fn main() {}
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    hermes_server::cli::run()
+}

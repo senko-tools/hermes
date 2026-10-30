@@ -149,3 +149,23 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   `ready.instance.limits = {max_upload_mb, max_message_length}` (same as `GET /instance`).
 - **Permissions helpers:** besides `compute`, `highest_position`, `can_manage_member` and
   `can_manage_role` implement the hierarchy rule (owner ranks above everyone, nobody acts on the owner).
+
+## 2026-10-30: Server config loading details
+
+- **`toml` crate:** added `toml = "=0.8.23"` (the version `figment` already depends on, so nothing new is
+  downloaded) to print the effective config as TOML in `check-config`. Approved by the developer;
+  section 6 does not list it. `clap` gets its `env` feature for `HERMES_CONFIG`.
+- **Precedence:** defaults < `hermes.toml` < `SERVER_PORT` < `HERMES__SECTION__KEY`. Section 18.5 only says
+  `SERVER_PORT` is a fallback when `HERMES__NETWORK__PORT` is unset; it also wins over the file because the
+  Pterodactyl egg runs `init`, which writes `port = 7700`, and the panel's allocation must still apply.
+  An empty `SERVER_PORT` is ignored; an invalid one is an error.
+- **Strictness:** unknown keys (in the file or as `HERMES__…` variables) are errors, so typos are not
+  silently ignored. String keys also accept env values that look like numbers or booleans
+  (`HERMES__INSTANCE__NAME=1337`).
+- **Validation:** errors for port 0, `tls.mode = "files"` without both paths, empty `instance.name` or
+  `storage.data_dir`, zero sizes/rate limits, `limits.max_group_dm_size < 2`, bitrates outside Opus's
+  6000–510000 range or default > max, and an invalid `log.level` filter. An empty `instance.public_host`
+  is only a warning, so a container configured purely through env vars still starts. Whether the TLS files
+  exist is checked by the TLS item, not here.
+- **`init`** refuses to overwrite an existing file (exit code 1) and creates missing parent directories.
+- **`run`** only loads the config and sets up logging for now; it exits with code 1 until the server exists.

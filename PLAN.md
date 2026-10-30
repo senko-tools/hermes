@@ -1560,7 +1560,7 @@ Goal: remove the biggest unknowns before writing real code.
 
 ### Phase 1: Server core, text only (3–4 weeks)
 - [x] `hermes-proto`: IDs, models, error codes, permissions + `compute` with tests, gateway envelope/events, markup parser.
-- [ ] Config loading (TOML + env + `SERVER_PORT` fallback), `init`, `check-config`.
+- [x] Config loading (TOML + env + `SERVER_PORT` fallback), `init`, `check-config`.
 - [ ] SQLite + migrations, snowflake generator, state cache load.
 - [ ] TLS modes (`self_signed` with persisted cert, `files`, `off`).
 - [ ] Auth: register/login/logout/sessions, first-start setup invite, invites.
