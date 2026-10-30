@@ -52,3 +52,17 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 - **Follow-up for `hermes-audio`:** playback sounded quiet on the developer's setup; the spike now has
   a dBFS level meter and `--gain` to investigate. Consider the AGC from section 12.5 (step 4) if quiet
   microphones turn out to be common.
+
+## 2026-10-30: Spike B (QUIC datagrams) passed
+
+- **Result:** `quic-echo server` (static musl binary) on hermes.senko.tools, bound to `[::]:7700`
+  (dual-stack, `net.ipv6.bindv6only = 0`), client on the developer's Windows PC at home, 50 datagrams/s
+  of 200 bytes for 60 s, certificate pinned by SHA-256:
+  - IPv4: 3000/3000 received, 0 % loss, no reordering, RTT min 5.3 / avg 5.6 / p95 5.7 / max 6.3 ms,
+    jitter 0.08 ms, max datagram size 1414 bytes.
+  - IPv6: same results (RTT avg 5.6 / p95 5.8 / max 8.2 ms, jitter 0.10 ms) after the developer fixed
+    IPv6 on the home network (the first failure was the client network, not the server).
+- **What:** no change to the plan; QUIC datagrams over one UDP port are confirmed for voice. A 20 ms
+  Opus frame (~160 bytes at 64 kbps) plus the 11-byte header fits well inside 1414 bytes.
+- **Notes for the real server:** on a dual-stack socket IPv4 peers appear as `::ffff:a.b.c.d`; convert
+  them to plain IPv4 (`to_canonical()`) before per-IP rate limits and logging.
