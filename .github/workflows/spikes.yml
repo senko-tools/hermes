@@ -10,7 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  ALSA_LIB_VERSION: v1.2.16.1
+  ALSA_LIB_VERSION: 1.2.16.1
 
 jobs:
   build:
@@ -47,10 +47,13 @@ jobs:
         # so ALSA plugins (pulse/pipewire) are unavailable; config is read from /usr/share/alsa.
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools autoconf automake libtool pkg-config
-          git clone --depth 1 --branch "$ALSA_LIB_VERSION" https://github.com/alsa-project/alsa-lib "$RUNNER_TEMP/alsa-src"
+          sudo apt-get install -y musl-tools pkg-config
+          # The release tarball ships a generated ./configure; the git tree needs autoconf >= 2.72,
+          # which ubuntu-latest does not have.
+          mkdir "$RUNNER_TEMP/alsa-src"
+          curl -fsSL "https://www.alsa-project.org/files/pub/lib/alsa-lib-$ALSA_LIB_VERSION.tar.bz2" \
+            | tar -xj --strip-components=1 -C "$RUNNER_TEMP/alsa-src"
           cd "$RUNNER_TEMP/alsa-src"
-          autoreconf -fi
           CC=musl-gcc ./configure --prefix="$RUNNER_TEMP/alsa-musl" \
             --enable-static --disable-shared --without-libdl \
             --disable-python --disable-ucm --disable-topology \
