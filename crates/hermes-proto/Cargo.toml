@@ -1,0 +1,14 @@
+[package]
+name = "hermes-proto"
+description = "Shared Hermes wire types: IDs, models, REST bodies, gateway events, voice packets, permissions, markup"
+license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

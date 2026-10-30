@@ -1,0 +1,14 @@
+[package]
+name = "hermes-server"
+description = "Hermes chat server"
+license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
