@@ -77,3 +77,38 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   `global-hotkey` 0.9 on Windows uses `RegisterHotKey` (the key is taken away from every other app while
   registered, keyboard keys only) and detects release by polling `GetAsyncKeyState` every 50 ms; the
   spike compares both. A static musl build cannot load the system GUI libraries, so it would be useless.
+
+## 2026-10-30: Spike C (iced UI risks) passed
+
+- **Result** (developer's Windows PC, iced 0.14): pane_grid split/close/drag/resize, `text_editor`
+  input (Enter sends, Shift+Enter newline), a virtualized list of 10,000 rows with color emoji
+  scrolling smoothly, file-drop events, and global push-to-talk reporting press **and** release while
+  the window is unfocused all worked, and the developer reported it as fast. Memory use ~125 MB on
+  Windows. The app crashed once and the crash could not be reproduced (no message was captured);
+  watch for it in Phase 3 and capture the panic output if it happens again.
+- **Virtualized list:** fixed row height; the scroll offset from `scrollable::on_scroll` selects the
+  visible range plus 10 rows of overscan, with spacers for the rest. Only ~30–60 rows are built at any
+  time. Variable-height rows (wrapping, attachments, replies) are still open for Phase 3.
+- **Emoji** (observed in the Linux VM with Noto Color Emoji; not checked row by row on Windows):
+  ordinary emoji, skin tones and ZWJ sequences render in color; flags (regional indicator pairs) render
+  as letters in boxes, and characters with VS16 (`❤️ ☕ ⚠️`) render as monochrome symbols. Windows'
+  Segoe UI Emoji has no flag glyphs at all. Keep the section 21 fallback (bundled Twemoji/Noto images in
+  a custom rich-text widget) in mind for Phase 3, at least for flags.
+- **Push-to-talk decision** (section 21 says "decide in Spike C"): use the `GetAsyncKeyState` polling
+  thread (every 10 ms, `windows` crate) for push-to-talk on Windows. `global-hotkey` also reports release
+  (it polls `GetAsyncKeyState` itself every 50 ms), but it registers the key with `RegisterHotKey`, which
+  takes the key away from every other app (a PTT key like `V` or `CapsLock` would stop working
+  everywhere else) and it cannot use mouse buttons, which section 15.6 suggests (Mouse4). Polling does
+  neither and has lower release latency. `global-hotkey` stays the choice for one-shot global actions
+  where taking the key is fine (global toggle-mute). Other platforms are not targeted in v1.
+
+## 2026-10-30: Phase 0 complete
+
+- **What:** all three spikes passed on the developer's machine (see the entries above); no fallback from
+  section 21 was needed. The spike code stays in `spikes/` as reference and is not used by real crates.
+- **Carry-over notes for later phases:**
+  - Phase 1 (server): canonicalize `::ffff:a.b.c.d` peers before per-IP rate limits and logs (Spike B).
+  - Phase 3 (GUI): variable-height virtualized rows; emoji fallback for flags/VS16; investigate the
+    one-off crash; the developer has UI changes in mind.
+  - Phase 4 (audio): playback sounded quiet in Spike A, so check levels and consider the AGC from
+    section 12.5; PTT uses the polling approach above.
