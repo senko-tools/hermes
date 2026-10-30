@@ -112,3 +112,40 @@ Newest entries at the bottom. Each entry: date, what changed, why.
     one-off crash; the developer has UI changes in mind.
   - Phase 4 (audio): playback sounded quiet in Spike A, so check levels and consider the AGC from
     section 12.5; PTT uses the polling approach above.
+
+## 2026-10-30: Hand-written markup parser instead of wrapping `pulldown-cmark`
+
+- **What:** `hermes-proto::markup` is a small hand-written parser for exactly the syntax in section 7.5
+  (Discord-style rules); `pulldown-cmark` (section 6) is not used. Additions the plan did not spell out:
+  backslash escapes of ASCII punctuation (`\*`), `<https://…>` links, quotes need `> ` (so `>_<` stays
+  text) and do not nest, `_`-italics only at word boundaries (`snake_case` stays text), link targets must
+  be `http://` or `https://`, and formatting nests at most 12 levels deep.
+- **Why:** approved by the developer. CommonMark disagrees with chat syntax in many places: `__x__` is
+  bold there (we want underline), single newlines are merged, 4-space indents become code blocks,
+  `- x` becomes a list, bare URLs are not links, and `||spoiler||` / `<@id>` would need a second pass
+  anyway. A parser that only knows our syntax is more predictable and keeps GUI and TUI identical.
+
+## 2026-10-30: `Permissions` is a decimal string on the wire
+
+- **What:** `Permissions` serializes as a decimal string (`"196608"`), like `Id`. Unknown bits from a
+  newer peer are dropped when decoding.
+- **Why:** approved by the developer. Bits currently go up to 37, but the reserved gaps go up to bit 63,
+  which a JavaScript number cannot hold exactly; using strings now avoids a breaking change later.
+
+## 2026-10-30: `hermes-proto` details the plan left open
+
+- **HTTP statuses for `ErrorCode`:** 400 `BAD_REQUEST`, `VALIDATION_FAILED`; 401 `UNAUTHORIZED`,
+  `INVALID_CREDENTIALS`; 403 `ACCOUNT_DISABLED`, `MISSING_PERMISSION`, `REGISTRATION_CLOSED`, `BANNED`,
+  `VOICE_DISABLED`; 404 `NOT_FOUND`, `INVITE_INVALID`; 409 `CONFLICT`, `VOICE_FULL`; 413
+  `PAYLOAD_TOO_LARGE`; 429 `RATE_LIMITED`; 500 `INTERNAL`; 507 `STORAGE_FULL`. `fields` is omitted
+  unless the code is `VALIDATION_FAILED`.
+- **Models:** `AttachmentRef = {id, filename}` (enough to build the download URL); `Mentions =
+  {users, roles, everyone, here}` (the `message_mentions` kinds); `SpacePreview = {id, name, icon,
+  member_count}`; `Member.role_ids` never lists `@everyone` (it is implicit); `Message.nonce` is left
+  out of the JSON when absent.
+- **Gateway:** client ops are sent as `{op, d}` without `s` (the server ignores `s` if present);
+  `heartbeat.last_seq` is `0` before any dispatch was received (sequences start at 1);
+  `ready.voice.quic_port` / `cert_sha256` are `null` when voice is disabled;
+  `ready.instance.limits = {max_upload_mb, max_message_length}` (same as `GET /instance`).
+- **Permissions helpers:** besides `compute`, `highest_position`, `can_manage_member` and
+  `can_manage_role` implement the hierarchy rule (owner ranks above everyone, nobody acts on the owner).
