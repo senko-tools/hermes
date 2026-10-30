@@ -27,3 +27,88 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 - **Note:** the musl build links a static alsa-lib without `dlopen`, so ALSA plugins (PulseAudio and
   PipeWire bridges) are not available to it. On such desktops it may only see raw `hw:` devices.
   The Windows build is the one that matters for Spike A.
+
+## 2026-10-30: rustls uses the `ring` crypto provider
+
+- **What:** the workspace `rustls` and `quinn` entries disable default features and enable `ring`
+  (rustls: `std`, `ring`, `logging`, `tls12`; quinn: `runtime-tokio`, `rustls-ring`, `log`).
+- **Why:** rustls 0.23 defaults to `aws-lc-rs`, while quinn and rcgen default to `ring`. With both
+  compiled in, rustls cannot pick a provider automatically, and `aws-lc-sys` is a heavy C/CMake
+  build on Windows and musl. `ring` alone covers TLS 1.3 for QUIC and HTTPS.
+
+## 2026-10-30: Spike A (audio loopback) passed; "added latency" means our pipeline only
+
+- **Result** (developer's Windows PC, WASAPI shared mode, Yeti X in, Realtek out, both 48 kHz f32,
+  480-frame periods): the full chain cpal → nnnoiseless → Opus 20 ms/64 kbps/FEC/DTX → decode → cpal
+  works with libopus built statically. Estimated end-to-end latency 77–82 ms, of which:
+  - devices (WASAPI engine + drivers): ~14 ms input + ~32 ms output ≈ 46 ms;
+  - Hermes pipeline (ring buffers, frame buffering, resampler/Opus/denoiser delays): ~31–36 ms.
+  DTX works (6.9–11.9 kbps in silence, ~53 kbps while talking); RNNoise voice probability 0.84 while
+  talking; no sustained underruns.
+- **What:** the Phase 0 criterion "< 60 ms added latency" is interpreted as latency added by Hermes,
+  excluding the OS audio devices, which every voice app pays. The spike counts as passed.
+- **Why:** cpal only offers WASAPI shared mode with fixed 10 ms periods, so the device part cannot be
+  reduced from our side; the part we control is well under 60 ms.
+- **Follow-up for `hermes-audio`:** playback sounded quiet on the developer's setup; the spike now has
+  a dBFS level meter and `--gain` to investigate. Consider the AGC from section 12.5 (step 4) if quiet
+  microphones turn out to be common.
+
+## 2026-10-30: Spike B (QUIC datagrams) passed
+
+- **Result:** `quic-echo server` (static musl binary) on hermes.senko.tools, bound to `[::]:7700`
+  (dual-stack, `net.ipv6.bindv6only = 0`), client on the developer's Windows PC at home, 50 datagrams/s
+  of 200 bytes for 60 s, certificate pinned by SHA-256:
+  - IPv4: 3000/3000 received, 0 % loss, no reordering, RTT min 5.3 / avg 5.6 / p95 5.7 / max 6.3 ms,
+    jitter 0.08 ms, max datagram size 1414 bytes.
+  - IPv6: same results (RTT avg 5.6 / p95 5.8 / max 8.2 ms, jitter 0.10 ms) after the developer fixed
+    IPv6 on the home network (the first failure was the client network, not the server).
+- **What:** no change to the plan; QUIC datagrams over one UDP port are confirmed for voice. A 20 ms
+  Opus frame (~160 bytes at 64 kbps) plus the 11-byte header fits well inside 1414 bytes.
+- **Notes for the real server:** on a dual-stack socket IPv4 peers appear as `::ffff:a.b.c.d`; convert
+  them to plain IPv4 (`to_canonical()`) before per-IP rate limits and logging.
+
+## 2026-10-30: `windows` crate for the push-to-talk polling fallback; iced-ui spike is Windows-only
+
+- **What:** added `windows = "=0.62.2"` (feature `Win32_UI_Input_KeyboardAndMouse`) to the workspace,
+  used only on Windows by `spikes/iced-ui --poll` to read `GetAsyncKeyState` every 10 ms. The `spikes`
+  workflow does not build `iced-ui` for `x86_64-unknown-linux-musl`.
+- **Why:** PLAN.md section 21 names this fallback (`windows` crate) but section 6 does not list the crate;
+  approved by the developer. The version is the one cpal already pulls in, so nothing new is downloaded.
+  `global-hotkey` 0.9 on Windows uses `RegisterHotKey` (the key is taken away from every other app while
+  registered, keyboard keys only) and detects release by polling `GetAsyncKeyState` every 50 ms; the
+  spike compares both. A static musl build cannot load the system GUI libraries, so it would be useless.
+
+## 2026-10-30: Spike C (iced UI risks) passed
+
+- **Result** (developer's Windows PC, iced 0.14): pane_grid split/close/drag/resize, `text_editor`
+  input (Enter sends, Shift+Enter newline), a virtualized list of 10,000 rows with color emoji
+  scrolling smoothly, file-drop events, and global push-to-talk reporting press **and** release while
+  the window is unfocused all worked, and the developer reported it as fast. Memory use ~125 MB on
+  Windows. The app crashed once and the crash could not be reproduced (no message was captured);
+  watch for it in Phase 3 and capture the panic output if it happens again.
+- **Virtualized list:** fixed row height; the scroll offset from `scrollable::on_scroll` selects the
+  visible range plus 10 rows of overscan, with spacers for the rest. Only ~30–60 rows are built at any
+  time. Variable-height rows (wrapping, attachments, replies) are still open for Phase 3.
+- **Emoji** (observed in the Linux VM with Noto Color Emoji; not checked row by row on Windows):
+  ordinary emoji, skin tones and ZWJ sequences render in color; flags (regional indicator pairs) render
+  as letters in boxes, and characters with VS16 (`❤️ ☕ ⚠️`) render as monochrome symbols. Windows'
+  Segoe UI Emoji has no flag glyphs at all. Keep the section 21 fallback (bundled Twemoji/Noto images in
+  a custom rich-text widget) in mind for Phase 3, at least for flags.
+- **Push-to-talk decision** (section 21 says "decide in Spike C"): use the `GetAsyncKeyState` polling
+  thread (every 10 ms, `windows` crate) for push-to-talk on Windows. `global-hotkey` also reports release
+  (it polls `GetAsyncKeyState` itself every 50 ms), but it registers the key with `RegisterHotKey`, which
+  takes the key away from every other app (a PTT key like `V` or `CapsLock` would stop working
+  everywhere else) and it cannot use mouse buttons, which section 15.6 suggests (Mouse4). Polling does
+  neither and has lower release latency. `global-hotkey` stays the choice for one-shot global actions
+  where taking the key is fine (global toggle-mute). Other platforms are not targeted in v1.
+
+## 2026-10-30: Phase 0 complete
+
+- **What:** all three spikes passed on the developer's machine (see the entries above); no fallback from
+  section 21 was needed. The spike code stays in `spikes/` as reference and is not used by real crates.
+- **Carry-over notes for later phases:**
+  - Phase 1 (server): canonicalize `::ffff:a.b.c.d` peers before per-IP rate limits and logs (Spike B).
+  - Phase 3 (GUI): variable-height virtualized rows; emoji fallback for flags/VS16; investigate the
+    one-off crash; the developer has UI changes in mind.
+  - Phase 4 (audio): playback sounded quiet in Spike A, so check levels and consider the AGC from
+    section 12.5; PTT uses the polling approach above.

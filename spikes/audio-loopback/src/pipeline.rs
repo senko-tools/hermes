@@ -51,6 +51,46 @@ pub struct Config {
     pub input: DeviceInfo,
     pub output: DeviceInfo,
     pub denoise: bool,
+    /// Extra input gain in dB, applied right after the downmix.
+    pub gain_db: f32,
+}
+
+/// Peak and RMS of a signal over one window.
+#[derive(Default)]
+struct Level {
+    peak: f32,
+    sum_sq: f64,
+    samples: u64,
+    clipped: u64,
+}
+
+impl Level {
+    fn add(&mut self, s: f32) {
+        let a = s.abs();
+        self.peak = self.peak.max(a);
+        self.sum_sq += f64::from(s * s);
+        self.samples += 1;
+        if a > 1.0 {
+            self.clipped += 1;
+        }
+    }
+
+    /// `rms/peak` in dBFS.
+    fn describe(&self) -> String {
+        let db = |v: f64| {
+            if v > 0.0 {
+                format!("{:.1}", 20.0 * v.log10())
+            } else {
+                "-inf".to_string()
+            }
+        };
+        let rms = if self.samples > 0 {
+            (self.sum_sq / self.samples as f64).sqrt()
+        } else {
+            0.0
+        };
+        format!("{}/{} dBFS", db(rms), db(f64::from(self.peak)))
+    }
 }
 
 /// Resampler for one mono stream with a fixed input chunk, or a passthrough when rates match.
@@ -139,6 +179,8 @@ struct Window {
     vad_sum: f64,
     vad_frames: u64,
     dropped: u64,
+    mic: Level,
+    out: Level,
 }
 
 /// All DSP state between the two ring buffers.
@@ -147,6 +189,7 @@ pub struct Worker {
     in_ch: usize,
     out_rate: u32,
     denoise: bool,
+    gain: f32,
     enc: Encoder,
     dec: Decoder,
     denoiser: Box<DenoiseState<'static>>,
@@ -169,7 +212,7 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(in_rate: u32, in_ch: usize, out_rate: u32, denoise: bool) -> Self {
+    pub fn new(in_rate: u32, in_ch: usize, out_rate: u32, denoise: bool, gain_db: f32) -> Self {
         let mut enc =
             Encoder::new(OPUS_RATE, Channels::Mono, Application::Voip).expect("opus encoder");
         enc.set_bitrate(Bitrate::Bits(OPUS_BITRATE))
@@ -184,6 +227,7 @@ impl Worker {
             in_ch,
             out_rate,
             denoise,
+            gain: 10f32.powf(gain_db / 20.0),
             enc,
             dec: Decoder::new(OPUS_RATE, Channels::Mono).expect("opus decoder"),
             denoiser: DenoiseState::new(),
@@ -223,7 +267,9 @@ impl Worker {
         let n = input.pop_slice(&mut self.raw);
         let n = n - n % in_ch;
         for f in self.raw[..n].chunks_exact(in_ch) {
-            self.mono_in.push(f.iter().sum::<f32>() / in_ch as f32);
+            let s = f.iter().sum::<f32>() / in_ch as f32 * self.gain;
+            win.mic.add(s);
+            self.mono_in.push(s);
         }
 
         // 2. Resample to 48 kHz.
@@ -273,6 +319,9 @@ impl Worker {
                 .dec
                 .decode_float(&self.packet[..len], &mut self.decoded, false)
                 .expect("opus decode");
+            for &s in &self.decoded[..samples] {
+                win.out.add(s);
+            }
             self.dec48.extend_from_slice(&self.decoded[..samples]);
         }
 
@@ -330,6 +379,7 @@ pub fn run(
         cfg.input.channels,
         cfg.output.rate,
         cfg.denoise,
+        cfg.gain_db,
     );
     print_header(&cfg, &worker);
     let mut last_print = Instant::now();
@@ -401,10 +451,11 @@ fn print_header(cfg: &Config, w: &Worker) {
         w.lookahead_s * 1000.0
     );
     println!(
-        "resample in: {}, out: {}, denoise: {}",
+        "resample in: {}, out: {}, denoise: {}, gain: {:+.1} dB",
         describe_resampler(&w.up, cfg.input.rate, OPUS_RATE),
         describe_resampler(&w.down, OPUS_RATE, cfg.output.rate),
-        if cfg.denoise { "on" } else { "off" }
+        if cfg.denoise { "on" } else { "off" },
+        cfg.gain_db
     );
     println!("Press Ctrl+C to stop.\n");
 }
@@ -454,7 +505,7 @@ fn print_stats(cfg: &Config, w: &Window, cb: &Snapshot, algo_s: f64) {
     };
     println!(
         "latency ~{:.1} ms = in-dev {:.1} + in-ring {:.1} + buffering {:.1} + algo {:.1} + out-ring {:.1} + out-dev {:.1} | \
-         cb in {}x{}f @{} Hz, out {}x{}f @{} Hz | opus {} pkt ({} dtx) {:.1} kbps{} | underruns {} overflows {} dropped {}",
+         cb in {}x{}f @{} Hz, out {}x{}f @{} Hz | opus {} pkt ({} dtx) {:.1} kbps{} | mic {} (clipped {}) out {} | underruns {} overflows {} dropped {}",
         ms(total),
         ms(in_dev),
         ms(in_ring),
@@ -472,6 +523,9 @@ fn print_stats(cfg: &Config, w: &Window, cb: &Snapshot, algo_s: f64) {
         w.dtx_packets,
         kbps(w.bytes, w.packets),
         vad,
+        w.mic.describe(),
+        w.mic.clipped,
+        w.out.describe(),
         cb.out_underruns,
         cb.in_overflows,
         w.dropped,
@@ -489,7 +543,7 @@ mod tests {
     fn loopback(in_rate: u32, out_rate: u32, denoise: bool) -> Vec<f32> {
         let (mut in_prod, mut in_cons) = HeapRb::<f32>::new(in_rate as usize).split();
         let (mut out_prod, mut out_cons) = HeapRb::<f32>::new(out_rate as usize * 2).split();
-        let mut worker = Worker::new(in_rate, 2, out_rate, denoise);
+        let mut worker = Worker::new(in_rate, 2, out_rate, denoise, 0.0);
         let chunk = in_rate as usize / 100;
         let mut out = Vec::new();
         for c in 0..100 {
@@ -528,6 +582,16 @@ mod tests {
                 "{in_rate}->{out_rate}: rms {level}"
             );
         }
+    }
+
+    #[test]
+    fn gain_scales_the_signal() {
+        let mut level = Level::default();
+        level.add(0.5);
+        level.add(-0.5);
+        assert_eq!(level.describe(), "-6.0/-6.0 dBFS");
+        let gain = Worker::new(48_000, 1, 48_000, false, 6.0).gain;
+        assert!((gain - 1.995).abs() < 0.01);
     }
 
     #[test]

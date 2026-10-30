@@ -1551,10 +1551,10 @@ The order is designed so that **risky parts are proven early**, **something usab
 Goal: remove the biggest unknowns before writing real code.
 - [x] Create the GitHub organization `senko-tools` and the repository `hermes` (see [5.1](#51-repositories-and-versioning)); create the workspace, crates (empty), CI, licenses, `docs/DECISIONS.md`.
 - [x] Point DNS `hermes.senko.tools` at the Hetzner VPS and open the firewall ports from [18.8](#188-reference-deployment-hermessenkotools-on-hetzner-debian-13) (needed for Spike B).
-- [ ] **Spike A: audio loopback on Windows**: cpal capture → nnnoiseless → Opus encode → decode → playback, with < 60 ms added latency. Proves the audio stack builds (libopus static) and works.
-- [ ] **Spike B: QUIC datagrams**: quinn server on the Hetzner VPS (UDP 7700), client at home, send 50 packets/s of 200 bytes, measure RTT and loss. Proves the network approach.
-- [ ] **Spike C: iced UI risks**: `pane_grid` with splits, `text_editor` input, a 10,000-row virtualized list scrolling smoothly, color emoji rendering, file drop event, and a `global-hotkey` push-to-talk key that reports press **and release** while the window is unfocused.
-- [ ] Write findings into `docs/DECISIONS.md`; if a spike fails, apply the fallback from [Risks](#21-risks-and-how-to-handle-them).
+- [x] **Spike A: audio loopback on Windows**: cpal capture → nnnoiseless → Opus encode → decode → playback, with < 60 ms added latency. Proves the audio stack builds (libopus static) and works.
+- [x] **Spike B: QUIC datagrams**: quinn server on the Hetzner VPS (UDP 7700), client at home, send 50 packets/s of 200 bytes, measure RTT and loss. Proves the network approach.
+- [x] **Spike C: iced UI risks**: `pane_grid` with splits, `text_editor` input, a 10,000-row virtualized list scrolling smoothly, color emoji rendering, file drop event, and a `global-hotkey` push-to-talk key that reports press **and release** while the window is unfocused.
+- [x] Write findings into `docs/DECISIONS.md`; if a spike fails, apply the fallback from [Risks](#21-risks-and-how-to-handle-them).
 
 **Done when:** all three spikes work on the author's Windows machine.
 
