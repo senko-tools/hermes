@@ -1,0 +1,14 @@
+[package]
+name = "hermes-client-core"
+description = "Hermes client core: connection management, REST and gateway client, state store, voice transport, config"
+license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
