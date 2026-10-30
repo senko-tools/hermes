@@ -1,0 +1,21 @@
+[package]
+name = "iced-ui"
+description = "Spike C: iced UI risks (pane_grid, text_editor, virtualized list, emoji, file drop, global PTT)"
+license = "GPL-3.0-or-later"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+clap.workspace = true
+global-hotkey.workspace = true
+iced.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

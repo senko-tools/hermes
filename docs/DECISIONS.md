@@ -66,3 +66,14 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   Opus frame (~160 bytes at 64 kbps) plus the 11-byte header fits well inside 1414 bytes.
 - **Notes for the real server:** on a dual-stack socket IPv4 peers appear as `::ffff:a.b.c.d`; convert
   them to plain IPv4 (`to_canonical()`) before per-IP rate limits and logging.
+
+## 2026-10-30: `windows` crate for the push-to-talk polling fallback; iced-ui spike is Windows-only
+
+- **What:** added `windows = "=0.62.2"` (feature `Win32_UI_Input_KeyboardAndMouse`) to the workspace,
+  used only on Windows by `spikes/iced-ui --poll` to read `GetAsyncKeyState` every 10 ms. The `spikes`
+  workflow does not build `iced-ui` for `x86_64-unknown-linux-musl`.
+- **Why:** PLAN.md section 21 names this fallback (`windows` crate) but section 6 does not list the crate;
+  approved by the developer. The version is the one cpal already pulls in, so nothing new is downloaded.
+  `global-hotkey` 0.9 on Windows uses `RegisterHotKey` (the key is taken away from every other app while
+  registered, keyboard keys only) and detects release by polling `GetAsyncKeyState` every 50 ms; the
+  spike compares both. A static musl build cannot load the system GUI libraries, so it would be useless.
