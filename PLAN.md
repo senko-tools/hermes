@@ -1562,7 +1562,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] `hermes-proto`: IDs, models, error codes, permissions + `compute` with tests, gateway envelope/events, markup parser.
 - [x] Config loading (TOML + env + `SERVER_PORT` fallback), `init`, `check-config`.
 - [x] SQLite + migrations, snowflake generator, state cache load.
-- [ ] TLS modes (`self_signed` with persisted cert, `files`, `off`).
+- [x] TLS modes (`self_signed` with persisted cert, `files`, `off`).
 - [ ] Auth: register/login/logout/sessions, first-start setup invite, invites.
 - [ ] Spaces, channels, roles, members, overrides REST + audit log.
 - [ ] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).

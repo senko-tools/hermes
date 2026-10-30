@@ -7,8 +7,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-use crate::config::{self, Config, LogConfig, LogFormat};
+use crate::config::{self, Config, LogConfig, LogFormat, TlsMode};
 use crate::state::AppState;
+use crate::tls::{self, Tls};
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes-server", version, about = "Hermes chat server")]
@@ -73,6 +74,9 @@ fn run_server(path: &Path) -> ExitCode {
 
 async fn serve(config: Config) -> ExitCode {
     let data_dir = config.storage.data_dir.clone();
+    let Some(_tls) = load_tls(&config) else {
+        return ExitCode::FAILURE;
+    };
     let state = match AppState::load(config).await {
         Ok(state) => state,
         Err(err) => {
@@ -97,6 +101,33 @@ async fn serve(config: Config) -> ExitCode {
     // The HTTP/gateway/voice server is built in the next PLAN.md section 20 items.
     tracing::error!("the server is not implemented yet");
     ExitCode::FAILURE
+}
+
+/// Loads (or on first start generates) the TLS certificate and logs what is used.
+fn load_tls(config: &Config) -> Option<Tls> {
+    let tls = match tls::load(config) {
+        Ok(tls) => tls,
+        Err(err) => {
+            tracing::error!("TLS setup failed: {err}");
+            return None;
+        }
+    };
+    match config.tls.mode {
+        TlsMode::SelfSigned => tracing::info!(
+            "HTTPS uses the self-signed certificate in {}, fingerprint {}",
+            config.storage.data_dir.join(tls::CERTS_DIR).display(),
+            tls.fingerprint().expect("self_signed has a fingerprint")
+        ),
+        TlsMode::Files => tracing::info!(
+            "HTTPS uses the certificate {}",
+            config.tls.cert_file.display()
+        ),
+        TlsMode::Off => tracing::warn!(
+            "tls.mode = \"off\": serving plain HTTP; only do this behind a TLS-terminating \
+             reverse proxy"
+        ),
+    }
+    Some(tls)
 }
 
 fn init(path: &Path) -> ExitCode {

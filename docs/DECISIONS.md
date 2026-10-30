@@ -32,6 +32,8 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 
 - **What:** the workspace `rustls` and `quinn` entries disable default features and enable `ring`
   (rustls: `std`, `ring`, `logging`, `tls12`; quinn: `runtime-tokio`, `rustls-ring`, `log`).
+  `tokio-rustls` got the same treatment (`logging`, `tls12`, `ring`) when the server started using
+  it (2026-10-31), because its default features also enable `aws-lc-rs`.
 - **Why:** rustls 0.23 defaults to `aws-lc-rs`, while quinn and rcgen default to `ring`. With both
   compiled in, rustls cannot pick a provider automatically, and `aws-lc-sys` is a heavy C/CMake
   build on Windows and musl. `ring` alone covers TLS 1.3 for QUIC and HTTPS.
