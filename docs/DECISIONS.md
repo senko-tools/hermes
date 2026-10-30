@@ -169,3 +169,23 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   exist is checked by the TLS item, not here.
 - **`init`** refuses to overwrite an existing file (exit code 1) and creates missing parent directories.
 - **`run`** only loads the config and sets up logging for now; it exits with code 1 until the server exists.
+
+## 2026-10-31: SQLite, snowflakes and the state cache
+
+- **`synchronous = NORMAL`:** set on every connection besides the pragmas from section 7.3. It is the
+  usual setting with WAL: a power loss can lose the last commits but cannot corrupt the database.
+- **Two pools:** a read pool (4 connections) and a write pool with a single connection, as the
+  "SQLite write contention" row in section 21 says. Migrations run on the write pool.
+- **Offline query data:** `crates/hermes-server/.sqlx/` is committed so builds need no database. After
+  changing a query, regenerate it with `cargo sqlx prepare` (`sqlx-cli` 0.9.0, a dev tool, not a crate
+  dependency); the exact commands are in `src/db/mod.rs`. `build.rs` makes the crate rebuild when a
+  migration changes.
+- **Snowflake overflow:** when all 4096 sequence numbers of a millisecond are used, the generator moves
+  on to the next millisecond instead of sleeping, so it never blocks while holding its lock. A clock
+  going backwards reuses the last timestamp, so IDs stay unique and increasing within one process.
+- **Cache shape:** users are cached once (`Cache::users`); channels keep DM recipients as IDs
+  (`recipient_ids`) and the wire `Channel::recipients` stays empty in the cache. Presences and voice
+  states are runtime-only maps. `Cache::space_permissions`/`channel_permissions` wrap
+  `hermes_proto::permissions::compute` (DMs use `Permissions::DM_RECIPIENT`).
+- **`0002_search.sql`:** an external-content FTS5 table plus insert/delete/update-of-content triggers.
+  A soft delete clears `content`, which removes the message from the index.

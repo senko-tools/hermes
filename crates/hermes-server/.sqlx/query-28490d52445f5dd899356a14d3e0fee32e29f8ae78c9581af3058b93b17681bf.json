@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT space_id, user_id, role_id FROM member_roles",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "member_roles",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "member_roles",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "role_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "member_roles",
+            "name": "role_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "28490d52445f5dd899356a14d3e0fee32e29f8ae78c9581af3058b93b17681bf"
+}

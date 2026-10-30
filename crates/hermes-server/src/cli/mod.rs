@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use crate::config::{self, Config, LogConfig, LogFormat};
+use crate::state::AppState;
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes-server", version, about = "Hermes chat server")]
@@ -60,7 +61,40 @@ fn run_server(path: &Path) -> ExitCode {
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }
-    // The server itself is built in the next PLAN.md section 20 items.
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            tracing::error!("could not start the async runtime: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(serve(loaded.config))
+}
+
+async fn serve(config: Config) -> ExitCode {
+    let data_dir = config.storage.data_dir.clone();
+    let state = match AppState::load(config).await {
+        Ok(state) => state,
+        Err(err) => {
+            tracing::error!(
+                "could not open the database in {}: {err}",
+                data_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    {
+        let cache = state.cache.read().unwrap_or_else(|e| e.into_inner());
+        tracing::info!(
+            users = cache.users.len(),
+            spaces = cache.spaces.len(),
+            channels = cache.channels.len(),
+            "database {} loaded",
+            data_dir.join(crate::db::DB_FILE).display()
+        );
+    }
+    state.db.close().await;
+    // The HTTP/gateway/voice server is built in the next PLAN.md section 20 items.
     tracing::error!("the server is not implemented yet");
     ExitCode::FAILURE
 }

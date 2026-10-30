@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "username",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "name": "display_name",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "name": "status_text",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "status_text"
+          }
+        }
+      },
+      {
+        "name": "instance_admin: bool",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "instance_admin"
+          }
+        }
+      },
+      {
+        "name": "disabled: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "disabled"
+          }
+        }
+      },
+      {
+        "name": "avatar_id",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "avatar_id"
+          }
+        }
+      },
+      {
+        "name": "avatar_filename?",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ea3b2352c2ef9233ace316aaaaf235f3b9488c79d5274fa4b6eda995f6597143"
+}
