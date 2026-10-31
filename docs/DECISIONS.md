@@ -744,3 +744,30 @@ Approved by the developer as a plan before implementation.
   Phase 6.
 - **New DM:** the "+" of the Direct messages section takes comma-separated usernames or display
   names (case-insensitive) of users the store knows; the new DM opens right away.
+
+## 2026-10-31: GUI pane grid, layout, command bar and keybinds
+
+Approved by the developer as a plan before implementation.
+
+- **Panes:** buffers are `Empty`, `Channel` and `Settings` for now (the others come with their
+  features). Opening a channel or Settings uses the focused pane. Splitting copies the pane's
+  buffer into the new pane, which gets the focus; closing the last pane empties it. The header has
+  Members / Maximize buttons and a `⋮` menu (split right/down, maximize, member list, close). The
+  docked member list uses `view::member_groups` (a DM lists its recipients).
+- **`[[layout]]`:** one table per window holding the pane tree: a split is
+  `{ split = "vertical" | "horizontal", ratio, a, b }`, a pane is `{ buffer = "channel" |
+  "settings" | "empty", instance, channel, members }`. Saved through `Core::set_setting("layout",
+  …)` when the window is closed, restored on start. A layout that does not parse gives one empty
+  pane; panes of removed instances or left spaces are emptied.
+- **Keybinds:** every action of section 15.6 has a config name (`command_bar`, `next_unread`,
+  `prev_unread`, `next_channel`, `prev_channel`, `focus_next_pane`, `focus_prev_pane`,
+  `split_right`, `split_down`, `close_pane`, `maximize_pane`, `toggle_member_list`,
+  `toggle_sidebar`, `search`, `mark_read`, `toggle_mute`, `toggle_deafen`, `settings`) and the
+  default from the table; `[keys]` overrides them, an empty value unbinds. Keys a text input used
+  only count with Ctrl, Alt or Super. Search, mute and deafen say "comes in a later version".
+- **Punctuation keys on non-US layouts** (approved): a punctuation key in a combo also matches the
+  key in its place on a US keyboard, so the default `Ctrl+\` splits on layouts where `\` needs
+  AltGr (on a Finnish keyboard: Ctrl + the `'` key left of Enter). A key that types the character
+  wins over a US position, and letters only match what they type.
+- **Command bar:** subsequence fuzzy match (word starts and runs score higher, gaps lower) over
+  channels, DMs, "Message @user" (opens or creates the DM), the keybind actions and "Theme: …".

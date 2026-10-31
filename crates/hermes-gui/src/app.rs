@@ -6,30 +6,27 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::api::CreateInviteRequest;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::{Core, CoreEvent, InstanceId, view};
+use hermes_client_core::{Core, CoreEvent, InstanceId};
+use iced::keyboard::{self, Modifiers};
+use iced::widget::pane_grid::Axis;
 use iced::widget::{button, column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
-use crate::buffer::settings;
+use crate::buffer::{Buffer, settings};
 use crate::font::Fonts;
+use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
-use crate::modal::{self, add_instance, confirm, new_dm};
+use crate::modal::{self, add_instance, command_bar, confirm, new_dm};
+use crate::panes::{self, PaneAction, Panes};
 use crate::sidebar::collapsed::Collapsed;
 use crate::sidebar::menu::{self, Action, Target};
-use crate::sidebar::tree::{self, Selection};
+use crate::sidebar::tree::{self, Row};
 use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
 use crate::widget::context_menu;
 use crate::widget::cursor::{self, Cursor};
-use crate::widget::{heading, label, small};
-
-/// What the main area shows until the pane grid exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
-    Welcome,
-    Settings,
-}
+use crate::widget::small;
 
 /// A line shown above the main area until dismissed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,15 +51,16 @@ pub struct App {
     pub iced_theme: iced::Theme,
     pub themes: Vec<String>,
     pub fonts: Fonts,
-    pub screen: Screen,
     pub status: Option<Status>,
+    pub panes: Panes,
+    pub keybinds: Keybinds,
+    pub sidebar_visible: bool,
+    pub command_bar: Option<command_bar::CommandBar>,
     /// The add-instance / sign-in dialog.
     pub add_instance: Option<add_instance::AddInstance>,
     /// Where later launches forward their links (section 15.7).
     single_instance: Option<Endpoint>,
     pub collapsed: Collapsed,
-    /// The channel shown in the main area.
-    pub selected: Option<Selection>,
     /// An open context menu and where it was opened.
     pub menu: Option<(Target, Point)>,
     cursor: Cursor,
@@ -83,7 +81,12 @@ impl App {
             .paths()
             .map(|p| Collapsed::load(&p.dir))
             .unwrap_or_default();
+        let (keybinds, key_warnings) = Keybinds::from_config(&config.keys);
         let mut app = App {
+            panes: Panes::restore(&config.layout),
+            keybinds,
+            sidebar_visible: true,
+            command_bar: None,
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
             iced_theme: style::iced_theme(&Theme::dark()),
@@ -91,12 +94,10 @@ impl App {
             config,
             core,
             events,
-            screen: Screen::Welcome,
             status: None,
             add_instance: None,
             single_instance,
             collapsed,
-            selected: None,
             menu: None,
             cursor: Cursor::default(),
             window_size: Size::new(1200.0, 800.0),
@@ -104,7 +105,21 @@ impl App {
             new_dm: None,
         };
         app.reload_theme();
+        if let Some(warning) = key_warnings.into_iter().next() {
+            app.warn(warning);
+        }
+        app.core.set_visible_channels(app.panes.visible_channels());
         app
+    }
+
+    /// Loads the first page of every channel the restored layout shows.
+    pub fn open_restored(&self) -> Task<Message> {
+        Task::batch(
+            self.panes
+                .visible_channels()
+                .into_iter()
+                .map(|(inst, channel)| self.load_channel(inst, channel)),
+        )
     }
 
     pub fn themes_dir(&self) -> Option<PathBuf> {
@@ -128,7 +143,7 @@ impl App {
             Message::Core(event) => self.on_core(event),
             Message::ThemesChanged => self.reload_theme(),
             Message::WindowFocused(focused) => self.core.set_app_focused(focused),
-            Message::OpenSettings => self.screen = Screen::Settings,
+            Message::OpenSettings => self.panes.open(Buffer::Settings),
             Message::Settings(message) => self.on_settings(message),
             Message::DismissStatus => self.status = None,
             Message::FontLoaded | Message::ChannelOpened => {}
@@ -141,6 +156,21 @@ impl App {
                 }
             }
             Message::Select(inst, channel) => return self.select(inst, channel),
+            Message::PaneClicked(pane) => self.panes.focus = pane,
+            Message::PaneDragged(event) => self.panes.on_drag(event),
+            Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),
+            Message::PaneMenu(pane, action) => match action {
+                PaneAction::ToggleMembers => self.panes.toggle_members(pane),
+                PaneAction::Maximize => self.panes.toggle_maximize(pane),
+            },
+            Message::Key(key, physical, modifiers, captured) => {
+                return self.on_key(&key, physical, modifiers, captured);
+            }
+            Message::CloseRequested(id) => {
+                self.save_layout();
+                return window::close(id);
+            }
+            Message::CommandBar(message) => return self.on_command_bar(message),
             Message::OpenMenu(target) => self.menu = Some((target, self.cursor.get())),
             Message::CloseMenu => self.menu = None,
             Message::Menu(target, action) => {
@@ -186,12 +216,16 @@ impl App {
             Message::Escape => {
                 if self.menu.is_some() {
                     self.menu = None;
+                } else if self.command_bar.is_some() {
+                    self.command_bar = None;
                 } else if self.confirm.is_some() {
                     self.confirm = None;
                 } else if self.new_dm.is_some() {
                     self.new_dm = None;
                 } else if self.add_instance.is_some() {
                     self.add_instance = None;
+                } else {
+                    return self.key_action(keybinds::Action::MarkRead);
                 }
             }
             Message::Forwarded(link) => {
@@ -214,11 +248,18 @@ impl App {
         Task::none()
     }
 
-    /// Shows a channel in the main area and loads its latest messages.
+    /// Shows a channel in the focused pane and loads its latest messages.
     fn select(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
-        self.selected = Some((inst.clone(), channel));
-        self.screen = Screen::Welcome;
-        self.core.set_visible_channels([(inst.clone(), channel)]);
+        self.panes.open(Buffer::Channel {
+            inst: inst.clone(),
+            channel,
+        });
+        self.load_channel(inst, channel)
+    }
+
+    fn load_channel(&self, inst: InstanceId, channel: Id) -> Task<Message> {
+        self.core
+            .set_visible_channels(self.panes.visible_channels());
         let core = self.core.clone();
         Task::perform(
             async move { core.open_channel(&inst, channel).await },
@@ -257,9 +298,8 @@ impl App {
                 );
             }
             (Target::Instance(inst), Action::RemoveInstance) => {
-                if self.selected.as_ref().is_some_and(|(i, _)| *i == inst) {
-                    self.selected = None;
-                }
+                self.panes
+                    .clear_where(|b| matches!(b, Buffer::Channel { inst: i, .. } if *i == inst));
                 return Task::perform(
                     async move {
                         core.remove_instance(&inst)
@@ -294,12 +334,14 @@ impl App {
                 return self.update(Message::Copy(space.to_string(), "Space ID"));
             }
             (Target::Space(inst, space), Action::LeaveSpace) => {
-                if self.selected.as_ref().is_some_and(|(i, c)| {
-                    *i == inst
-                        && core.store().instance(i).and_then(|s| s.space_of(*c)) == Some(space)
-                }) {
-                    self.selected = None;
-                }
+                self.panes.clear_where(|b| match b {
+                    Buffer::Channel { inst: i, channel } => {
+                        *i == inst
+                            && core.store().instance(i).and_then(|s| s.space_of(*channel))
+                                == Some(space)
+                    }
+                    _ => false,
+                });
                 return Task::perform(
                     async move {
                         core.rest(&inst)?.leave_space(space).await?;
@@ -324,11 +366,234 @@ impl App {
             (Target::Channel(_, channel), Action::CopyChannelId) => {
                 return self.update(Message::Copy(channel.to_string(), "Channel ID"));
             }
+            (Target::Pane(pane), Action::SplitRight) => self.panes.split(pane, Axis::Vertical),
+            (Target::Pane(pane), Action::SplitDown) => self.panes.split(pane, Axis::Horizontal),
+            (Target::Pane(pane), Action::MaximizePane) => self.panes.toggle_maximize(pane),
+            (Target::Pane(pane), Action::ToggleMembers) => self.panes.toggle_members(pane),
+            (Target::Pane(pane), Action::ClosePane) => {
+                self.panes.close(pane);
+                self.core
+                    .set_visible_channels(self.panes.visible_channels());
+            }
             (target, action) => {
                 tracing::warn!("menu action {action:?} does not apply to {target:?}")
             }
         }
         Task::none()
+    }
+
+    /// A key press. While a dialog or menu is open only Escape and the command bar keys count;
+    /// keys a text input used only count with Ctrl, Alt or Super.
+    fn on_key(
+        &mut self,
+        key: &keyboard::Key,
+        physical: keyboard::key::Physical,
+        modifiers: Modifiers,
+        captured: bool,
+    ) -> Task<Message> {
+        use keyboard::key::Named;
+
+        let escape = *key == keyboard::Key::Named(Named::Escape);
+        if let Some(bar) = &mut self.command_bar {
+            match key {
+                keyboard::Key::Named(Named::ArrowDown) => bar.move_selection(1),
+                keyboard::Key::Named(Named::ArrowUp) => bar.move_selection(-1),
+                _ if escape => self.command_bar = None,
+                _ => {}
+            }
+            return Task::none();
+        }
+        let overlay = self.menu.is_some()
+            || self.confirm.is_some()
+            || self.new_dm.is_some()
+            || self.add_instance.is_some();
+        if escape && (overlay || !captured) {
+            return self.update(Message::Escape);
+        }
+        if overlay || (captured && !(modifiers.control() || modifiers.alt() || modifiers.logo())) {
+            return Task::none();
+        }
+        match self.keybinds.action(key, physical, modifiers) {
+            Some(action) => self.key_action(action),
+            None => Task::none(),
+        }
+    }
+
+    fn key_action(&mut self, action: keybinds::Action) -> Task<Message> {
+        use keybinds::Action as K;
+
+        let focus = self.panes.focus;
+        match action {
+            K::CommandBar => {
+                let store = self.core.store();
+                let entries = command_bar::entries(
+                    &store,
+                    &self.core.instance_ids(),
+                    &self.themes,
+                    &self.config.keys,
+                );
+                drop(store);
+                self.command_bar = Some(command_bar::CommandBar::new(entries));
+                return operation::focus(iced::widget::Id::new(command_bar::INPUT));
+            }
+            K::NextChannel => return self.step_channel(1, false),
+            K::PrevChannel => return self.step_channel(-1, false),
+            K::NextUnread => return self.step_channel(1, true),
+            K::PrevUnread => return self.step_channel(-1, true),
+            K::FocusNextPane => self.panes.cycle_focus(1),
+            K::FocusPrevPane => self.panes.cycle_focus(-1),
+            K::SplitRight => self.panes.split(focus, Axis::Vertical),
+            K::SplitDown => self.panes.split(focus, Axis::Horizontal),
+            K::ClosePane => {
+                self.panes.close(focus);
+                self.core
+                    .set_visible_channels(self.panes.visible_channels());
+            }
+            K::MaximizePane => self.panes.toggle_maximize(focus),
+            K::ToggleMemberList => self.panes.toggle_members(focus),
+            K::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            K::Settings => self.panes.open(Buffer::Settings),
+            K::MarkRead => {
+                if let Some((inst, channel)) = self.panes.focused_channel() {
+                    return self.run_action(Target::Channel(inst, channel), Action::MarkRead);
+                }
+            }
+            K::Search => self.info("Search comes in a later version".into()),
+            K::ToggleMute | K::ToggleDeafen => {
+                self.info("Voice comes in a later version".into());
+            }
+        }
+        Task::none()
+    }
+
+    /// Opens the next or previous channel of the sidebar (only unread ones if `unread`),
+    /// wrapping around.
+    fn step_channel(&mut self, delta: i32, unread: bool) -> Task<Message> {
+        let channels: Vec<(InstanceId, Id, bool)> = self
+            .sidebar_rows()
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Channel {
+                    inst, id, badge, ..
+                }
+                | Row::Dm {
+                    inst, id, badge, ..
+                } => Some((inst, id, badge.unread || badge.mentions > 0)),
+                _ => None,
+            })
+            .collect();
+        if channels.is_empty() {
+            return Task::none();
+        }
+        let current = self.panes.focused_channel();
+        let start =
+            current.and_then(|(i, c)| channels.iter().position(|(ci, cc, _)| *ci == i && *cc == c));
+        let len = channels.len() as i32;
+        for step in 1..=len {
+            let index = match start {
+                Some(s) => (s as i32 + delta * step).rem_euclid(len),
+                None if delta > 0 => step - 1,
+                None => len - step,
+            } as usize;
+            let (inst, id, is_unread) = &channels[index];
+            if !unread || *is_unread {
+                return self.select(inst.clone(), *id);
+            }
+        }
+        Task::none()
+    }
+
+    fn on_command_bar(&mut self, message: command_bar::Message) -> Task<Message> {
+        let Some(bar) = &mut self.command_bar else {
+            return Task::none();
+        };
+        let command = match message {
+            command_bar::Message::Input(text) => {
+                bar.set_input(text);
+                return Task::none();
+            }
+            command_bar::Message::Close => {
+                self.command_bar = None;
+                return Task::none();
+            }
+            command_bar::Message::Submit => bar.command(bar.selected),
+            command_bar::Message::Run(n) => bar.command(n),
+        };
+        self.command_bar = None;
+        match command {
+            Some(command_bar::Command::Open(inst, channel)) => self.select(inst, channel),
+            Some(command_bar::Command::MessageUser(inst, user)) => self.message_user(inst, user),
+            Some(command_bar::Command::Action(action)) => self.key_action(action),
+            Some(command_bar::Command::Theme(name)) => {
+                self.on_settings(settings::Message::Theme(name));
+                Task::none()
+            }
+            Some(command_bar::Command::AddInstance) => self.open_add_instance(String::new()),
+            None => Task::none(),
+        }
+    }
+
+    /// Opens the 1:1 DM with `user`, creating it if needed.
+    fn message_user(&mut self, inst: InstanceId, user: Id) -> Task<Message> {
+        let existing = self.core.store().instance(&inst).and_then(|s| {
+            s.dms
+                .values()
+                .find(|dm| {
+                    dm.kind == hermes_client_core::proto::models::ChannelKind::Dm
+                        && s.dm_partner(dm).is_some_and(|u| u.id == user)
+                })
+                .map(|dm| dm.id)
+        });
+        if let Some(dm) = existing {
+            return self.select(inst, dm);
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let result = match core.rest(&inst) {
+                    Ok(rest) => rest
+                        .create_dm(vec![user])
+                        .await
+                        .map(|c| c.id)
+                        .map_err(|e| e.to_string()),
+                    Err(err) => Err(err.to_string()),
+                };
+                (inst, result)
+            },
+            |(inst, result)| Message::DmCreated(inst, result),
+        )
+    }
+
+    /// Writes the pane layout to `[[layout]]` in `config.toml`.
+    pub fn save_layout(&mut self) {
+        let value = toml::Value::Array(
+            self.panes
+                .save()
+                .into_iter()
+                .map(toml::Value::Table)
+                .collect(),
+        );
+        if let Err(err) = self.core.set_setting("layout", &value.to_string()) {
+            tracing::error!("layout not saved: {err}");
+        }
+    }
+
+    fn sidebar_rows(&self) -> Vec<Row> {
+        let statuses: Vec<(InstanceId, ConnStatus)> = self
+            .core
+            .instance_ids()
+            .into_iter()
+            .map(|id| {
+                let status = self.core.status(&id);
+                (id, status)
+            })
+            .collect();
+        tree::rows(
+            &self.core.store(),
+            &statuses,
+            &self.collapsed,
+            self.panes.focused_channel().as_ref(),
+        )
     }
 
     fn on_new_dm(&mut self, message: new_dm::Message) -> Task<Message> {
@@ -465,7 +730,7 @@ impl App {
                 let (key, value) = settings::saved_value(&self.config, setting);
                 self.persist(key, &value);
             }
-            settings::Message::Close => self.screen = Screen::Welcome,
+            settings::Message::Close => self.panes.clear_where(|b| *b == Buffer::Settings),
         }
     }
 
@@ -482,6 +747,13 @@ impl App {
 
     fn apply_config(&mut self, config: ClientConfig) {
         let theme_changed = config.general.theme != self.config.general.theme;
+        if config.keys != self.config.keys {
+            let (keybinds, warnings) = Keybinds::from_config(&config.keys);
+            self.keybinds = keybinds;
+            if let Some(warning) = warnings.into_iter().next() {
+                self.warn(warning);
+            }
+        }
         self.fonts = Fonts::from_config(&config.font);
         self.config = config;
         if theme_changed {
@@ -537,27 +809,14 @@ impl App {
             subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
         subscriptions.push(subscription::window_and_keys());
+        subscriptions.push(window::close_requests().map(Message::CloseRequested));
         Subscription::batch(subscriptions)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let fonts = &self.fonts;
         let theme = &self.theme;
-        let statuses: Vec<(InstanceId, ConnStatus)> = self
-            .core
-            .instance_ids()
-            .into_iter()
-            .map(|id| {
-                let status = self.core.status(&id);
-                (id, status)
-            })
-            .collect();
-        let rows = tree::rows(
-            &self.core.store(),
-            &statuses,
-            &self.collapsed,
-            self.selected.as_ref(),
-        );
+        let rows = self.sidebar_rows();
         let sidebar = crate::sidebar::view(
             &self.core,
             &rows,
@@ -568,37 +827,6 @@ impl App {
                 .width
                 .clamp(settings::MIN_SIDEBAR_WIDTH, settings::MAX_SIDEBAR_WIDTH),
         );
-
-        let content: Element<'_, Message> = match self.screen {
-            Screen::Welcome if self.selected.is_some() => self.channel_view(),
-            Screen::Welcome => {
-                let mut welcome = column![heading("Welcome to Hermes", fonts)].spacing(12);
-                if self.core.instance_ids().is_empty() {
-                    welcome = welcome
-                        .push(
-                            label(
-                                "Paste an invite link from a friend, or the address of a server.",
-                                fonts,
-                            )
-                            .color(theme.text.secondary.0),
-                        )
-                        .push(
-                            button(label("Add an instance", fonts))
-                                .style(|_, s| style::primary(theme, s))
-                                .on_press(Message::OpenAddInstance),
-                        );
-                } else {
-                    welcome = welcome.push(
-                        label("Open a channel from the sidebar.", fonts)
-                            .color(theme.text.secondary.0),
-                    );
-                }
-                container(welcome).center(Fill).into()
-            }
-            Screen::Settings => {
-                settings::view(&self.config, &self.themes, fonts, theme).map(Message::Settings)
-            }
-        };
 
         let mut main = column![].width(Fill).height(Fill);
         if let Some(status) = &self.status {
@@ -617,9 +845,17 @@ impl App {
                 .style(|_| style::status_bar(theme, status.level)),
             );
         }
-        main = main.push(content);
+        main = main.push(self.panes.view(&panes::Context {
+            core: &self.core,
+            fonts,
+            theme,
+            config: &self.config,
+            themes: &self.themes,
+        }));
 
-        let layout = if settings::Position::from_config(&self.config.sidebar.position)
+        let layout = if !self.sidebar_visible {
+            row![main]
+        } else if settings::Position::from_config(&self.config.sidebar.position)
             == settings::Position::Right
         {
             row![main, sidebar]
@@ -636,6 +872,7 @@ impl App {
                 Target::Instance(inst) | Target::Space(inst, _) | Target::Channel(inst, _) => {
                     self.core.status(inst)
                 }
+                Target::Pane(_) => ConnStatus::Connected,
             };
             let items = menu::actions(target, &status)
                 .into_iter()
@@ -653,6 +890,14 @@ impl App {
                 fonts,
                 theme,
                 Message::CloseMenu,
+            );
+        }
+        if let Some(bar) = &self.command_bar {
+            root = modal::overlay(
+                root,
+                bar.view(fonts, theme).map(Message::CommandBar),
+                theme,
+                Some(Message::CommandBar(command_bar::Message::Close)),
             );
         }
         if let Some(dialog) = &self.add_instance {
@@ -689,45 +934,6 @@ impl App {
             );
         }
         cursor::tracker(&self.cursor, root).into()
-    }
-
-    /// The selected channel's header; the message list comes with the channel buffer.
-    fn channel_view(&self) -> Element<'_, Message> {
-        let fonts = &self.fonts;
-        let theme = &self.theme;
-        let Some((inst, id)) = &self.selected else {
-            return column![].into();
-        };
-        let store = self.core.store();
-        let channel = store
-            .instance(inst)
-            .and_then(|s| Some((s, s.channel(*id)?)));
-        let (title, topic) = match channel {
-            Some((s, c)) => (
-                view::channel_title(s, c),
-                c.topic.clone().unwrap_or_default(),
-            ),
-            None => ("(not available)".to_owned(), String::new()),
-        };
-        let header = container(
-            row![
-                label(title, fonts).font(fonts.bold()),
-                small(topic, fonts).color(theme.text.secondary.0),
-            ]
-            .spacing(12)
-            .align_y(iced::Alignment::Center),
-        )
-        .padding([8, 12])
-        .width(Fill)
-        .style(|_| style::pane_header(theme));
-        column![
-            header,
-            container(
-                small("The message view is not built yet.", fonts).color(theme.text.tertiary.0)
-            )
-            .center(Fill),
-        ]
-        .into()
     }
 }
 
@@ -864,6 +1070,61 @@ mod tests {
         assert_eq!(
             app.theme.general.background.0,
             iced::Color::from_rgb8(4, 5, 6)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn keys_split_panes_and_the_layout_is_saved() {
+        use hermes_client_core::proto::id::Id;
+        use iced::keyboard::Key;
+
+        const ANY: keyboard::key::Physical =
+            keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
+        let dir = temp_dir("layout");
+        let mut app = app_in(&dir);
+        assert_eq!(app.panes.state.len(), 1);
+        let ctrl = Modifiers::CTRL;
+
+        let _ = app.update(Message::Select("h".into(), Id(11)));
+        let _ = app.update(Message::Key(Key::Character("\\".into()), ANY, ctrl, false));
+        assert_eq!(app.panes.state.len(), 2);
+        let _ = app.update(Message::Select("h".into(), Id(12)));
+        assert_eq!(app.panes.focused_channel(), Some(("h".into(), Id(12))));
+        // Typing plain letters into an input does not trigger keybinds; Ctrl combos do.
+        let _ = app.update(Message::Key(
+            Key::Character("w".into()),
+            ANY,
+            Modifiers::empty(),
+            true,
+        ));
+        assert_eq!(app.panes.state.len(), 2);
+        let _ = app.update(Message::Key(Key::Character("u".into()), ANY, ctrl, true));
+        assert!(app.panes.focused().unwrap().members);
+        let _ = app.update(Message::Key(Key::Character("b".into()), ANY, ctrl, false));
+        assert!(!app.sidebar_visible);
+
+        // The command bar opens, filters and runs.
+        let _ = app.update(Message::Key(Key::Character("k".into()), ANY, ctrl, false));
+        assert!(app.command_bar.is_some());
+        let _ = app.update(Message::CommandBar(command_bar::Message::Input(
+            "open settings".into(),
+        )));
+        let _ = app.update(Message::CommandBar(command_bar::Message::Submit));
+        assert!(app.command_bar.is_none());
+        assert_eq!(app.panes.focused().unwrap().buffer, Buffer::Settings);
+
+        app.save_layout();
+        let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        let saved = ClientConfig::parse(&text).unwrap().config;
+        assert_eq!(saved.layout, app.panes.save(), "{text}");
+        let restored = app_in(&dir);
+        assert_eq!(restored.panes.save(), app.panes.save());
+        assert!(
+            restored
+                .panes
+                .visible_channels()
+                .contains(&("h".into(), Id(11)))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

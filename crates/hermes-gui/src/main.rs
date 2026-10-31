@@ -8,8 +8,11 @@ mod buffer;
 #[cfg(test)]
 mod fixtures;
 mod font;
+mod keybinds;
 mod message;
 mod modal;
+mod pane;
+mod panes;
 mod sidebar;
 mod single_instance;
 mod subscription;
@@ -25,6 +28,7 @@ use std::sync::Mutex;
 use clap::Parser;
 use hermes_client_core::config::{ClientConfig, ConfigPaths};
 use hermes_client_core::{Core, CoreOptions};
+use iced::Task;
 
 use crate::app::App;
 use crate::single_instance::Endpoint;
@@ -97,9 +101,10 @@ fn main() -> ExitCode {
             }
             let open = match link {
                 Some(link) => app.open_link(link),
-                None => iced::Task::none(),
+                None => Task::none(),
             };
-            (app, app::load_fonts().chain(open))
+            let restored = app.open_restored();
+            (app, Task::batch([app::load_fonts().chain(open), restored]))
         },
         App::update,
         App::view,
@@ -110,6 +115,7 @@ fn main() -> ExitCode {
     .subscription(App::subscription)
     .default_font(fonts.ui)
     .window_size((1200.0, 800.0))
+    .exit_on_close_request(false)
     .run();
 
     match result {

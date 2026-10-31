@@ -1,6 +1,7 @@
 //! Dialogs shown over the window (PLAN.md section 15.4).
 
 pub mod add_instance;
+pub mod command_bar;
 pub mod confirm;
 pub mod fingerprint;
 pub mod new_dm;

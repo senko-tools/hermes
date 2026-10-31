@@ -1,9 +1,10 @@
-//! Context menu entries of the sidebar (PLAN.md section 15.1). Space settings, notification
-//! level and mute come with Phase 6.
+//! Context menu entries of the sidebar and the pane headers (PLAN.md section 15.1). Space
+//! settings, notification level and mute come with Phase 6.
 
 use hermes_client_core::InstanceId;
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
+use iced::widget::pane_grid;
 
 /// What was right-clicked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +12,8 @@ pub enum Target {
     Instance(InstanceId),
     Space(InstanceId, Id),
     Channel(InstanceId, Id),
+    /// A pane header's `⋮`.
+    Pane(pane_grid::Pane),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,11 @@ pub enum Action {
     LeaveSpace,
     MarkRead,
     CopyChannelId,
+    SplitRight,
+    SplitDown,
+    MaximizePane,
+    ToggleMembers,
+    ClosePane,
 }
 
 impl Action {
@@ -40,6 +48,11 @@ impl Action {
             Action::LeaveSpace => "Leave space",
             Action::MarkRead => "Mark as read",
             Action::CopyChannelId => "Copy channel ID",
+            Action::SplitRight => "Split right",
+            Action::SplitDown => "Split down",
+            Action::MaximizePane => "Maximize / restore",
+            Action::ToggleMembers => "Toggle member list",
+            Action::ClosePane => "Close pane",
         }
     }
 
@@ -71,6 +84,13 @@ pub fn actions(target: &Target, status: &ConnStatus) -> Vec<Action> {
             Action::LeaveSpace,
         ],
         Target::Channel(..) => vec![Action::MarkRead, Action::CopyChannelId],
+        Target::Pane(_) => vec![
+            Action::SplitRight,
+            Action::SplitDown,
+            Action::MaximizePane,
+            Action::ToggleMembers,
+            Action::ClosePane,
+        ],
     }
 }
 
