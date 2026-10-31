@@ -1568,7 +1568,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).
 - [x] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
 - [x] DMs and group DMs.
-- [ ] Attachments upload/download/thumbnails.
+- [x] Attachments upload/download/thumbnails.
 - [ ] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
 - [ ] TLS certificate reload on SIGHUP / file change.
 - [ ] Landing page `/` and invite page `/invite/<code>`.

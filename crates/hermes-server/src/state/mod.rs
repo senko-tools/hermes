@@ -20,6 +20,7 @@ use hermes_proto::permissions::{self, Permissions};
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::state::Snapshot;
+use crate::files::Files;
 use crate::gateway::bus::{Audience, Gateway};
 use crate::messages::Slowmode;
 use crate::snowflake::Snowflake;
@@ -36,6 +37,8 @@ pub struct AppState {
     /// Never take it while holding the cache lock.
     pub writes: tokio::sync::Mutex<()>,
     pub slowmode: Slowmode,
+    /// Uploaded files on disk.
+    pub files: Files,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
 }
@@ -45,6 +48,8 @@ impl AppState {
     pub async fn load(config: Config) -> Result<Self, sqlx::Error> {
         let db = Db::open(&config.storage.data_dir).await?;
         let cache = load_from_db(&db).await?;
+        let used = crate::db::attachments::total_size(&db.read).await?;
+        let files = Files::open(&config.storage.data_dir, used)?;
         Ok(Self {
             config,
             db,
@@ -52,6 +57,7 @@ impl AppState {
             cache: RwLock::new(cache),
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
+            files,
             gateway: Gateway::default(),
         })
     }

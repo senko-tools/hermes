@@ -176,6 +176,7 @@ async fn serve(config: Config) -> ExitCode {
     // Graceful shutdown, `/healthz` and the "Hermes is ready" line come with their own
     // PLAN.md section 20 item.
     let state = Arc::new(state);
+    tokio::spawn(crate::files::cleanup_task(state.clone()));
     let result = api::serve(tcp, &tls, api::router(state.clone())).await;
     state.db.close().await;
     match result {

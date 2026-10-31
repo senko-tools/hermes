@@ -55,7 +55,7 @@ tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 
 # Images (server), permissions
-image = "=0.25.10"
+image = { version = "=0.25.10", default-features = false }  # crates enable the formats they need
 bitflags = "=2.13.2"
 
 # Client networking

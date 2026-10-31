@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, uploader_id, message_id, filename, content_type, size, width, height,\n                  has_thumb AS \"has_thumb: bool\", sha256, created_at\n           FROM attachments WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "uploader_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "uploader_id"
+          }
+        }
+      },
+      {
+        "name": "message_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "filename",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "name": "content_type",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "name": "size",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "size"
+          }
+        }
+      },
+      {
+        "name": "width",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "name": "height",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "name": "has_thumb: bool",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "has_thumb"
+          }
+        }
+      },
+      {
+        "name": "sha256",
+        "ordinal": 9,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "12609aba3b4b73eccee0d1e1e4e7ed6afdba460d43b71a8de3a572fa43d7b6ec"
+}

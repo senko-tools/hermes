@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT channel_id FROM messages WHERE id = ? AND deleted = 0",
+  "describe": {
+    "columns": [
+      {
+        "name": "channel_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "channel_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2cba6726e720462842a9e9e25c077396ebda0536b4c7e2b58c2eda50c2bc8e53"
+}

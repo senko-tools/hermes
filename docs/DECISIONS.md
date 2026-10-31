@@ -390,3 +390,27 @@ Approved by the developer as a plan before implementation.
 - **Resuming a session that still has a connection** closes the old connection with 4009.
 - **Test-only dependency:** `futures-util` (already in the lock file through axum) is a
   dev-dependency of `hermes-server` for the gateway test client's `StreamExt`/`SinkExt`.
+
+## 2026-10-31: Attachment details the plan leaves open
+
+- **What counts as an image:** only PNG, JPEG, GIF and WebP, detected from the file's bytes, that
+  decode within limits (16384 px per side, 256 MiB per decode, at most 2 decodes at a time). They
+  get `width`/`height`, the detected `content_type` and `Content-Disposition: inline`. Everything
+  else (SVG included) keeps the declared `Content-Type` (parameters dropped, lowercased; invalid →
+  `application/octet-stream`) and is served with `Content-Disposition: attachment`.
+- **Thumbnails are lossless WebP:** the `image` crate (section 6) only encodes lossless WebP.
+  Images that already fit in 400×400 are re-encoded at their own size, never upscaled. GIFs and
+  animated WebPs use their first frame.
+- **Filenames:** `X-Filename` is required, percent-decoded as UTF-8; any directory part is dropped,
+  whitespace trimmed, control characters rejected, at most 255 bytes. The filename in the download
+  URL must match the stored one, or the answer is `NOT_FOUND`. A file literally named `thumb`
+  cannot be downloaded by name, because `/attachments/{id}/thumb` is the thumbnail route.
+- **Access:** an attachment on a message needs `VIEW_CHANNEL` on its channel (DM: recipient). An
+  avatar or icon is visible to every signed-in user. An unattached upload (also after its message
+  was deleted) is visible only to its uploader. Every denial answers `NOT_FOUND`.
+- **Quota:** `max_total_storage_gb` counts originals only (not thumbnails), in GiB. Uploads over
+  `max_upload_mb` (MiB) are refused from `Content-Length` when present, otherwise while streaming.
+- **Cleanup:** every hour, uploads created more than 24 h ago that are on no message and are no
+  avatar or icon are deleted, rows and files. Unfinished uploads in `files/tmp/` are removed on start.
+- **Downloads** support HTTP ranges and conditional requests (`tower-http`'s `ServeFile`) and send
+  `Cache-Control: private, max-age=31536000, immutable`.

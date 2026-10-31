@@ -166,6 +166,43 @@ impl TestServer {
         self.request(Method::PUT, path, token, Some(body)).await
     }
 
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// `POST /attachments` with a raw body.
+    pub async fn upload(
+        &self,
+        token: &str,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+    ) -> Res {
+        let res = self
+            .client
+            .post(format!("{}/attachments", self.base))
+            .bearer_auth(token)
+            .header("content-type", content_type)
+            .header("x-filename", filename)
+            .body(bytes)
+            .send()
+            .await
+            .unwrap();
+        let status = res.status();
+        let text = res.text().await.unwrap();
+        let body = serde_json::from_str(&text).unwrap_or(Value::Null);
+        Res { status, body }
+    }
+
+    /// A GET returning the raw response (for file downloads and HTML pages).
+    pub async fn get_raw(&self, path: &str, token: Option<&str>) -> reqwest::Response {
+        let mut req = self.client.get(format!("{}{path}", self.base));
+        if let Some(token) = token {
+            req = req.bearer_auth(token);
+        }
+        req.send().await.unwrap()
+    }
+
     /// Registers `username` and joins `space_id` through a new invite created by `inviter`;
     /// returns `(token, user_id)`.
     pub async fn member(&self, inviter: &str, space_id: &str, username: &str) -> (String, String) {
