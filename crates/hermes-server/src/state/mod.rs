@@ -19,6 +19,7 @@ use hermes_proto::permissions::{self, Permissions};
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::state::Snapshot;
+use crate::messages::Slowmode;
 use crate::snowflake::Snowflake;
 
 /// Everything the request handlers share.
@@ -32,6 +33,7 @@ pub struct AppState {
     /// two such changes cannot interleave and leave the cache different from the database.
     /// Never take it while holding the cache lock.
     pub writes: tokio::sync::Mutex<()>,
+    pub slowmode: Slowmode,
 }
 
 impl AppState {
@@ -45,6 +47,7 @@ impl AppState {
             ids: Snowflake::new(),
             cache: RwLock::new(cache),
             writes: tokio::sync::Mutex::new(()),
+            slowmode: Slowmode::default(),
         })
     }
 

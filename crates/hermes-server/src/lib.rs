@@ -6,6 +6,7 @@ pub mod cli;
 pub mod config;
 pub mod db;
 pub mod invites;
+pub mod messages;
 pub mod setup;
 pub mod snowflake;
 pub mod state;

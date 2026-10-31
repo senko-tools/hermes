@@ -1,0 +1,52 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id AS \"message_id!\", emoji AS \"emoji!\", COUNT(*) AS \"count!: i64\",\n                  MAX(user_id = ?) AS \"me!: bool\"\n           FROM reactions WHERE message_id IN (SELECT value FROM json_each(?))\n           GROUP BY message_id, emoji ORDER BY message_id, MIN(rowid)",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "reactions",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "emoji!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reactions",
+            "name": "emoji"
+          }
+        }
+      },
+      {
+        "name": "count!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "me!: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "39cf1a19810b9b8686ee4a3bdc585d1fa944ba1a2c0e1d7e88f057655d0e8d64"
+}

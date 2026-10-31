@@ -6,6 +6,7 @@ mod auth;
 mod channels;
 mod invites;
 mod members;
+mod messages;
 mod perms;
 mod roles;
 mod spaces;
@@ -74,6 +75,31 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/channels/{id}/overrides/{role_id}",
             put(channels::put_override).delete(channels::delete_override),
         )
+        .route(
+            "/channels/{id}/messages",
+            get(messages::history).post(messages::send),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}",
+            get(messages::get)
+                .patch(messages::edit)
+                .delete(messages::delete),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}/pin",
+            put(messages::pin).delete(messages::unpin),
+        )
+        .route("/channels/{id}/pins", get(messages::pins))
+        .route(
+            "/channels/{id}/messages/{mid}/reactions/{emoji}",
+            put(messages::add_reaction).delete(messages::remove_own_reaction),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}/reactions/{emoji}/{uid}",
+            delete(messages::remove_reaction),
+        )
+        .route("/channels/{id}/typing", post(messages::typing))
+        .route("/channels/{id}/ack", post(messages::ack))
         .route(
             "/spaces/{id}/invites",
             post(invites::create).get(invites::list),

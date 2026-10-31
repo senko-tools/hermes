@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO reactions (message_id, emoji, user_id, created_at) VALUES (?, ?, ?, ?)\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "42394ebed4fee120c6e13af81e445528c73c048aecbdeb6b3a2425fa428b6811"
+}

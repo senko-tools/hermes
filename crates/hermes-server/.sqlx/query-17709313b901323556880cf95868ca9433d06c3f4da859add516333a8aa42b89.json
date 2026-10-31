@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, message_id AS \"message_id!\", filename, content_type, size, width, height,\n                  has_thumb AS \"has_thumb: bool\"\n           FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "message_id!",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "filename",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
+      },
+      {
+        "name": "content_type",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "content_type"
+          }
+        }
+      },
+      {
+        "name": "size",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "size"
+          }
+        }
+      },
+      {
+        "name": "width",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "name": "height",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "name": "has_thumb: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "has_thumb"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "17709313b901323556880cf95868ca9433d06c3f4da859add516333a8aa42b89"
+}

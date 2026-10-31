@@ -271,6 +271,64 @@ pub struct OverrideRequest {
     pub deny: Permissions,
 }
 
+/// `GET /channels/{id}/messages`: at most one of `before`, `after` and `around`. Without any,
+/// the newest messages. Results are oldest first ("newest last").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// The message itself plus messages before and after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub around: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl HistoryQuery {
+    /// `limit` with the default applied, clamped to `1..=Pagination::MAX_LIMIT`.
+    pub fn limit(&self) -> u32 {
+        Pagination {
+            limit: self.limit,
+            ..Pagination::default()
+        }
+        .limit()
+    }
+}
+
+/// `POST /channels/{id}/messages`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendMessageRequest {
+    /// Raw markup; may be empty only when there are attachments.
+    #[serde(default)]
+    pub content: String,
+    /// Client-generated (a UUID), echoed back to the author's sessions.
+    pub nonce: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to_id: Option<Id>,
+    /// Own uploads that are not attached to a message yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_ids: Vec<Id>,
+}
+
+impl SendMessageRequest {
+    pub const MAX_NONCE_CHARS: usize = 64;
+    pub const MAX_ATTACHMENTS: usize = 10;
+}
+
+/// `PATCH /channels/{id}/messages/{mid}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditMessageRequest {
+    pub content: String,
+}
+
+/// `POST /channels/{id}/ack`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AckRequest {
+    pub message_id: Id,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -348,6 +406,19 @@ mod tests {
         };
         assert_eq!(page(0).limit(), 1);
         assert_eq!(page(500).limit(), 100);
+    }
+
+    #[test]
+    fn send_message_defaults() {
+        let req: SendMessageRequest = serde_json::from_value(json!({ "nonce": "n1" })).unwrap();
+        assert_eq!(req.content, "");
+        assert!(req.attachment_ids.is_empty());
+        assert_eq!(req.reply_to_id, None);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "content": "", "nonce": "n1" })
+        );
+        assert!(serde_json::from_value::<SendMessageRequest>(json!({ "content": "hi" })).is_err());
     }
 
     #[test]

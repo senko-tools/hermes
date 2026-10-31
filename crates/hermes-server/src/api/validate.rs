@@ -128,9 +128,34 @@ pub fn optional_text(raw: &str, max: usize) -> Result<Option<String>, String> {
     Ok((!text.is_empty()).then(|| text.to_owned()))
 }
 
+/// Message content (raw markup, not trimmed): at most `max` characters; no control characters
+/// except `\n` and `\t` (PLAN.md section 13).
+pub fn message_content(raw: &str, max: usize) -> Result<(), String> {
+    if raw.chars().count() > max {
+        return Err(format!("must be at most {max} characters"));
+    }
+    if raw
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err("must not contain control characters other than newlines and tabs".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_contents() {
+        assert!(message_content("  hi\n\tthere ", 20).is_ok());
+        assert!(message_content("", 20).is_ok());
+        assert!(message_content(&"é".repeat(20), 20).is_ok());
+        assert!(message_content(&"é".repeat(21), 20).is_err());
+        assert!(message_content("a\r\nb", 20).is_err());
+        assert!(message_content("a\u{1b}[31m", 20).is_err());
+    }
 
     #[test]
     fn names() {

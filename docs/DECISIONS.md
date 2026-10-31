@@ -312,3 +312,55 @@ Approved by the developer as a plan before implementation.
   usually the changed fields. Entries are written in the same transaction as the change.
   `GET …/audit-log` is newest first (`?before&limit`). `AuditEntry` and `Ban` are new
   `hermes-proto` models.
+
+## 2026-10-31: Messages REST
+
+Approved by the developer as a plan before implementation.
+
+- **Gateway events** (`message_create`, `reaction_add`, `typing_start`, `read_state_update`, …) come
+  with the gateway item; `POST …/typing` only checks `SEND_MESSAGES` for now.
+- **Sending:**
+  - `nonce` is required (1–64 characters, no control characters) and echoed in the `POST`
+    response.
+  - `content` is stored exactly as sent (not trimmed): at most `limits.max_message_length`
+    characters, no control characters except `\n` and `\t` (so `\r` is rejected). Content that is
+    only whitespace needs at least one attachment.
+  - `reply_to_id` must be a message of the same channel (a deleted one is allowed; its excerpt is
+    empty).
+  - `attachment_ids` (max 10, duplicates ignored) must be the sender's own uploads that are not
+    attached yet, and need `ATTACH_FILES`. Uploading is the attachments item; tests create the rows
+    with SQL.
+  - Categories answer `BAD_REQUEST` ("Categories have no messages").
+  - `channels.last_message_id` never moves backwards, even if concurrent sends commit out of order.
+- **Slowmode** is kept in memory per channel and user (`messages::Slowmode`) and skipped with
+  `BYPASS_SLOWMODE`; it answers `RATE_LIMITED` with `retry_after_ms`. The `messages_per_5s` limit
+  stays with the "Rate limits" item.
+- **History:** `?before|after|around&limit` (at most one anchor, `BAD_REQUEST` otherwise), oldest
+  first. `around` returns up to `limit / 2` older messages, then the message itself and newer ones.
+  Needs `VIEW_CHANNEL` + `READ_HISTORY`, like `GET …/messages/{mid}` and `GET …/pins`. Deleted
+  messages are returned as tombstones (`deleted: true`, empty content, no attachments, reactions or
+  mentions).
+- **Edit:** author only, not for system messages. Stored mentions are recomputed, but mention counts
+  are not raised again. An empty edit is allowed only when the message has attachments.
+- **Delete** (author, or `MANAGE_MESSAGES`): soft delete that clears the content, unpins, removes
+  reactions and mentions, and unlinks attachments (file cleanup comes with the attachments item).
+  Deleting someone else's message in a space is audited as `message_delete`. In DMs nobody can delete
+  others' messages.
+- **Pins:** `MANAGE_MESSAGES` in spaces, any recipient in DMs; pinning twice is not an error. No pin
+  limit. `GET …/pins` is newest first (by message ID; there is no pin time).
+- **Reactions:**
+  - The emoji must be one Unicode emoji known to the `emojis` crate (listed in section 6;
+    added to `hermes-server`).
+  - Joining an existing reaction needs only `VIEW_CHANNEL`; a new emoji needs `ADD_REACTIONS`, and
+    a message can have at most 20 different emoji (`BAD_REQUEST`).
+  - Adding twice or removing a missing own reaction is not an error. Removing others' reactions
+    needs `MANAGE_MESSAGES`. Deleted messages answer `NOT_FOUND`.
+  - `Message.reactions` lists each emoji in the order its oldest remaining reaction was added.
+- **Mentions:** `@everyone`/`@here` count only with `MENTION_EVERYONE`; roles only if mentionable or
+  with `MENTION_EVERYONE`; user mentions only for existing users; mentions inside code do not count
+  (the markup parser ignores them). `Message.mentions` holds only the mentions that count.
+  `read_states.mention_count` goes up by one per message for every mentioned user who can see the
+  channel (not the author), unless they already read past it. `@here` counts users whose presence is
+  not offline/invisible; presence comes with the gateway, so until then it counts nobody.
+- **Ack:** `VIEW_CHANNEL`; the message must be in the channel (deleted is fine). `last_read_id` is set
+  to it, even if that is older (marking a channel unread), and `mention_count` is reset to 0.

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)\n         VALUES (?, ?, ?, 0)\n         ON CONFLICT (user_id, channel_id)\n         DO UPDATE SET last_read_id = excluded.last_read_id, mention_count = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b316b471d97a75097bfd2209d02ecf9785cc01faf4454351aeb5c478eb86ea33"
+}
