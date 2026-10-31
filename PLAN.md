@@ -1584,7 +1584,7 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** the author can use the TUI daily for text chat with a friend on the VPS instance, across reconnects, without bugs that lose messages.
 
 ### Phase 3: iced GUI, text features to parity (4–6 weeks)
-- [ ] App skeleton, theme system (dark/light), fonts, settings persistence.
+- [x] App skeleton, theme system (dark/light), fonts, settings persistence.
 - [ ] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
 - [ ] Sidebar tree with unread/mention badges, DMs section, context menus.
 - [ ] Pane grid with save/restore, command bar, keybinds.

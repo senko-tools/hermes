@@ -1,0 +1,52 @@
+# Built-in dark theme (PLAN.md section 15.5). Copy this file to <config dir>/themes/<name>.toml
+# and set `general.theme = "<name>"` to make your own; keys you leave out use these values.
+
+[general]
+background = "#1e1f22"
+border = "#2f3136"
+horizontal_rule = "#2b2d31"
+unread_indicator = "#f2f3f5"
+scrollbar = "#3f4147"
+
+[text]
+primary = "#dbdee1"
+secondary = "#a4a8ae"
+tertiary = "#6d7178"
+success = "#3ba55d"
+error = "#ed4245"
+warning = "#faa61a"
+info = "#5b9bf8"
+link = "#4fa3ff"
+mention_bg = "#3d3726"
+code_bg = "#2b2d31"
+
+[buttons.primary]
+background = "#5865f2"
+background_hover = "#4752c4"
+text = "#ffffff"
+
+[buttons.secondary]
+background = "#3a3c42"
+background_hover = "#474a51"
+text = "#dbdee1"
+
+[buttons.danger]
+background = "#da373c"
+background_hover = "#a12d2f"
+text = "#ffffff"
+
+[sidebar]
+background = "#2b2d31"
+selected = "#404249"
+hover = "#35373c"
+
+[pane]
+header_bg = "#26272b"
+focused_border = "#5865f2"
+
+[voice]
+speaking_ring = "#23a55a"
+muted = "#ed4245"
+
+[roles]
+default_color = "#dbdee1"

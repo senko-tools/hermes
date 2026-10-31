@@ -667,3 +667,27 @@ search with Phase 6; both show "comes in a later version").
 - **CLI flags:** `--config-dir <dir>` and an optional link argument.
 - **Test-only dependency:** `hermes-server` is a dev-dependency of `hermes-tui` for an end-to-end
   test (invite link → account → open `#general` → send → render with ratatui's `TestBackend`).
+
+## 2026-10-31: GUI skeleton, themes, fonts and settings details
+
+Approved by the developer as a plan before implementation.
+
+- **Binary:** the `hermes-gui` crate builds the `hermes` binary (section 15). Release builds on
+  Windows use the `windows` subsystem (no console window). Logs go to
+  `<config dir>/logs/hermes.log` (`HERMES_LOG` sets the filter). The `Core` is created in iced's
+  `boot`, which runs inside iced's tokio runtime (feature `tokio`).
+- **Themes:** a user theme in `<config dir>/themes/<name>.toml` wins over a built-in of the same
+  name. Keys it leaves out use the `dark` values, and unknown keys are ignored, both with a
+  warning. A theme that does not parse falls back to the built-in of that name, else `dark`. Colors
+  are `#rrggbb` or `#rrggbbaa`. The themes folder is watched (debounced 200 ms). Widgets without a
+  Hermes style function use iced's defaults, driven by a palette built from the theme.
+- **Fonts:** Inter (Regular, Medium, Bold) and JetBrains Mono (Regular, Bold) are bundled as static
+  TTF files (SIL OFL, license files next to them in `crates/hermes-gui/assets/fonts/`), not the
+  variable fonts. Any other `font.family` is looked up among the system fonts by name. Because iced
+  only reads its default font and size at startup, every text goes through helpers that set font
+  and size, so `[font]` changes apply live. `font.size` is clamped to 8–32 and `font.ui_scale` to
+  0.75–2.0 (section 15.5); the scale is applied through iced's scale factor.
+- **Settings persistence:** the Settings buffer has only the Appearance tab so far (theme, font size,
+  UI scale, sidebar position and width). Each change is written with `Core::set_setting`, so
+  `config.toml` keeps its comments; sliders preview live and save on release. Edits to
+  `config.toml` from outside apply live through the core's hot reload.

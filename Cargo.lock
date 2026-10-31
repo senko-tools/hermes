@@ -2365,6 +2365,18 @@ dependencies = [
 [[package]]
 name = "hermes-gui"
 version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures-util",
+ "hermes-client-core",
+ "iced",
+ "notify",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "hermes-proto"
@@ -2650,6 +2662,7 @@ dependencies = [
  "iced_core",
  "log",
  "rustc-hash 2.1.3",
+ "tokio",
  "wasm-bindgen-futures",
  "wasmtimer",
 ]
