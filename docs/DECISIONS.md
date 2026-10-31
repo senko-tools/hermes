@@ -484,3 +484,48 @@ Approved by the developer as a plan before implementation.
   `/etc/nginx/sites-available/00-catch-all` that answered 421/404. They were removed (backup
   `00-catch-all.bak-20261031-132144` next to it) in favour of the dedicated site.
 - **Why:** requested by the developer, so the bare domain shows something useful in a browser.
+
+## 2026-10-31: Minimal deployability (install.sh, systemd, Docker) details
+
+Approved by the developer as a plan before implementation.
+
+- **`hermes-server backup <output>`** (from section 9.1, listed again in Phase 7) is added now, so the
+  reference instance can run the nightly backup from 18.8 step 9 from day one: `VACUUM INTO` on a
+  separate connection, refuses an existing output file or a missing database, and reminds the user
+  that `files/` must be copied separately.
+- **`hermes-server healthcheck`** (not in section 9.1) is new: the distroless image has no shell or
+  curl for the `HEALTHCHECK`. It sends `GET /healthz` to the loopback address of the bind address
+  (or the bind address itself when it is specific), over TLS without certificate checks when
+  `tls.mode` is not `off` (it only asks whether the local server answers), and exits 0 on `ok`.
+- **`install.sh`:**
+  - It downloads three release files: `hermes-server-<arch>-unknown-linux-musl.tar.gz`,
+    `hermes.service` and `SHA256SUMS`. Both other files are checked against `SHA256SUMS`. The unit
+    comes from the release, so the installed unit matches the binary.
+  - New options: `--version vX.Y.Z` (or `HERMES_VERSION`) and `--from DIR` (or `HERMES_FROM`),
+    which installs files that are already downloaded.
+  - Why `--from`: the repository is private for now, so the VPS cannot download releases without
+    a token. GitHub's `releases/latest` also skips pre-releases.
+  - A new config gets `storage.data_dir = "/var/lib/hermes"`. It is owned by `root:hermes`, mode
+    640, in `/etc/hermes` (750).
+  - It does not restart a running server after an upgrade; it prints the command (18.8 step 10).
+- **systemd unit:** the hardening from 18.4 plus `ProtectHome`, `PrivateTmp`, `PrivateDevices`,
+  kernel/cgroup protection, `RestrictAddressFamilies`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`,
+  `UMask=0027` and `TimeoutStopSec=20`.
+- **Docker:**
+  - The builder is `rust:alpine`, which is musl natively; it builds for `$(uname -m)`, so the same
+    Dockerfile works on arm64.
+  - The final stage is `gcr.io/distroless/static-debian12`, with `/data` owned by UID 10001 and
+    `HERMES_CONFIG=/data/hermes.toml` (optional).
+  - The compose file keeps `./data:/data` from 18.3. A bind-mounted directory created by Docker
+    belongs to root, so the comments add `chown 10001:10001 data`.
+  - No image is published to ghcr.io yet (Phase 7).
+- **`release.yml` (early, partial):** a `v*` tag builds only what `install.sh` needs (x86_64 musl
+  server, `hermes.service`, `SHA256SUMS`) and creates the GitHub release, as a pre-release when
+  the tag contains `-`. aarch64, Windows, the Docker image and the clients come with the Phase 7
+  item.
+- **Reference instance files:** `deploy/letsencrypt/hermes.sh` (the 18.8 step 4 deploy hook) only
+  reacts when `RENEWED_LINEAGE` is its own certificate, because the VPS renews other domains too.
+  `deploy/cron/hermes-backup` is step 9; the backup directory is owned by `hermes` so the backup
+  can run as that user.
+- **`.gitattributes`** forces LF for `deploy/**` and `*.sh`, so scripts work when checked out on
+  Windows with `core.autocrlf`.

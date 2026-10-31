@@ -75,6 +75,35 @@ impl Db {
     }
 }
 
+/// Writes a consistent copy of `<data_dir>/hermes.db` to `output` with `VACUUM INTO`, which is
+/// safe while the server runs (WAL). Fails if `output` exists or the database does not.
+pub async fn backup(data_dir: &Path, output: &Path) -> Result<(), sqlx::Error> {
+    let source = data_dir.join(DB_FILE);
+    if !source.is_file() {
+        return Err(sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} does not exist", source.display()),
+        )));
+    }
+    if output.exists() {
+        return Err(sqlx::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("{} already exists", output.display()),
+        )));
+    }
+    let options = connect_options(&source).create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let result = sqlx::query("VACUUM INTO ?")
+        .bind(output.to_string_lossy().into_owned())
+        .execute(&pool)
+        .await;
+    pool.close().await;
+    result.map(|_| ())
+}
+
 /// Pragmas from PLAN.md section 7.3, plus `synchronous = NORMAL`, the usual choice with WAL:
 /// a power loss may lose the last commits but cannot corrupt the database.
 fn connect_options(path: &PathBuf) -> SqliteConnectOptions {

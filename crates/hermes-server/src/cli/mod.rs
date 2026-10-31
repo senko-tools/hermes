@@ -1,5 +1,7 @@
 //! Command line interface (PLAN.md section 9.1).
 
+mod healthcheck;
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -46,6 +48,14 @@ pub enum Command {
     /// Manage invites.
     #[command(subcommand)]
     Invite(InviteCommand),
+    /// Write a consistent copy of the database to a new file (safe while the server runs).
+    /// Uploaded files in `<data_dir>/files` must be copied separately.
+    Backup {
+        /// File to create; it must not exist yet.
+        output: PathBuf,
+    },
+    /// Check that the server on this machine answers `GET /healthz` (exit code 0 if it does).
+    Healthcheck,
 }
 
 #[derive(Debug, Subcommand)]
@@ -126,6 +136,8 @@ pub fn run() -> ExitCode {
             uses,
             expires,
         }) => invite_create(&cli.config, space, uses, expires),
+        Command::Backup { output } => backup(&cli.config, &output),
+        Command::Healthcheck => health(&cli.config),
     }
 }
 
@@ -213,15 +225,8 @@ fn invite_create(path: &Path, space: Option<Id>, uses: Option<u32>, expires: Lif
         return ExitCode::FAILURE;
     };
     let config = loaded.config;
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("Could not start the async runtime: {err}");
-            return ExitCode::FAILURE;
-        }
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
     };
     runtime.block_on(async move {
         // Only a self-signed certificate puts a fingerprint into the link.
@@ -293,6 +298,67 @@ fn invite_create(path: &Path, space: Option<Id>, uses: Option<u32>, expires: Lif
         println!("\n{}\n{}", links.web, links.app);
         ExitCode::SUCCESS
     })
+}
+
+fn backup(path: &Path, output: &Path) -> ExitCode {
+    let Some(loaded) = load_or_report(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
+    };
+    let data_dir = loaded.config.storage.data_dir;
+    match runtime.block_on(crate::db::backup(&data_dir, output)) {
+        Ok(()) => {
+            println!(
+                "Wrote a copy of {} to {}",
+                data_dir.join(crate::db::DB_FILE).display(),
+                output.display()
+            );
+            println!(
+                "Uploaded files are not included; copy {} too.",
+                data_dir.join("files").display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Backup failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn health(path: &Path) -> ExitCode {
+    let Some(loaded) = load_or_report(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
+    };
+    match runtime.block_on(healthcheck::check(&loaded.config)) {
+        Ok(()) => {
+            println!("ok");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("unhealthy: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A single-threaded runtime for the short admin subcommands.
+fn small_runtime() -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(err) => {
+            eprintln!("Could not start the async runtime: {err}");
+            None
+        }
+    }
 }
 
 /// Loads (or on first start generates) the TLS certificate and logs what is used.

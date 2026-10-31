@@ -375,3 +375,63 @@ fn sighup_reloads_the_certificate() {
     lines.wait_for("Hermes stopped");
     assert!(child.wait().unwrap().success());
 }
+
+/// `hermes-server <args>` with the same bind/port/TLS variables as the running server.
+fn admin(dir: &Path, port: u16, tls: &str, args: &[&str]) -> Output {
+    server(dir)
+        .args(args)
+        .env("HERMES__NETWORK__BIND", "127.0.0.1")
+        .env("HERMES__NETWORK__PORT", port.to_string())
+        .env("HERMES__TLS__MODE", tls)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn healthcheck_reports_the_running_server() {
+    for tls in ["self_signed", "off"] {
+        let dir = TempDir::new(&format!("healthcheck-{tls}"));
+        let port = free_port();
+
+        let output = admin(dir.path(), port, tls, &["healthcheck"]);
+        assert!(!output.status.success(), "nothing listens yet ({tls})");
+        assert!(stderr(&output).contains("unhealthy"), "{}", stderr(&output));
+
+        let (mut child, lines) = run(dir.path(), port, &[("HERMES__TLS__MODE", tls)]);
+        lines.wait_for("Hermes is ready on");
+        let output = admin(dir.path(), port, tls, &["healthcheck"]);
+        assert!(output.status.success(), "{tls}: {}", stderr(&output));
+        assert_eq!(stdout(&output).trim(), "ok");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[test]
+fn backup_copies_the_database_while_running() {
+    let dir = TempDir::new("backup");
+    let port = free_port();
+    let out = dir.path().join("backup.db");
+
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(!output.status.success(), "no database yet");
+    assert!(!out.exists());
+
+    let (mut child, lines) = run(dir.path(), port, &[("HERMES__TLS__MODE", "off")]);
+    lines.wait_for("Hermes is ready on");
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("files"), "{}", stdout(&output));
+    let header = std::fs::read(&out).unwrap();
+    assert!(header.starts_with(b"SQLite format 3\0"));
+
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(!output.status.success(), "refuses to overwrite");
+    assert!(
+        stderr(&output).contains("already exists"),
+        "{}",
+        stderr(&output)
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
