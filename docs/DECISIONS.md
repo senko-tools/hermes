@@ -992,3 +992,27 @@ Approved by the developer as a plan before implementation.
 - **`Core::drop_voice_connection`** (hidden) breaks the connection for the reconnect test.
 - **Proto:** the unused `KickReason::ServerShutdown` was removed; a shutdown closes the QUIC
   connection and clients reconnect.
+
+## 2026-11-01: `hermes-voicebot` and voice integration test details
+
+Approved by the developer as a plan before implementation.
+
+- **Library + binary:** `hermes_voicebot::Bot` signs in (or registers with an invite) through
+  `hermes-client-core` with `Io::Virtual`, joins a voice channel (by name in any space, or by
+  ID, DMs included), plays 48 kHz mono samples and records what it hears. The binary is a thin
+  CLI around it:
+  `hermes-voicebot --server <addr> --user <u> --password <p> [--register [--invite <code>]]
+  [--fingerprint <fp>] --join <channel> [--play in.wav | --tone] [--loop] [--record out.wav]
+  [--duration <s>] [--denoise]`. The password can come from `HERMES_BOT_PASSWORD`.
+- **No WAV crate:** a small reader (PCM 8/16/24/32-bit, 32-bit float, extensible format, any
+  rate and channels, downmixed and resampled to 48 kHz) and a 16-bit PCM writer.
+- **Defaults for bots:** UI sounds off (they would be recorded), RNNoise off unless `--denoise`
+  (it treats synthetic tones as noise), self-signed certificates trusted on first use unless
+  `--fingerprint` is given.
+- **Measuring:** test signals are tone bursts; `signal::compare` finds burst onsets in what was
+  sent and heard (20 ms frames above −34 dBFS RMS) and reports bursts heard, loss (audible
+  frames heard vs sent) and per-burst latency on a shared clock.
+- **Tests:** two bots in-process exchange 6 bursts (all heard, loss < 10 %, median latency
+  < 250 ms; locally about 5–65 ms with 0 % loss), and the binary is run twice (one plays a
+  44.1 kHz stereo WAV, the other records `out.wav`, which must contain all 4 bursts). The
+  forwarding-rule and token tests from section 19 are the server's `tests/voice.rs`.

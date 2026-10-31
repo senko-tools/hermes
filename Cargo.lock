@@ -2935,6 +2935,14 @@ dependencies = [
 [[package]]
 name = "hermes-voicebot"
 version = "0.1.0"
+dependencies = [
+ "clap",
+ "hermes-client-core",
+ "hermes-server",
+ "rustls",
+ "tokio",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "hermit-abi"
