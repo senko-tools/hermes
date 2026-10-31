@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO spaces (id, name, description, icon_id, owner_id, created_at)\n         VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "e4bd4e8cbeb7fa0477fdb98c88fe1402ba4f6e13fba023f9a401fe66bd05e9eb"
+}

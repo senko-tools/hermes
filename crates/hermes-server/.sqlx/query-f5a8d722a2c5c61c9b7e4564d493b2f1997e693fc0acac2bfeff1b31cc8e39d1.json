@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM sessions WHERE user_id = ? AND id != ? RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f5a8d722a2c5c61c9b7e4564d493b2f1997e693fc0acac2bfeff1b31cc8e39d1"
+}

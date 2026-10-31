@@ -28,7 +28,7 @@ tower_governor = "=0.8.0"
 
 # TLS
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring", "logging", "tls12"] }
-tokio-rustls = "=0.26.6"
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["logging", "tls12", "ring"] }
 rcgen = "=0.14.10"
 
 # Database
@@ -49,6 +49,7 @@ base64 = "=0.23.1"
 
 # Config, CLI, logging
 figment = { version = "=0.10.19", features = ["toml", "env"] }
+toml = "=0.8.23"  # same version figment uses; serializes the effective config in `check-config`
 clap = { version = "=4.6.7", features = ["derive"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
@@ -58,7 +59,7 @@ image = "=0.25.10"
 bitflags = "=2.13.2"
 
 # Client networking
-reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2", "json"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "http2", "json"] }
 tokio-tungstenite = { version = "=0.30.0", features = ["rustls-tls-webpki-roots"] }
 
 # Audio

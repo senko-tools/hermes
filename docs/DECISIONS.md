@@ -32,6 +32,8 @@ Newest entries at the bottom. Each entry: date, what changed, why.
 
 - **What:** the workspace `rustls` and `quinn` entries disable default features and enable `ring`
   (rustls: `std`, `ring`, `logging`, `tls12`; quinn: `runtime-tokio`, `rustls-ring`, `log`).
+  `tokio-rustls` got the same treatment (`logging`, `tls12`, `ring`) when the server started using
+  it (2026-10-31), because its default features also enable `aws-lc-rs`.
 - **Why:** rustls 0.23 defaults to `aws-lc-rs`, while quinn and rcgen default to `ring`. With both
   compiled in, rustls cannot pick a provider automatically, and `aws-lc-sys` is a heavy C/CMake
   build on Windows and musl. `ring` alone covers TLS 1.3 for QUIC and HTTPS.
@@ -112,3 +114,136 @@ Newest entries at the bottom. Each entry: date, what changed, why.
     one-off crash; the developer has UI changes in mind.
   - Phase 4 (audio): playback sounded quiet in Spike A, so check levels and consider the AGC from
     section 12.5; PTT uses the polling approach above.
+
+## 2026-10-30: Hand-written markup parser instead of wrapping `pulldown-cmark`
+
+- **What:** `hermes-proto::markup` is a small hand-written parser for exactly the syntax in section 7.5
+  (Discord-style rules); `pulldown-cmark` (section 6) is not used. Additions the plan did not spell out:
+  backslash escapes of ASCII punctuation (`\*`), `<https://…>` links, quotes need `> ` (so `>_<` stays
+  text) and do not nest, `_`-italics only at word boundaries (`snake_case` stays text), link targets must
+  be `http://` or `https://`, and formatting nests at most 12 levels deep.
+- **Why:** approved by the developer. CommonMark disagrees with chat syntax in many places: `__x__` is
+  bold there (we want underline), single newlines are merged, 4-space indents become code blocks,
+  `- x` becomes a list, bare URLs are not links, and `||spoiler||` / `<@id>` would need a second pass
+  anyway. A parser that only knows our syntax is more predictable and keeps GUI and TUI identical.
+
+## 2026-10-30: `Permissions` is a decimal string on the wire
+
+- **What:** `Permissions` serializes as a decimal string (`"196608"`), like `Id`. Unknown bits from a
+  newer peer are dropped when decoding.
+- **Why:** approved by the developer. Bits currently go up to 37, but the reserved gaps go up to bit 63,
+  which a JavaScript number cannot hold exactly; using strings now avoids a breaking change later.
+
+## 2026-10-30: `hermes-proto` details the plan left open
+
+- **HTTP statuses for `ErrorCode`:** 400 `BAD_REQUEST`, `VALIDATION_FAILED`; 401 `UNAUTHORIZED`,
+  `INVALID_CREDENTIALS`; 403 `ACCOUNT_DISABLED`, `MISSING_PERMISSION`, `REGISTRATION_CLOSED`, `BANNED`,
+  `VOICE_DISABLED`; 404 `NOT_FOUND`, `INVITE_INVALID`; 409 `CONFLICT`, `VOICE_FULL`; 413
+  `PAYLOAD_TOO_LARGE`; 429 `RATE_LIMITED`; 500 `INTERNAL`; 507 `STORAGE_FULL`. `fields` is omitted
+  unless the code is `VALIDATION_FAILED`.
+- **Models:** `AttachmentRef = {id, filename}` (enough to build the download URL); `Mentions =
+  {users, roles, everyone, here}` (the `message_mentions` kinds); `SpacePreview = {id, name, icon,
+  member_count}`; `Member.role_ids` never lists `@everyone` (it is implicit); `Message.nonce` is left
+  out of the JSON when absent.
+- **Gateway:** client ops are sent as `{op, d}` without `s` (the server ignores `s` if present);
+  `heartbeat.last_seq` is `0` before any dispatch was received (sequences start at 1);
+  `ready.voice.quic_port` / `cert_sha256` are `null` when voice is disabled;
+  `ready.instance.limits = {max_upload_mb, max_message_length}` (same as `GET /instance`).
+- **Permissions helpers:** besides `compute`, `highest_position`, `can_manage_member` and
+  `can_manage_role` implement the hierarchy rule (owner ranks above everyone, nobody acts on the owner).
+
+## 2026-10-30: Server config loading details
+
+- **`toml` crate:** added `toml = "=0.8.23"` (the version `figment` already depends on, so nothing new is
+  downloaded) to print the effective config as TOML in `check-config`. Approved by the developer;
+  section 6 does not list it. `clap` gets its `env` feature for `HERMES_CONFIG`.
+- **Precedence:** defaults < `hermes.toml` < `SERVER_PORT` < `HERMES__SECTION__KEY`. Section 18.5 only says
+  `SERVER_PORT` is a fallback when `HERMES__NETWORK__PORT` is unset; it also wins over the file because the
+  Pterodactyl egg runs `init`, which writes `port = 7700`, and the panel's allocation must still apply.
+  An empty `SERVER_PORT` is ignored; an invalid one is an error.
+- **Strictness:** unknown keys (in the file or as `HERMES__…` variables) are errors, so typos are not
+  silently ignored. String keys also accept env values that look like numbers or booleans
+  (`HERMES__INSTANCE__NAME=1337`).
+- **Validation:** errors for port 0, `tls.mode = "files"` without both paths, empty `instance.name` or
+  `storage.data_dir`, zero sizes/rate limits, `limits.max_group_dm_size < 2`, bitrates outside Opus's
+  6000–510000 range or default > max, and an invalid `log.level` filter. An empty `instance.public_host`
+  is only a warning, so a container configured purely through env vars still starts. Whether the TLS files
+  exist is checked by the TLS item, not here.
+- **`init`** refuses to overwrite an existing file (exit code 1) and creates missing parent directories.
+- **`run`** only loads the config and sets up logging for now; it exits with code 1 until the server exists.
+
+## 2026-10-31: SQLite, snowflakes and the state cache
+
+- **`synchronous = NORMAL`:** set on every connection besides the pragmas from section 7.3. It is the
+  usual setting with WAL: a power loss can lose the last commits but cannot corrupt the database.
+- **Two pools:** a read pool (4 connections) and a write pool with a single connection, as the
+  "SQLite write contention" row in section 21 says. Migrations run on the write pool.
+- **Offline query data:** `crates/hermes-server/.sqlx/` is committed so builds need no database. After
+  changing a query, regenerate it with `cargo sqlx prepare` (`sqlx-cli` 0.9.0, a dev tool, not a crate
+  dependency); the exact commands are in `src/db/mod.rs`. `build.rs` makes the crate rebuild when a
+  migration changes.
+- **Snowflake overflow:** when all 4096 sequence numbers of a millisecond are used, the generator moves
+  on to the next millisecond instead of sleeping, so it never blocks while holding its lock. A clock
+  going backwards reuses the last timestamp, so IDs stay unique and increasing within one process.
+- **Cache shape:** users are cached once (`Cache::users`); channels keep DM recipients as IDs
+  (`recipient_ids`) and the wire `Channel::recipients` stays empty in the cache. Presences and voice
+  states are runtime-only maps. `Cache::space_permissions`/`channel_permissions` wrap
+  `hermes_proto::permissions::compute` (DMs use `Permissions::DM_RECIPIENT`).
+- **`0002_search.sql`:** an external-content FTS5 table plus insert/delete/update-of-content triggers.
+  A soft delete clears `content`, which removes the message from the index.
+
+## 2026-10-31: Auth, sessions, setup invite and invites
+
+- **`invites.creator_id` is nullable** (approved by the developer): migration `0003_invite_creator.sql`
+  rebuilds the table with `creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL` (NULL = created
+  by the server) and `code TEXT NOT NULL PRIMARY KEY` (SQLite otherwise allows NULL text keys).
+  `Invite.creator_id` in `hermes-proto` is `Option<Id>`. The setup invite is created before any user
+  exists, and `hermes-server invite create` has no user either.
+- **`/users/@me`** (approved): `GET /users/@me` and `POST /users/@me/password` (revokes all other
+  sessions) are included here although no checklist item names them; `PATCH /users/@me` and
+  `GET /users/{id}` are left for later.
+- **`run` serves HTTP(S)** now (approved): the API router on the TLS listener (or plain HTTP with
+  `tls.mode = "off"`). Graceful shutdown, `/healthz` and the "Hermes is ready" line stay with their own item.
+- **`reqwest` uses `rustls-no-provider`:** the workspace entry changed from `rustls` to
+  `rustls-no-provider`, because `rustls` pulls in `aws-lc-rs` (see the `ring` entry above). Code that
+  builds a `reqwest::Client` must install the `ring` provider first
+  (`rustls::crypto::ring::default_provider().install_default()`); the server tests do.
+- **Registration rules the plan left open:**
+  - The very first account always needs an invite (the setup invite), in every mode, so a random
+    visitor cannot become the instance admin. `closed` refuses everything else.
+  - `invite_only` without an invite and `closed` answer `REGISTRATION_CLOSED`; an unknown, expired or
+    used-up invite answers `INVITE_INVALID`.
+  - Usernames are trimmed and lowercased before the `^[a-z0-9_.]{2,32}$` check (login lowercases too).
+    Passwords: `registration.min_password_length` to 256 characters. Device names: 1 to 64
+    characters, no control characters.
+  - Login runs a dummy argon2 check for unknown usernames (no timing hint), and answers
+    `ACCOUNT_DISABLED` only after the right password.
+- **Sessions:** `last_seen_at`/`last_ip` are written at most once a minute per session, not on every
+  request. `last_ip` is the TCP peer, or the `X-Forwarded-For` client when the peer is in
+  `network.trusted_proxies`; IPv4-mapped IPv6 peers are stored as plain IPv4. A disabled user's
+  requests are refused through the cached `disabled` flag. `DELETE /auth/sessions/{id}` only finds the
+  caller's own sessions (`NOT_FOUND` otherwise); closing the gateway connection comes with the gateway.
+- **Setup invite:** single use, 24 hours, instance-only. A restart before anyone registered reuses the
+  newest unused server-created instance invite instead of printing a new code each time. The link uses
+  `instance.public_host` (or the bind address, or `localhost`) and the public port, with
+  `#fp=sha256:…` when `tls.mode = "self_signed"`. The banner goes to stdout, not the log, so it is
+  visible in every log format. The first account becomes `instance_admin` and owns a space named
+  `instance.name` with `@everyone` (`DEFAULT_EVERYONE`), `#general` and `General` (voice,
+  `voice.default_bitrate`).
+- **Invites:**
+  - `expires_in_secs` absent = 7 days, `0` = never, at most 30 days. `max_uses` absent or `0` = unlimited.
+  - A use is taken with a single conditional `UPDATE … RETURNING`, so concurrent joins cannot go over
+    `max_uses`. Already being a member returns the space without using up the invite.
+  - `POST /invites/{code}` returns a `SpaceSnapshot` ("Space (full, as in Ready)"). An instance-only
+    invite there answers `INVITE_INVALID`.
+  - Space endpoints answer `NOT_FOUND` to non-members, so they cannot probe which spaces exist.
+  - `DELETE /invites/{code}`: the creator, members with `MANAGE_INVITES`, or (instance-only invites)
+    instance admins.
+  - `hermes-server invite create [--space ID] [--uses N] [--expires 30m|24h|7d|never]` defaults to
+    7 days and unlimited uses, and prints both link forms.
+- **Deferred:** the per-IP login rate limit goes with the "Rate limits" item, and gateway events for
+  joins with the gateway item.
+- **Test fix:** the config tests used `figment::Jail::clear_env`, which removes every variable of the
+  process, including `SystemRoot`. On Windows, other tests running in parallel then fail to create
+  sockets (WSA error 10106). The jail now only clears the environment when a `HERMES*`/`SERVER_PORT`
+  variable is set, and puts all other variables back right away.

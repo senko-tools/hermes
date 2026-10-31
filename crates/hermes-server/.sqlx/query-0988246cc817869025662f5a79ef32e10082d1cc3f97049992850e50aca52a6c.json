@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE invites SET uses = uses + 1\n         WHERE code = ?\n           AND (expires_at IS NULL OR expires_at > ?)\n           AND (max_uses IS NULL OR uses < max_uses)\n         RETURNING space_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "invites",
+            "name": "space_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "0988246cc817869025662f5a79ef32e10082d1cc3f97049992850e50aca52a6c"
+}

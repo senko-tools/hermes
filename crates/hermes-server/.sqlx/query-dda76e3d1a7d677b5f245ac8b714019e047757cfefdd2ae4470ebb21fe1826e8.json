@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO roles (id, space_id, name, color, hoist, mentionable, position, permissions)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "dda76e3d1a7d677b5f245ac8b714019e047757cfefdd2ae4470ebb21fe1826e8"
+}

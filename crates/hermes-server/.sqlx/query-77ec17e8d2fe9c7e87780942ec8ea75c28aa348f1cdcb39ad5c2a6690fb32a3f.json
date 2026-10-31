@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id, s.name, s.description, s.owner_id, s.icon_id, a.filename AS \"icon_filename?\"\n           FROM spaces s LEFT JOIN attachments a ON a.id = s.icon_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "owner_id",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "name": "icon_id",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "icon_id"
+          }
+        }
+      },
+      {
+        "name": "icon_filename?",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "77ec17e8d2fe9c7e87780942ec8ea75c28aa348f1cdcb39ad5c2a6690fb32a3f"
+}

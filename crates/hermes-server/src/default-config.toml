@@ -1,0 +1,58 @@
+# Hermes server configuration (written by `hermes-server init`).
+#
+# Every key can be overridden by an environment variable named HERMES__<SECTION>__<KEY>,
+# for example HERMES__NETWORK__PORT=7700. Environment variables win over this file.
+# SERVER_PORT (set by Pterodactyl/Pelican) is used for network.port when
+# HERMES__NETWORK__PORT is not set, and wins over the port in this file.
+#
+# Run `hermes-server check-config` to validate this file and print the effective values.
+
+[instance]
+name = "Hermes"                     # shown in clients; also the default space name on first start
+description = ""
+public_host = ""                    # REQUIRED for correct invite links: domain or public IP clients use, e.g. "hermes.senko.tools"
+public_port = 0                     # 0 = same as network.port (set this if behind NAT/port-mapping)
+
+[network]
+bind = "0.0.0.0"                    # use "::" to accept IPv4 + IPv6 (dual stack); recommended when the domain has an AAAA record
+port = 7700                         # TCP (HTTPS/WSS) and UDP (QUIC voice) both use this port
+trusted_proxies = []                # IPs whose X-Forwarded-For is trusted (when tls.mode = "off" behind a proxy)
+
+[tls]
+mode = "self_signed"                # "self_signed" | "files" | "off"
+cert_file = ""                      # mode = "files": PEM certificate chain
+key_file = ""                       # mode = "files": PEM private key
+# "off" = plain HTTP/WS, only for running behind a TLS-terminating reverse proxy.
+# The voice QUIC endpoint ALWAYS uses its own self-signed cert stored in data_dir;
+# clients pin its fingerprint received over the authenticated gateway.
+
+[storage]
+data_dir = "./data"                 # hermes.db, files/, certs/ live here
+max_upload_mb = 25
+max_total_storage_gb = 0            # 0 = unlimited; uploads rejected when exceeded
+thumbnails = true
+
+[registration]
+mode = "invite_only"                # "open" | "invite_only" | "closed"
+min_password_length = 8
+
+[limits]
+max_spaces_per_user = 10            # spaces a non-admin user may create; 0 = only instance admins
+max_message_length = 4000
+max_group_dm_size = 10
+messages_per_5s = 5                 # per user per channel
+requests_per_second = 30            # per session, REST
+login_attempts_per_minute = 5       # per IP
+
+[privacy]
+dm_policy = "shared_space"          # "shared_space" | "anyone"
+
+[voice]
+enabled = true
+default_bitrate = 64000             # bits/s, per new voice channel
+max_bitrate = 128000
+max_users_per_room = 25
+
+[log]
+level = "info"                      # trace | debug | info | warn | error, or an EnvFilter string
+format = "pretty"                   # "pretty" | "json"

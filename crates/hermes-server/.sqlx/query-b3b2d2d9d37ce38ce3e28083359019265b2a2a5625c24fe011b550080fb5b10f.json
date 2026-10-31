@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, device_name, created_at, last_seen_at FROM sessions\n         WHERE user_id = ? ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "device_name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "device_name"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "last_seen_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b3b2d2d9d37ce38ce3e28083359019265b2a2a5625c24fe011b550080fb5b10f"
+}
