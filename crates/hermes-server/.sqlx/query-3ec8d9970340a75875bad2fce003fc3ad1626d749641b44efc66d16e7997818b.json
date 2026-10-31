@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET last_seen_at = ?, last_ip = COALESCE(?, last_ip) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3ec8d9970340a75875bad2fce003fc3ad1626d749641b44efc66d16e7997818b"
+}

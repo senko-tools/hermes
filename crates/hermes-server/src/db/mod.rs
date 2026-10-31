@@ -11,6 +11,9 @@
 //! cargo sqlx prepare -- --all-targets
 //! ```
 
+pub mod auth;
+pub mod invites;
+pub mod spaces;
 pub mod state;
 
 use std::path::{Path, PathBuf};

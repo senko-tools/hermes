@@ -156,3 +156,73 @@ fn run_rejects_invalid_config() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("prot"), "{}", stderr(&output));
 }
+
+#[test]
+fn invite_create_prints_links() {
+    let dir = TempDir::new("invite-create");
+    let with_env = |cmd: &mut Command| {
+        cmd.env("HERMES__INSTANCE__PUBLIC_HOST", "hermes.example.org")
+            .env("HERMES__NETWORK__PORT", "7800");
+    };
+
+    // Self-signed (the default): the links carry the certificate fingerprint.
+    let mut cmd = server(dir.path());
+    with_env(&mut cmd);
+    let output = cmd
+        .args(["invite", "create", "--uses", "3", "--expires", "24h"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(out.contains("joins no space"), "{out}");
+    assert!(out.contains("Uses: 3"), "{out}");
+    assert!(out.contains("Expires: in 1d"), "{out}");
+    assert!(
+        out.contains("https://hermes.example.org:7800/invite/"),
+        "{out}"
+    );
+    assert!(
+        out.contains("hermes://hermes.example.org:7800/invite/"),
+        "{out}"
+    );
+    assert!(out.contains("#fp=sha256:"), "{out}");
+    assert!(dir.path().join("data").join("hermes.db").is_file());
+
+    // TLS off: no fingerprint; unknown spaces and bad lifetimes are rejected.
+    let mut cmd = server(dir.path());
+    with_env(&mut cmd);
+    let output = cmd
+        .env("HERMES__TLS__MODE", "off")
+        .args(["invite", "create", "--expires", "never"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let out = stdout(&output);
+    assert!(
+        out.contains("Uses: unlimited") && out.contains("Expires: never"),
+        "{out}"
+    );
+    assert!(!out.contains("#fp="), "{out}");
+
+    let output = server(dir.path())
+        .args(["invite", "create", "--space", "12345"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no space with ID 12345"),
+        "{}",
+        stderr(&output)
+    );
+
+    let output = server(dir.path())
+        .args(["invite", "create", "--expires", "soon"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not a lifetime"),
+        "{}",
+        stderr(&output)
+    );
+}

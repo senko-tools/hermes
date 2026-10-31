@@ -506,10 +506,24 @@ mod tests {
 
     const FILE: &str = "hermes.toml";
 
-    /// Runs `f` in a fresh temp dir with no inherited environment variables.
+    /// Runs `f` in a fresh temp dir without inherited `HERMES*` / `SERVER_PORT` variables.
+    ///
+    /// Other variables stay: the environment is process-wide, and on Windows other tests running
+    /// in parallel cannot create sockets while `SystemRoot` is missing (WSA error 10106). So the
+    /// environment is only cleared when a config variable is actually set, and everything else
+    /// is put back right away; the jail restores all of it afterwards.
     fn jail(f: impl FnOnce(&mut Jail) -> figment::Result<()>) {
         Jail::expect_with(|jail| {
-            jail.clear_env();
+            let is_config = |key: &str| key.starts_with("HERMES") || key == SERVER_PORT_ENV;
+            let vars: Vec<(String, String)> = std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+                .collect();
+            if vars.iter().any(|(key, _)| is_config(key)) {
+                jail.clear_env();
+                for (key, value) in vars.into_iter().filter(|(key, _)| !is_config(key)) {
+                    jail.set_env(key, value);
+                }
+            }
             f(jail)
         });
     }

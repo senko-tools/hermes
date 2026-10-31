@@ -191,3 +191,59 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   `hermes_proto::permissions::compute` (DMs use `Permissions::DM_RECIPIENT`).
 - **`0002_search.sql`:** an external-content FTS5 table plus insert/delete/update-of-content triggers.
   A soft delete clears `content`, which removes the message from the index.
+
+## 2026-10-31: Auth, sessions, setup invite and invites
+
+- **`invites.creator_id` is nullable** (approved by the developer): migration `0003_invite_creator.sql`
+  rebuilds the table with `creator_id INTEGER REFERENCES users(id) ON DELETE SET NULL` (NULL = created
+  by the server) and `code TEXT NOT NULL PRIMARY KEY` (SQLite otherwise allows NULL text keys).
+  `Invite.creator_id` in `hermes-proto` is `Option<Id>`. The setup invite is created before any user
+  exists, and `hermes-server invite create` has no user either.
+- **`/users/@me`** (approved): `GET /users/@me` and `POST /users/@me/password` (revokes all other
+  sessions) are included here although no checklist item names them; `PATCH /users/@me` and
+  `GET /users/{id}` are left for later.
+- **`run` serves HTTP(S)** now (approved): the API router on the TLS listener (or plain HTTP with
+  `tls.mode = "off"`). Graceful shutdown, `/healthz` and the "Hermes is ready" line stay with their own item.
+- **`reqwest` uses `rustls-no-provider`:** the workspace entry changed from `rustls` to
+  `rustls-no-provider`, because `rustls` pulls in `aws-lc-rs` (see the `ring` entry above). Code that
+  builds a `reqwest::Client` must install the `ring` provider first
+  (`rustls::crypto::ring::default_provider().install_default()`); the server tests do.
+- **Registration rules the plan left open:**
+  - The very first account always needs an invite (the setup invite), in every mode, so a random
+    visitor cannot become the instance admin. `closed` refuses everything else.
+  - `invite_only` without an invite and `closed` answer `REGISTRATION_CLOSED`; an unknown, expired or
+    used-up invite answers `INVITE_INVALID`.
+  - Usernames are trimmed and lowercased before the `^[a-z0-9_.]{2,32}$` check (login lowercases too).
+    Passwords: `registration.min_password_length` to 256 characters. Device names: 1 to 64
+    characters, no control characters.
+  - Login runs a dummy argon2 check for unknown usernames (no timing hint), and answers
+    `ACCOUNT_DISABLED` only after the right password.
+- **Sessions:** `last_seen_at`/`last_ip` are written at most once a minute per session, not on every
+  request. `last_ip` is the TCP peer, or the `X-Forwarded-For` client when the peer is in
+  `network.trusted_proxies`; IPv4-mapped IPv6 peers are stored as plain IPv4. A disabled user's
+  requests are refused through the cached `disabled` flag. `DELETE /auth/sessions/{id}` only finds the
+  caller's own sessions (`NOT_FOUND` otherwise); closing the gateway connection comes with the gateway.
+- **Setup invite:** single use, 24 hours, instance-only. A restart before anyone registered reuses the
+  newest unused server-created instance invite instead of printing a new code each time. The link uses
+  `instance.public_host` (or the bind address, or `localhost`) and the public port, with
+  `#fp=sha256:…` when `tls.mode = "self_signed"`. The banner goes to stdout, not the log, so it is
+  visible in every log format. The first account becomes `instance_admin` and owns a space named
+  `instance.name` with `@everyone` (`DEFAULT_EVERYONE`), `#general` and `General` (voice,
+  `voice.default_bitrate`).
+- **Invites:**
+  - `expires_in_secs` absent = 7 days, `0` = never, at most 30 days. `max_uses` absent or `0` = unlimited.
+  - A use is taken with a single conditional `UPDATE … RETURNING`, so concurrent joins cannot go over
+    `max_uses`. Already being a member returns the space without using up the invite.
+  - `POST /invites/{code}` returns a `SpaceSnapshot` ("Space (full, as in Ready)"). An instance-only
+    invite there answers `INVITE_INVALID`.
+  - Space endpoints answer `NOT_FOUND` to non-members, so they cannot probe which spaces exist.
+  - `DELETE /invites/{code}`: the creator, members with `MANAGE_INVITES`, or (instance-only invites)
+    instance admins.
+  - `hermes-server invite create [--space ID] [--uses N] [--expires 30m|24h|7d|never]` defaults to
+    7 days and unlimited uses, and prints both link forms.
+- **Deferred:** the per-IP login rate limit goes with the "Rate limits" item, and gateway events for
+  joins with the gateway item.
+- **Test fix:** the config tests used `figment::Jail::clear_env`, which removes every variable of the
+  process, including `SystemRoot`. On Windows, other tests running in parallel then fail to create
+  sockets (WSA error 10106). The jail now only clears the environment when a `HERMES*`/`SERVER_PORT`
+  variable is set, and puts all other variables back right away.

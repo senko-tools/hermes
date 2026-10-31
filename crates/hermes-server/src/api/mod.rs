@@ -1,0 +1,171 @@
+//! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
+//! mapping of errors to HTTP responses.
+
+mod auth;
+mod invites;
+mod users;
+mod validate;
+
+use std::io;
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use axum::Router;
+use axum::extract::connect_info::Connected;
+use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::{FromRequest, FromRequestParts, Request};
+use axum::http::StatusCode;
+use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get, post};
+use axum::serve::IncomingStream;
+use hermes_proto::{ApiError, ErrorBody, ErrorCode};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tokio::net::TcpListener;
+
+use crate::state::AppState;
+use crate::tls::{Tls, TlsListener};
+
+/// The `/api/v1` router plus everything outside it.
+pub fn router(state: Arc<AppState>) -> Router {
+    let api = Router::new()
+        .route("/auth/register", post(auth::register))
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/sessions", get(auth::list_sessions))
+        .route("/auth/sessions/{id}", delete(auth::delete_session))
+        .route("/users/@me", get(users::me))
+        .route("/users/@me/password", post(users::change_password))
+        .route(
+            "/spaces/{id}/invites",
+            post(invites::create).get(invites::list),
+        )
+        .route(
+            "/invites/{code}",
+            get(invites::preview)
+                .post(invites::join)
+                .delete(invites::delete),
+        )
+        .fallback(not_found);
+    Router::new().nest("/api/v1", api).with_state(state)
+}
+
+async fn not_found() -> Error {
+    Error::new(ErrorCode::NotFound, "Unknown endpoint")
+}
+
+/// Serves `app` on `tcp`, terminating TLS unless `tls` is [`Tls::Off`]. Handlers can extract
+/// `ConnectInfo<PeerAddr>`.
+pub async fn serve(tcp: TcpListener, tls: &Tls, app: Router) -> io::Result<()> {
+    let service = app.into_make_service_with_connect_info::<PeerAddr>();
+    match tls {
+        Tls::Off => axum::serve(tcp, service).await,
+        Tls::Rustls { config, .. } => {
+            axum::serve(TlsListener::new(tcp, config.clone())?, service).await
+        }
+    }
+}
+
+/// The TCP peer of a connection. Use [`AppState::client_ip`] for the client's address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerAddr(pub SocketAddr);
+
+impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+        PeerAddr(*stream.remote_addr())
+    }
+}
+
+impl Connected<IncomingStream<'_, TlsListener>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+        PeerAddr(*stream.remote_addr())
+    }
+}
+
+/// An error response: `{ "error": { … } }` with the status of its code.
+#[derive(Debug)]
+pub struct Error(pub ApiError);
+
+pub type ApiResult<T> = Result<T, Error>;
+
+impl Error {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Error(ApiError::new(code, message))
+    }
+
+    /// Logs `detail` and responds with a generic `INTERNAL` error.
+    pub fn internal(detail: impl std::fmt::Display) -> Self {
+        tracing::error!("internal error: {detail}");
+        Error::new(ErrorCode::Internal, "Internal server error")
+    }
+
+    pub fn not_found(what: &str) -> Self {
+        Error::new(ErrorCode::NotFound, format!("Unknown {what}"))
+    }
+
+    pub fn missing_permission(permission: &str) -> Self {
+        Error::new(
+            ErrorCode::MissingPermission,
+            format!("You need {permission} in this space"),
+        )
+    }
+}
+
+impl From<sqlx::Error> for Error {
+    fn from(err: sqlx::Error) -> Self {
+        Error::internal(format!("database: {err}"))
+    }
+}
+
+impl IntoResponse for Error {
+    fn into_response(self) -> Response {
+        let status =
+            StatusCode::from_u16(self.0.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        (status, axum::Json(ErrorBody::from(self.0))).into_response()
+    }
+}
+
+/// `axum::Json` with rejections turned into `BAD_REQUEST` error bodies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Json<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
+    type Rejection = Error;
+
+    async fn from_request(req: Request, state: &S) -> ApiResult<Self> {
+        match axum::Json::<T>::from_request(req, state).await {
+            Ok(axum::Json(value)) => Ok(Json(value)),
+            Err(rejection) => Err(json_rejection(rejection)),
+        }
+    }
+}
+
+fn json_rejection(rejection: JsonRejection) -> Error {
+    Error::new(ErrorCode::BadRequest, rejection.body_text())
+}
+
+impl<T: Serialize> IntoResponse for Json<T> {
+    fn into_response(self) -> Response {
+        axum::Json(self.0).into_response()
+    }
+}
+
+/// `axum::extract::Path` with rejections turned into `BAD_REQUEST` error bodies.
+#[derive(Debug, Clone, Copy)]
+pub struct Path<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned + Send> FromRequestParts<S> for Path<T> {
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> ApiResult<Self> {
+        match axum::extract::Path::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Path(value)) => Ok(Path(value)),
+            Err(rejection) => Err(path_rejection(rejection)),
+        }
+    }
+}
+
+fn path_rejection(rejection: PathRejection) -> Error {
+    Error::new(ErrorCode::BadRequest, rejection.body_text())
+}

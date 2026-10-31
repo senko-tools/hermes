@@ -5,10 +5,15 @@
 //! Lock rule: never hold the cache lock across an `.await`.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
+use axum::http::HeaderMap;
+use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
-use hermes_proto::models::{Channel, Member, PresenceStatus, Role, Space, User, VoiceState};
+use hermes_proto::models::{
+    Channel, CurrentUser, Member, PresenceStatus, Role, Space, SpacePreview, User, VoiceState,
+};
 use hermes_proto::permissions::{self, Permissions};
 
 use crate::config::Config;
@@ -37,6 +42,44 @@ impl AppState {
             cache: RwLock::new(cache),
         })
     }
+
+    /// Read access to the cache. A poisoned lock is still used: every write is a short,
+    /// self-contained update, so the data stays consistent.
+    pub fn cache(&self) -> RwLockReadGuard<'_, Cache> {
+        self.cache.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn cache_mut(&self) -> RwLockWriteGuard<'_, Cache> {
+        self.cache.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The client's IP: the TCP peer, or, when the peer is one of `network.trusted_proxies`, the
+    /// last `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
+    /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
+    pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+        let trusted = &self.config.network.trusted_proxies;
+        let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+        let mut ip = peer.ip().to_canonical();
+        if !is_trusted(&ip) {
+            return ip;
+        }
+        let forwarded = headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(','))
+            .collect::<Vec<_>>();
+        for entry in forwarded.iter().rev() {
+            let Ok(hop) = entry.trim().parse::<IpAddr>() else {
+                break;
+            };
+            ip = hop.to_canonical();
+            if !is_trusted(&ip) {
+                break;
+            }
+        }
+        ip
+    }
 }
 
 pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {
@@ -44,6 +87,9 @@ pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {
         crate::db::state::load(&db.read).await?,
     ))
 }
+
+/// Members included in a [`SpaceSnapshot`]; larger spaces lazy-load the rest via REST.
+pub const SNAPSHOT_MEMBER_CAP: usize = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedUser {
@@ -86,6 +132,27 @@ pub struct Cache {
     pub presences: HashMap<Id, PresenceStatus>,
     /// Runtime only, keyed by user (one voice room per user).
     pub voice_states: HashMap<Id, VoiceState>,
+}
+
+impl CachedUser {
+    pub fn current_user(&self) -> CurrentUser {
+        CurrentUser {
+            user: self.user.clone(),
+            instance_admin: self.instance_admin,
+        }
+    }
+}
+
+impl SpaceState {
+    /// A new space's state: `@everyone` must be in `roles`; members are added separately.
+    pub fn new(space: Space, mut roles: Vec<Role>) -> Self {
+        roles.sort_by_key(|r| (r.position, r.id));
+        SpaceState {
+            space,
+            roles,
+            members: HashMap::new(),
+        }
+    }
 }
 
 impl Cache {
@@ -170,6 +237,103 @@ impl Cache {
         }
 
         cache
+    }
+
+    pub fn insert_user(&mut self, user: CachedUser) {
+        self.users.insert(user.user.id, user);
+    }
+
+    pub fn insert_space(&mut self, space: SpaceState) {
+        self.spaces.insert(space.space.id, space);
+    }
+
+    /// Adds a space or DM channel. `channel.recipients` is ignored (see [`ChannelState`]).
+    pub fn insert_channel(&mut self, mut channel: Channel, mut recipient_ids: Vec<Id>) {
+        channel.recipients.clear();
+        channel.overrides.sort_by_key(|o| o.role_id);
+        recipient_ids.sort();
+        self.channels.insert(
+            channel.id,
+            ChannelState {
+                channel,
+                recipient_ids,
+            },
+        );
+    }
+
+    /// Adds a member without roles. Does nothing if the space is not cached.
+    pub fn insert_member(&mut self, space_id: Id, user_id: Id, joined_at: i64) {
+        if let Some(space) = self.spaces.get_mut(&space_id) {
+            space.members.insert(
+                user_id,
+                MemberState {
+                    nickname: None,
+                    role_ids: Vec::new(),
+                    joined_at,
+                },
+            );
+        }
+    }
+
+    pub fn is_member(&self, space_id: Id, user_id: Id) -> bool {
+        self.spaces
+            .get(&space_id)
+            .is_some_and(|s| s.members.contains_key(&user_id))
+    }
+
+    pub fn space_preview(&self, space_id: Id) -> Option<SpacePreview> {
+        let state = self.spaces.get(&space_id)?;
+        Some(SpacePreview {
+            id: space_id,
+            name: state.space.name.clone(),
+            icon: state.space.icon.clone(),
+            member_count: u32::try_from(state.members.len()).unwrap_or(u32::MAX),
+        })
+    }
+
+    /// Everything `user_id` sees of a space, as in `ready` (PLAN.md section 11.3): channels they
+    /// can view, sorted by position; at most [`SNAPSHOT_MEMBER_CAP`] members, oldest first.
+    pub fn space_snapshot(&self, space_id: Id, user_id: Id) -> Option<SpaceSnapshot> {
+        let state = self.spaces.get(&space_id)?;
+        let mut channels: Vec<Channel> = self
+            .channels
+            .values()
+            .filter(|c| c.channel.space_id == Some(space_id))
+            .filter(|c| {
+                self.channel_permissions(c.channel.id, user_id)
+                    .contains(Permissions::VIEW_CHANNEL)
+            })
+            .map(|c| c.channel.clone())
+            .collect();
+        channels.sort_by_key(|c| (c.position, c.id));
+        let mut member_ids: Vec<(i64, Id)> = state
+            .members
+            .iter()
+            .map(|(id, m)| (m.joined_at, *id))
+            .collect();
+        member_ids.sort();
+        let members = member_ids
+            .into_iter()
+            .take(SNAPSHOT_MEMBER_CAP)
+            .filter_map(|(_, id)| self.member(space_id, id))
+            .collect();
+        let voice_states = self
+            .voice_states
+            .values()
+            .filter(|v| {
+                self.channels
+                    .get(&v.channel_id)
+                    .is_some_and(|c| c.channel.space_id == Some(space_id))
+            })
+            .copied()
+            .collect();
+        Some(SpaceSnapshot {
+            space: state.space.clone(),
+            roles: state.roles.clone(),
+            channels,
+            members,
+            voice_states,
+        })
     }
 
     /// The wire `Member` of `user_id` in `space_id`, if they are a member.

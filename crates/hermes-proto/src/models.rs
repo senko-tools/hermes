@@ -286,7 +286,9 @@ pub struct Invite {
     pub code: String,
     /// `None` for instance-only invites.
     pub space: Option<SpacePreview>,
-    pub creator_id: Id,
+    /// `None` for invites created by the server itself (first-start setup invite, the
+    /// `hermes-server invite create` command).
+    pub creator_id: Option<Id>,
     pub max_uses: Option<u32>,
     pub uses: u32,
     pub expires_at: Option<i64>,

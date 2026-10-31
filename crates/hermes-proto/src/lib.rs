@@ -3,10 +3,12 @@
 //! - [`id`]: snowflake IDs
 //! - [`models`]: wire models
 //! - [`error`]: REST error codes and bodies
+//! - [`api`]: REST request and response bodies
 //! - [`permissions`]: permission bits and `compute`
 //! - [`gateway`]: WebSocket envelope, ops, events and close codes
 //! - [`markup`]: message markup parser
 
+pub mod api;
 pub mod error;
 pub mod gateway;
 pub mod id;
