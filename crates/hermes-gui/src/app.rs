@@ -3,17 +3,25 @@
 use std::path::PathBuf;
 
 use hermes_client_core::config::ClientConfig;
-use hermes_client_core::{Core, CoreEvent, InstanceId};
+use hermes_client_core::gateway::ConnStatus;
+use hermes_client_core::proto::api::CreateInviteRequest;
+use hermes_client_core::proto::id::Id;
+use hermes_client_core::{Core, CoreEvent, InstanceId, view};
 use iced::widget::{button, column, container, operation, row};
-use iced::{Element, Fill, Subscription, Task, window};
+use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
 use crate::buffer::settings;
 use crate::font::Fonts;
 use crate::message::Message;
-use crate::modal::{self, add_instance};
+use crate::modal::{self, add_instance, confirm, new_dm};
+use crate::sidebar::collapsed::Collapsed;
+use crate::sidebar::menu::{self, Action, Target};
+use crate::sidebar::tree::{self, Selection};
 use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
+use crate::widget::context_menu;
+use crate::widget::cursor::{self, Cursor};
 use crate::widget::{heading, label, small};
 
 /// What the main area shows until the pane grid exists.
@@ -52,6 +60,16 @@ pub struct App {
     pub add_instance: Option<add_instance::AddInstance>,
     /// Where later launches forward their links (section 15.7).
     single_instance: Option<Endpoint>,
+    pub collapsed: Collapsed,
+    /// The channel shown in the main area.
+    pub selected: Option<Selection>,
+    /// An open context menu and where it was opened.
+    pub menu: Option<(Target, Point)>,
+    cursor: Cursor,
+    window_size: Size,
+    /// A destructive menu action waiting for confirmation.
+    pub confirm: Option<(Target, Action)>,
+    pub new_dm: Option<new_dm::NewDm>,
 }
 
 impl App {
@@ -61,6 +79,10 @@ impl App {
         single_instance: Option<Endpoint>,
     ) -> App {
         let config = core.config();
+        let collapsed = core
+            .paths()
+            .map(|p| Collapsed::load(&p.dir))
+            .unwrap_or_default();
         let mut app = App {
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
@@ -73,6 +95,13 @@ impl App {
             status: None,
             add_instance: None,
             single_instance,
+            collapsed,
+            selected: None,
+            menu: None,
+            cursor: Cursor::default(),
+            window_size: Size::new(1200.0, 800.0),
+            confirm: None,
+            new_dm: None,
         };
         app.reload_theme();
         app
@@ -102,10 +131,69 @@ impl App {
             Message::OpenSettings => self.screen = Screen::Settings,
             Message::Settings(message) => self.on_settings(message),
             Message::DismissStatus => self.status = None,
-            Message::FontLoaded => {}
+            Message::FontLoaded | Message::ChannelOpened => {}
             Message::OpenAddInstance => return self.open_add_instance(String::new()),
             Message::SignIn(inst) => return self.sign_in(&inst),
             Message::AddInstance(message) => return self.on_add_instance(message),
+            Message::Toggle(node) => {
+                if let Err(err) = self.collapsed.toggle(&node) {
+                    self.error(format!("could not save the sidebar state: {err}"));
+                }
+            }
+            Message::Select(inst, channel) => return self.select(inst, channel),
+            Message::OpenMenu(target) => self.menu = Some((target, self.cursor.get())),
+            Message::CloseMenu => self.menu = None,
+            Message::Menu(target, action) => {
+                self.menu = None;
+                if action.is_destructive() {
+                    self.confirm = Some((target, action));
+                } else {
+                    return self.run_action(target, action);
+                }
+            }
+            Message::Confirmed => {
+                if let Some((target, action)) = self.confirm.take() {
+                    return self.run_action(target, action);
+                }
+            }
+            Message::CancelConfirm => self.confirm = None,
+            Message::NewDm(inst) => {
+                self.new_dm = Some(new_dm::NewDm::new(inst));
+                return operation::focus(iced::widget::Id::new(new_dm::INPUT));
+            }
+            Message::NewDmMsg(message) => return self.on_new_dm(message),
+            Message::DmCreated(inst, result) => match result {
+                Ok(channel) => {
+                    self.new_dm = None;
+                    return self.select(inst, channel);
+                }
+                Err(err) => {
+                    if let Some(dialog) = &mut self.new_dm {
+                        dialog.busy = false;
+                        dialog.error = Some(err);
+                    }
+                }
+            },
+            Message::Copy(text, what) => {
+                self.info(format!("{what} copied"));
+                return iced::clipboard::write(text);
+            }
+            Message::Done(result) => match result {
+                Ok(text) => self.info(text),
+                Err(text) => self.error(text),
+            },
+            Message::WindowResized(size) => self.window_size = size,
+            Message::Escape => {
+                if self.menu.is_some() {
+                    self.menu = None;
+                } else if self.confirm.is_some() {
+                    self.confirm = None;
+                } else if self.new_dm.is_some() {
+                    self.new_dm = None;
+                } else if self.add_instance.is_some() {
+                    self.add_instance = None;
+                }
+            }
             Message::Forwarded(link) => {
                 tracing::info!(
                     "another launch handed over {}",
@@ -121,6 +209,168 @@ impl App {
                     self.open_link(link)
                 };
                 return show.chain(open);
+            }
+        }
+        Task::none()
+    }
+
+    /// Shows a channel in the main area and loads its latest messages.
+    fn select(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
+        self.selected = Some((inst.clone(), channel));
+        self.screen = Screen::Welcome;
+        self.core.set_visible_channels([(inst.clone(), channel)]);
+        let core = self.core.clone();
+        Task::perform(
+            async move { core.open_channel(&inst, channel).await },
+            |result| match result {
+                Ok(()) => Message::ChannelOpened,
+                Err(err) => Message::Done(Err(format!("could not open the channel: {err}"))),
+            },
+        )
+    }
+
+    fn run_action(&mut self, target: Target, action: Action) -> Task<Message> {
+        let core = self.core.clone();
+        match (target, action) {
+            (Target::Instance(inst), Action::Reconnect) => {
+                let result = core
+                    .set_online(&inst, false)
+                    .and_then(|()| core.set_online(&inst, true));
+                if let Err(err) = result {
+                    self.error(err.to_string());
+                }
+            }
+            (Target::Instance(inst), Action::GoOffline | Action::GoOnline) => {
+                if let Err(err) = core.set_online(&inst, action == Action::GoOnline) {
+                    self.error(err.to_string());
+                }
+            }
+            (Target::Instance(inst), Action::LogOut) => {
+                return Task::perform(
+                    async move {
+                        core.logout(&inst)
+                            .await
+                            .map(|()| format!("Logged out of {inst}"))
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::Done,
+                );
+            }
+            (Target::Instance(inst), Action::RemoveInstance) => {
+                if self.selected.as_ref().is_some_and(|(i, _)| *i == inst) {
+                    self.selected = None;
+                }
+                return Task::perform(
+                    async move {
+                        core.remove_instance(&inst)
+                            .await
+                            .map(|()| format!("Removed {inst}"))
+                            .map_err(|e| e.to_string())
+                    },
+                    Message::Done,
+                );
+            }
+            (Target::Space(inst, space), Action::InvitePeople) => {
+                return Task::perform(
+                    async move {
+                        let invite = core
+                            .rest(&inst)?
+                            .create_invite(space, &CreateInviteRequest::default())
+                            .await?;
+                        Ok::<_, hermes_client_core::CoreError>(
+                            core.invite_link(&inst, &invite.code),
+                        )
+                    },
+                    |result| match result {
+                        Ok(Some(link)) => Message::Copy(link, "Invite link"),
+                        Ok(None) => Message::Done(Err("no such instance".into())),
+                        Err(err) => {
+                            Message::Done(Err(format!("could not create an invite: {err}")))
+                        }
+                    },
+                );
+            }
+            (Target::Space(_, space), Action::CopySpaceId) => {
+                return self.update(Message::Copy(space.to_string(), "Space ID"));
+            }
+            (Target::Space(inst, space), Action::LeaveSpace) => {
+                if self.selected.as_ref().is_some_and(|(i, c)| {
+                    *i == inst
+                        && core.store().instance(i).and_then(|s| s.space_of(*c)) == Some(space)
+                }) {
+                    self.selected = None;
+                }
+                return Task::perform(
+                    async move {
+                        core.rest(&inst)?.leave_space(space).await?;
+                        Ok::<_, hermes_client_core::CoreError>(())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Done(Ok("Left the space".into())),
+                        Err(err) => Message::Done(Err(format!("could not leave: {err}"))),
+                    },
+                );
+            }
+            (Target::Channel(inst, channel), Action::MarkRead) => {
+                let last = core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.channel(channel))
+                    .and_then(|c| c.last_message_id);
+                if let Some(last) = last {
+                    core.mark_read(&inst, channel, last);
+                }
+            }
+            (Target::Channel(_, channel), Action::CopyChannelId) => {
+                return self.update(Message::Copy(channel.to_string(), "Channel ID"));
+            }
+            (target, action) => {
+                tracing::warn!("menu action {action:?} does not apply to {target:?}")
+            }
+        }
+        Task::none()
+    }
+
+    fn on_new_dm(&mut self, message: new_dm::Message) -> Task<Message> {
+        let Some(dialog) = &mut self.new_dm else {
+            return Task::none();
+        };
+        match message {
+            new_dm::Message::Input(text) => dialog.input = text,
+            new_dm::Message::Cancel => self.new_dm = None,
+            new_dm::Message::Submit => {
+                if dialog.busy {
+                    return Task::none();
+                }
+                let inst = dialog.inst.clone();
+                let ids = match self.core.store().instance(&inst) {
+                    Some(store) => new_dm::resolve(store, &dialog.input),
+                    None => Err("Not connected to this instance.".into()),
+                };
+                let ids = match ids {
+                    Ok(ids) => ids,
+                    Err(err) => {
+                        dialog.error = Some(err);
+                        return Task::none();
+                    }
+                };
+                dialog.busy = true;
+                dialog.error = None;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let result = match core.rest(&inst) {
+                            Ok(rest) => rest
+                                .create_dm(ids)
+                                .await
+                                .map(|c| c.id)
+                                .map_err(|e| e.to_string()),
+                            Err(err) => Err(err.to_string()),
+                        };
+                        (inst, result)
+                    },
+                    |(inst, result)| Message::DmCreated(inst, result),
+                );
             }
         }
         Task::none()
@@ -286,14 +536,31 @@ impl App {
         if let Some(endpoint) = &self.single_instance {
             subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
+        subscriptions.push(subscription::window_and_keys());
         Subscription::batch(subscriptions)
     }
 
     pub fn view(&self) -> Element<'_, Message> {
         let fonts = &self.fonts;
         let theme = &self.theme;
+        let statuses: Vec<(InstanceId, ConnStatus)> = self
+            .core
+            .instance_ids()
+            .into_iter()
+            .map(|id| {
+                let status = self.core.status(&id);
+                (id, status)
+            })
+            .collect();
+        let rows = tree::rows(
+            &self.core.store(),
+            &statuses,
+            &self.collapsed,
+            self.selected.as_ref(),
+        );
         let sidebar = crate::sidebar::view(
             &self.core,
+            &rows,
             fonts,
             theme,
             self.config
@@ -303,6 +570,7 @@ impl App {
         );
 
         let content: Element<'_, Message> = match self.screen {
+            Screen::Welcome if self.selected.is_some() => self.channel_view(),
             Screen::Welcome => {
                 let mut welcome = column![heading("Welcome to Hermes", fonts)].spacing(12);
                 if self.core.instance_ids().is_empty() {
@@ -362,15 +630,119 @@ impl App {
             .width(Fill)
             .height(Fill)
             .style(|_| style::app(theme));
-        match &self.add_instance {
-            Some(dialog) => modal::overlay(
-                base,
+        let mut root: Element<'_, Message> = base.into();
+        if let Some((target, at)) = &self.menu {
+            let status = match target {
+                Target::Instance(inst) | Target::Space(inst, _) | Target::Channel(inst, _) => {
+                    self.core.status(inst)
+                }
+            };
+            let items = menu::actions(target, &status)
+                .into_iter()
+                .map(|action| context_menu::Item {
+                    label: action.label(),
+                    message: Message::Menu(target.clone(), action),
+                    danger: action.is_destructive(),
+                })
+                .collect();
+            root = context_menu::overlay(
+                root,
+                items,
+                *at,
+                self.window_size,
+                fonts,
+                theme,
+                Message::CloseMenu,
+            );
+        }
+        if let Some(dialog) = &self.add_instance {
+            root = modal::overlay(
+                root,
                 dialog.view(fonts, theme).map(Message::AddInstance),
                 theme,
                 None,
-            ),
-            None => base.into(),
+            );
         }
+        if let Some(dialog) = &self.new_dm {
+            root = modal::overlay(
+                root,
+                dialog.view(fonts, theme).map(Message::NewDmMsg),
+                theme,
+                Some(Message::NewDmMsg(new_dm::Message::Cancel)),
+            );
+        }
+        if let Some((_, action)) = &self.confirm {
+            let (title, text) = confirm_text(*action);
+            root = modal::overlay(
+                root,
+                confirm::view(
+                    title,
+                    text,
+                    action.label(),
+                    fonts,
+                    theme,
+                    Message::Confirmed,
+                    Message::CancelConfirm,
+                ),
+                theme,
+                Some(Message::CancelConfirm),
+            );
+        }
+        cursor::tracker(&self.cursor, root).into()
+    }
+
+    /// The selected channel's header; the message list comes with the channel buffer.
+    fn channel_view(&self) -> Element<'_, Message> {
+        let fonts = &self.fonts;
+        let theme = &self.theme;
+        let Some((inst, id)) = &self.selected else {
+            return column![].into();
+        };
+        let store = self.core.store();
+        let channel = store
+            .instance(inst)
+            .and_then(|s| Some((s, s.channel(*id)?)));
+        let (title, topic) = match channel {
+            Some((s, c)) => (
+                view::channel_title(s, c),
+                c.topic.clone().unwrap_or_default(),
+            ),
+            None => ("(not available)".to_owned(), String::new()),
+        };
+        let header = container(
+            row![
+                label(title, fonts).font(fonts.bold()),
+                small(topic, fonts).color(theme.text.secondary.0),
+            ]
+            .spacing(12)
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 12])
+        .width(Fill)
+        .style(|_| style::pane_header(theme));
+        column![
+            header,
+            container(
+                small("The message view is not built yet.", fonts).color(theme.text.tertiary.0)
+            )
+            .center(Fill),
+        ]
+        .into()
+    }
+}
+
+/// Title and text of the confirmation for a destructive action.
+fn confirm_text(action: Action) -> (&'static str, &'static str) {
+    match action {
+        Action::RemoveInstance => (
+            "Remove this instance?",
+            "You are signed out and it disappears from the sidebar. Your account on the server stays.",
+        ),
+        Action::LeaveSpace => (
+            "Leave this space?",
+            "You will need a new invite to join again.",
+        ),
+        _ => ("Are you sure?", ""),
     }
 }
 

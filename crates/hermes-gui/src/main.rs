@@ -5,6 +5,8 @@
 
 mod app;
 mod buffer;
+#[cfg(test)]
+mod fixtures;
 mod font;
 mod message;
 mod modal;

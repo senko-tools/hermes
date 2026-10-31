@@ -289,3 +289,32 @@ fn account_rules() {
     };
     assert!(empty.validate().is_err());
 }
+
+#[tokio::test]
+async fn menus_confirm_destructive_actions_and_escape_closes() {
+    use crate::sidebar::menu::{Action, Target};
+    use hermes_client_core::proto::id::Id;
+
+    let mut app = app();
+    let space = Target::Space("h".into(), Id(10));
+    let _ = app.update(Message::OpenMenu(space.clone()));
+    assert!(app.menu.is_some());
+    let _ = app.update(Message::Escape);
+    assert!(app.menu.is_none());
+
+    // Destructive entries ask first; the menu closes either way.
+    let _ = app.update(Message::OpenMenu(space.clone()));
+    let _ = app.update(Message::Menu(space.clone(), Action::LeaveSpace));
+    assert!(app.menu.is_none());
+    assert_eq!(app.confirm, Some((space.clone(), Action::LeaveSpace)));
+    let _ = app.update(Message::Escape);
+    assert!(app.confirm.is_none());
+
+    // Copying reports what was copied.
+    let _ = app.update(Message::Menu(
+        Target::Channel("h".into(), Id(11)),
+        Action::CopyChannelId,
+    ));
+    assert_eq!(app.status.as_ref().unwrap().text, "Channel ID copied");
+    assert!(app.confirm.is_none());
+}

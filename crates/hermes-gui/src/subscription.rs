@@ -97,6 +97,18 @@ pub fn single_instance(endpoint: Endpoint) -> Subscription<Message> {
     })
 }
 
+/// Window size (for placing menus) and Escape (closes menus and dialogs).
+pub fn window_and_keys() -> Subscription<Message> {
+    event::listen_with(|event, status, _window| match event {
+        Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
+        Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) if status == event::Status::Ignored => Some(Message::Escape),
+        _ => None,
+    })
+}
+
 pub fn window_focus() -> Subscription<Message> {
     event::listen_with(|event, _status, _window| match event {
         Event::Window(window::Event::Focused) => Some(Message::WindowFocused(true)),

@@ -715,3 +715,32 @@ Approved by the developer as a plan before implementation.
   client already accepts the link as its argument.
 - **Test-only dependency:** `hermes-server` is a dev-dependency of `hermes-gui` for the end-to-end
   dialog tests, as for `hermes-tui`.
+
+## 2026-10-31: GUI sidebar tree, context menus and collapsed state
+
+Approved by the developer as a plan before implementation.
+
+- **Tree:** built as a flat list of rows from the store (`sidebar/tree.rs`), on top of
+  `view::channel_tree` and `view::dm_list`. Spaces are listed in ID order (the store does not keep
+  the `ready` order). A collapsed space, category or DM section shows the sum of its channels'
+  badges (mention count, else an unread dot); expanded ones show the badges on the channels.
+  Voice channels always list their occupants from `voice_states` (name, "muted"/"deaf"); the
+  speaking ring comes with Phase 5.
+- **Icons:** until an icon font is added, text glyphs mark rows (`#` text, `♪` voice, `@` DM,
+  `≡` group DM), not emoji.
+- **Selecting** a text channel or DM shows its header in the main area (the message list comes
+  with the channel buffer item) and calls `open_channel` and `set_visible_channels`. A single click
+  on a voice channel only selects it; double-click to join comes with Phase 5.
+- **`collapsed.toml`:** `collapsed = ["<instance id>", "<instance id>/space/<id>",
+  "<instance id>/category/<id>", "<instance id>/dms"]`, written on every toggle (temporary file +
+  rename). A broken file is ignored with a warning.
+- **Context menus:** iced has none, so `widget/context_menu.rs` draws one with `stack` + `pin` at
+  the pointer, kept inside the window; outside clicks and Escape close it. The pointer position
+  comes from a small wrapper widget around the whole window that records it without sending a
+  message per mouse move (uses iced's `advanced` feature). Entries: instance (Reconnect, Go
+  offline/online, Log out, Remove instance), space (Invite people: creates an invite and copies
+  the link, Copy space ID, Leave space), channel/DM (Mark as read, Copy channel ID). Remove instance
+  and Leave space are confirmed first. Space settings, notification level and mute come with
+  Phase 6.
+- **New DM:** the "+" of the Direct messages section takes comma-separated usernames or display
+  names (case-insensitive) of users the store knows; the new DM opens right away.

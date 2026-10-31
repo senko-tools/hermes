@@ -1,7 +1,9 @@
 //! Dialogs shown over the window (PLAN.md section 15.4).
 
 pub mod add_instance;
+pub mod confirm;
 pub mod fingerprint;
+pub mod new_dm;
 
 use iced::widget::{center, container, mouse_area, opaque, stack};
 use iced::{Border, Color, Element, Fill};

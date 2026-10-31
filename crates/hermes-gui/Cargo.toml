@@ -16,7 +16,7 @@ path = "src/main.rs"
 hermes-client-core.workspace = true
 clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
-iced = { workspace = true, features = ["tokio"] }
+iced = { workspace = true, features = ["tokio", "advanced"] }
 notify.workspace = true
 serde.workspace = true
 tokio.workspace = true
