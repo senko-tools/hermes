@@ -1,14 +1,16 @@
 //! The sidebar (PLAN.md section 15.1): one scrollable tree of instances, spaces, categories,
-//! channels with their voice occupants, and the direct messages of each instance, then the user
-//! panel. Right-click opens a context menu.
+//! channels with their voice occupants, and the direct messages of each instance, then the voice
+//! panel (while in voice) and the user panel. Right-click opens a context menu.
 
 pub mod collapsed;
 pub mod menu;
 pub mod tree;
+pub mod voice_panel;
 
-use hermes_client_core::Core;
 use hermes_client_core::gateway::ConnStatus;
+use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
+use hermes_client_core::{Core, InstanceId};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Border, Element, Fill, Length};
 
@@ -18,6 +20,7 @@ use self::tree::{Badge, Row};
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
+use crate::voice::{JoinOn, VoiceMsg};
 use crate::widget::{label, small, strong};
 
 const INDENT: f32 = 12.0;
@@ -28,10 +31,12 @@ pub fn view<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
     width: u16,
+    ptt_down: bool,
 ) -> Element<'a, Message> {
+    let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(1).padding([0, 4]);
     for row in rows {
-        list = list.push(row_view(row, fonts, theme));
+        list = list.push(row_view(row, join_on, fonts, theme));
     }
     list = list.push(
         button(small("+ Add instance", fonts).color(theme.text.secondary.0))
@@ -59,21 +64,27 @@ pub fn view<'a>(
     .padding(8)
     .style(|_| style::pane_header(theme));
 
-    container(
-        column![
-            container(strong("Hermes", fonts)).padding([10, 12]),
-            scrollable(list).height(Fill),
-            user_panel,
-        ]
-        .height(Fill),
-    )
-    .width(f32::from(width))
-    .height(Fill)
-    .style(|_| style::sidebar(theme))
-    .into()
+    let mut content = column![
+        container(strong("Hermes", fonts)).padding([10, 12]),
+        scrollable(list).height(Fill),
+    ]
+    .height(Fill);
+    if let Some(panel) = voice_panel::view(core, ptt_down, fonts, theme) {
+        content = content.push(panel);
+    }
+    container(content.push(user_panel))
+        .width(f32::from(width))
+        .height(Fill)
+        .style(|_| style::sidebar(theme))
+        .into()
 }
 
-fn row_view<'a>(row: &Row, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
+fn row_view<'a>(
+    row: &Row,
+    join_on: JoinOn,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
     match row {
         Row::Instance {
             inst,
@@ -168,29 +179,44 @@ fn row_view<'a>(row: &Row, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Messa
             } else {
                 name.color(theme.text.secondary.0)
             };
-            item(
-                row![
-                    label(icon, fonts).color(theme.text.tertiary.0),
-                    name.width(Fill),
-                    mention_count(badge.mentions, fonts, theme),
-                ]
-                .spacing(6)
-                .align_y(Alignment::Center),
-                INDENT * if *nested { 3.0 } else { 2.0 },
-                *selected,
-                theme,
-                Message::Select(inst.clone(), *id),
-                Some(Target::Channel(inst.clone(), *id)),
-            )
+            let content = row![
+                label(icon, fonts).color(theme.text.tertiary.0),
+                name.width(Fill),
+                mention_count(badge.mentions, fonts, theme),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center);
+            let indent = INDENT * if *nested { 3.0 } else { 2.0 };
+            if *kind == ChannelKind::Voice {
+                voice_item(content, indent, *selected, theme, inst, *id, join_on)
+            } else {
+                item(
+                    content,
+                    indent,
+                    *selected,
+                    theme,
+                    Message::Select(inst.clone(), *id),
+                    Some(Target::Channel(inst.clone(), *id)),
+                )
+            }
         }
         Row::VoiceUser {
+            inst,
+            user,
             name,
             muted,
             deafened,
+            speaking,
+            me,
             ..
         } => {
+            let (dot, color) = if *speaking {
+                ("●", theme.voice.speaking_ring.0)
+            } else {
+                ("○", theme.text.tertiary.0)
+            };
             let mut content = row![
-                small("●", fonts).color(theme.text.success.0),
+                small(dot, fonts).color(color),
                 small(name.clone(), fonts).width(Fill),
             ]
             .spacing(6)
@@ -200,14 +226,19 @@ fn row_view<'a>(row: &Row, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Messa
             } else if *muted {
                 content = content.push(small("muted", fonts).color(theme.voice.muted.0));
             }
-            container(content)
-                .padding(iced::Padding {
-                    top: 2.0,
-                    bottom: 2.0,
-                    left: 8.0 + INDENT * 4.0,
-                    right: 8.0,
-                })
-                .into()
+            let row = container(content).padding(iced::Padding {
+                top: 2.0,
+                bottom: 2.0,
+                left: 8.0 + INDENT * 4.0,
+                right: 8.0,
+            });
+            if *me {
+                row.into()
+            } else {
+                mouse_area(row)
+                    .on_right_press(Message::Voice(VoiceMsg::UserMenu(inst.clone(), *user)))
+                    .into()
+            }
         }
         Row::Dms {
             inst,
@@ -295,6 +326,40 @@ fn item<'a>(
             .into(),
         None => button.into(),
     }
+}
+
+/// A voice channel row: a click selects it (and opens its chat); joining takes a double-click
+/// unless `voice.join_on = "single_click"`.
+fn voice_item<'a>(
+    content: impl Into<Element<'a, Message>>,
+    indent: f32,
+    selected: bool,
+    theme: &'a Theme,
+    inst: &InstanceId,
+    channel: Id,
+    join_on: JoinOn,
+) -> Element<'a, Message> {
+    // No `on_press`: the button only draws; the mouse area takes the clicks.
+    let look = button(row![
+        Space::new().width(Length::Fixed(indent)),
+        content.into()
+    ])
+    .padding([4, 8])
+    .width(Fill)
+    .style(move |_, s| style::sidebar_item(theme, s, selected));
+    let area = mouse_area(look)
+        .on_right_press(Message::OpenMenu(Target::Channel(inst.clone(), channel)))
+        .interaction(iced::mouse::Interaction::Pointer);
+    match join_on {
+        JoinOn::SingleClick => area.on_press(Message::Voice(VoiceMsg::SelectAndJoin(
+            inst.clone(),
+            channel,
+        ))),
+        JoinOn::DoubleClick => area
+            .on_press(Message::Select(inst.clone(), channel))
+            .on_double_click(Message::Voice(VoiceMsg::Join(inst.clone(), channel))),
+    }
+    .into()
 }
 
 fn arrow<'a>(collapsed: bool, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {

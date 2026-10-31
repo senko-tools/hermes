@@ -2,7 +2,8 @@
 //! `[[layout]]` as one table per window: a split is
 //! `{ split = "vertical", ratio = 0.5, a = {…}, b = {…} }`, a pane is
 //! `{ buffer = "channel", instance = "…", channel = "…", members = true }`,
-//! `{ buffer = "settings" }` or `{ buffer = "empty" }`.
+//! `{ buffer = "voice_room", instance = "…", channel = "…" }`, `{ buffer = "settings" }` or
+//! `{ buffer = "empty" }`.
 
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
@@ -70,6 +71,11 @@ fn node_table(state: &pane_grid::State<Pane>, node: &Node) -> toml::Table {
                     table.insert("instance".into(), inst.clone().into());
                     table.insert("channel".into(), channel.to_string().into());
                 }
+                Buffer::VoiceRoom { inst, channel } => {
+                    table.insert("buffer".into(), "voice_room".into());
+                    table.insert("instance".into(), inst.clone().into());
+                    table.insert("channel".into(), channel.to_string().into());
+                }
             }
             if pane.members {
                 table.insert("members".into(), true.into());
@@ -103,12 +109,13 @@ fn config_of(table: &toml::Table) -> Option<Configuration<Pane>> {
     }
     let buffer = match table.get("buffer").and_then(toml::Value::as_str)? {
         "settings" => Buffer::Settings,
-        "channel" => {
+        kind @ ("channel" | "voice_room") => {
             let inst: InstanceId = table.get("instance")?.as_str()?.to_owned();
-            let channel = table.get("channel")?.as_str()?.parse::<u64>().ok()?;
-            Buffer::Channel {
-                inst,
-                channel: Id(channel),
+            let channel = Id(table.get("channel")?.as_str()?.parse::<u64>().ok()?);
+            if kind == "channel" {
+                Buffer::Channel { inst, channel }
+            } else {
+                Buffer::VoiceRoom { inst, channel }
             }
         }
         _ => Buffer::Empty,
@@ -140,6 +147,16 @@ mod tests {
         let (right, _) = state
             .split(Axis::Vertical, first, Pane::new(Buffer::Settings))
             .unwrap();
+        state
+            .split(
+                Axis::Horizontal,
+                first,
+                Pane::new(Buffer::VoiceRoom {
+                    inst: "h".into(),
+                    channel: Id(14),
+                }),
+            )
+            .unwrap();
         let mut members = Pane::new(channel(12));
         members.members = true;
         state.split(Axis::Horizontal, right, members).unwrap();
@@ -163,7 +180,14 @@ mod tests {
         assert_eq!(save(&restored), saved);
         let mut buffers: Vec<_> = restored.iter().map(|(_, p)| p.clone()).collect();
         buffers.sort_by_key(|p| format!("{:?}", p.buffer));
-        assert_eq!(buffers.len(), 3);
+        assert_eq!(buffers.len(), 4);
+        assert!(buffers.iter().any(|p| matches!(
+            p.buffer,
+            Buffer::VoiceRoom {
+                channel: Id(14),
+                ..
+            }
+        )));
         assert!(buffers.iter().any(|p| p.buffer == channel(12) && p.members));
         assert!(buffers.iter().any(|p| p.buffer == Buffer::Settings));
     }

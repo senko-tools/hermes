@@ -18,6 +18,7 @@ arboard.workspace = true
 clap = { workspace = true, features = ["derive"] }
 directories.workspace = true
 futures-util.workspace = true
+global-hotkey.workspace = true
 iced = { workspace = true, features = ["tokio", "advanced", "image"] }
 image = { workspace = true, features = ["png"] }
 notify.workspace = true
@@ -29,6 +30,10 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tray-icon.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Push-to-talk key polling (PLAN.md section 21, Spike C decision).
+windows.workspace = true
 
 [dev-dependencies]
 # The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.

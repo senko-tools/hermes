@@ -43,7 +43,7 @@ pub enum Row {
         badge: Badge,
         selected: bool,
     },
-    /// Someone in a voice channel, listed under it whether I am in voice or not.
+    /// Someone in a voice channel (or a DM call), listed under it whether I am in voice or not.
     VoiceUser {
         inst: InstanceId,
         channel: Id,
@@ -51,6 +51,9 @@ pub enum Row {
         name: String,
         muted: bool,
         deafened: bool,
+        speaking: bool,
+        /// It is me (no volume menu).
+        me: bool,
     },
     Dms {
         inst: InstanceId,
@@ -88,6 +91,7 @@ pub fn rows(
     instances: &[(InstanceId, ConnStatus)],
     collapsed: &Collapsed,
     selected: Option<&Selection>,
+    speaking: &dyn Fn(&str, Id) -> bool,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for (inst, status) in instances {
@@ -104,18 +108,18 @@ pub fn rows(
             continue;
         }
         let selected_here = selected.filter(|(i, _)| i == inst).map(|(_, id)| *id);
-        for (space_id, space) in &s.spaces {
+        for space_id in s.spaces.keys() {
             space_rows(
                 s,
                 inst,
                 *space_id,
-                &space.space.name,
                 collapsed,
                 selected_here,
+                speaking,
                 &mut rows,
             );
         }
-        dm_rows(s, inst, collapsed, selected_here, &mut rows);
+        dm_rows(s, inst, collapsed, selected_here, speaking, &mut rows);
     }
     rows
 }
@@ -124,11 +128,12 @@ fn space_rows(
     s: &InstanceStore,
     inst: &InstanceId,
     space: Id,
-    name: &str,
     collapsed: &Collapsed,
     selected: Option<Id>,
+    speaking: &dyn Fn(&str, Id) -> bool,
     rows: &mut Vec<Row>,
 ) {
+    let name = s.spaces.get(&space).map_or("", |sp| sp.space.name.as_str());
     let tree = view::channel_tree(s, space);
     let space_collapsed = collapsed.is_collapsed(&Node::Space(inst.clone(), space));
     let mut total = Badge::default();
@@ -195,23 +200,38 @@ fn space_rows(
             selected: selected == Some(c.id),
         });
         if c.kind == ChannelKind::Voice {
-            let mut occupants: Vec<_> = s
-                .voice_states
-                .values()
-                .filter(|v| v.channel_id == c.id)
-                .collect();
-            occupants.sort_by_key(|v| (v.joined_at, v.user_id));
-            for v in occupants {
-                rows.push(Row::VoiceUser {
-                    inst: inst.clone(),
-                    channel: c.id,
-                    user: v.user_id,
-                    name: s.display_name(Some(space), v.user_id),
-                    muted: v.self_mute || v.server_mute,
-                    deafened: v.self_deaf || v.server_deaf,
-                });
-            }
+            voice_users(s, inst, c.id, Some(space), speaking, rows);
         }
+    }
+}
+
+/// The people in the voice room of `channel`, in join order.
+fn voice_users(
+    s: &InstanceStore,
+    inst: &InstanceId,
+    channel: Id,
+    space: Option<Id>,
+    speaking: &dyn Fn(&str, Id) -> bool,
+    rows: &mut Vec<Row>,
+) {
+    let me = s.me_id();
+    let mut occupants: Vec<_> = s
+        .voice_states
+        .values()
+        .filter(|v| v.channel_id == channel)
+        .collect();
+    occupants.sort_by_key(|v| (v.joined_at, v.user_id));
+    for v in occupants {
+        rows.push(Row::VoiceUser {
+            inst: inst.clone(),
+            channel,
+            user: v.user_id,
+            name: s.display_name(space, v.user_id),
+            muted: v.self_mute || v.server_mute,
+            deafened: v.self_deaf || v.server_deaf,
+            speaking: speaking(inst, v.user_id),
+            me: Some(v.user_id) == me,
+        });
     }
 }
 
@@ -220,6 +240,7 @@ fn dm_rows(
     inst: &InstanceId,
     collapsed: &Collapsed,
     selected: Option<Id>,
+    speaking: &dyn Fn(&str, Id) -> bool,
     rows: &mut Vec<Row>,
 ) {
     let dms = view::dm_list(s);
@@ -241,17 +262,22 @@ fn dm_rows(
     if dms_collapsed {
         return;
     }
-    rows.extend(dms.into_iter().map(|dm| Row::Dm {
-        inst: inst.clone(),
-        id: dm.id,
-        name: dm.name,
-        group: dm.kind == ChannelKind::GroupDm,
-        badge: Badge {
-            unread: dm.unread,
-            mentions: dm.mentions,
-        },
-        selected: selected == Some(dm.id),
-    }));
+    for dm in dms {
+        let id = dm.id;
+        rows.push(Row::Dm {
+            inst: inst.clone(),
+            id,
+            name: dm.name,
+            group: dm.kind == ChannelKind::GroupDm,
+            badge: Badge {
+                unread: dm.unread,
+                mentions: dm.mentions,
+            },
+            selected: selected == Some(id),
+        });
+        // People in the DM's call.
+        voice_users(s, inst, id, None, speaking, rows);
+    }
 }
 
 #[cfg(test)]
@@ -288,8 +314,12 @@ mod tests {
                     name,
                     muted,
                     deafened,
+                    speaking,
                     ..
-                } => format!("    voice {name} muted={muted} deaf={deafened}"),
+                } => format!(
+                    "    voice {name} muted={muted} deaf={deafened}{}",
+                    if *speaking { " speaking" } else { "" }
+                ),
                 Row::Dms { badge, .. } => format!("dms {badge:?}"),
                 Row::Dm {
                     name, group, badge, ..
@@ -310,6 +340,7 @@ mod tests {
             &connected(),
             &Collapsed::default(),
             Some(&selected),
+            &|_, _| false,
         );
         assert_eq!(
             names(&rows),
@@ -336,7 +367,7 @@ mod tests {
             .toggle(&Node::Category("h".into(), Id(12)))
             .unwrap();
         collapsed.toggle(&Node::Dms("h".into())).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None);
+        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
         let shown = names(&list);
         assert!(shown.contains(&"category Games Badge { unread: false, mentions: 0 }".into()));
         assert!(
@@ -349,7 +380,7 @@ mod tests {
         assert!(!shown.iter().any(|n| n.starts_with("dm ")));
 
         collapsed.toggle(&Node::Space("h".into(), Id(10))).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None);
+        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
         assert_eq!(
             names(&list)[..2],
             [
@@ -359,8 +390,52 @@ mod tests {
         );
 
         collapsed.toggle(&Node::Instance("h".into())).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None);
+        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
         assert_eq!(names(&list), ["instance h"]);
+    }
+
+    #[test]
+    fn speaking_rings_and_dm_call_participants() {
+        use hermes_client_core::proto::models::VoiceState;
+
+        let mut store = store();
+        let s = store.instances.get_mut("h").unwrap();
+        let carol_dm = s
+            .dms
+            .values()
+            .find(|d| d.kind == ChannelKind::Dm)
+            .unwrap()
+            .id;
+        let carol = s.dms[&carol_dm]
+            .recipients
+            .iter()
+            .find(|u| u.username == "carol")
+            .unwrap()
+            .id;
+        s.voice_states.insert(
+            carol,
+            VoiceState {
+                user_id: carol,
+                channel_id: carol_dm,
+                self_mute: false,
+                self_deaf: true,
+                server_mute: false,
+                server_deaf: false,
+                joined_at: 5,
+            },
+        );
+        let speaking = |_: &str, user: Id| user == carol;
+        let list = rows(&store, &connected(), &Collapsed::default(), None, &speaking);
+        let shown = names(&list);
+        let dm = shown
+            .iter()
+            .position(|n| n.starts_with("dm carol"))
+            .unwrap();
+        assert_eq!(
+            shown[dm + 1],
+            "    voice carol muted=false deaf=true speaking"
+        );
+        assert!(shown.contains(&"    voice Bobby muted=true deaf=false".to_owned()));
     }
 
     #[test]
@@ -370,6 +445,7 @@ mod tests {
             &[("other".into(), ConnStatus::LoggedOut)],
             &Collapsed::default(),
             None,
+            &|_, _| false,
         );
         assert_eq!(
             rows,

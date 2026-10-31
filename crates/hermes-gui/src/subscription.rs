@@ -113,6 +113,9 @@ pub fn window_and_keys() -> Subscription<Message> {
             modifiers,
             status == event::Status::Captured,
         )),
+        Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. }) => {
+            Some(Message::KeyReleased(key))
+        }
         _ => None,
     })
 }

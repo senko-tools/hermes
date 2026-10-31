@@ -15,12 +15,16 @@ mod modal;
 mod open;
 mod pane;
 mod panes;
+mod ptt;
 mod sidebar;
 mod single_instance;
 mod subscription;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_voice;
 mod theme;
+mod voice;
 mod widget;
 
 use std::path::PathBuf;
@@ -84,15 +88,23 @@ fn main() -> ExitCode {
             None
         }
     };
+    // The global mute key also needs this thread (section 15.6).
+    let global_keys = match ptt::GlobalKeys::new() {
+        Ok(keys) => Some(keys),
+        Err(err) => {
+            tracing::warn!("no global keys: {err}");
+            None
+        }
+    };
     let start_hidden = loaded.config.general.start_minimized && tray.is_some();
     let window_icon =
         iced::window::icon::from_rgba(desktop::tray::icon_rgba(64, false), 64, 64).ok();
 
     // `boot` runs once, inside iced's tokio runtime, which the core needs.
-    let boot_state = std::cell::RefCell::new(Some((loaded, options, cli.link, tray)));
+    let boot_state = std::cell::RefCell::new(Some((loaded, options, cli.link, tray, global_keys)));
     let result = iced::application(
         move || {
-            let (loaded, options, link, tray) =
+            let (loaded, options, link, tray, global_keys) =
                 boot_state.borrow_mut().take().expect("boot runs once");
             let (core, events) = Core::new(loaded.config, options);
             if let Err(err) = core.watch_config() {
@@ -105,6 +117,8 @@ fn main() -> ExitCode {
                 Some(endpoint.clone()),
             );
             app.tray = tray;
+            app.global_keys = global_keys;
+            app.register_global_keys();
             app.window_visible = !start_hidden;
             if let Some(warning) = loaded.warnings.into_iter().next() {
                 app.status = Some(app::Status {

@@ -23,6 +23,8 @@ pub enum Command {
     Action(Action),
     Theme(String),
     AddInstance,
+    JoinVoice(InstanceId, Id),
+    LeaveVoice,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +201,13 @@ pub fn entries(
                     detail: space.space.name.clone(),
                     command: Command::Open(inst.clone(), c.id),
                 });
+                if c.kind == ChannelKind::Voice {
+                    out.push(Entry {
+                        label: format!("Join voice: {}", c.name),
+                        detail: space.space.name.clone(),
+                        command: Command::JoinVoice(inst.clone(), c.id),
+                    });
+                }
             }
         }
         for dm in view::dm_list(s) {
@@ -229,6 +238,11 @@ pub fn entries(
             command: Command::Action(action),
         });
     }
+    out.push(Entry {
+        label: "Leave voice".into(),
+        detail: String::new(),
+        command: Command::LeaveVoice,
+    });
     out.push(Entry {
         label: "Add an instance".into(),
         detail: String::new(),
@@ -280,6 +294,9 @@ mod tests {
             "Message @bob",
             "Split pane right",
             "Theme: light",
+            "Join voice: Lounge",
+            "Toggle mute",
+            "Leave voice",
         ] {
             assert!(labels.contains(&want), "{want} missing from {labels:?}");
         }

@@ -6,7 +6,7 @@
 //! same instance. A lost connection is retried with a fresh `/voice/join` for the same channel,
 //! up to [`RECONNECT_ATTEMPTS`] times with backoff.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,6 +60,8 @@ struct State {
     server_deaf: bool,
     /// inst → user → locally muted.
     local_mutes: HashMap<(InstanceId, Id), bool>,
+    /// Who in the room is speaking right now (you included).
+    speaking: HashSet<(InstanceId, Id)>,
 }
 
 struct Session {
@@ -310,6 +312,30 @@ impl Core {
             .map_or(VoiceStatus::Disconnected, |s| s.status.clone())
     }
 
+    /// `user` is speaking in your voice room (your own state comes from the local gate).
+    pub fn is_speaking(&self, inst: &str, user: Id) -> bool {
+        self.voice()
+            .state()
+            .speaking
+            .contains(&(inst.to_owned(), user))
+    }
+
+    fn set_speaking(&self, inst: InstanceId, user: Id, speaking: bool) {
+        {
+            let mut state = self.voice().state();
+            if speaking {
+                state.speaking.insert((inst.clone(), user));
+            } else {
+                state.speaking.remove(&(inst.clone(), user));
+            }
+        }
+        self.emit(CoreEvent::Speaking {
+            inst,
+            user,
+            speaking,
+        });
+    }
+
     pub fn self_mute(&self) -> bool {
         self.voice().state().self_mute
     }
@@ -470,6 +496,7 @@ impl Core {
             let mut state = self.voice().state();
             state.server_mute = false;
             state.server_deaf = false;
+            state.speaking.clear();
         }
         if sound && session.connected_once {
             engine.play_sound(Sound::Leave);
@@ -832,11 +859,7 @@ impl Core {
         });
         self.voice().engine.remove_participant(participant_id);
         if let Some(Some((inst, user))) = left {
-            self.emit(CoreEvent::Speaking {
-                inst,
-                user,
-                speaking: false,
-            });
+            self.set_speaking(inst, user, false);
             self.voice().engine.play_sound(Sound::Leave);
         }
     }
@@ -892,11 +915,7 @@ impl Core {
                     })
                 };
                 if let Some((inst, user)) = who {
-                    self.emit(CoreEvent::Speaking {
-                        inst,
-                        user,
-                        speaking,
-                    });
+                    self.set_speaking(inst, user, speaking);
                 }
             }
             AudioEvent::InputLevel(db) => self.emit(CoreEvent::InputLevel(db)),

@@ -119,6 +119,10 @@ pub const ACTIONS: [(Action, &str, &str, &str); 18] = [
     (Action::Settings, "settings", "Ctrl+,", "Open settings"),
 ];
 
+/// `[keys]` entry of the global mute key (unbound by default). It is registered system-wide with
+/// `global-hotkey` instead of being a window keybind (see `crate::ptt`).
+pub const GLOBAL_MUTE: &str = "toggle_mute_global";
+
 /// A key: a character (lowercase) or a named key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyName {
@@ -259,7 +263,7 @@ impl Keybinds {
     pub fn from_config(keys: &BTreeMap<String, String>) -> (Keybinds, Vec<String>) {
         let mut warnings = Vec::new();
         for name in keys.keys() {
-            if !ACTIONS.iter().any(|(_, n, ..)| n == name) {
+            if name != GLOBAL_MUTE && !ACTIONS.iter().any(|(_, n, ..)| n == name) {
                 warnings.push(format!("[keys] unknown action `{name}` (ignored)"));
             }
         }
@@ -376,6 +380,7 @@ mod tests {
             ("toggle_sidebar", ""),
             ("close_pane", "Ctrl+Nope"),
             ("fly", "F1"),
+            (GLOBAL_MUTE, "Ctrl+Shift+F9"),
         ]
         .into_iter()
         .map(|(a, b)| (a.to_owned(), b.to_owned()))

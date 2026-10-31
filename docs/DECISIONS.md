@@ -1016,3 +1016,31 @@ Approved by the developer as a plan before implementation.
   < 250 ms; locally about 5–65 ms with 0 % loss), and the binary is run twice (one plays a
   44.1 kHz stereo WAV, the other records `out.wav`, which must contain all 4 bursts). The
   forwarding-rule and token tests from section 19 are the server's `tests/voice.rs`.
+
+## 2026-11-01: GUI voice UI details
+
+Approved by the developer as a plan before implementation.
+
+- **PTT key lives in `[voice] ptt_key`** (written by Settings → Voice & Audio), not in a
+  `[keys] push_to_talk` entry: section 17 had both places. `[keys] toggle_mute_global` (unbound by
+  default) is the global mute key; it is registered with `global-hotkey` and is not a window
+  keybind, so it never fires twice.
+- **Push-to-talk polling** (Spike C decision) is in `hermes-gui` itself: `windows` is a
+  `cfg(windows)` dependency of the GUI. Keys: `Mouse4`, `Mouse5`, `MouseMiddle`, `CapsLock`,
+  `F1`–`F24`, letters, digits, `Space`, `Tab`, `Ctrl`/`Shift`/`Alt` (left/right variants too) and
+  combos like `Ctrl+Space` (all held). On other systems PTT only works while the window is
+  focused (iced key press/release); global PTT is not targeted there in v1.
+- **Client-core additions:** `CoreEvent::CallRingStopped {inst, channel}` (from `call_ring_stop`;
+  before it was dropped) and `Core::is_speaking(inst, user)` (the core keeps the speaking set, so
+  the UIs do not each track it). `view::find_voice_channel` resolves `/join <name>` and the TUI's
+  `:voice <name>`, preferring the space being viewed.
+- **Joining a DM room** nobody else is in starts a call (`start_call`, which rings the others);
+  otherwise it just joins. The pane header shows "Start call" or "Join voice" accordingly.
+- **Incoming call banner** rings with `Sound::Ring` every 2 s for up to 30 s; it is not shown if
+  you are already in that room. Join opens the DM and joins; Dismiss or `call_ring_stop` stops it.
+- **Settings → Voice & Audio:** devices are listed in the background when the tab opens (and with
+  "Refresh devices"); the level meter runs only while the tab is visible and the mic test stops
+  when the tab is left. Sliders apply on release. The headphones hint is shown once per run on
+  joining with noise suppression off (not persisted).
+- **Per-user volume menu** (right-click a participant in the sidebar or the voice room): a
+  0–200 % slider applied live and saved to `user_volumes.toml`, plus "Mute for me" (not saved).

@@ -298,6 +298,8 @@ async fn two_clients_talk() {
         |e| matches!(e, CoreEvent::Speaking { user, speaking: true, .. } if *user == alice_id),
     )
     .await;
+    assert!(p.bob.is_speaking(&inst, alice_id));
+    assert!(p.alice.is_speaking(&inst, alice_id));
     eventually("bob hears alice", || p.bob_dev.level(300) > 0.1).await;
     // Alice does not hear herself.
     assert!(p.alice_dev.level(300) < 0.01);
@@ -318,6 +320,7 @@ async fn two_clients_talk() {
         |e| matches!(e, CoreEvent::Speaking { user, speaking: false, .. } if *user == alice_id),
     )
     .await;
+    assert!(!p.bob.is_speaking(&inst, alice_id));
     eventually("silence", || p.bob_dev.level(200) < 0.01).await;
     eventually("muted voice state", || {
         p.bob
@@ -339,6 +342,35 @@ async fn two_clients_talk() {
             .instance(&inst)
             .is_some_and(|s| !s.voice_states.contains_key(&alice_id))
     })
+    .await;
+    drop(p.server);
+}
+
+#[tokio::test]
+async fn dm_call_rings_until_the_caller_leaves() {
+    let mut p = pair("ring").await;
+    let inst = p.inst.clone();
+    let (alice_id, bob_id) = (me(&p.alice, &inst), me(&p.bob, &inst));
+    let dm = p
+        .alice
+        .rest(&inst)
+        .unwrap()
+        .create_dm(vec![bob_id])
+        .await
+        .unwrap()
+        .id;
+    p.alice.start_call(&inst, dm).await.unwrap();
+    wait_for(&mut p.bob_events, "incoming call", |e| {
+        matches!(e, CoreEvent::IncomingCall { channel, caller, .. }
+            if *channel == dm && *caller == alice_id)
+    })
+    .await;
+    p.alice.leave_voice().await;
+    wait_for(
+        &mut p.bob_events,
+        "ringing stops",
+        |e| matches!(e, CoreEvent::CallRingStopped { channel, .. } if *channel == dm),
+    )
     .await;
     drop(p.server);
 }

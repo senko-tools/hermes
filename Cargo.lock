@@ -2857,6 +2857,7 @@ dependencies = [
  "clap",
  "directories",
  "futures-util",
+ "global-hotkey",
  "hermes-client-core",
  "hermes-server",
  "iced",
@@ -2870,6 +2871,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "windows 0.62.2",
 ]
 
 [[package]]

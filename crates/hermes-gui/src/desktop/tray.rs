@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 
 use futures_util::Stream;
 use tokio::sync::mpsc;
-use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub const ICON_SIZE: u32 = 32;
@@ -16,16 +16,22 @@ const BADGE: [u8; 3] = [0xed, 0x42, 0x45];
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
     ToggleWindow,
+    ToggleMute,
+    ToggleDeafen,
     Quit,
 }
 
 pub struct Tray {
     icon: TrayIcon,
     badge: bool,
+    mute: CheckMenuItem,
+    deafen: CheckMenuItem,
 }
 
 /// Menu item IDs.
 const SHOW: &str = "show";
+const MUTE: &str = "mute";
+const DEAFEN: &str = "deafen";
 const QUIT: &str = "quit";
 
 /// Tray and menu events, forwarded into a channel the subscription reads once.
@@ -35,8 +41,8 @@ impl Tray {
     /// Creates the tray icon. Must run on the thread with the event loop (the main thread).
     pub fn new() -> Result<Tray, String> {
         let menu = Menu::new();
-        let mute = MenuItem::new("Mute (voice comes later)", false, None);
-        let deafen = MenuItem::new("Deafen (voice comes later)", false, None);
+        let mute = CheckMenuItem::with_id(MUTE, "Mute", true, false, None);
+        let deafen = CheckMenuItem::with_id(DEAFEN, "Deafen", true, false, None);
         menu.append_items(&[
             &MenuItem::with_id(SHOW, "Show / hide Hermes", true, None),
             &PredefinedMenuItem::separator(),
@@ -53,6 +59,10 @@ impl Tray {
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             let action = if event.id == MenuId::new(SHOW) {
                 Some(TrayAction::ToggleWindow)
+            } else if event.id == MenuId::new(MUTE) {
+                Some(TrayAction::ToggleMute)
+            } else if event.id == MenuId::new(DEAFEN) {
+                Some(TrayAction::ToggleDeafen)
             } else if event.id == MenuId::new(QUIT) {
                 Some(TrayAction::Quit)
             } else {
@@ -80,7 +90,18 @@ impl Tray {
             .with_icon(tray_icon(false)?)
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Tray { icon, badge: false })
+        Ok(Tray {
+            icon,
+            badge: false,
+            mute,
+            deafen,
+        })
+    }
+
+    /// The check marks of Mute and Deafen.
+    pub fn set_voice(&mut self, muted: bool, deafened: bool) {
+        self.mute.set_checked(muted || deafened);
+        self.deafen.set_checked(deafened);
     }
 
     /// Shows or hides the badge dot (only touches the icon when it changes).

@@ -62,6 +62,11 @@ pub enum CoreEvent {
         channel: Id,
         caller: Id,
     },
+    /// The ringing for a call stopped (the caller left, or you joined from elsewhere).
+    CallRingStopped {
+        inst: InstanceId,
+        channel: Id,
+    },
     /// `config.toml` changed on disk and was reloaded.
     ConfigReloaded {
         warnings: Vec<String>,
@@ -882,6 +887,10 @@ impl Core {
                 inst: inst.to_owned(),
                 channel: *channel_id,
                 caller: *caller_id,
+            }),
+            ServerEvent::CallRingStop { channel_id } => self.emit(CoreEvent::CallRingStopped {
+                inst: inst.to_owned(),
+                channel: *channel_id,
             }),
             ServerEvent::SpaceCreate(snapshot) if snapshot.members.len() >= SNAPSHOT_MEMBER_CAP => {
                 self.spawn_members(inst, snapshot.space.id);

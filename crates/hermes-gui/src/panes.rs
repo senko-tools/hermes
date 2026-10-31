@@ -15,6 +15,7 @@ use crate::message::Message;
 use crate::pane::{self, Pane};
 use crate::sidebar::menu::Target;
 use crate::theme::{Theme, style};
+use crate::voice::VoiceMsg;
 use crate::widget::{heading, label, small};
 
 const MEMBER_LIST_WIDTH: f32 = 200.0;
@@ -173,6 +174,9 @@ impl Panes {
             let theme = ctx.theme;
             let (title, topic) = title(ctx.core, &pane.buffer);
             let mut controls = row![].spacing(4).align_y(Alignment::Center);
+            for (text, message) in voice_controls(ctx.core, &pane.buffer) {
+                controls = controls.push(header_button(text, ctx).on_press(message));
+            }
             if matches!(pane.buffer, Buffer::Channel { .. }) {
                 controls = controls.push(
                     header_button(
@@ -243,6 +247,8 @@ pub struct Context<'a> {
     pub utc_offset: i64,
     pub images: &'a channel::message::Images,
     pub composers: &'a std::collections::HashMap<(InstanceId, Id), channel::input::Composer>,
+    pub settings_tab: settings::Tab,
+    pub voice: settings::VoiceView<'a>,
 }
 
 /// Actions from a pane header.
@@ -257,6 +263,59 @@ fn header_button<'a>(text: &'a str, ctx: &Context<'a>) -> button::Button<'a, Mes
     button(small(text, ctx.fonts))
         .padding([2, 8])
         .style(move |_, s| style::sidebar_item(theme, s, false))
+}
+
+/// The voice buttons of a pane header: join / start call / leave and the voice room for voice
+/// channels and DMs, the chat for a voice room.
+pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Message)> {
+    use hermes_client_core::proto::models::ChannelKind;
+
+    let (inst, channel, room) = match buffer {
+        Buffer::Channel { inst, channel } => (inst, *channel, false),
+        Buffer::VoiceRoom { inst, channel } => (inst, *channel, true),
+        _ => return Vec::new(),
+    };
+    let kind = core
+        .store()
+        .instance(inst)
+        .and_then(|s| s.channel(channel).map(|c| c.kind));
+    let Some(kind) = kind.filter(|k| {
+        matches!(
+            k,
+            ChannelKind::Voice | ChannelKind::Dm | ChannelKind::GroupDm
+        )
+    }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if core.voice_channel() == Some((inst.clone(), channel)) {
+        out.push(("Leave voice", Message::Voice(VoiceMsg::Leave)));
+    } else {
+        let others = {
+            let store = core.store();
+            store.instance(inst).is_some_and(|s| {
+                let me = s.me_id();
+                s.voice_states
+                    .values()
+                    .any(|v| v.channel_id == channel && Some(v.user_id) != me)
+            })
+        };
+        let text = if kind != ChannelKind::Voice && !others {
+            "Start call"
+        } else {
+            "Join voice"
+        };
+        out.push((text, Message::Voice(VoiceMsg::Join(inst.clone(), channel))));
+    }
+    if room {
+        out.push(("Chat", Message::Select(inst.clone(), channel)));
+    } else {
+        out.push((
+            "Voice room",
+            Message::Voice(VoiceMsg::OpenRoom(inst.clone(), channel)),
+        ));
+    }
+    out
 }
 
 /// The header title and topic of a buffer.
@@ -274,6 +333,16 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
                     view::channel_title(s, c),
                     c.topic.clone().unwrap_or_default(),
                 ),
+                None => ("(not available)".into(), String::new()),
+            }
+        }
+        Buffer::VoiceRoom { inst, channel } => {
+            let store = core.store();
+            match store
+                .instance(inst)
+                .and_then(|s| Some((s, s.channel(*channel)?)))
+            {
+                Some((s, c)) => (view::channel_title(s, c), "Voice room".into()),
                 None => ("(not available)".into(), String::new()),
             }
         }
@@ -308,8 +377,17 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
             }
             container(welcome).center(Fill).into()
         }
-        Buffer::Settings => {
-            settings::view(ctx.config, ctx.themes, fonts, theme).map(Message::Settings)
+        Buffer::Settings => settings::view(
+            ctx.config,
+            ctx.themes,
+            ctx.settings_tab,
+            &ctx.voice,
+            fonts,
+            theme,
+        )
+        .map(Message::Settings),
+        Buffer::VoiceRoom { inst, channel } => {
+            crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
         }
         Buffer::Channel { inst, channel } => {
             let messages = channel::view(

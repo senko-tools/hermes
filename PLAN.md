@@ -1603,7 +1603,7 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** two voicebots and two real users talk in one room for 30 minutes with no audible glitches on normal connections and audio recovers automatically after a 5-second network drop.
 
 ### Phase 5: Voice UI (1–2 weeks)
-- [ ] GUI: voice users in the sidebar (visible without joining), double-click to join, voice panel, voice room buffer, speaking rings, per-user volume menu, mute/deafen keybinds, global push-to-talk and global mute, incoming-call banner, audio settings page with level meter and mic test.
+- [x] GUI: voice users in the sidebar (visible without joining), double-click to join, voice panel, voice room buffer, speaking rings, per-user volume menu, mute/deafen keybinds, global push-to-talk and global mute, incoming-call banner, audio settings page with level meter and mic test.
 - [ ] TUI: voice users in sidebar, `J`/`L`/`m`/`D`, status line.
 
 **Done when:** voice is usable daily from both clients.

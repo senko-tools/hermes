@@ -105,6 +105,30 @@ pub fn channel_title(store: &InstanceStore, channel: &Channel) -> String {
     }
 }
 
+/// The voice channel called `name` (`/join Lounge`, `:voice lounge`), case-insensitive. One in
+/// the space of `near` (the channel being viewed) wins over one in another space.
+pub fn find_voice_channel(store: &InstanceStore, near: Option<Id>, name: &str) -> Option<Id> {
+    let wanted = name
+        .trim()
+        .trim_start_matches(['#', '♪'])
+        .trim()
+        .to_lowercase();
+    let space = near.and_then(|c| store.space_of(c));
+    let mut found: Vec<&Channel> = store
+        .spaces
+        .values()
+        .flat_map(|sp| sp.channels.values())
+        .filter(|c| {
+            c.kind == ChannelKind::Voice
+                && c.name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase() == wanted)
+        })
+        .collect();
+    found.sort_by_key(|c| (c.space_id != space, c.id));
+    found.first().map(|c| c.id)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberRow {
     pub user_id: Id,
@@ -353,6 +377,30 @@ mod tests {
         );
         assert!(tree[3].unread);
         assert!(!tree[0].unread);
+    }
+
+    #[test]
+    fn voice_channels_are_found_by_name() {
+        let mut s = store();
+        s.apply(
+            ServerEvent::ChannelCreate(channel(21, Some(10), ChannelKind::Voice, "Lounge")),
+            0,
+        );
+        s.apply(
+            ServerEvent::ChannelCreate(channel(22, Some(10), ChannelKind::Text, "chat")),
+            0,
+        );
+        assert_eq!(find_voice_channel(&s, None, "lounge"), Some(Id(21)));
+        assert_eq!(
+            find_voice_channel(&s, Some(Id(22)), " #LOUNGE "),
+            Some(Id(21))
+        );
+        assert_eq!(
+            find_voice_channel(&s, None, "chat"),
+            None,
+            "text channels are not rooms"
+        );
+        assert_eq!(find_voice_channel(&s, None, "nowhere"), None);
     }
 
     #[test]

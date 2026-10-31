@@ -77,4 +77,7 @@ pub enum Message {
     Tray(crate::desktop::tray::TrayAction),
     /// A notification toast was clicked: open its channel.
     NotificationClicked(InstanceId, Id),
+    Voice(crate::voice::VoiceMsg),
+    /// A key was released (push-to-talk without global polling).
+    KeyReleased(Key),
 }

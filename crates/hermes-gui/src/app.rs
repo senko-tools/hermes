@@ -30,6 +30,7 @@ use crate::sidebar::tree::{self, Row};
 use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
+use crate::voice::{self as voice_ui, VoiceMsg};
 use crate::widget::context_menu;
 use crate::widget::cursor::{self, Cursor};
 use crate::widget::small;
@@ -84,11 +85,32 @@ pub struct App {
     pub collapsed: Collapsed,
     /// An open context menu and where it was opened.
     pub menu: Option<(Target, Point)>,
-    cursor: Cursor,
+    pub(crate) cursor: Cursor,
     window_size: Size,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
     pub new_dm: Option<new_dm::NewDm>,
+    /// A ringing incoming call (the banner).
+    pub call: Option<voice_ui::Call>,
+    /// The per-user volume menu.
+    pub volume_menu: Option<voice_ui::VolumeMenu>,
+    /// The push-to-talk key is held.
+    pub ptt_down: bool,
+    /// A join in progress.
+    pub joining: Option<(InstanceId, Id)>,
+    pub headphones_hint_shown: bool,
+    pub settings_tab: settings::Tab,
+    /// Audio devices, listed when the Voice & Audio tab opens.
+    pub audio_devices: Option<hermes_client_core::audio::AudioDevices>,
+    /// Microphone level in dBFS while the meter runs.
+    pub input_level: f32,
+    pub mic_test: bool,
+    /// The level meter runs (the Voice & Audio tab is shown).
+    meter_on: bool,
+    /// The PTT key being typed in the settings.
+    pub ptt_draft: Option<String>,
+    /// The global mute key, if global hotkeys work here.
+    pub global_keys: Option<crate::ptt::GlobalKeys>,
 }
 
 impl App {
@@ -132,6 +154,18 @@ impl App {
             window_size: Size::new(1200.0, 800.0),
             confirm: None,
             new_dm: None,
+            call: None,
+            volume_menu: None,
+            ptt_down: false,
+            joining: None,
+            headphones_hint_shown: false,
+            settings_tab: settings::Tab::default(),
+            audio_devices: None,
+            input_level: settings::METER_MIN,
+            mic_test: false,
+            meter_on: false,
+            ptt_draft: None,
+            global_keys: None,
         };
         app.reload_theme();
         if let Some(warning) = key_warnings.into_iter().next() {
@@ -171,8 +205,58 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.update_inner(message);
+        self.sync_meter();
+        task
+    }
+
+    /// Runs the level meter (and allows the mic test) only while the Voice & Audio tab shows.
+    fn sync_meter(&mut self) {
+        let shown = self.settings_tab == settings::Tab::Voice
+            && self
+                .panes
+                .state
+                .iter()
+                .any(|(_, p)| p.buffer == Buffer::Settings);
+        if shown != self.meter_on {
+            self.meter_on = shown;
+            self.core.set_level_meter(shown);
+            if !shown {
+                self.input_level = settings::METER_MIN;
+                if self.mic_test {
+                    self.mic_test = false;
+                    self.core.set_mic_test(false);
+                }
+            }
+        }
+    }
+
+    /// Lists the audio devices in the background (it can take a moment).
+    pub fn load_devices(&self) -> Task<Message> {
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || core.list_audio_devices())
+                    .await
+                    .unwrap_or_default()
+            },
+            |devices| Message::Settings(settings::Message::Devices(devices)),
+        )
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Core(event) => return self.on_core(event),
+            Message::Voice(message) => return self.on_voice(message),
+            Message::KeyReleased(key) => {
+                if self.ptt_matches(&key) {
+                    return self.on_voice(VoiceMsg::Ptt(false));
+                }
+            }
+            Message::Tray(TrayAction::ToggleMute) => return self.on_voice(VoiceMsg::ToggleMute),
+            Message::Tray(TrayAction::ToggleDeafen) => {
+                return self.on_voice(VoiceMsg::ToggleDeafen);
+            }
             Message::Tray(TrayAction::ToggleWindow) => {
                 return if self.window_visible {
                     self.hide_window()
@@ -197,7 +281,7 @@ impl App {
                 }
             }
             Message::OpenSettings => self.panes.open(Buffer::Settings),
-            Message::Settings(message) => self.on_settings(message),
+            Message::Settings(message) => return self.on_settings(message),
             Message::DismissStatus => self.status = None,
             Message::FontLoaded | Message::ChannelOpened => {}
             Message::OpenAddInstance => return self.open_add_instance(String::new()),
@@ -339,6 +423,8 @@ impl App {
             Message::Escape => {
                 if self.viewer.is_some() {
                     self.viewer = None;
+                } else if self.volume_menu.is_some() {
+                    self.volume_menu = None;
                 } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.command_bar.is_some() {
@@ -742,13 +828,21 @@ impl App {
         composer.clear();
         match command {
             SlashCommand::Send(_) | SlashCommand::Me(_) => Task::none(),
-            SlashCommand::Join(_)
-            | SlashCommand::Leave
-            | SlashCommand::Mute
-            | SlashCommand::Deafen => {
-                self.info("Voice comes in a later version".into());
-                Task::none()
+            SlashCommand::Join(name) => {
+                let found = self.core.store().instance(&inst).and_then(|s| {
+                    hermes_client_core::view::find_voice_channel(s, Some(channel), &name)
+                });
+                match found {
+                    Some(room) => self.on_voice(VoiceMsg::Join(inst, room)),
+                    None => {
+                        self.error(format!("No voice channel {name:?} here"));
+                        Task::none()
+                    }
+                }
             }
+            SlashCommand::Leave => self.on_voice(VoiceMsg::Leave),
+            SlashCommand::Mute => self.on_voice(VoiceMsg::ToggleMute),
+            SlashCommand::Deafen => self.on_voice(VoiceMsg::ToggleDeafen),
             SlashCommand::Status(status) => {
                 self.core.set_presence(status);
                 self.info(format!("Status: {status:?}"));
@@ -1243,6 +1337,9 @@ impl App {
         use keyboard::key::Named;
 
         let escape = *key == keyboard::Key::Named(Named::Escape);
+        if !captured && !self.ptt_down && self.ptt_matches(key) {
+            return self.on_voice(VoiceMsg::Ptt(true));
+        }
         if let Some(bar) = &mut self.command_bar {
             match key {
                 keyboard::Key::Named(Named::ArrowDown) => bar.move_selection(1),
@@ -1253,6 +1350,7 @@ impl App {
             return Task::none();
         }
         let overlay = self.viewer.is_some()
+            || self.volume_menu.is_some()
             || self.menu.is_some()
             || self.confirm.is_some()
             || self.new_dm.is_some()
@@ -1309,9 +1407,8 @@ impl App {
                 }
             }
             K::Search => self.info("Search comes in a later version".into()),
-            K::ToggleMute | K::ToggleDeafen => {
-                self.info("Voice comes in a later version".into());
-            }
+            K::ToggleMute => return self.on_voice(VoiceMsg::ToggleMute),
+            K::ToggleDeafen => return self.on_voice(VoiceMsg::ToggleDeafen),
         }
         Task::none()
     }
@@ -1375,10 +1472,13 @@ impl App {
             Some(command_bar::Command::MessageUser(inst, user)) => self.message_user(inst, user),
             Some(command_bar::Command::Action(action)) => self.key_action(action),
             Some(command_bar::Command::Theme(name)) => {
-                self.on_settings(settings::Message::Theme(name));
-                Task::none()
+                self.on_settings(settings::Message::Theme(name))
             }
             Some(command_bar::Command::AddInstance) => self.open_add_instance(String::new()),
+            Some(command_bar::Command::JoinVoice(inst, channel)) => {
+                self.on_voice(VoiceMsg::Join(inst, channel))
+            }
+            Some(command_bar::Command::LeaveVoice) => self.on_voice(VoiceMsg::Leave),
             None => Task::none(),
         }
     }
@@ -1438,11 +1538,13 @@ impl App {
                 (id, status)
             })
             .collect();
+        let core = &self.core;
         tree::rows(
-            &self.core.store(),
+            &core.store(),
             &statuses,
             &self.collapsed,
             self.panes.focused_channel().as_ref(),
+            &|inst, user| core.is_speaking(inst, user),
         )
     }
 
@@ -1556,6 +1658,14 @@ impl App {
                 task = self.notify(inst, notification);
             }
             CoreEvent::Error(text) => self.error(text),
+            CoreEvent::IncomingCall {
+                inst,
+                channel,
+                caller,
+            } => self.incoming_call(inst, channel, caller),
+            CoreEvent::CallRingStopped { inst, channel } => self.call_ring_stopped(&inst, channel),
+            CoreEvent::InputLevel(db) => self.input_level = db,
+            CoreEvent::VoiceStatus(_) => self.update_tray_voice(),
             CoreEvent::StoreChanged {
                 inst,
                 what: Changed::Messages(channel),
@@ -1641,7 +1751,98 @@ impl App {
         })
     }
 
-    fn on_settings(&mut self, message: settings::Message) {
+    fn on_settings(&mut self, message: settings::Message) -> Task<Message> {
+        use settings::Message as S;
+
+        let mut voice = self.config.voice.clone();
+        match message {
+            S::Tab(tab) => {
+                self.settings_tab = tab;
+                if tab == settings::Tab::Voice && self.audio_devices.is_none() {
+                    return self.load_devices();
+                }
+                return Task::none();
+            }
+            S::RefreshDevices => return self.load_devices(),
+            S::Devices(devices) => {
+                self.audio_devices = Some(devices);
+                return Task::none();
+            }
+            S::MicTest(on) => {
+                self.mic_test = on;
+                self.core.set_mic_test(on);
+                return Task::none();
+            }
+            S::PttKey(text) => {
+                self.ptt_draft = Some(text);
+                return Task::none();
+            }
+            S::SavePttKey => {
+                if let Some(text) = self.ptt_draft.take() {
+                    let text = text.trim().to_owned();
+                    if !text.is_empty() && crate::ptt::virtual_keys(&text).is_none() {
+                        self.error(format!("{text:?} is not a key Hermes knows"));
+                        self.ptt_draft = Some(text);
+                    } else {
+                        let value = toml::Value::String(text).to_string();
+                        self.persist("voice.ptt_key", &value);
+                        self.info("Push-to-talk key saved".into());
+                    }
+                }
+                return Task::none();
+            }
+            S::JoinOn(join_on) => {
+                let value = toml::Value::String(join_on.as_config().to_owned()).to_string();
+                self.persist("voice.join_on", &value);
+                return Task::none();
+            }
+            // Sliders: shown live, applied on release.
+            S::InputVolume(v) => {
+                self.config.voice.input_volume = (v * 100.0).round() / 100.0;
+                return Task::none();
+            }
+            S::OutputVolume(v) => {
+                self.config.voice.output_volume = (v * 100.0).round() / 100.0;
+                return Task::none();
+            }
+            S::SoundsVolume(v) => {
+                self.config.voice.sounds_volume = (v * 100.0).round() / 100.0;
+                return Task::none();
+            }
+            S::VadSensitivity(db) => {
+                self.config.voice.vad_sensitivity = db;
+                return Task::none();
+            }
+            S::ReleaseDelay(ms) => {
+                self.config.voice.ptt_release_delay_ms = ms;
+                return Task::none();
+            }
+            S::SaveVoice => {}
+            S::InputDevice(device) => voice.input_device = device.as_config(),
+            S::OutputDevice(device) => voice.output_device = device.as_config(),
+            S::Mode(mode) => voice.mode = mode.as_config().to_owned(),
+            S::NoiseSuppression(on) => voice.noise_suppression = on,
+            S::AutoGain(on) => voice.auto_gain = on,
+            S::Sounds(on) => voice.sounds = on,
+            other => {
+                self.on_appearance(other);
+                return Task::none();
+            }
+        }
+        self.save_voice(&voice);
+        Task::none()
+    }
+
+    /// Applies `[voice]` to the audio engine and writes it to `config.toml`.
+    fn save_voice(&mut self, voice: &hermes_client_core::config::Voice) {
+        let settings = hermes_client_core::voice::audio_settings(voice);
+        if let Err(err) = self.core.set_audio_settings(settings) {
+            self.error(format!("setting not saved: {err}"));
+        }
+        self.apply_config(self.core.config());
+    }
+
+    fn on_appearance(&mut self, message: settings::Message) {
         match message {
             settings::Message::Theme(name) => {
                 let value = toml::Value::String(name).to_string();
@@ -1665,6 +1866,7 @@ impl App {
                 self.persist(key, &value);
             }
             settings::Message::Close => self.panes.clear_where(|b| *b == Buffer::Settings),
+            _ => {}
         }
     }
 
@@ -1690,9 +1892,45 @@ impl App {
         }
         self.fonts = Fonts::from_config(&config.font);
         self.config = config;
+        self.register_global_keys();
         if theme_changed {
             self.reload_theme();
         }
+    }
+
+    /// Registers `[keys] toggle_mute_global` (when it changed).
+    pub fn register_global_keys(&mut self) {
+        let combo = self
+            .config
+            .keys
+            .get(keybinds::GLOBAL_MUTE)
+            .cloned()
+            .unwrap_or_default();
+        let Some(keys) = &mut self.global_keys else {
+            return;
+        };
+        if keys.combo == combo {
+            return;
+        }
+        if let Err(err) = keys.set_mute(&combo) {
+            self.warn(format!("[keys] {}: {err}", keybinds::GLOBAL_MUTE));
+        }
+    }
+
+    /// Whether `key` is the push-to-talk key, for systems without global key polling (the
+    /// window has to be focused there). On Windows the polling thread does it.
+    fn ptt_matches(&self, key: &keyboard::Key) -> bool {
+        if cfg!(windows) {
+            return false;
+        }
+        let Some(combo) = keybinds::Combo::parse(&self.config.voice.ptt_key) else {
+            return false;
+        };
+        combo.matches(
+            key,
+            keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified),
+            Modifiers::default(),
+        ) || matches!((&combo.key, key), (keybinds::KeyName::Char(c), keyboard::Key::Character(k)) if k.to_lowercase() == *c)
     }
 
     /// Loads the configured theme again (from disk if it is a user theme).
@@ -1707,7 +1945,7 @@ impl App {
         }
     }
 
-    fn info(&mut self, text: String) {
+    pub(crate) fn info(&mut self, text: String) {
         tracing::info!("{text}");
         self.status = Some(Status {
             text,
@@ -1715,7 +1953,7 @@ impl App {
         });
     }
 
-    fn warn(&mut self, text: String) {
+    pub(crate) fn warn(&mut self, text: String) {
         tracing::warn!("{text}");
         self.status = Some(Status {
             text,
@@ -1723,7 +1961,7 @@ impl App {
         });
     }
 
-    fn error(&mut self, text: String) {
+    pub(crate) fn error(&mut self, text: String) {
         tracing::error!("{text}");
         self.status = Some(Status {
             text,
@@ -1747,6 +1985,19 @@ impl App {
         if self.tray.is_some() {
             subscriptions.push(Subscription::run(crate::desktop::tray::events).map(Message::Tray));
         }
+        if self.call.is_some() {
+            subscriptions.push(
+                iced::time::every(voice_ui::RING_EVERY).map(|_| Message::Voice(VoiceMsg::RingTick)),
+            );
+        }
+        if let Some(keys) = crate::ptt::virtual_keys(&self.config.voice.ptt_key) {
+            subscriptions
+                .push(crate::ptt::poll(keys).map(|down| Message::Voice(VoiceMsg::Ptt(down))));
+        }
+        if self.global_keys.is_some() {
+            subscriptions
+                .push(crate::ptt::global_presses().map(|()| Message::Voice(VoiceMsg::GlobalMute)));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -1763,9 +2014,13 @@ impl App {
                 .sidebar
                 .width
                 .clamp(settings::MIN_SIDEBAR_WIDTH, settings::MAX_SIDEBAR_WIDTH),
+            self.ptt_down,
         );
 
         let mut main = column![].width(Fill).height(Fill);
+        if let Some(call) = &self.call {
+            main = main.push(voice_ui::banner(&self.core, call, fonts, theme));
+        }
         if let Some(status) = &self.status {
             main = main.push(
                 container(
@@ -1791,6 +2046,13 @@ impl App {
             utc_offset: self.utc_offset,
             images: &self.images,
             composers: &self.composers,
+            settings_tab: self.settings_tab,
+            voice: settings::VoiceView {
+                devices: self.audio_devices.as_ref(),
+                level: self.input_level,
+                mic_test: self.mic_test,
+                ptt_draft: self.ptt_draft.as_deref(),
+            },
         }));
 
         let layout = if !self.sidebar_visible {
@@ -1851,6 +2113,9 @@ impl App {
                 theme,
                 Message::CloseMenu,
             );
+        }
+        if let Some(menu) = &self.volume_menu {
+            root = voice_ui::volume_overlay(root, menu, self.window_size, fonts, theme);
         }
         if let Some(viewer) = &self.viewer {
             root = image_viewer::view(
