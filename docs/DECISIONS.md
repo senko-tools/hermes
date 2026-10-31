@@ -467,3 +467,20 @@ Approved by the developer as a plan before implementation.
   invite pages and `no-cache` on the landing page. Invalid, expired and used-up codes answer 404.
 - **The fingerprint for `#fp=`** in the "Open in Hermes" link comes from `AppState::fingerprint`,
   set by `run` after TLS is loaded.
+
+## 2026-10-31: hermes.senko.tools serves a static landing page through nginx on 80/443
+
+- **What:** on the reference VPS, nginx (which already hosts the other `*.senko.tools` sites)
+  serves `hermes.senko.tools` on ports 80/443. Port 80 redirects to HTTPS, and 443 serves the static
+  page from `deploy/www/hermes.senko.tools/index.html`, installed to `/var/www/hermes`. The site
+  config is `deploy/nginx/hermes.senko.tools`. `https://hermes.senko.tools/invite/<code>` (port left
+  off) redirects to `https://hermes.senko.tools:7700/invite/<code>`. Hermes itself still runs on
+  7700 TCP+UDP with its built-in `/` and `/invite/<code>` pages, and nothing is proxied.
+- **Changes to PLAN.md section 18.8:** ports 80/443 are no longer "left free". The certificate is
+  renewed by certbot's `nginx` authenticator instead of `--standalone` (18.8 step 4 already names
+  this option once a web server uses port 80). The deploy hook from step 4 is unchanged.
+  The Hetzner firewall must allow TCP 443 as well as 80.
+- **Server cleanup:** earlier certbot runs had added `hermes.senko.tools` blocks to
+  `/etc/nginx/sites-available/00-catch-all` that answered 421/404. They were removed (backup
+  `00-catch-all.bak-20261031-132144` next to it) in favour of the dedicated site.
+- **Why:** requested by the developer, so the bare domain shows something useful in a browser.

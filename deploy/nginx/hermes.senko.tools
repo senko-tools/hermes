@@ -1,0 +1,47 @@
+# hermes.senko.tools on ports 80/443: the static landing page from deploy/www/hermes.senko.tools,
+# installed to /var/www/hermes. Hermes itself listens on port 7700 (TCP for HTTPS/WSS with its own
+# copy of the Let's Encrypt certificate, UDP for voice) and does not go through nginx.
+# Install: /etc/nginx/sites-available/hermes.senko.tools, symlinked from sites-enabled.
+
+server {
+  listen 80;
+  listen [::]:80;
+  server_name hermes.senko.tools;
+  return 301 https://$host$request_uri;
+}
+
+server {
+  listen 443 ssl;
+  listen [::]:443 ssl;
+  http2 on;
+  server_name hermes.senko.tools;
+  root /var/www/hermes;
+  index index.html;
+
+  include snippets/senko-error-pages.conf;
+
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "no-referrer" always;
+
+  # Invite links with the port left off still reach the server's invite page.
+  location ^~ /invite/ {
+    return 302 https://$host:7700$request_uri;
+  }
+
+  location / {
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cache-Control "no-cache" always;
+    try_files $uri $uri/ =404;
+  }
+
+  location ~ /\. {
+    deny all;
+  }
+
+  # SSL Config (Certbot)
+  ssl_certificate /etc/letsencrypt/live/hermes.senko.tools/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/hermes.senko.tools/privkey.pem;
+  include /etc/letsencrypt/options-ssl-nginx.conf;
+  ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
