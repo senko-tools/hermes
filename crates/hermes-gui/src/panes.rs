@@ -241,6 +241,7 @@ pub struct Context<'a> {
     pub config: &'a hermes_client_core::config::ClientConfig,
     pub themes: &'a [String],
     pub utc_offset: i64,
+    pub images: &'a channel::message::Images,
 }
 
 /// Actions from a pane header.
@@ -317,6 +318,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     fonts,
                     theme,
                     utc_offset: ctx.utc_offset,
+                    images: ctx.images,
                 },
                 inst,
                 *channel,

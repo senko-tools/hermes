@@ -11,6 +11,7 @@ mod font;
 mod keybinds;
 mod message;
 mod modal;
+mod open;
 mod pane;
 mod panes;
 mod sidebar;

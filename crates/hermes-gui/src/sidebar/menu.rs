@@ -14,6 +14,8 @@ pub enum Target {
     Channel(InstanceId, Id),
     /// A pane header's `⋮`.
     Pane(pane_grid::Pane),
+    /// A message's `⋯`: instance, channel, message.
+    Message(InstanceId, Id, Id),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +35,11 @@ pub enum Action {
     MaximizePane,
     ToggleMembers,
     ClosePane,
+    CopyText,
+    CopyMessageId,
+    Pin,
+    Unpin,
+    DeleteMessage,
 }
 
 impl Action {
@@ -53,12 +60,20 @@ impl Action {
             Action::MaximizePane => "Maximize / restore",
             Action::ToggleMembers => "Toggle member list",
             Action::ClosePane => "Close pane",
+            Action::CopyText => "Copy text",
+            Action::CopyMessageId => "Copy message ID",
+            Action::Pin => "Pin message",
+            Action::Unpin => "Unpin message",
+            Action::DeleteMessage => "Delete message",
         }
     }
 
     /// Shown in red and confirmed first.
     pub fn is_destructive(self) -> bool {
-        matches!(self, Action::RemoveInstance | Action::LeaveSpace)
+        matches!(
+            self,
+            Action::RemoveInstance | Action::LeaveSpace | Action::DeleteMessage
+        )
     }
 }
 
@@ -91,7 +106,21 @@ pub fn actions(target: &Target, status: &ConnStatus) -> Vec<Action> {
             Action::ToggleMembers,
             Action::ClosePane,
         ],
+        // Needs the store; see `message_actions`.
+        Target::Message(..) => vec![Action::CopyText, Action::CopyMessageId],
     }
+}
+
+/// The entries for a message: pin and delete depend on what I may do.
+pub fn message_actions(own: bool, manage: bool, pinned: bool) -> Vec<Action> {
+    let mut actions = vec![Action::CopyText, Action::CopyMessageId];
+    if manage {
+        actions.push(if pinned { Action::Unpin } else { Action::Pin });
+    }
+    if own || manage {
+        actions.push(Action::DeleteMessage);
+    }
+    actions
 }
 
 #[cfg(test)]
@@ -119,6 +148,27 @@ mod tests {
             [Action::RemoveInstance]
         );
         assert!(Action::LeaveSpace.is_destructive());
+        assert_eq!(
+            message_actions(true, false, false),
+            [
+                Action::CopyText,
+                Action::CopyMessageId,
+                Action::DeleteMessage
+            ]
+        );
+        assert_eq!(
+            message_actions(false, true, true),
+            [
+                Action::CopyText,
+                Action::CopyMessageId,
+                Action::Unpin,
+                Action::DeleteMessage
+            ]
+        );
+        assert_eq!(
+            message_actions(false, false, false),
+            [Action::CopyText, Action::CopyMessageId]
+        );
         assert!(!Action::MarkRead.is_destructive());
     }
 }

@@ -794,3 +794,26 @@ Approved by the developer as a plan before implementation.
   shows when scrolled up or when the window is not live (it then loads the latest page). A channel
   is marked read when its newest message is visible, the window is focused and the window is live
   (on scroll, on new messages and on focus).
+
+## 2026-10-31: GUI channel buffer, part B (message content)
+
+Approved by the developer as a plan before implementation.
+
+- **Markup:** `hermes_proto::markup` spans are flattened into styled pieces in blocks (text, code
+  block, quote) and drawn with iced `rich_text`. Mentions show names (`@deleted-role`,
+  `#unknown` when unknown) with a tinted background; channel mentions open the channel. Spoilers
+  are hidden until clicked (per message). Links open in the default browser; only `http(s)` URLs
+  are opened, and on Windows through `rundll32 url.dll,FileProtocolHandler`, never a shell.
+- **Fonts:** Inter Italic is bundled too (OFL), so italic text is real italic.
+- **Messages:** a letter avatar in the author's colour (avatar images come with profile editing in
+  Phase 6) on the first message of a group, the time in the gutter of grouped lines on hover.
+- **Reactions:** chips with emoji and count, highlighted when mine; a click toggles. The model has
+  no per-user list, so there is no "who reacted" tooltip yet.
+- **Hover toolbar:** React (8 quick reactions; the full picker comes with `:` autocomplete in the
+  input box item) and `⋯` (copy text, copy ID, pin/unpin with MANAGE_MESSAGES, delete for own
+  messages or with MANAGE_MESSAGES, confirmed). Reply and Edit come with the input box.
+- **Attachments:** images with a thumbnail show inline at most 400×300 (the thumbnail is loaded
+  the first time its row is shown and kept in memory); a click opens the original in a full-window
+  viewer (Escape or a click closes it). Other files show a card with a Download button. Downloads
+  go to the Downloads folder with a sanitized name (no directory parts, no characters Windows
+  forbids, no device names) and never overwrite a file (` (1)`, ` (2)`, …).

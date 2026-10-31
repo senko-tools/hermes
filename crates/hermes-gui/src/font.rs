@@ -12,8 +12,9 @@ pub const INTER: &str = "Inter";
 pub const JETBRAINS_MONO: &str = "JetBrains Mono";
 
 /// The bundled font files, loaded at startup.
-pub const BUNDLED: [&[u8]; 5] = [
+pub const BUNDLED: [&[u8]; 6] = [
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Italic.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),

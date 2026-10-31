@@ -4,6 +4,7 @@ pub mod add_instance;
 pub mod command_bar;
 pub mod confirm;
 pub mod fingerprint;
+pub mod image_viewer;
 pub mod new_dm;
 
 use iced::widget::{center, container, mouse_area, opaque, stack};

@@ -472,4 +472,54 @@ async fn channel_buffer_rows_follow_history_reads_and_deletes() {
     })
     .await;
     assert!(!build(&alice).contains(&"third".to_owned()));
+
+    // A reaction toggles: the chip is "mine" (highlighted) after adding, gone after removing.
+    let second = {
+        let store = alice.core.store();
+        let w = store.instance(&inst).unwrap().window(general).unwrap();
+        w.messages
+            .iter()
+            .find(|m| m.content == "second")
+            .unwrap()
+            .id
+    };
+    let reactions = |app: &App| {
+        app.core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.window(general))
+            .and_then(|w| w.get(second))
+            .map(|m| m.reactions.clone())
+            .unwrap_or_default()
+    };
+    alice
+        .core
+        .react(&inst, general, second, "👍")
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !reactions(&alice)
+        .iter()
+        .any(|r| r.emoji == "👍" && r.me && r.count == 1)
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            reactions(&alice)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    alice
+        .core
+        .unreact(&inst, general, second, "👍")
+        .await
+        .unwrap();
+    while !reactions(&alice).is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            reactions(&alice)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }

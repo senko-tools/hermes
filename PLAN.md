@@ -1588,7 +1588,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
 - [x] Sidebar tree with unread/mention badges, DMs section, context menus.
 - [x] Pane grid with save/restore, command bar, keybinds.
-- [ ] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.
+- [x] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.
 - [ ] Input box: multi-line, autocomplete, reply/edit modes, uploads (dialog, drag and drop, paste).
 - [ ] Notifications, tray icon, taskbar flash.
 

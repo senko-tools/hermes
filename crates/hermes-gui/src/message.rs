@@ -56,4 +56,11 @@ pub enum Message {
     CloseRequested(window::Id),
     CommandBar(command_bar::Message),
     Channel(pane_grid::Pane, channel::Message),
+    /// A thumbnail arrived (instance, attachment).
+    ImageLoaded(InstanceId, Id, Result<Vec<u8>, String>),
+    /// The viewer's full-size image arrived (attachment).
+    ViewerLoaded(Id, Result<Vec<u8>, String>),
+    CloseViewer,
+    /// Saves the viewer's image to the Downloads folder.
+    DownloadViewer,
 }

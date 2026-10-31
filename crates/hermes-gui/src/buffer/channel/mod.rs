@@ -3,15 +3,19 @@
 //! the typing line and "Jump to present".
 
 pub mod list;
+pub mod markup;
+pub mod message;
 pub mod rows;
+
+use std::collections::HashSet;
 
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::Message as ChatMessage;
+use hermes_client_core::proto::models::Attachment;
 use hermes_client_core::store::{InstanceStore, LocalId, MessageWindow, PendingState};
 use hermes_client_core::{Core, InstanceId, now_ms, time};
-use iced::widget::{Space, button, column, container, row, scrollable, sensor, stack, text};
-use iced::{Alignment, Border, Element, Fill, Length, Size};
+use iced::widget::{Space, button, column, container, row, scrollable, sensor, stack};
+use iced::{Alignment, Element, Fill, Length, Size};
 
 use self::list::Heights;
 use self::rows::{Row, RowKey};
@@ -37,6 +41,12 @@ pub struct ChannelView {
     /// My read marker when the channel was opened (the divider position).
     pub read_marker: Option<Id>,
     pub loading_older: bool,
+    /// The message under the pointer (shows the toolbar).
+    pub hovered: Option<Id>,
+    /// The message whose quick-reaction palette is open.
+    pub palette: Option<Id>,
+    /// Messages whose spoilers were clicked.
+    pub revealed: HashSet<Id>,
 }
 
 impl Default for ChannelView {
@@ -49,6 +59,9 @@ impl Default for ChannelView {
             heights: Heights::default(),
             read_marker: None,
             loading_older: false,
+            hovered: None,
+            palette: None,
+            revealed: HashSet::new(),
         }
     }
 }
@@ -91,6 +104,17 @@ pub enum Message {
     OlderLoaded,
     Retry(LocalId),
     Discard(LocalId),
+    /// The pointer entered (`true`) or left a message.
+    Hover(Id, bool),
+    /// Opens (or closes) the quick-reaction palette of a message.
+    Palette(Option<Id>),
+    /// The `⋯` of a message: its context menu.
+    More(Id),
+    /// Adds (`true`) or removes a reaction.
+    React(Id, String, bool),
+    Link(Id, markup::Link),
+    OpenImage(Attachment),
+    Download(Attachment),
 }
 
 /// What the view needs besides the pane state.
@@ -100,6 +124,7 @@ pub struct Context<'a> {
     pub fonts: &'a Fonts,
     pub theme: &'a Theme,
     pub utc_offset: i64,
+    pub images: &'a message::Images,
 }
 
 pub fn view<'a>(
@@ -157,7 +182,7 @@ pub fn view<'a>(
     for r in &rows[visible.range.clone()] {
         let key = r.key();
         list = list.push(
-            sensor(row_view(ctx, s, window, r))
+            sensor(row_view(ctx, s, inst, window, r, state))
                 .key(key)
                 .on_show(move |size| Message::Measured(key, size.height))
                 .on_resize(move |size| Message::Measured(key, size.height)),
@@ -253,8 +278,10 @@ fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element
 fn row_view<'a>(
     ctx: &Context<'a>,
     s: &InstanceStore,
+    inst: &InstanceId,
     window: &MessageWindow,
     r: &Row,
+    state: &'a ChannelView,
 ) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
@@ -283,7 +310,7 @@ fn row_view<'a>(
         .align_y(Alignment::Center)
         .into(),
         Row::Message(m) => match window.get(m.id) {
-            Some(msg) => message_view(ctx, s, m, msg),
+            Some(msg) => message::view(ctx, s, inst, m, msg, state),
             None => Space::new().into(),
         },
         Row::Pending(p) => match window.pending(p.local_id) {
@@ -350,7 +377,7 @@ fn row_view<'a>(
     }
 }
 
-fn row_padding(grouped: bool) -> iced::Padding {
+pub(super) fn row_padding(grouped: bool) -> iced::Padding {
     iced::Padding {
         top: if grouped { 1.0 } else { 8.0 },
         bottom: 1.0,
@@ -369,99 +396,6 @@ fn rule_line<'a>(_theme: &'a Theme, color: iced::Color) -> Element<'a, Message> 
         .into()
 }
 
-fn message_view<'a>(
-    ctx: &Context<'a>,
-    s: &InstanceStore,
-    m: &rows::MessageRow,
-    msg: &ChatMessage,
-) -> Element<'a, Message> {
-    let fonts = ctx.fonts;
-    let theme = ctx.theme;
-    let space = s.space_of(msg.channel_id);
-    let content_color = if m.system {
-        theme.text.secondary.0
-    } else {
-        theme.text.primary.0
-    };
-    let mut content = label(msg.content.clone(), fonts).color(content_color);
-    if m.system {
-        content = content.font(iced::Font {
-            style: iced::font::Style::Italic,
-            ..fonts.ui
-        });
-    }
-    let mut body = column![].spacing(2);
-    if let Some(reply) = &m.reply {
-        let excerpt = if reply.excerpt.is_empty() {
-            "original message deleted".to_owned()
-        } else {
-            reply.excerpt.replace('\n', " ")
-        };
-        body = body.push(
-            row![
-                small("↪", fonts).color(theme.text.tertiary.0),
-                small(reply.author.clone(), fonts)
-                    .font(iced::Font {
-                        weight: iced::font::Weight::Bold,
-                        ..fonts.ui
-                    })
-                    .color(theme.text.secondary.0),
-                small(excerpt, fonts)
-                    .color(theme.text.tertiary.0)
-                    .wrapping(text::Wrapping::None),
-            ]
-            .spacing(6),
-        );
-    }
-    if !m.grouped {
-        let name = s.display_name(space, msg.author.id);
-        let color = space
-            .and_then(|sp| author_color(s, sp, msg.author.id))
-            .map_or(theme.roles.default_color.0, rgb);
-        body = body.push(
-            row![
-                label(name, fonts).font(fonts.bold()).color(color),
-                small(
-                    time::format(
-                        msg.created_at() as i64,
-                        &ctx.config.buffer.timestamp_format,
-                        ctx.utc_offset
-                    ),
-                    fonts
-                )
-                .color(theme.text.tertiary.0),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        );
-    }
-    let mut line = row![content].spacing(6).align_y(Alignment::End);
-    if msg.edited_at.is_some() {
-        line = line.push(small("(edited)", fonts).color(theme.text.tertiary.0));
-    }
-    body = body.push(line);
-    let highlight = m.mentions_me;
-    container(body)
-        .padding(row_padding(m.grouped))
-        .width(Fill)
-        .style(move |_| {
-            if highlight {
-                container::Style {
-                    background: Some(theme.text.mention_bg.0.into()),
-                    border: Border {
-                        color: theme.text.warning.0,
-                        width: 0.0,
-                        radius: 0.0.into(),
-                    },
-                    ..container::Style::default()
-                }
-            } else {
-                container::Style::default()
-            }
-        })
-        .into()
-}
-
 /// The color of the member's highest role that has one.
 pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
     let state = s.spaces.get(&space)?;
@@ -473,7 +407,7 @@ pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
         .find_map(|r| r.color)
 }
 
-fn rgb(c: u32) -> iced::Color {
+pub(super) fn rgb(c: u32) -> iced::Color {
     iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
 }
 

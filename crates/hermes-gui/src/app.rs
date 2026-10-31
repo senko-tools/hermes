@@ -13,10 +13,12 @@ use iced::widget::pane_grid::Axis;
 use iced::widget::{button, column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
+use crate::buffer::channel::message::{Images, Img};
 use crate::buffer::{Buffer, channel, settings};
 use crate::font::Fonts;
 use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
+use crate::modal::image_viewer::{self, Viewer};
 use crate::modal::{self, add_instance, command_bar, confirm, new_dm};
 use crate::panes::{self, PaneAction, Panes};
 use crate::sidebar::collapsed::Collapsed;
@@ -61,6 +63,10 @@ pub struct App {
     pub utc_offset: i64,
     /// The window has the keyboard focus.
     pub focused: bool,
+    /// Thumbnails, loaded when their message is first shown.
+    pub images: Images,
+    /// The full-size image viewer.
+    pub viewer: Option<Viewer>,
     /// The add-instance / sign-in dialog.
     pub add_instance: Option<add_instance::AddInstance>,
     /// Where later launches forward their links (section 15.7).
@@ -94,6 +100,8 @@ impl App {
             command_bar: None,
             utc_offset: time::local_offset_secs(),
             focused: true,
+            images: Images::new(),
+            viewer: None,
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
             iced_theme: style::iced_theme(&Theme::dark()),
@@ -185,6 +193,35 @@ impl App {
             }
             Message::CommandBar(message) => return self.on_command_bar(message),
             Message::Channel(pane, message) => return self.on_channel(pane, message),
+            Message::ImageLoaded(inst, id, result) => {
+                let img = match result {
+                    Ok(bytes) => Img::Ready(iced::widget::image::Handle::from_bytes(bytes)),
+                    Err(err) => {
+                        tracing::warn!("thumbnail {id}: {err}");
+                        Img::Failed
+                    }
+                };
+                self.images.insert((inst, id), img);
+            }
+            Message::ViewerLoaded(id, result) => {
+                if let Some(viewer) = &mut self.viewer
+                    && viewer.attachment.id == id
+                {
+                    viewer.image = match result {
+                        Ok(bytes) => Img::Ready(iced::widget::image::Handle::from_bytes(bytes)),
+                        Err(err) => {
+                            tracing::warn!("image {id}: {err}");
+                            Img::Failed
+                        }
+                    };
+                }
+            }
+            Message::CloseViewer => self.viewer = None,
+            Message::DownloadViewer => {
+                if let Some(viewer) = &self.viewer {
+                    return self.download(viewer.inst.clone(), viewer.attachment.clone());
+                }
+            }
             Message::OpenMenu(target) => self.menu = Some((target, self.cursor.get())),
             Message::CloseMenu => self.menu = None,
             Message::Menu(target, action) => {
@@ -228,7 +265,9 @@ impl App {
             },
             Message::WindowResized(size) => self.window_size = size,
             Message::Escape => {
-                if self.menu.is_some() {
+                if self.viewer.is_some() {
+                    self.viewer = None;
+                } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.command_bar.is_some() {
                     self.command_bar = None;
@@ -305,7 +344,72 @@ impl App {
             }
             channel::Message::Measured(key, height) => {
                 view.heights.set(key, height);
+                if let channel::rows::RowKey::Message(id) = key {
+                    return self.load_thumbnails(&inst, channel, id);
+                }
             }
+            channel::Message::Hover(id, entered) => {
+                if entered {
+                    view.hovered = Some(id);
+                } else if view.hovered == Some(id) {
+                    view.hovered = None;
+                    if view.palette == Some(id) {
+                        view.palette = None;
+                    }
+                }
+            }
+            channel::Message::Palette(id) => view.palette = id,
+            channel::Message::More(id) => {
+                self.menu = Some((Target::Message(inst, channel, id), self.cursor.get()));
+            }
+            channel::Message::React(id, emoji, add) => {
+                view.palette = None;
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        if add {
+                            core.react(&inst, channel, id, &emoji).await
+                        } else {
+                            core.unreact(&inst, channel, id, &emoji).await
+                        }
+                    },
+                    |result| match result {
+                        Ok(()) => Message::ChannelOpened,
+                        Err(err) => Message::Done(Err(format!("reaction failed: {err}"))),
+                    },
+                );
+            }
+            channel::Message::Link(id, link) => match link {
+                channel::markup::Link::Url(url) => {
+                    if let Err(err) = crate::open::url(&url) {
+                        self.error(format!("could not open the link: {err}"));
+                    }
+                }
+                channel::markup::Link::Channel(target) => return self.select(inst, target),
+                channel::markup::Link::Spoiler => {
+                    view.revealed.insert(id);
+                }
+            },
+            channel::Message::OpenImage(attachment) => {
+                self.viewer = Some(Viewer {
+                    inst: inst.clone(),
+                    attachment: attachment.clone(),
+                    image: Img::Loading,
+                });
+                let core = self.core.clone();
+                let id = attachment.id;
+                return Task::perform(
+                    async move {
+                        core.rest(&inst)
+                            .map_err(|e| e.to_string())?
+                            .download(attachment.id, &attachment.filename)
+                            .await
+                            .map_err(|e| e.to_string())
+                    },
+                    move |result| Message::ViewerLoaded(id, result),
+                );
+            }
+            channel::Message::Download(attachment) => return self.download(inst, attachment),
             channel::Message::OlderLoaded => view.loading_older = false,
             channel::Message::JumpToPresent => {
                 let id = view.scroll_id.clone();
@@ -346,6 +450,76 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    /// Starts loading the thumbnails of a message's images that are not loaded yet.
+    fn load_thumbnails(&mut self, inst: &InstanceId, channel: Id, message: Id) -> Task<Message> {
+        if !self.config.buffer.image_previews {
+            return Task::none();
+        }
+        let wanted: Vec<Id> = {
+            let store = self.core.store();
+            let Some(msg) = store
+                .instance(inst)
+                .and_then(|s| s.window(channel))
+                .and_then(|w| w.get(message))
+            else {
+                return Task::none();
+            };
+            msg.attachments
+                .iter()
+                .filter(|a| channel::message::is_image(a))
+                .map(|a| a.id)
+                .filter(|id| !self.images.contains_key(&(inst.clone(), *id)))
+                .collect()
+        };
+        let mut tasks = Vec::new();
+        for id in wanted {
+            self.images.insert((inst.clone(), id), Img::Loading);
+            let core = self.core.clone();
+            let inst = inst.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let result = match core.rest(&inst) {
+                        Ok(rest) => rest.thumbnail(id).await.map_err(|e| e.to_string()),
+                        Err(err) => Err(err.to_string()),
+                    };
+                    (inst, result)
+                },
+                move |(inst, result)| Message::ImageLoaded(inst, id, result),
+            ));
+        }
+        Task::batch(tasks)
+    }
+
+    /// Downloads an attachment into the Downloads folder (never overwriting a file).
+    fn download(
+        &self,
+        inst: InstanceId,
+        attachment: hermes_client_core::proto::models::Attachment,
+    ) -> Task<Message> {
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let bytes = core
+                    .rest(&inst)
+                    .map_err(|e| e.to_string())?
+                    .download(attachment.id, &attachment.filename)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let dir = crate::open::downloads_dir();
+                let path = tokio::task::spawn_blocking(move || {
+                    crate::open::save_new(&dir, &attachment.filename, &bytes)
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+                Ok(format!("Saved to {}", path.display()))
+            },
+            |result: Result<String, String>| {
+                Message::Done(result.map_err(|e| format!("download failed: {e}")))
+            },
+        )
     }
 
     /// Loads the page before the oldest loaded message of a pane's channel.
@@ -557,6 +731,47 @@ impl App {
                 self.core
                     .set_visible_channels(self.panes.visible_channels());
             }
+            (Target::Message(inst, channel, message), Action::CopyText) => {
+                let text = core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.window(channel))
+                    .and_then(|w| w.get(message))
+                    .map(|m| m.content.clone());
+                if let Some(text) = text {
+                    return self.update(Message::Copy(text, "Message text"));
+                }
+            }
+            (Target::Message(_, _, message), Action::CopyMessageId) => {
+                return self.update(Message::Copy(message.to_string(), "Message ID"));
+            }
+            (Target::Message(inst, channel, message), Action::Pin | Action::Unpin) => {
+                let pin = action == Action::Pin;
+                return Task::perform(
+                    async move {
+                        let rest = core.rest(&inst)?;
+                        if pin {
+                            rest.pin(channel, message).await?;
+                        } else {
+                            rest.unpin(channel, message).await?;
+                        }
+                        Ok::<_, hermes_client_core::CoreError>(())
+                    },
+                    move |result| match result {
+                        Ok(()) => Message::Done(Ok(if pin { "Pinned" } else { "Unpinned" }.into())),
+                        Err(err) => Message::Done(Err(err.to_string())),
+                    },
+                );
+            }
+            (Target::Message(inst, channel, message), Action::DeleteMessage) => {
+                return Task::perform(
+                    async move { core.delete_message(&inst, channel, message).await },
+                    |result| match result {
+                        Ok(()) => Message::ChannelOpened,
+                        Err(err) => Message::Done(Err(format!("could not delete: {err}"))),
+                    },
+                );
+            }
             (target, action) => {
                 tracing::warn!("menu action {action:?} does not apply to {target:?}")
             }
@@ -585,7 +800,8 @@ impl App {
             }
             return Task::none();
         }
-        let overlay = self.menu.is_some()
+        let overlay = self.viewer.is_some()
+            || self.menu.is_some()
             || self.confirm.is_some()
             || self.new_dm.is_some()
             || self.add_instance.is_some();
@@ -1055,6 +1271,7 @@ impl App {
             config: &self.config,
             themes: &self.themes,
             utc_offset: self.utc_offset,
+            images: &self.images,
         }));
 
         let layout = if !self.sidebar_visible {
@@ -1073,12 +1290,32 @@ impl App {
         let mut root: Element<'_, Message> = base.into();
         if let Some((target, at)) = &self.menu {
             let status = match target {
-                Target::Instance(inst) | Target::Space(inst, _) | Target::Channel(inst, _) => {
-                    self.core.status(inst)
-                }
+                Target::Instance(inst)
+                | Target::Space(inst, _)
+                | Target::Channel(inst, _)
+                | Target::Message(inst, ..) => self.core.status(inst),
                 Target::Pane(_) => ConnStatus::Connected,
             };
-            let items = menu::actions(target, &status)
+            let actions = match target {
+                Target::Message(inst, channel, message) => {
+                    let store = self.core.store();
+                    let s = store.instance(inst);
+                    let msg = s
+                        .and_then(|s| s.window(*channel))
+                        .and_then(|w| w.get(*message));
+                    let own = msg.is_some_and(|m| s.and_then(|s| s.me_id()) == Some(m.author.id));
+                    let manage = s.is_some_and(|s| {
+                        hermes_client_core::view::can(
+                            s,
+                            *channel,
+                            hermes_client_core::proto::permissions::Permissions::MANAGE_MESSAGES,
+                        )
+                    });
+                    menu::message_actions(own, manage, msg.is_some_and(|m| m.pinned))
+                }
+                _ => menu::actions(target, &status),
+            };
+            let items = actions
                 .into_iter()
                 .map(|action| context_menu::Item {
                     label: action.label(),
@@ -1094,6 +1331,16 @@ impl App {
                 fonts,
                 theme,
                 Message::CloseMenu,
+            );
+        }
+        if let Some(viewer) = &self.viewer {
+            root = image_viewer::view(
+                root,
+                viewer,
+                fonts,
+                theme,
+                Message::CloseViewer,
+                Message::DownloadViewer,
             );
         }
         if let Some(bar) = &self.command_bar {
@@ -1147,6 +1394,10 @@ fn confirm_text(action: Action) -> (&'static str, &'static str) {
         Action::RemoveInstance => (
             "Remove this instance?",
             "You are signed out and it disappears from the sidebar. Your account on the server stays.",
+        ),
+        Action::DeleteMessage => (
+            "Delete this message?",
+            "It is removed for everyone. This cannot be undone.",
         ),
         Action::LeaveSpace => (
             "Leave this space?",
