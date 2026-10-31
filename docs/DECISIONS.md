@@ -855,3 +855,24 @@ Approved by the developer as a plan before implementation.
   text. Each file is a chip ("uploading…", its size when ready, the error when it failed, ✕ to
   remove). The core reports no byte progress, so there is no percentage. Sending waits until all
   uploads finished; failed ones are left out.
+
+## 2026-10-31: GUI notifications, tray icon and taskbar flash
+
+Approved by the developer as a plan before implementation.
+
+- **Toasts:** `notify-rust`, shown for every `CoreEvent::Notification` (the core decides what is
+  notified) while `[notifications] enabled`: title `Alice in #general` (or the DM partner),
+  the preview capped at 200 characters ("New message" with `show_preview = false`, "Sent an
+  attachment" for empty text), the default sound with `sound = true`. A click on a toast while
+  Hermes runs shows the window and opens the channel (Windows reports the activation in-process).
+  Until the installer registers an app ID (Phase 7), Windows labels the toasts "Windows
+  PowerShell".
+- **Taskbar flash:** DMs and mentions while the window is unfocused
+  (`request_user_attention(Informational)`), unless `flash_taskbar = false`.
+- **Tray icon:** created on the main thread before the event loop; the icon (also the window icon)
+  is drawn in code: a rounded "H" in the accent colour, with a red dot while a mention or an unread
+  DM exists. Left click shows/hides the window; the menu has Show/hide, Mute and Deafen (disabled
+  until voice exists) and Quit. If the tray cannot be created, closing the window quits.
+- **Close to tray:** with `general.close_to_tray` (default on) the close button hides the window
+  (the layout is saved); Quit in the tray saves and exits. `general.start_minimized` starts hidden
+  only when the tray exists.

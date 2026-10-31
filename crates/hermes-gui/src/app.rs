@@ -16,6 +16,8 @@ use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 use crate::buffer::channel::input::{self, Composer, Upload, UploadState};
 use crate::buffer::channel::message::{Images, Img};
 use crate::buffer::{Buffer, channel, settings};
+use crate::desktop::tray::{Tray, TrayAction};
+use crate::desktop::{self, CloseAction};
 use crate::font::Fonts;
 use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
@@ -68,6 +70,10 @@ pub struct App {
     pub images: Images,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
+    /// The tray icon, if it could be created.
+    pub tray: Option<Tray>,
+    /// The window is shown (not hidden in the tray).
+    pub window_visible: bool,
     /// The draft of each channel.
     pub composers: std::collections::HashMap<(InstanceId, Id), Composer>,
     next_upload: u64,
@@ -107,6 +113,8 @@ impl App {
             images: Images::new(),
             viewer: None,
             composers: std::collections::HashMap::new(),
+            tray: None,
+            window_visible: true,
             next_upload: 0,
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
@@ -164,7 +172,22 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Core(event) => self.on_core(event),
+            Message::Core(event) => return self.on_core(event),
+            Message::Tray(TrayAction::ToggleWindow) => {
+                return if self.window_visible {
+                    self.hide_window()
+                } else {
+                    self.show_window()
+                };
+            }
+            Message::Tray(TrayAction::Quit) => {
+                self.save_layout();
+                return iced::exit();
+            }
+            Message::NotificationClicked(inst, channel) => {
+                let show = self.show_window();
+                return show.chain(self.select(inst, channel));
+            }
             Message::ThemesChanged => self.reload_theme(),
             Message::WindowFocused(focused) => {
                 self.focused = focused;
@@ -198,7 +221,16 @@ impl App {
             }
             Message::CloseRequested(id) => {
                 self.save_layout();
-                return window::close(id);
+                return match desktop::on_close(
+                    self.config.general.close_to_tray,
+                    self.tray.is_some(),
+                ) {
+                    CloseAction::Hide => {
+                        self.window_visible = false;
+                        window::set_mode(id, window::Mode::Hidden)
+                    }
+                    CloseAction::Quit => iced::exit(),
+                };
             }
             Message::CommandBar(message) => return self.on_command_bar(message),
             Message::Channel(pane, message) => return self.on_channel(pane, message),
@@ -326,10 +358,7 @@ impl App {
                     "another launch handed over {}",
                     if link.is_empty() { "nothing" } else { "a link" }
                 );
-                let show = window::oldest().then(|id| match id {
-                    Some(id) => window::minimize(id, false).chain(window::gain_focus(id)),
-                    None => Task::none(),
-                });
+                let show = self.show_window();
                 let open = if link.is_empty() {
                     Task::none()
                 } else {
@@ -1514,13 +1543,17 @@ impl App {
         }
     }
 
-    fn on_core(&mut self, event: CoreEvent) {
+    fn on_core(&mut self, event: CoreEvent) -> Task<Message> {
+        let mut task = Task::none();
         match event {
             CoreEvent::ConfigReloaded { warnings } => {
                 self.apply_config(self.core.config());
                 if let Some(warning) = warnings.into_iter().next() {
                     self.warn(format!("config: {warning}"));
                 }
+            }
+            CoreEvent::Notification { inst, notification } => {
+                task = self.notify(inst, notification);
             }
             CoreEvent::Error(text) => self.error(text),
             CoreEvent::StoreChanged {
@@ -1547,6 +1580,65 @@ impl App {
             // The views read the store directly; the other events only trigger a redraw.
             _ => {}
         }
+        self.update_badge();
+        task
+    }
+
+    /// A toast (if enabled) and a taskbar flash for DMs and mentions while unfocused.
+    fn notify(
+        &mut self,
+        inst: InstanceId,
+        notification: hermes_client_core::notify::Notification,
+    ) -> Task<Message> {
+        let settings = self.config.notifications.clone();
+        if !settings.enabled {
+            return Task::none();
+        }
+        let flash = if !self.focused && settings.flash_taskbar && desktop::flashes(&notification) {
+            window::oldest().then(|id| match id {
+                Some(id) => {
+                    window::request_user_attention(id, Some(window::UserAttention::Informational))
+                }
+                None => Task::none(),
+            })
+        } else {
+            Task::none()
+        };
+        let toast = Task::perform(
+            desktop::show_toast(inst, notification, settings),
+            |clicked| match clicked {
+                Some((inst, channel)) => Message::NotificationClicked(inst, channel),
+                None => Message::ChannelOpened,
+            },
+        );
+        Task::batch([flash, toast])
+    }
+
+    /// The tray's badge dot follows unread mentions and DMs.
+    fn update_badge(&mut self) {
+        if let Some(tray) = &mut self.tray {
+            let badge = desktop::has_badge(&self.core.store(), &self.core.instance_ids());
+            tray.set_badge(badge);
+        }
+    }
+
+    fn hide_window(&mut self) -> Task<Message> {
+        self.window_visible = false;
+        self.save_layout();
+        window::oldest().then(|id| match id {
+            Some(id) => window::set_mode(id, window::Mode::Hidden),
+            None => Task::none(),
+        })
+    }
+
+    fn show_window(&mut self) -> Task<Message> {
+        self.window_visible = true;
+        window::oldest().then(|id| match id {
+            Some(id) => window::set_mode(id, window::Mode::Windowed)
+                .chain(window::minimize(id, false))
+                .chain(window::gain_focus(id)),
+            None => Task::none(),
+        })
     }
 
     fn on_settings(&mut self, message: settings::Message) {
@@ -1652,6 +1744,9 @@ impl App {
         }
         subscriptions.push(subscription::window_and_keys());
         subscriptions.push(window::close_requests().map(Message::CloseRequested));
+        if self.tray.is_some() {
+            subscriptions.push(Subscription::run(crate::desktop::tray::events).map(Message::Tray));
+        }
         Subscription::batch(subscriptions)
     }
 

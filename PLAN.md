@@ -1590,7 +1590,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Pane grid with save/restore, command bar, keybinds.
 - [x] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.
 - [x] Input box: multi-line, autocomplete, reply/edit modes, uploads (dialog, drag and drop, paste).
-- [ ] Notifications, tray icon, taskbar flash.
+- [x] Notifications, tray icon, taskbar flash.
 
 **Done when:** a non-technical friend can install the GUI, click an invite link, create an account and chat comfortably.
 

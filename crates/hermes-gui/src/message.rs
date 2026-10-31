@@ -74,4 +74,7 @@ pub enum Message {
         u64,
         Result<hermes_client_core::proto::models::Attachment, String>,
     ),
+    Tray(crate::desktop::tray::TrayAction),
+    /// A notification toast was clicked: open its channel.
+    NotificationClicked(InstanceId, Id),
 }

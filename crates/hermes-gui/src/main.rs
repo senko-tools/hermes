@@ -5,6 +5,7 @@
 
 mod app;
 mod buffer;
+mod desktop;
 #[cfg(test)]
 mod fixtures;
 mod font;
@@ -75,15 +76,24 @@ fn main() -> ExitCode {
     };
     let fonts = font::Fonts::from_config(&loaded.config.font);
 
+    // The tray lives on this (the event loop's) thread; without it, closing quits.
+    let tray = match desktop::tray::Tray::new() {
+        Ok(tray) => Some(tray),
+        Err(err) => {
+            tracing::warn!("no tray icon: {err}");
+            None
+        }
+    };
+    let start_hidden = loaded.config.general.start_minimized && tray.is_some();
+    let window_icon =
+        iced::window::icon::from_rgba(desktop::tray::icon_rgba(64, false), 64, 64).ok();
+
     // `boot` runs once, inside iced's tokio runtime, which the core needs.
-    let boot_state = Mutex::new(Some((loaded, options, cli.link)));
+    let boot_state = std::cell::RefCell::new(Some((loaded, options, cli.link, tray)));
     let result = iced::application(
         move || {
-            let (loaded, options, link) = boot_state
-                .lock()
-                .expect("boot lock")
-                .take()
-                .expect("boot runs once");
+            let (loaded, options, link, tray) =
+                boot_state.borrow_mut().take().expect("boot runs once");
             let (core, events) = Core::new(loaded.config, options);
             if let Err(err) = core.watch_config() {
                 tracing::warn!("config hot reload unavailable: {err}");
@@ -94,6 +104,8 @@ fn main() -> ExitCode {
                 Some(CoreEventsHandle::new(events)),
                 Some(endpoint.clone()),
             );
+            app.tray = tray;
+            app.window_visible = !start_hidden;
             if let Some(warning) = loaded.warnings.into_iter().next() {
                 app.status = Some(app::Status {
                     text: format!("config: {warning}"),
@@ -115,8 +127,13 @@ fn main() -> ExitCode {
     .scale_factor(App::scale_factor)
     .subscription(App::subscription)
     .default_font(fonts.ui)
-    .window_size((1200.0, 800.0))
-    .exit_on_close_request(false)
+    .window(iced::window::Settings {
+        size: iced::Size::new(1200.0, 800.0),
+        visible: !start_hidden,
+        icon: window_icon,
+        exit_on_close_request: false,
+        ..iced::window::Settings::default()
+    })
     .run();
 
     match result {
