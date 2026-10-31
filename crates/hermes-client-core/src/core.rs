@@ -719,6 +719,20 @@ impl Core {
         *self.inner.presence.lock().expect("presence")
     }
 
+    /// The web invite link for `code`, with `#fp=` when the instance's certificate is pinned.
+    pub fn invite_link(&self, inst: &str, code: &str) -> Option<String> {
+        let config = self.config();
+        let host = &config.instance(inst)?.url;
+        let fragment = self
+            .inner
+            .known_hosts
+            .lock()
+            .expect("known hosts")
+            .get(host)
+            .map_or_else(String::new, |fp| format!("#fp={fp}"));
+        Some(format!("{}/invite/{code}{fragment}", host.url()))
+    }
+
     /// Joins a space through an invite code on a signed-in instance.
     pub async fn join_invite(&self, inst: &str, code: &str) -> Result<SpaceSnapshot> {
         let rest = self.rest(inst)?;

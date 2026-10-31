@@ -9,6 +9,22 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+hermes-client-core.workspace = true
+clap = { workspace = true, features = ["derive"] }
+crossterm.workspace = true
+futures-util.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The local UTC offset for timestamps (time.rs).
+windows = { workspace = true, features = ["Win32_System_Time"] }
+
+[dev-dependencies]
+# The end-to-end test runs a real server (PLAN.md section 19); never a normal dependency.
+hermes-server = { path = "../hermes-server" }
 
 [lints]
 workspace = true

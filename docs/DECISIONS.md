@@ -630,3 +630,40 @@ Approved by the developer as a plan before implementation (voice and audio are P
   - `/me x` sends `_x_`. `/shrug` appends `¯\_(ツ)_/¯`, escaped so the markup parser keeps it.
   - `//text` sends `/text`. `/status` also accepts `away` and `offline`.
   - `/join`, `/leave`, `/mute` and `/deafen` are parsed now and do something once voice exists.
+
+## 2026-10-31: `hermes-tui` details
+
+Approved by the developer as a plan before implementation (voice keys come with Phase 5, `/`
+search with Phase 6; both show "comes in a later version").
+
+- **Local time without a date crate:** section 6 lists none, so the UTC offset is read once at
+  startup: `date +%z` on unix, and `GetTimeZoneInformation` on Windows through the `windows` crate
+  (already listed; the TUI enables its `Win32_System_Time` feature, `cfg(windows)` only).
+  - A DST change while the TUI runs is only picked up after a restart.
+  - `[buffer] timestamp_format` supports `%H %M %S %d %m %Y %y %%`.
+- **Keys:**
+  - Every normal-mode action of section 16.2 has a name in `[tui.keys]` (`move_down`, `join_voice`,
+    `top`, …; `:help` lists them). Keys are written `J`, `Ctrl+u`, `Enter`, `Tab`, or two
+    characters such as `gg`. Unknown actions and keys that do not parse are warnings.
+  - Arrow keys always move. One extra action is not in the plan: `retry` (`R`), which re-sends a
+    failed message (Enter on it works too).
+- **Commands** beyond section 16.2:
+  - `:instance remove [id]`, `:logout`, `:invite` (prints the web invite link, with `#fp=` when
+    the instance is pinned), `:retry`, `:offline`/`:online`, `:help`.
+  - `:join <channel>` opens a text channel by name, preferring the current space.
+- **Add instance / login:**
+  - `:instance add <invite link or address>` probes the server. An invite's `#fp=` is trusted
+    without asking (section 13); an unknown or changed certificate shows its fingerprint and asks.
+  - The account form starts on "create an account" for invite links and "sign in" otherwise;
+    Ctrl+R switches.
+  - Signing in with an existing account and an invite link then joins the invite's space.
+  - `hermes-tui <link>` does the same on start.
+- **Notifications** ring the terminal bell and show in the status line.
+- **Attachments:** `:open <n>` downloads attachment n of the selected message (or of the newest
+  message with attachments) to a temp folder and opens it with the OS default app (`start`,
+  `open`, `xdg-open`). `:upload <path>` sends the file as its own message.
+- **Logs** go to `<config dir>/logs/hermes-tui.log` (`HERMES_LOG` sets the filter). There is no
+  7-day rotation yet (`tracing-appender` is not in section 6).
+- **CLI flags:** `--config-dir <dir>` and an optional link argument.
+- **Test-only dependency:** `hermes-server` is a dev-dependency of `hermes-tui` for an end-to-end
+  test (invite link → account → open `#general` → send → render with ratatui's `TestBackend`).
