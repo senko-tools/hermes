@@ -4,18 +4,20 @@
 #![allow(dead_code)] // Each test binary uses a different subset.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use hermes_server::config::{Config, RegistrationMode, TlsMode};
 use hermes_server::state::AppState;
 use hermes_server::tls::Tls;
-use hermes_server::{api, setup};
+use hermes_server::{server, setup};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 
@@ -43,11 +45,16 @@ impl Drop for TempDir {
 }
 
 pub struct TestServer {
+    /// `http://127.0.0.1:<port>/api/v1`
     pub base: String,
+    /// `http://127.0.0.1:<port>`
+    pub root: String,
     pub state: Arc<AppState>,
     /// Code of the first-start setup invite.
     pub setup_code: String,
     client: reqwest::Client,
+    shutdown: Arc<Notify>,
+    task: Mutex<Option<JoinHandle<std::io::Result<()>>>>,
     _dir: TempDir,
 }
 
@@ -101,6 +108,10 @@ pub async fn start_with(
     config.storage.data_dir = dir.path().join("data");
     config.tls.mode = TlsMode::Off;
     config.registration.mode = mode;
+    // Rate limits are tested on their own; everything else may go fast.
+    config.limits.requests_per_second = 100_000;
+    config.limits.login_attempts_per_minute = 100_000;
+    config.limits.messages_per_5s = 100_000;
     let mut state = AppState::load(config).await.unwrap();
     configure(&mut state);
     let state = Arc::new(state);
@@ -108,19 +119,36 @@ pub async fn start_with(
     let setup_code = links.web.rsplit('/').next().unwrap().to_owned();
 
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}/api/v1", tcp.local_addr().unwrap());
-    let router = api::router(state.clone());
-    tokio::spawn(async move { api::serve(tcp, &Tls::Off, router).await });
+    let root = format!("http://{}", tcp.local_addr().unwrap());
+    let shutdown = Arc::new(Notify::new());
+    let signal = {
+        let shutdown = shutdown.clone();
+        async move { shutdown.notified().await }
+    };
+    let task = tokio::spawn(server::run(state.clone(), tcp, Tls::Off, signal));
     TestServer {
-        base,
+        base: format!("{root}/api/v1"),
+        root,
         state,
         setup_code,
         client: reqwest::Client::new(),
+        shutdown,
+        task: Mutex::new(Some(task)),
         _dir: dir,
     }
 }
 
 impl TestServer {
+    /// Sends the shutdown signal and waits for `server::run` to return.
+    pub async fn shut_down(&self) -> std::io::Result<()> {
+        self.shutdown.notify_one();
+        let task = self.task.lock().unwrap().take().expect("already shut down");
+        tokio::time::timeout(Duration::from_secs(15), task)
+            .await
+            .expect("shutdown takes too long")
+            .unwrap()
+    }
+
     pub async fn request(
         &self,
         method: Method,

@@ -19,6 +19,7 @@ use crate::db;
 use crate::db::messages::MessageRow;
 use crate::gateway::bus::Audience;
 use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
+use crate::ratelimit;
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -190,6 +191,14 @@ pub async fn send(
             "must be a message in this channel",
         ));
     }
+    state
+        .message_limiter
+        .check(
+            &(channel_id, auth.user_id),
+            state.config.limits.messages_per_5s,
+            ratelimit::MESSAGES_PERIOD,
+        )
+        .map_err(|wait| Error(ApiError::rate_limited(ratelimit::retry_ms(wait))))?;
     let now = now_ms();
     if let Some(secs) = slowmode {
         state

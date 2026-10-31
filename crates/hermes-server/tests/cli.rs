@@ -226,3 +226,75 @@ fn invite_create_prints_links() {
         stderr(&output)
     );
 }
+
+/// A free local TCP port (freed again before returning).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// `GET path` over plain HTTP/1.1; returns the whole response.
+fn http_get(port: u16, path: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[test]
+fn run_logs_ready_line_and_serves_healthz() {
+    use std::io::{BufRead, BufReader};
+    let dir = TempDir::new("run");
+    let port = free_port();
+    let mut child = server(dir.path())
+        .arg("run")
+        .env("HERMES__NETWORK__BIND", "127.0.0.1")
+        .env("HERMES__NETWORK__PORT", port.to_string())
+        .env("HERMES__TLS__MODE", "off")
+        .env("HERMES__LOG__FORMAT", "json")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let expected = format!("Hermes is ready on 127.0.0.1:{port}");
+    let ready = lines
+        .by_ref()
+        .map(Result::unwrap)
+        .find(|line| line.contains(&expected));
+    assert!(ready.is_some(), "no ready line");
+    let response = http_get(port, "/healthz");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.ends_with("ok"), "{response}");
+
+    #[cfg(unix)]
+    {
+        let status = Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let rest: Vec<String> = lines.map(Result::unwrap).collect();
+        assert!(child.wait().unwrap().success());
+        assert!(
+            rest.iter().any(|line| line.contains("Hermes stopped")),
+            "{rest:?}"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        // Sending Ctrl+C to one process is not practical on Windows; the shutdown path itself
+        // is covered by `lifecycle::shutdown_closes_gateways_with_4100_and_stops_serving`.
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(lines);
+    }
+}

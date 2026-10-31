@@ -93,6 +93,8 @@ impl Default for Timings {
 pub struct Gateway {
     pub timings: Timings,
     sessions: Mutex<HashMap<String, Arc<Session>>>,
+    /// Set once on shutdown; every connection then closes with 4100.
+    shutdown: watch::Sender<bool>,
 }
 
 /// One gateway session: created by `identify`, survives disconnects for
@@ -175,6 +177,20 @@ impl Gateway {
         Gateway {
             timings,
             sessions: Mutex::default(),
+            shutdown: watch::Sender::new(false),
+        }
+    }
+
+    /// Closes every connection, now and later ones, with 4100 ("server restarting").
+    pub fn shut_down(&self) {
+        self.shutdown.send_replace(true);
+    }
+
+    /// Completes once [`shut_down`](Self::shut_down) was called.
+    pub fn shutting_down(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut rx = self.shutdown.subscribe();
+        async move {
+            let _ = rx.wait_for(|down| *down).await;
         }
     }
 

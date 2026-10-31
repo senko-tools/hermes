@@ -23,6 +23,7 @@ use crate::db::state::Snapshot;
 use crate::files::Files;
 use crate::gateway::bus::{Audience, Gateway};
 use crate::messages::Slowmode;
+use crate::ratelimit::KeyedLimiter;
 use crate::snowflake::Snowflake;
 
 /// Everything the request handlers share.
@@ -37,6 +38,8 @@ pub struct AppState {
     /// Never take it while holding the cache lock.
     pub writes: tokio::sync::Mutex<()>,
     pub slowmode: Slowmode,
+    /// `limits.messages_per_5s`, keyed by `(channel_id, user_id)`.
+    pub message_limiter: KeyedLimiter<(Id, Id)>,
     /// Uploaded files on disk.
     pub files: Files,
     /// Gateway sessions and the EventBus.
@@ -57,6 +60,7 @@ impl AppState {
             cache: RwLock::new(cache),
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
+            message_limiter: KeyedLimiter::default(),
             files,
             gateway: Gateway::default(),
         })
@@ -88,33 +92,37 @@ impl AppState {
         self.cache.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The client's IP: the TCP peer, or, when the peer is one of `network.trusted_proxies`, the
-    /// last `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
-    /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
+    /// The client's IP; see [`client_ip`].
     pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-        let trusted = &self.config.network.trusted_proxies;
-        let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
-        let mut ip = peer.ip().to_canonical();
-        if !is_trusted(&ip) {
-            return ip;
-        }
-        let forwarded = headers
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .collect::<Vec<_>>();
-        for entry in forwarded.iter().rev() {
-            let Ok(hop) = entry.trim().parse::<IpAddr>() else {
-                break;
-            };
-            ip = hop.to_canonical();
-            if !is_trusted(&ip) {
-                break;
-            }
-        }
-        ip
+        client_ip(&self.config.network.trusted_proxies, peer, headers)
     }
+}
+
+/// The client's IP: the TCP peer, or, when the peer is one of `trusted` (proxies), the last
+/// `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
+/// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
+pub fn client_ip(trusted: &[IpAddr], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+    let mut ip = peer.ip().to_canonical();
+    if !is_trusted(&ip) {
+        return ip;
+    }
+    let forwarded = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .collect::<Vec<_>>();
+    for entry in forwarded.iter().rev() {
+        let Ok(hop) = entry.trim().parse::<IpAddr>() else {
+            break;
+        };
+        ip = hop.to_canonical();
+        if !is_trusted(&ip) {
+            break;
+        }
+    }
+    ip
 }
 
 pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {

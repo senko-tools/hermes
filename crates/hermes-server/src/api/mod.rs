@@ -20,6 +20,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::connect_info::Connected;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Request};
@@ -34,15 +35,25 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
 
+use crate::ratelimit;
 use crate::state::AppState;
 use crate::tls::{Tls, TlsListener};
 
-/// The `/api/v1` router plus everything outside it.
+/// Largest JSON request body; uploads (`POST /attachments`) stream and have their own limit.
+pub const JSON_BODY_LIMIT: usize = 256 * 1024;
+
+/// The `/api/v1` router plus everything outside it. Must run inside a tokio runtime (the rate
+/// limiters start cleanup tasks).
 pub fn router(state: Arc<AppState>) -> Router {
+    let trusted = &state.config.network.trusted_proxies;
+    let limits = &state.config.limits;
     let api = Router::new()
         .route("/gateway", get(crate::gateway::handler))
         .route("/auth/register", post(auth::register))
-        .route("/auth/login", post(auth::login))
+        .route(
+            "/auth/login",
+            ratelimit::limit_login(post(auth::login), trusted, limits.login_attempts_per_minute),
+        )
         .route("/auth/logout", post(auth::logout))
         .route("/auth/sessions", get(auth::list_sessions))
         .route("/auth/sessions/{id}", delete(auth::delete_session))
@@ -121,22 +132,43 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .post(invites::join)
                 .delete(invites::delete),
         )
-        .fallback(not_found);
-    Router::new().nest("/api/v1", api).with_state(state)
+        .fallback(not_found)
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
+    let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);
+    Router::new()
+        .nest("/api/v1", api)
+        .route("/healthz", get(healthz))
+        .with_state(state)
+}
+
+/// `GET /healthz`, for Docker and uptime checks.
+async fn healthz() -> &'static str {
+    "ok"
 }
 
 async fn not_found() -> Error {
     Error::new(ErrorCode::NotFound, "Unknown endpoint")
 }
 
-/// Serves `app` on `tcp`, terminating TLS unless `tls` is [`Tls::Off`]. Handlers can extract
-/// `ConnectInfo<PeerAddr>`.
-pub async fn serve(tcp: TcpListener, tls: &Tls, app: Router) -> io::Result<()> {
+/// Serves `app` on `tcp`, terminating TLS unless `tls` is [`Tls::Off`], until `shutdown`
+/// completes and all connections have finished. Handlers can extract `ConnectInfo<PeerAddr>`.
+pub async fn serve(
+    tcp: TcpListener,
+    tls: &Tls,
+    app: Router,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> io::Result<()> {
     let service = app.into_make_service_with_connect_info::<PeerAddr>();
     match tls {
-        Tls::Off => axum::serve(tcp, service).await,
+        Tls::Off => {
+            axum::serve(tcp, service)
+                .with_graceful_shutdown(shutdown)
+                .await
+        }
         Tls::Rustls { config, .. } => {
-            axum::serve(TlsListener::new(tcp, config.clone())?, service).await
+            axum::serve(TlsListener::new(tcp, config.clone())?, service)
+                .with_graceful_shutdown(shutdown)
+                .await
         }
     }
 }
@@ -216,6 +248,15 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for Json<T> {
 }
 
 fn json_rejection(rejection: JsonRejection) -> Error {
+    if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        return Error::new(
+            ErrorCode::PayloadTooLarge,
+            format!(
+                "Request bodies may be at most {} KiB",
+                JSON_BODY_LIMIT / 1024
+            ),
+        );
+    }
     Error::new(ErrorCode::BadRequest, rejection.body_text())
 }
 

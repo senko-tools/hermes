@@ -414,3 +414,26 @@ Approved by the developer as a plan before implementation.
   avatar or icon are deleted, rows and files. Unfinished uploads in `files/tmp/` are removed on start.
 - **Downloads** support HTTP ranges and conditional requests (`tower-http`'s `ServeFile`) and send
   `Cache-Control: private, max-age=31536000, immutable`.
+
+## 2026-10-31: Rate limit, validation and shutdown details the plan leaves open
+
+- **REST limit** (`requests_per_second`): a `tower_governor` token bucket per bearer token (keyed by
+  its SHA-256, so raw tokens are never kept in memory), or per client IP for requests without a
+  token. It covers everything under `/api/v1` (the gateway upgrade included), not `/healthz` or
+  the HTML pages. `tower_governor` only reports whole seconds, so its 429s say
+  `retry_after_ms` ≥ 1000. A `Retry-After` header (seconds) is added to every 429.
+- **Login limit** (`login_attempts_per_minute`): per client IP on `POST /auth/login`, successful
+  attempts included.
+- **Message limit** (`messages_per_5s`): a token bucket per `(channel, user)`, checked after the
+  permission checks and before slowmode, with millisecond `retry_after_ms`. A small built-in limiter
+  (`ratelimit::KeyedLimiter`), because `tower_governor` works per request, not per channel.
+- **Gateway limit:** 120 client ops per connection as a token bucket (burst 120, 2 per second
+  refill). The op after that closes the connection with 4008.
+- **The `tonic` feature** of `tower_governor` (on by default) is disabled; only `axum` is used.
+- **JSON bodies** are limited to 256 KiB (`PAYLOAD_TOO_LARGE`). Uploads stream and have their own limit.
+- **Shutdown:** on Ctrl+C/SIGINT (and SIGTERM on unix) the server stops accepting, closes every
+  gateway connection (identified or not) with 4100, waits up to 8 s for running requests,
+  aborts the rest, then closes the database (WAL checkpoint), so it exits within 10 s.
+  "Hermes stopped" is logged at the end.
+- **Ready line:** logged as `Hermes is ready on <network.bind>:<port>` once the socket is bound and
+  the server runs. With `bind = "::"` it reads `Hermes is ready on :::7700`.

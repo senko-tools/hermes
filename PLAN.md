@@ -1569,7 +1569,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
 - [x] DMs and group DMs.
 - [x] Attachments upload/download/thumbnails.
-- [ ] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
+- [x] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
 - [ ] TLS certificate reload on SIGHUP / file change.
 - [ ] Landing page `/` and invite page `/invite/<code>`.
 - [ ] **Minimal deployability early**: `install.sh` + systemd unit (and the Dockerfile + compose file), and deploy the server to `hermes.senko.tools` following [18.8](#188-reference-deployment-hermessenkotools-on-hetzner-debian-13), so a real test instance runs from now on.

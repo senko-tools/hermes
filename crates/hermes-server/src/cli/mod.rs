@@ -16,7 +16,7 @@ use crate::config::{self, Config, LogConfig, LogFormat, TlsMode};
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
 use crate::tls::{self, Tls};
-use crate::{api, invites, setup};
+use crate::{invites, server, setup};
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes-server", version, about = "Hermes chat server")]
@@ -172,14 +172,7 @@ async fn serve(config: Config) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    tracing::info!("listening on {addr}");
-    // Graceful shutdown, `/healthz` and the "Hermes is ready" line come with their own
-    // PLAN.md section 20 item.
-    let state = Arc::new(state);
-    tokio::spawn(crate::files::cleanup_task(state.clone()));
-    let result = api::serve(tcp, &tls, api::router(state.clone())).await;
-    state.db.close().await;
-    match result {
+    match server::run(Arc::new(state), tcp, tls, server::shutdown_signal()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!("server error: {err}");

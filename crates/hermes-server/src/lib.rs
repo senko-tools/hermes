@@ -9,6 +9,8 @@ pub mod files;
 pub mod gateway;
 pub mod invites;
 pub mod messages;
+pub mod ratelimit;
+pub mod server;
 pub mod setup;
 pub mod snowflake;
 pub mod state;
