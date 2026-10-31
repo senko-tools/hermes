@@ -920,3 +920,38 @@ Approved by the developer as a plan before implementation.
 - **Shutdown:** the QUIC endpoint closes with code 0 ("server restarting") with the gateway; clients
   reconnect like after a network loss.
 - **`docs/protocol.md`** now exists (human-readable reference, kept in sync with `hermes-proto`).
+
+## 2026-11-01: `hermes-audio` details the plan leaves open
+
+Approved by the developer as a plan before implementation.
+
+- **Layout:** pure pipelines (`capture`, `playback`) built from `dsp` (resampler, downmix, RNNoise
+  wrapper, AGC, gate), `codec` (Opus), `jitter`, `mixer` and `sounds`; `devices` opens cpal
+  streams; `engine` is one worker thread that owns the streams and pipelines. `hermes-audio`
+  depends on `hermes-proto` for the datagram header.
+- **Virtual I/O:** `Io::Virtual(Box<dyn VirtualIo>)` replaces the devices with a 48 kHz mono frame
+  source and sink, driven in real time (20 ms ticks), so the voicebot and tests run the same
+  pipelines without hardware.
+- **Gate:** voice activity opens on RMS above `vad_sensitivity` *or* RNNoise probability above
+  0.9 (fixed), with a 300 ms hangover; push-to-talk has the release delay; self-mute closes it.
+  Every frame is encoded (continuous encoder state, timestamps follow real time); a closed gate
+  sends one final frame with `voice_active = 0`, then nothing.
+- **AGC:** gain 0.1–10 towards −18 dBFS, adapting only on frames louder than −50 dBFS (attack 10 %,
+  release 2 % per frame).
+- **Jitter buffer:** target = 40 ms + 3 × RFC 3550 jitter, clamped to 40–200 ms, starting at 60 ms
+  and following slowly (5 % per packet). Playback starts when the queued span reaches the target.
+  More than target + 4 frames queued skips the oldest. A missing frame uses the next packet's FEC
+  if it is there, else concealment; after 5 concealed frames with nothing queued, or right away
+  when the last packet had `voice_active = 0`, the stream pauses and re-buffers on the next packet.
+- **Playback:** per-user volume 0–200 % and local mute; deafen silences participants but not UI
+  sounds; output volume after the soft clip. The output ring is topped up to 30 ms.
+- **UI sounds** are synthesized sine tones (join, leave, mute, unmute, ping, ring), so there are no
+  asset files.
+- **Devices:** the input opens only while transmitting, metering or testing the microphone; the
+  output while transmitting, testing, or a sound plays, and closes after 3 s idle. cpal errors
+  other than xruns, followed route changes and refused real-time priority rebuild the stream: the
+  chosen device first, else the default one (`AudioEvent::DeviceChanged`), else
+  `AudioEvent::DeviceError` and a retry every 2 s.
+- **Mic test** loops your encoded packets back through a local playback stream, so you hear what
+  others hear (gate included).
+- **`examples/audio-check.rs`** checks devices by hand: `list`, `meter`, `mic-test`, `sounds`.
