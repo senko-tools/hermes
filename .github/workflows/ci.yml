@@ -11,6 +11,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  # Full debug info for every test binary fills the runner's disk; line tables are enough
+  # for backtraces.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   check:
