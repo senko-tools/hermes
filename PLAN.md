@@ -1578,7 +1578,7 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** the integration test suite passes and the server runs on `hermes.senko.tools` with a valid Let's Encrypt certificate.
 
 ### Phase 2: Client core + TUI text client (2–3 weeks)
-- [ ] `hermes-client-core`: instance management, probing, fingerprint pinning/known hosts, keyring tokens, REST client, gateway with resume/backoff, Store, optimistic sending, history windows, read-state handling, notifications logic, config loading + hot reload, slash commands.
+- [x] `hermes-client-core`: instance management, probing, fingerprint pinning/known hosts, keyring tokens, REST client, gateway with resume/backoff, Store, optimistic sending, history windows, read-state handling, notifications logic, config loading + hot reload, slash commands.
 - [ ] `hermes-tui`: layout, modes, sidebar tree, message view, input with autocomplete, member list, commands, add instance/login flow.
 
 **Done when:** the author can use the TUI daily for text chat with a friend on the VPS instance, across reconnects, without bugs that lose messages.

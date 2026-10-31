@@ -9,6 +9,28 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+hermes-proto.workspace = true
+directories.workspace = true
+emojis.workspace = true
+futures-util.workspace = true
+keyring.workspace = true
+notify.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Integration tests run a real server (PLAN.md section 19); never a normal dependency.
+hermes-server = { path = "../hermes-server" }
 
 [lints]
 workspace = true

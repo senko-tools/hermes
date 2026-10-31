@@ -547,3 +547,86 @@ Approved by the developer as a plan before implementation.
   The voice bits come with Phase 4.
 - **Not covered:** endpoints that belong to later phases (`PATCH /users/@me`, `GET /users/{id}`,
   search, voice, notification settings, admin) do not exist yet.
+
+## 2026-10-31: `hermes-client-core` details
+
+Approved by the developer as a plan before implementation (voice and audio are Phase 4).
+
+- **New dependencies:**
+  - `rustls-platform-verifier = "=0.7.1"` (already in the lock file through reqwest): CA validation
+    uses the OS trust store.
+  - `toml_edit = "=0.22.27"` (the version `toml` uses; named in section 17): writes `config.toml`
+    while keeping comments.
+  - `hermes-server` is a **dev-dependency** of `hermes-client-core`, so its integration tests can run
+    a real server (section 19). Section 5.2's rule ("clients never depend on hermes-server") still
+    holds for the normal dependencies.
+  - `futures-util` is now a normal dependency too (the gateway's `StreamExt`/`SinkExt`).
+  - `uuid` is not used: nonces are UUID v4 strings built from `rand`.
+- **Addresses:** `HostPort` stands for both `InstanceUrl` and `HostPort` from section 14.2.
+  - It accepts `host`, `host:port`, `[v6]:port`, a bare IPv6 address or an `https://`/`hermes://`
+    URL. The default port is 7700 and hosts are lowercased.
+  - The instance ID is `host`, plus `:port` when it is not 7700. `known_hosts.toml` is keyed by
+    `host:port`.
+  - Both invite link forms are parsed, and so is `#fp=`. A fingerprint can be written as
+    `sha256:<hex>`, as plain hex, or as `AB:CD:…`.
+- **Certificate trust:**
+  - `probe_instance` reads `GET /instance` with a verifier that records the certificate and
+    whether CA validation would accept it. It answers `Trusted` (CA-valid), `Pinned`, `Unknown`
+    (ask, trust on first use) or `Changed`.
+  - `login`/`register` probe first and refuse `Unknown` (`UntrustedCertificate(fp)`) and
+    `Changed` (`CertificateChanged`).
+  - All other connections use either the OS verifier or a verifier that accepts exactly the pinned
+    fingerprint (host name and issuer are not checked for pinned certificates).
+  - A server with another `protocol_version` is refused with a clear message.
+- **Tokens:** keyring service `hermes`, account `<username>@<instance id>`. If the keyring fails,
+  `tokens.toml` in the config directory is used instead (mode 600 on unix). A successful keyring
+  write removes any copy from the file.
+- **Config:**
+  - Unknown keys are warnings, except in the free-form `[keys]`, `[tui.keys]` and `[[layout]]`.
+  - The float settings are `f64`, so they are written as typed (`0.6`).
+  - `set_setting("a.b", value)` accepts TOML values; anything that does not parse is taken as a
+    string. Unknown keys and wrong types are refused.
+  - Saving merges into the existing file (comments and unknown keys stay) and writes a temporary
+    file, then renames it.
+  - Hot reload watches the directory (debounced 250 ms) and sends `CoreEvent::ConfigReloaded`.
+- **Gateway:**
+  - Backoff is 1 s, 2 s, 4 s, … capped at 30 s, with ±20 % jitter. After a connection that reached
+    `ready`/`resumed`, the next retry starts at attempt 1.
+  - `hello`, `ready` and `resumed` each have 15 s to arrive.
+  - The client reconnects if no `heartbeat_ack` came for two intervals plus 5 s.
+  - Close codes follow `CloseCode::action()`. 4004 and 4011 report `LoggedOut` and delete the
+    stored token; 4010 reports `Failed`.
+  - `set_online(false)` closes the connection but keeps the session, and `set_online(true)` resumes
+    it. Its own `Offline` status makes the offline queue testable and gives the UIs an "offline"
+    switch.
+  - Frames this client cannot decode (events from newer servers) are skipped.
+- **Store:**
+  - `ready` replaces everything. Loaded message windows are dropped because they may have gaps, but
+    pending messages stay; the visible channels reload their latest page right away.
+  - Members come from the snapshots. Only spaces at the 1000-member cap load the full list over REST.
+  - A new message is added to a window only when the window is "live" (ends at the newest message).
+  - My own new messages mark the channel read locally, and the core acks them. A message that
+    mentions me raises `mention_count` locally (the server does not send `read_state_update` for
+    mentions).
+  - Typing indicators last 10 s, counted with the client clock.
+  - Windows not shown for 10 minutes are trimmed to the last 50 messages (checked every minute). A
+    window in the middle of history is dropped instead.
+- **Optimistic sending:** one outbox task per instance sends in order and only while connected.
+  - Network errors put the message back in the queue (`Queued`) and retry after 2 s.
+  - `RATE_LIMITED` waits `retry_after_ms`.
+  - Any other error is `Failed(reason)`, with `retry_message` / `discard_message`.
+  - With 50 messages queued, new ones fail right away.
+- **API shape:** instead of 1:1 `Core` methods for every endpoint, `Core::rest(inst)` returns the
+  signed-in `Rest` client, which has one typed method per endpoint. Message actions that touch the
+  store (send, edit, delete, react, history, read, typing, upload) are on `Core`. Voice methods,
+  `InputLevel`, `VoiceStatus` and `Speaking` come with Phase 4.
+- **Notifications:**
+  - The level is the channel's setting, else its space's, else `all` for DMs and `mentions` for
+    spaces.
+  - Nothing is notified while muted, in `dnd`, for my own messages, or while the channel is in a
+    visible pane of a focused window (`set_visible_channels`, `set_app_focused`).
+  - `[notifications] enabled = false` turns them all off.
+- **Slash commands:**
+  - `/me x` sends `_x_`. `/shrug` appends `¯\_(ツ)_/¯`, escaped so the markup parser keeps it.
+  - `//text` sends `/text`. `/status` also accepts `away` and `offline`.
+  - `/join`, `/leave`, `/mute` and `/deafen` are parsed now and do something once voice exists.
