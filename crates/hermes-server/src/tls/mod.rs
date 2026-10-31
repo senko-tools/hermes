@@ -6,6 +6,7 @@
 //! - `off`: plain HTTP, for running behind a TLS-terminating reverse proxy.
 
 mod listener;
+mod reload;
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -23,6 +24,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{Config, TlsMode};
 
 pub use listener::TlsListener;
+pub use reload::CertReloader;
 
 /// Subdirectory of `storage.data_dir` holding the generated certificates.
 pub const CERTS_DIR: &str = "certs";
@@ -41,6 +43,8 @@ pub enum Tls {
         config: Arc<ServerConfig>,
         /// Set for `self_signed` only: clients pin it and invite links carry it.
         fingerprint: Option<Fingerprint>,
+        /// Set for `files` only: reloads the certificate on SIGHUP and file changes.
+        reloader: Option<Arc<CertReloader>>,
     },
 }
 
@@ -49,6 +53,13 @@ impl Tls {
         match self {
             Tls::Off => None,
             Tls::Rustls { fingerprint, .. } => fingerprint.as_ref(),
+        }
+    }
+
+    pub fn reloader(&self) -> Option<&Arc<CertReloader>> {
+        match self {
+            Tls::Off => None,
+            Tls::Rustls { reloader, .. } => reloader.as_ref(),
         }
     }
 }
@@ -164,13 +175,27 @@ pub fn load(config: &Config) -> Result<Tls, TlsError> {
             Ok(Tls::Rustls {
                 config: server_config(pair.chain, pair.key, &pair.cert_path, &pair.key_path)?,
                 fingerprint: Some(fingerprint),
+                reloader: None,
             })
         }
         TlsMode::Files => {
             let (cert, key) = (&config.tls.cert_file, &config.tls.key_file);
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let reloader = Arc::new(CertReloader::new(cert, key, provider.clone())?);
+            let mut server = ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|source| TlsError::Rustls {
+                    cert: cert.clone(),
+                    key: key.clone(),
+                    source: Box::new(source),
+                })?
+                .with_no_client_auth()
+                .with_cert_resolver(reloader.clone());
+            server.alpn_protocols = vec![b"http/1.1".to_vec()];
             Ok(Tls::Rustls {
-                config: server_config(read_chain(cert)?, read_key(key)?, cert, key)?,
+                config: Arc::new(server),
                 fingerprint: None,
+                reloader: Some(reloader),
             })
         }
     }

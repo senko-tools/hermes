@@ -28,6 +28,7 @@ pub async fn run(
     let port = tcp.local_addr()?.port();
     let app = api::router(state.clone());
     let cleanup = tokio::spawn(files::cleanup_task(state.clone()));
+    let reload = tls.reloader().cloned().map(|r| tokio::spawn(r.watch()));
     let (stop, stopped) = oneshot::channel::<()>();
     let graceful = {
         let state = state.clone();
@@ -58,6 +59,9 @@ pub async fn run(
         }
     };
     cleanup.abort();
+    if let Some(reload) = reload {
+        reload.abort();
+    }
     state.db.close().await;
     if result.is_ok() {
         tracing::info!("Hermes stopped");

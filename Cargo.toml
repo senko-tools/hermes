@@ -30,6 +30,7 @@ tower_governor = { version = "=0.8.0", default-features = false, features = ["ax
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "ring", "logging", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["logging", "tls12", "ring"] }
 rcgen = "=0.14.10"
+arc-swap = "=1.9.3"  # certificate reload (PLAN.md section 9.1; not listed in section 6)
 
 # Database
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }

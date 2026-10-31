@@ -437,3 +437,17 @@ Approved by the developer as a plan before implementation.
   "Hermes stopped" is logged at the end.
 - **Ready line:** logged as `Hermes is ready on <network.bind>:<port>` once the socket is bound and
   the server runs. With `bind = "::"` it reads `Hermes is ready on :::7700`.
+
+## 2026-10-31: `arc-swap` for the certificate reload; reload details
+
+- **What:** added `arc-swap = "=1.9.3"` to the workspace, used only by `hermes-server`'s
+  `tls::CertReloader`, a rustls `ResolvesServerCert` that serves the current `CertifiedKey`.
+- **Why:** PLAN.md section 9.1 names the design ("rustls `ResolvesServerCert` backed by an
+  `ArcSwap`"), but section 6 does not list the crate. The developer said to follow the plan.
+- **Scope:** only `tls.mode = "files"` reloads; a `self_signed` certificate never changes by design.
+- **Triggers:** SIGHUP (unix only; Windows has no such signal) reloads unconditionally. Every 60 s the
+  modification times of `cert_file` and `key_file` are compared with those of the last attempt, and
+  any change triggers a reload.
+- **Failures:** a pair that cannot be read, parsed or does not match is logged as an error and the
+  old certificate stays in use. A broken pair is reported once per change, not every minute.
+- **Open connections** are not touched; only new handshakes get the new certificate.
