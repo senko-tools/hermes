@@ -10,11 +10,13 @@ homepage.workspace = true
 
 [dependencies]
 hermes-proto.workspace = true
+hermes-audio.workspace = true
 directories.workspace = true
 emojis.workspace = true
 futures-util.workspace = true
 keyring.workspace = true
 notify.workspace = true
+quinn.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["stream"] }
 rustls.workspace = true

@@ -103,8 +103,6 @@ pub enum KickReason {
     ChannelDeleted,
     /// You can no longer see or connect to the channel (left or removed from the space).
     Removed,
-    /// The server is shutting down.
-    ServerShutdown,
 }
 
 /// `u32` big-endian length prefix + JSON body.

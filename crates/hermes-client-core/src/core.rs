@@ -31,6 +31,9 @@ use crate::store::{
 };
 use crate::tls::{Recorder, Trust};
 use crate::tokens::TokenStore;
+use crate::voice::{Voice, VoiceStatus};
+use crate::volumes::UserVolumes;
+use hermes_audio::Io;
 
 /// `host`, plus `:port` when not 7700 (the `id` of `[[instances]]`).
 pub type InstanceId = String;
@@ -65,6 +68,15 @@ pub enum CoreEvent {
     },
     /// Something the user should see (failed background action).
     Error(String),
+    VoiceStatus(VoiceStatus),
+    /// Someone in your voice room (you included) started or stopped speaking.
+    Speaking {
+        inst: InstanceId,
+        user: Id,
+        speaking: bool,
+    },
+    /// Microphone level in dBFS, 20 times a second while [`Core::set_level_meter`] is on.
+    InputLevel(f32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +97,8 @@ pub enum CoreError {
         now: Fingerprint,
     },
     Io(String),
+    /// Joining or keeping voice failed.
+    Voice(String),
 }
 
 impl fmt::Display for CoreError {
@@ -116,7 +130,7 @@ impl fmt::Display for CoreError {
                 pinned.colon_hex(),
                 now.colon_hex()
             ),
-            CoreError::Io(e) => f.write_str(e),
+            CoreError::Io(e) | CoreError::Voice(e) => f.write_str(e),
         }
     }
 }
@@ -186,7 +200,6 @@ impl Store {
 }
 
 /// Options for [`Core::new`].
-#[derive(Debug)]
 pub struct CoreOptions {
     /// Sent in `identify` (`hermes-gui`, `hermes-tui`).
     pub client_name: String,
@@ -194,6 +207,18 @@ pub struct CoreOptions {
     pub paths: Option<ConfigPaths>,
     pub tokens: TokenStore,
     pub known_hosts: KnownHosts,
+    pub user_volumes: UserVolumes,
+    /// The audio devices, or a virtual device (voicebot, tests).
+    pub audio: Io,
+}
+
+impl fmt::Debug for CoreOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CoreOptions")
+            .field("client_name", &self.client_name)
+            .field("paths", &self.paths)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CoreOptions {
@@ -208,6 +233,8 @@ impl CoreOptions {
             tokens: TokenStore::Keyring {
                 fallback: paths.tokens(),
             },
+            user_volumes: UserVolumes::load(&paths.user_volumes()),
+            audio: Io::Devices,
             paths: Some(paths),
         })
     }
@@ -219,6 +246,8 @@ impl CoreOptions {
             paths: None,
             tokens: TokenStore::memory(),
             known_hosts: KnownHosts::in_memory(),
+            user_volumes: UserVolumes::in_memory(),
+            audio: Io::Devices,
         }
     }
 }
@@ -270,10 +299,10 @@ struct Focus {
     visible: HashSet<(InstanceId, Id)>,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     client_name: String,
     paths: Option<ConfigPaths>,
-    config: RwLock<ClientConfig>,
+    pub(crate) config: RwLock<ClientConfig>,
     known_hosts: Mutex<KnownHosts>,
     tokens: TokenStore,
     store: RwLock<Store>,
@@ -283,12 +312,13 @@ struct Inner {
     focus: Mutex<Focus>,
     presence: Mutex<PresenceStatus>,
     watcher: Mutex<Option<::notify::RecommendedWatcher>>,
+    pub(crate) voice: Voice,
 }
 
 /// The client core. Cheap to clone. Must be created inside a tokio runtime.
 #[derive(Clone)]
 pub struct Core {
-    inner: Arc<Inner>,
+    pub(crate) inner: Arc<Inner>,
 }
 
 impl fmt::Debug for Core {
@@ -325,6 +355,13 @@ impl Core {
         // rustls needs a process-wide provider for reqwest's internals.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let (audio_tx, audio_rx) = mpsc::unbounded_channel();
+        let voice = Voice::new(
+            options.audio,
+            crate::voice::audio_settings(&config.voice),
+            options.user_volumes,
+            audio_tx,
+        );
         let core = Core {
             inner: Arc::new(Inner {
                 client_name: options.client_name,
@@ -342,13 +379,28 @@ impl Core {
                 }),
                 presence: Mutex::new(PresenceStatus::Online),
                 watcher: Mutex::new(None),
+                voice,
             }),
         };
         core.spawn_ticker();
+        core.spawn_audio_events(audio_rx);
         (core, CoreEvents(rx))
     }
 
-    fn emit(&self, event: CoreEvent) {
+    /// Engine events (speaking, levels, devices) into core events. Holds the core weakly.
+    fn spawn_audio_events(&self, mut rx: mpsc::UnboundedReceiver<hermes_audio::AudioEvent>) {
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                Core { inner }.audio_event(event);
+            }
+        });
+    }
+
+    pub(crate) fn emit(&self, event: CoreEvent) {
         let _ = self.inner.events.send(event);
     }
 
@@ -379,7 +431,7 @@ impl Core {
         self.inner.paths.as_ref()
     }
 
-    fn save_config(&self) -> Result<()> {
+    pub(crate) fn save_config(&self) -> Result<()> {
         if let Some(paths) = &self.inner.paths {
             let config = self.config();
             config::save(&paths.config(), &config)?;
@@ -409,6 +461,7 @@ impl Core {
                 match result {
                     Ok(loaded) => {
                         *core.inner.config.write().expect("config lock") = loaded.config;
+                        core.apply_audio_settings();
                         core.emit(CoreEvent::ConfigReloaded {
                             warnings: loaded.warnings,
                         });
@@ -671,6 +724,7 @@ impl Core {
     }
 
     fn disconnect(&self, inst: &str, handle: &InstanceHandle) {
+        self.leave_voice_on(inst);
         let _ = self.inner.tokens.delete(inst, &handle.username);
         self.inner
             .instances

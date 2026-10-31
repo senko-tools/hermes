@@ -68,6 +68,10 @@ impl ConfigPaths {
     pub fn tokens(&self) -> PathBuf {
         self.dir.join(TOKENS_FILE)
     }
+
+    pub fn user_volumes(&self) -> PathBuf {
+        self.dir.join(crate::volumes::USER_VOLUMES_FILE)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

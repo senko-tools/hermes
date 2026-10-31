@@ -506,6 +506,8 @@ impl App {
                 }
             }
             CoreEvent::Error(e) => self.error(e),
+            // The voice status line and speaking markers come with the voice UI (Phase 5).
+            CoreEvent::VoiceStatus(_) | CoreEvent::Speaking { .. } | CoreEvent::InputLevel(_) => {}
         }
     }
 

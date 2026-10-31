@@ -238,6 +238,9 @@ impl InstanceStore {
         for dm in ready.dms {
             self.insert_dm(dm);
         }
+        for state in ready.dm_voice_states {
+            self.voice_states.insert(state.user_id, state);
+        }
         self.read_states = ready
             .read_states
             .into_iter()

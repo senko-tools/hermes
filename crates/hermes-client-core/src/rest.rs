@@ -5,12 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hermes_proto::api::{
-    AckRequest, AuthResponse, BanRequest, ChangePasswordRequest, ChannelPosition,
+    AckRequest, AuthResponse, BanRequest, CallRingRequest, ChangePasswordRequest, ChannelPosition,
     CreateChannelRequest, CreateDmRequest, CreateInviteRequest, CreateRoleRequest,
     CreateSpaceRequest, EditMessageRequest, HistoryQuery, InstanceResponse, LoginRequest,
     OverrideRequest, RegisterRequest, RolePosition, SendMessageRequest, SessionInfo,
     TransferSpaceRequest, UpdateChannelRequest, UpdateMemberRequest, UpdateRoleRequest,
-    UpdateSpaceRequest,
+    UpdateSpaceRequest, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
+    VoiceStatePatchRequest,
 };
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
@@ -644,6 +645,45 @@ impl Rest {
     pub async fn delete_invite(&self, code: &str) -> Result<()> {
         self.empty::<()>(Method::DELETE, &format!("/invites/{}", encode(code)), None)
             .await
+    }
+
+    // ---- voice ----------------------------------------------------------------------------
+
+    pub async fn voice_join(&self, req: &VoiceJoinRequest) -> Result<VoiceJoinResponse> {
+        self.call(Method::POST, "/voice/join", Some(req)).await
+    }
+
+    pub async fn voice_leave(&self) -> Result<()> {
+        self.empty::<()>(Method::POST, "/voice/leave", None).await
+    }
+
+    pub async fn voice_self_state(&self, req: &VoiceSelfStateRequest) -> Result<()> {
+        self.empty(Method::PATCH, "/voice/@me", Some(req)).await
+    }
+
+    /// Server mute/deafen, move (`channel_id: Some(Some(id))`) or disconnect (`Some(None)`).
+    pub async fn update_voice_state(
+        &self,
+        space: Id,
+        user: Id,
+        req: &VoiceStatePatchRequest,
+    ) -> Result<()> {
+        self.empty(
+            Method::PATCH,
+            &format!("/spaces/{space}/voice-states/{user}"),
+            Some(req),
+        )
+        .await
+    }
+
+    /// Rings the DM's recipients (all of them when `user_ids` is `None`).
+    pub async fn ring(&self, channel: Id, user_ids: Option<Vec<Id>>) -> Result<()> {
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/call/ring"),
+            Some(&CallRingRequest { user_ids }),
+        )
+        .await
     }
 }
 

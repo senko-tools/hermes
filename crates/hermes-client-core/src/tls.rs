@@ -36,6 +36,23 @@ pub fn client_config(trust: Trust, http: bool) -> Result<Arc<ClientConfig>, rust
     build(provider, verifier, http)
 }
 
+/// The rustls config of the voice QUIC connection (PLAN.md 12.2): TLS 1.3, ALPN
+/// `hermes-voice/1`, the certificate pinned to the fingerprint from `/voice/join`.
+pub fn voice_config(fingerprint: Fingerprint) -> Result<ClientConfig, rustls::Error> {
+    let provider = provider();
+    let verifier = Arc::new(Pinned {
+        fingerprint,
+        provider: provider.clone(),
+    });
+    let mut config = ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![hermes_proto::voice::ALPN.to_vec()];
+    Ok(config)
+}
+
 fn build(
     provider: Arc<CryptoProvider>,
     verifier: Arc<dyn ServerCertVerifier>,

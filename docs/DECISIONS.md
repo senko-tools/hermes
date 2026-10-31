@@ -955,3 +955,40 @@ Approved by the developer as a plan before implementation.
 - **Mic test** loops your encoded packets back through a local playback stream, so you hear what
   others hear (gate included).
 - **`examples/audio-check.rs`** checks devices by hand: `list`, `meter`, `mic-test`, `sounds`.
+
+## 2026-11-01: Client core voice details the plan leaves open
+
+Approved by the developer as a plan before implementation.
+
+- **Dependencies:** `hermes-client-core` now depends on `quinn` and `hermes-audio` (both in
+  section 6 / the workspace).
+- **One session at a time** (`Core::voice_channel`, `Core::voice_status`). `join_voice` on the
+  same instance sends `switch` on the open connection; another instance leaves first. It returns
+  after the server's `ready` (10 s timeout) with the REST error (`VOICE_FULL`, …) or
+  `CoreError::Voice` (connection, UDP).
+- **Reconnect:** a lost connection (QUIC error or closed control stream after a `ready`) retries
+  with a fresh `/voice/join` for the current channel up to 5 times, waiting 0.5, 1, 2, 4 and 8 s
+  (`VoiceStatus::Reconnecting {attempt}`). A REST answer that is not a network error (no
+  permission, full) stops the retries. Giving up and `kicked` end the session with
+  `CoreEvent::Error` and `VoiceStatus::Disconnected`; `moved` is followed with `switch`.
+  Short network drops (under the 15 s idle timeout) keep the connection and audio resumes.
+- **Mute/deafen:** deafen also mutes (the server sees `self_mute = true`); undeafening restores
+  your own mute. Changes go to the engine, the control stream (`set_state`) and
+  `PATCH /voice/@me`. Server mute/deafen from `server_state` also closes the local gate.
+- **Push-to-talk is forced** while the channel lacks `USE_VOICE_ACTIVITY`
+  (`Core::voice_requires_ptt`).
+- **Events:** `CoreEvent::VoiceStatus` (ping from `ping`/`pong` every 2 s, loss from QUIC path
+  stats), `CoreEvent::Speaking {inst, user, speaking}` (your own from the gate) and
+  `CoreEvent::InputLevel(dBFS)` while `set_level_meter(true)`. Device fallbacks and failures
+  are `CoreEvent::Error` toasts.
+- **Volumes:** `user_volumes.toml` (`[instance] "<user id>" = 1.5`); 1.0 is not stored. Local
+  per-user mute (`set_user_muted`) is not saved.
+- **Audio settings** come from `[voice]` (also on hot reload); `set_audio_settings` writes them
+  back. `CoreOptions::audio` chooses real devices (default) or `Io::Virtual`.
+- **`Core::start_call`** = `join_voice` + `POST /channels/{id}/call/ring`. `Core::play_sound`
+  is for the UIs (ring, ping).
+- **The QUIC client** binds `0.0.0.0:0` or `[::]:0` to match the resolved server address
+  (Windows sockets are not dual-stack by default).
+- **`Core::drop_voice_connection`** (hidden) breaks the connection for the reconnect test.
+- **Proto:** the unused `KickReason::ServerShutdown` was removed; a shutdown closes the QUIC
+  connection and clients reconnect.
