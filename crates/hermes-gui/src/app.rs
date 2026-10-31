@@ -6,13 +6,14 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::api::CreateInviteRequest;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::{Core, CoreEvent, InstanceId};
+use hermes_client_core::store::{Changed, HistoryAnchor};
+use hermes_client_core::{Core, CoreEvent, InstanceId, time};
 use iced::keyboard::{self, Modifiers};
 use iced::widget::pane_grid::Axis;
 use iced::widget::{button, column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
-use crate::buffer::{Buffer, settings};
+use crate::buffer::{Buffer, channel, settings};
 use crate::font::Fonts;
 use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
@@ -56,6 +57,10 @@ pub struct App {
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
     pub command_bar: Option<command_bar::CommandBar>,
+    /// Local UTC offset for timestamps, read once at startup.
+    pub utc_offset: i64,
+    /// The window has the keyboard focus.
+    pub focused: bool,
     /// The add-instance / sign-in dialog.
     pub add_instance: Option<add_instance::AddInstance>,
     /// Where later launches forward their links (section 15.7).
@@ -87,6 +92,8 @@ impl App {
             keybinds,
             sidebar_visible: true,
             command_bar: None,
+            utc_offset: time::local_offset_secs(),
+            focused: true,
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
             iced_theme: style::iced_theme(&Theme::dark()),
@@ -142,7 +149,13 @@ impl App {
         match message {
             Message::Core(event) => self.on_core(event),
             Message::ThemesChanged => self.reload_theme(),
-            Message::WindowFocused(focused) => self.core.set_app_focused(focused),
+            Message::WindowFocused(focused) => {
+                self.focused = focused;
+                self.core.set_app_focused(focused);
+                if focused {
+                    self.mark_visible_read();
+                }
+            }
             Message::OpenSettings => self.panes.open(Buffer::Settings),
             Message::Settings(message) => self.on_settings(message),
             Message::DismissStatus => self.status = None,
@@ -171,6 +184,7 @@ impl App {
                 return window::close(id);
             }
             Message::CommandBar(message) => return self.on_command_bar(message),
+            Message::Channel(pane, message) => return self.on_channel(pane, message),
             Message::OpenMenu(target) => self.menu = Some((target, self.cursor.get())),
             Message::CloseMenu => self.menu = None,
             Message::Menu(target, action) => {
@@ -250,11 +264,179 @@ impl App {
 
     /// Shows a channel in the focused pane and loads its latest messages.
     fn select(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
-        self.panes.open(Buffer::Channel {
-            inst: inst.clone(),
-            channel,
-        });
+        let marker = self
+            .core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.read_states.get(&channel).map(|r| r.last_read_id));
+        self.panes.open_with_marker(
+            Buffer::Channel {
+                inst: inst.clone(),
+                channel,
+            },
+            marker,
+        );
         self.load_channel(inst, channel)
+    }
+
+    fn on_channel(
+        &mut self,
+        pane: iced::widget::pane_grid::Pane,
+        message: channel::Message,
+    ) -> Task<Message> {
+        let Some(Buffer::Channel { inst, channel }) =
+            self.panes.state.get(pane).map(|p| p.buffer.clone())
+        else {
+            return Task::none();
+        };
+        let Some(view) = self.panes.state.get_mut(pane).map(|p| &mut p.channel) else {
+            return Task::none();
+        };
+        match message {
+            channel::Message::Scrolled(viewport) => {
+                view.scrolled(&viewport);
+                let older = view.near_top() && !view.loading_older;
+                if view.at_bottom() {
+                    self.mark_read_if_visible(pane);
+                }
+                if older {
+                    return self.load_older(pane, inst, channel);
+                }
+            }
+            channel::Message::Measured(key, height) => {
+                view.heights.set(key, height);
+            }
+            channel::Message::OlderLoaded => view.loading_older = false,
+            channel::Message::JumpToPresent => {
+                let id = view.scroll_id.clone();
+                let live = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.window(channel).map(|w| w.reached_end))
+                    .unwrap_or(false);
+                // Anchored to the bottom: offset 0 is the newest message.
+                let snap = operation::snap_to(
+                    id,
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                );
+                if live {
+                    return snap;
+                }
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        core.load_history(&inst, channel, HistoryAnchor::Latest)
+                            .await
+                    },
+                    |result| match result {
+                        Ok(()) => Message::ChannelOpened,
+                        Err(err) => Message::Done(Err(format!("could not load messages: {err}"))),
+                    },
+                )
+                .chain(snap);
+            }
+            channel::Message::Retry(local_id) => {
+                if let Err(err) = self.core.retry_message(&inst, channel, local_id) {
+                    self.error(err.to_string());
+                }
+            }
+            channel::Message::Discard(local_id) => {
+                self.core.discard_message(&inst, channel, local_id);
+            }
+        }
+        Task::none()
+    }
+
+    /// Loads the page before the oldest loaded message of a pane's channel.
+    fn load_older(
+        &mut self,
+        pane: iced::widget::pane_grid::Pane,
+        inst: InstanceId,
+        channel: Id,
+    ) -> Task<Message> {
+        let oldest = {
+            let store = self.core.store();
+            let Some(window) = store.instance(&inst).and_then(|s| s.window(channel)) else {
+                return Task::none();
+            };
+            if !window.loaded || window.reached_start {
+                return Task::none();
+            }
+            match window.messages.first() {
+                Some(m) => m.id,
+                None => return Task::none(),
+            }
+        };
+        if let Some(p) = self.panes.state.get_mut(pane) {
+            p.channel.loading_older = true;
+        }
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                core.load_history(&inst, channel, HistoryAnchor::Before(oldest))
+                    .await
+            },
+            move |result| {
+                if let Err(err) = result {
+                    tracing::warn!("older messages: {err}");
+                }
+                Message::Channel(pane, channel::Message::OlderLoaded)
+            },
+        )
+    }
+
+    /// Marks a pane's channel read when its newest message is on screen and the window has the
+    /// focus (section 15.2).
+    fn mark_read_if_visible(&self, pane: iced::widget::pane_grid::Pane) {
+        if !self.focused {
+            return;
+        }
+        let Some(p) = self.panes.state.get(pane) else {
+            return;
+        };
+        let Buffer::Channel { inst, channel } = &p.buffer else {
+            return;
+        };
+        if !p.channel.at_bottom() {
+            return;
+        }
+        let last = {
+            let store = self.core.store();
+            let Some(s) = store.instance(inst) else {
+                return;
+            };
+            let Some(window) = s.window(*channel) else {
+                return;
+            };
+            if !window.reached_end {
+                return;
+            }
+            let Some(last) = window
+                .messages
+                .iter()
+                .rev()
+                .find(|m| !m.deleted)
+                .map(|m| m.id)
+            else {
+                return;
+            };
+            if s.read_states
+                .get(channel)
+                .is_some_and(|r| r.last_read_id >= last)
+            {
+                return;
+            }
+            last
+        };
+        self.core.mark_read(inst, *channel, last);
+    }
+
+    fn mark_visible_read(&self) {
+        let panes: Vec<_> = self.panes.state.iter().map(|(id, _)| *id).collect();
+        for pane in panes {
+            self.mark_read_if_visible(pane);
+        }
     }
 
     fn load_channel(&self, inst: InstanceId, channel: Id) -> Task<Message> {
@@ -702,6 +884,27 @@ impl App {
                 }
             }
             CoreEvent::Error(text) => self.error(text),
+            CoreEvent::StoreChanged {
+                inst,
+                what: Changed::Messages(channel),
+            } => {
+                let panes: Vec<_> = self
+                    .panes
+                    .state
+                    .iter()
+                    .filter(|(_, p)| {
+                        p.buffer
+                            == Buffer::Channel {
+                                inst: inst.clone(),
+                                channel,
+                            }
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                for pane in panes {
+                    self.mark_read_if_visible(pane);
+                }
+            }
             // The views read the store directly; the other events only trigger a redraw.
             _ => {}
         }
@@ -851,6 +1054,7 @@ impl App {
             theme,
             config: &self.config,
             themes: &self.themes,
+            utc_offset: self.utc_offset,
         }));
 
         let layout = if !self.sidebar_visible {

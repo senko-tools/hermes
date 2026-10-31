@@ -771,3 +771,26 @@ Approved by the developer as a plan before implementation.
   wins over a US position, and letters only match what they type.
 - **Command bar:** subsequence fuzzy match (word starts and runs score higher, gaps lower) over
   channels, DMs, "Message @user" (opens or creates the DM), the keybind actions and "Theme: …".
+
+## 2026-10-31: GUI channel buffer, part A (message list)
+
+Approved by the developer as a plan before implementation.
+
+- **`hermes-client-core::time`:** the TUI's local time module moved to the client core so both
+  clients share it; the `windows` crate feature `Win32_System_Time` moved with it.
+- **Rows:** built from the store (`buffer/channel/rows.rs`): day separators (local time), the
+  "New messages" divider before the first newer message by someone else than me (the read marker
+  is taken when the channel is opened in a pane, so the divider stays put while reading), grouping
+  with `view::is_grouped`, reply previews ("original message deleted" for an empty excerpt) and
+  pending messages after the loaded ones (grouped with my previous message). Deleted messages are
+  not shown.
+- **Virtualization:** rows have different heights. Each row starts with an estimate (lines at the
+  pane width, attachments, reactions, reply) and keeps the height iced's `sensor` widget measures
+  once it is shown; only rows within 600 px of the viewport are built, with spacers for the rest.
+  The scrollable is anchored to the bottom, so offsets count from the newest message, new messages
+  stay in view, and older pages load above without moving the view. Heights are forgotten when the
+  pane width changes.
+- **Loading and reading:** older history loads when the top is within 400 px. "Jump to present"
+  shows when scrolled up or when the window is not live (it then loads the latest page). A channel
+  is marked read when its newest message is visible, the window is focused and the window is live
+  (on scroll, on new messages and on focus).

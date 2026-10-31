@@ -7,7 +7,6 @@ mod input;
 mod keymap;
 #[cfg(test)]
 mod tests;
-mod time;
 mod ui;
 
 use std::path::PathBuf;
@@ -21,7 +20,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use hermes_client_core::config::{ClientConfig, ConfigPaths};
-use hermes_client_core::{Core, CoreOptions};
+use hermes_client_core::{Core, CoreOptions, time};
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes-tui", version, about = "Hermes terminal client")]

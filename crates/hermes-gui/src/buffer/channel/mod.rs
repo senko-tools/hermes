@@ -1,0 +1,504 @@
+//! The Channel buffer (PLAN.md section 15.2): a virtualized message list anchored to the bottom,
+//! with grouping, day separators, the "New messages" divider, reply previews, pending messages,
+//! the typing line and "Jump to present".
+
+pub mod list;
+pub mod rows;
+
+use hermes_client_core::config::ClientConfig;
+use hermes_client_core::proto::id::Id;
+use hermes_client_core::proto::models::Message as ChatMessage;
+use hermes_client_core::store::{InstanceStore, LocalId, MessageWindow, PendingState};
+use hermes_client_core::{Core, InstanceId, now_ms, time};
+use iced::widget::{Space, button, column, container, row, scrollable, sensor, stack, text};
+use iced::{Alignment, Border, Element, Fill, Length, Size};
+
+use self::list::Heights;
+use self::rows::{Row, RowKey};
+use crate::font::Fonts;
+use crate::theme::{Theme, style};
+use crate::widget::{label, small};
+
+/// Within this many pixels of the bottom counts as "at the bottom" (live, marks read).
+pub const AT_BOTTOM: f32 = 4.0;
+/// Older history loads when the top is this close.
+const LOAD_OLDER_AT: f32 = 400.0;
+
+/// Per-pane state of a channel buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelView {
+    pub scroll_id: iced::widget::Id,
+    /// Pixels above the bottom.
+    pub from_bottom: f32,
+    pub viewport: Size,
+    /// Total content height (for "near the top").
+    pub content_height: f32,
+    pub heights: Heights,
+    /// My read marker when the channel was opened (the divider position).
+    pub read_marker: Option<Id>,
+    pub loading_older: bool,
+}
+
+impl Default for ChannelView {
+    fn default() -> Self {
+        ChannelView {
+            scroll_id: iced::widget::Id::unique(),
+            from_bottom: 0.0,
+            viewport: Size::new(800.0, 600.0),
+            content_height: 0.0,
+            heights: Heights::default(),
+            read_marker: None,
+            loading_older: false,
+        }
+    }
+}
+
+impl ChannelView {
+    pub fn new(read_marker: Option<Id>) -> ChannelView {
+        ChannelView {
+            read_marker,
+            ..ChannelView::default()
+        }
+    }
+
+    pub fn at_bottom(&self) -> bool {
+        self.from_bottom <= AT_BOTTOM
+    }
+
+    pub fn near_top(&self) -> bool {
+        self.content_height - self.viewport.height - self.from_bottom < LOAD_OLDER_AT
+    }
+
+    /// Takes a scroll position; `true` if the width changed (heights were reset).
+    pub fn scrolled(&mut self, viewport: &scrollable::Viewport) -> bool {
+        self.from_bottom = viewport.absolute_offset().y;
+        let bounds = viewport.bounds();
+        self.content_height = viewport.content_bounds().height;
+        let width_changed = (bounds.width - self.viewport.width).abs() > 1.0;
+        self.viewport = bounds.size();
+        if width_changed {
+            self.heights.clear();
+        }
+        width_changed
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    Scrolled(scrollable::Viewport),
+    Measured(RowKey, f32),
+    JumpToPresent,
+    OlderLoaded,
+    Retry(LocalId),
+    Discard(LocalId),
+}
+
+/// What the view needs besides the pane state.
+pub struct Context<'a> {
+    pub core: &'a Core,
+    pub config: &'a ClientConfig,
+    pub fonts: &'a Fonts,
+    pub theme: &'a Theme,
+    pub utc_offset: i64,
+}
+
+pub fn view<'a>(
+    ctx: &Context<'a>,
+    inst: &InstanceId,
+    channel: Id,
+    state: &'a ChannelView,
+) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let theme = ctx.theme;
+    let store = ctx.core.store();
+    let Some(s) = store.instance(inst) else {
+        return centered(small("Not connected to this instance.", fonts));
+    };
+    let Some(window) = s.window(channel) else {
+        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+    };
+    if !window.loaded {
+        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+    }
+    let rows = rows::build(
+        s,
+        window,
+        &rows::Options {
+            group_minutes: ctx.config.buffer.group_minutes,
+            utc_offset: ctx.utc_offset,
+            read_marker: state.read_marker,
+        },
+    );
+    if rows.is_empty() && window.pending.is_empty() {
+        let title = s
+            .channel(channel)
+            .map(|c| hermes_client_core::view::channel_title(s, c))
+            .unwrap_or_default();
+        return column![
+            centered(
+                small(format!("This is the start of {title}."), fonts).color(theme.text.tertiary.0)
+            ),
+            typing_line(ctx, s, channel)
+        ]
+        .into();
+    }
+    let heights: Vec<f32> = rows
+        .iter()
+        .map(|r| {
+            state
+                .heights
+                .get(&r.key())
+                .unwrap_or_else(|| estimate(r, window, state.viewport.width, fonts.size))
+        })
+        .collect();
+    let visible = list::visible(&heights, state.from_bottom, state.viewport.height);
+
+    let mut list = column![Space::new().height(visible.above)];
+    for r in &rows[visible.range.clone()] {
+        let key = r.key();
+        list = list.push(
+            sensor(row_view(ctx, s, window, r))
+                .key(key)
+                .on_show(move |size| Message::Measured(key, size.height))
+                .on_resize(move |size| Message::Measured(key, size.height)),
+        );
+    }
+    list = list.push(Space::new().height(visible.below));
+
+    let messages = scrollable(list.width(Fill))
+        .id(state.scroll_id.clone())
+        .anchor_bottom()
+        .on_scroll(Message::Scrolled)
+        .height(Fill)
+        .width(Fill);
+
+    let mut layers = stack![messages];
+    if !state.at_bottom() || !window.reached_end {
+        layers = layers.push(
+            container(
+                button(small("Jump to present", fonts))
+                    .padding([4, 12])
+                    .style(move |_, st| style::primary(theme, st))
+                    .on_press(Message::JumpToPresent),
+            )
+            .align_right(Fill)
+            .align_bottom(Fill)
+            .padding(12),
+        );
+    }
+
+    column![layers, typing_line(ctx, s, channel)].into()
+}
+
+fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).center(Fill).into()
+}
+
+fn estimate(r: &Row, window: &MessageWindow, width: f32, font_size: f32) -> f32 {
+    match r {
+        Row::Older => 32.0,
+        Row::Day { .. } => 30.0,
+        Row::NewMessages => 24.0,
+        Row::Message(m) => match window.get(m.id) {
+            Some(msg) => list::estimate_message(
+                &msg.content,
+                m.grouped,
+                &msg.attachments
+                    .iter()
+                    .map(|a| (a.width, a.height, a.content_type.starts_with("image/")))
+                    .collect::<Vec<_>>(),
+                !msg.reactions.is_empty(),
+                m.reply.is_some(),
+                width,
+                font_size,
+            ),
+            None => 30.0,
+        },
+        Row::Pending(p) => window.pending(p.local_id).map_or(30.0, |pm| {
+            list::estimate_message(&pm.content, p.grouped, &[], false, false, width, font_size)
+        }),
+    }
+}
+
+/// `Bob is typing…`, `Bob and Carol are typing…`, `Several people are typing…`.
+pub fn typing_text(names: &[String]) -> Option<String> {
+    match names {
+        [] => None,
+        [a] => Some(format!("{a} is typing…")),
+        [a, b] => Some(format!("{a} and {b} are typing…")),
+        [a, b, c] => Some(format!("{a}, {b} and {c} are typing…")),
+        _ => Some("Several people are typing…".into()),
+    }
+}
+
+fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let names: Vec<String> = if ctx.config.buffer.show_typing {
+        let space = s.space_of(channel);
+        s.typing(channel, now_ms())
+            .into_iter()
+            .map(|u| s.display_name(space, u))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    container(
+        small(typing_text(&names).unwrap_or_default(), fonts).color(ctx.theme.text.secondary.0),
+    )
+    .padding([2, 12])
+    .height(Length::Fixed(fonts.small() * 1.4 + 4.0))
+    .into()
+}
+
+fn row_view<'a>(
+    ctx: &Context<'a>,
+    s: &InstanceStore,
+    window: &MessageWindow,
+    r: &Row,
+) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let theme = ctx.theme;
+    match r {
+        Row::Older => {
+            container(small("Loading older messages…", fonts).color(theme.text.tertiary.0))
+                .center_x(Fill)
+                .padding(8)
+                .into()
+        }
+        Row::Day { label: day, .. } => row![
+            rule_line(theme, theme.general.horizontal_rule.0),
+            small(day.clone(), fonts).color(theme.text.tertiary.0),
+            rule_line(theme, theme.general.horizontal_rule.0),
+        ]
+        .spacing(8)
+        .padding([6, 12])
+        .align_y(Alignment::Center)
+        .into(),
+        Row::NewMessages => row![
+            rule_line(theme, theme.text.error.0),
+            small("New messages", fonts).color(theme.text.error.0),
+        ]
+        .spacing(8)
+        .padding([2, 12])
+        .align_y(Alignment::Center)
+        .into(),
+        Row::Message(m) => match window.get(m.id) {
+            Some(msg) => message_view(ctx, s, m, msg),
+            None => Space::new().into(),
+        },
+        Row::Pending(p) => match window.pending(p.local_id) {
+            Some(pm) => {
+                let (color, note) = match &pm.state {
+                    PendingState::Sending => (theme.text.tertiary.0, None),
+                    PendingState::Queued => (theme.text.tertiary.0, Some("waiting for connection")),
+                    PendingState::Failed(_) => (theme.text.error.0, Some("not sent")),
+                };
+                let mut body = column![label(pm.content.clone(), fonts).color(color)].spacing(2);
+                if !p.grouped {
+                    let me = s
+                        .me_id()
+                        .map(|id| s.display_name(None, id))
+                        .unwrap_or_default();
+                    body = column![
+                        row![
+                            label(me, fonts).font(fonts.bold()),
+                            small(
+                                time::format(
+                                    pm.created_at,
+                                    &ctx.config.buffer.timestamp_format,
+                                    ctx.utc_offset
+                                ),
+                                fonts
+                            )
+                            .color(theme.text.tertiary.0),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                        body
+                    ]
+                    .spacing(2);
+                }
+                if let Some(note) = note {
+                    let mut line = row![small(note, fonts).color(color)]
+                        .spacing(8)
+                        .align_y(Alignment::Center);
+                    if let PendingState::Failed(reason) = &pm.state {
+                        line = line
+                            .push(small(reason.clone(), fonts).color(theme.text.tertiary.0))
+                            .push(
+                                button(small("Retry", fonts))
+                                    .padding([1, 8])
+                                    .style(move |_, st| style::secondary(theme, st))
+                                    .on_press(Message::Retry(p.local_id)),
+                            )
+                            .push(
+                                button(small("Delete", fonts))
+                                    .padding([1, 8])
+                                    .style(move |_, st| style::danger(theme, st))
+                                    .on_press(Message::Discard(p.local_id)),
+                            );
+                    }
+                    body = body.push(line);
+                }
+                container(body)
+                    .padding(row_padding(p.grouped))
+                    .width(Fill)
+                    .into()
+            }
+            None => Space::new().into(),
+        },
+    }
+}
+
+fn row_padding(grouped: bool) -> iced::Padding {
+    iced::Padding {
+        top: if grouped { 1.0 } else { 8.0 },
+        bottom: 1.0,
+        left: 16.0,
+        right: 16.0,
+    }
+}
+
+fn rule_line<'a>(_theme: &'a Theme, color: iced::Color) -> Element<'a, Message> {
+    container(Space::new().height(1))
+        .width(Fill)
+        .style(move |_| container::Style {
+            background: Some(color.into()),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn message_view<'a>(
+    ctx: &Context<'a>,
+    s: &InstanceStore,
+    m: &rows::MessageRow,
+    msg: &ChatMessage,
+) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let theme = ctx.theme;
+    let space = s.space_of(msg.channel_id);
+    let content_color = if m.system {
+        theme.text.secondary.0
+    } else {
+        theme.text.primary.0
+    };
+    let mut content = label(msg.content.clone(), fonts).color(content_color);
+    if m.system {
+        content = content.font(iced::Font {
+            style: iced::font::Style::Italic,
+            ..fonts.ui
+        });
+    }
+    let mut body = column![].spacing(2);
+    if let Some(reply) = &m.reply {
+        let excerpt = if reply.excerpt.is_empty() {
+            "original message deleted".to_owned()
+        } else {
+            reply.excerpt.replace('\n', " ")
+        };
+        body = body.push(
+            row![
+                small("↪", fonts).color(theme.text.tertiary.0),
+                small(reply.author.clone(), fonts)
+                    .font(iced::Font {
+                        weight: iced::font::Weight::Bold,
+                        ..fonts.ui
+                    })
+                    .color(theme.text.secondary.0),
+                small(excerpt, fonts)
+                    .color(theme.text.tertiary.0)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(6),
+        );
+    }
+    if !m.grouped {
+        let name = s.display_name(space, msg.author.id);
+        let color = space
+            .and_then(|sp| author_color(s, sp, msg.author.id))
+            .map_or(theme.roles.default_color.0, rgb);
+        body = body.push(
+            row![
+                label(name, fonts).font(fonts.bold()).color(color),
+                small(
+                    time::format(
+                        msg.created_at() as i64,
+                        &ctx.config.buffer.timestamp_format,
+                        ctx.utc_offset
+                    ),
+                    fonts
+                )
+                .color(theme.text.tertiary.0),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+    let mut line = row![content].spacing(6).align_y(Alignment::End);
+    if msg.edited_at.is_some() {
+        line = line.push(small("(edited)", fonts).color(theme.text.tertiary.0));
+    }
+    body = body.push(line);
+    let highlight = m.mentions_me;
+    container(body)
+        .padding(row_padding(m.grouped))
+        .width(Fill)
+        .style(move |_| {
+            if highlight {
+                container::Style {
+                    background: Some(theme.text.mention_bg.0.into()),
+                    border: Border {
+                        color: theme.text.warning.0,
+                        width: 0.0,
+                        radius: 0.0.into(),
+                    },
+                    ..container::Style::default()
+                }
+            } else {
+                container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The color of the member's highest role that has one.
+pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
+    let state = s.spaces.get(&space)?;
+    let member = state.members.get(&user)?;
+    state
+        .roles
+        .iter()
+        .filter(|r| member.role_ids.contains(&r.id))
+        .find_map(|r| r.color)
+}
+
+fn rgb(c: u32) -> iced::Color {
+    iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typing_texts() {
+        let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(typing_text(&n(&[])), None);
+        assert_eq!(typing_text(&n(&["Bob"])).unwrap(), "Bob is typing…");
+        assert_eq!(
+            typing_text(&n(&["Bob", "Carol"])).unwrap(),
+            "Bob and Carol are typing…"
+        );
+        assert_eq!(
+            typing_text(&n(&["a", "b", "c", "d"])).unwrap(),
+            "Several people are typing…"
+        );
+    }
+
+    #[test]
+    fn author_color_is_the_highest_colored_role() {
+        let s = crate::fixtures::store();
+        assert_eq!(author_color(&s, Id(10), Id(3)), None, "only @everyone");
+    }
+}

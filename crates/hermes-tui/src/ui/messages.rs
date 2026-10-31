@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::{bold, border_style, dim, focused, width};
 use crate::app::{App, Focus};
-use crate::time;
+use hermes_client_core::time;
 
 /// Styled text pieces of one logical line.
 type Pieces = Vec<(String, Style)>;

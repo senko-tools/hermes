@@ -318,3 +318,158 @@ async fn menus_confirm_destructive_actions_and_escape_closes() {
     assert_eq!(app.status.as_ref().unwrap().text, "Channel ID copied");
     assert!(app.confirm.is_none());
 }
+
+/// Waits until `f` holds for the core's store.
+async fn eventually(core: &Core, what: &str, f: impl Fn(&hermes_client_core::Store) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while !f(&core.store()) {
+        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn channel_buffer_rows_follow_history_reads_and_deletes() {
+    use crate::buffer::Buffer;
+    use crate::buffer::channel::rows::{self, Row};
+    use hermes_client_core::Draft;
+
+    let server = start("channel-buffer").await;
+    let mut alice = app();
+    probe(&mut alice, &server.link).await;
+    submit(&mut alice, "alice", "correct horse").await;
+    let inst = server.host.display();
+    let space = first_space(&alice.core, &inst).await;
+    let general = alice.core.store().instance(&inst).unwrap().spaces[&space]
+        .channels
+        .values()
+        .find(|c| c.name.as_deref() == Some("general"))
+        .unwrap()
+        .id;
+    let invite = alice
+        .core
+        .rest(&inst)
+        .unwrap()
+        .create_invite(space, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let mut bob = app();
+    probe(
+        &mut bob,
+        &alice.core.invite_link(&inst, &invite.code).unwrap(),
+    )
+    .await;
+    submit(&mut bob, "bob", "battery staple").await;
+    first_space(&bob.core, &inst).await;
+
+    let send = |text: &str| {
+        bob.core
+            .send_message(
+                &inst,
+                general,
+                Draft {
+                    content: text.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    };
+    send("first");
+    eventually(&alice.core, "alice sees the first message", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.channel(general))
+            .is_some_and(|c| c.last_message_id.is_some())
+    })
+    .await;
+    let first = alice
+        .core
+        .store()
+        .instance(&inst)
+        .unwrap()
+        .channel(general)
+        .unwrap()
+        .last_message_id
+        .unwrap();
+    // Alice reads up to the first message, then Bob writes two more.
+    alice.core.mark_read(&inst, general, first);
+    eventually(&alice.core, "the read marker", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.read_states.get(&general))
+            .is_some_and(|r| r.last_read_id == first)
+    })
+    .await;
+    send("second");
+    send("third");
+    eventually(&alice.core, "three messages", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.channel(general))
+            .and_then(|c| c.last_message_id)
+            .is_some_and(|l| l > first)
+    })
+    .await;
+
+    // Alice opens #general: the divider sits before "second".
+    let _ = alice.update(Message::Select(inst.clone(), general));
+    assert_eq!(
+        alice.panes.focused().unwrap().buffer,
+        Buffer::Channel {
+            inst: inst.clone(),
+            channel: general
+        }
+    );
+    assert_eq!(
+        alice.panes.focused().unwrap().channel.read_marker,
+        Some(first)
+    );
+    alice.core.open_channel(&inst, general).await.unwrap();
+    let build = |app: &App| {
+        let store = app.core.store();
+        let s = store.instance(&inst).unwrap();
+        let window = s.window(general).unwrap();
+        let rows = rows::build(
+            s,
+            window,
+            &rows::Options {
+                group_minutes: 7,
+                utc_offset: 0,
+                read_marker: app.panes.focused().unwrap().channel.read_marker,
+            },
+        );
+        rows.iter()
+            .map(|r| match r {
+                Row::NewMessages => "new".to_owned(),
+                Row::Message(m) => window.get(m.id).unwrap().content.clone(),
+                _ => String::new(),
+            })
+            .filter(|t| !t.is_empty() && !t.contains("joined"))
+            .collect::<Vec<_>>()
+    };
+    let shown = build(&alice);
+    let tail: Vec<&str> = shown
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(tail, ["first", "new", "second", "third"], "{shown:?}");
+
+    // Bob deletes "third": it disappears from Alice's list.
+    let third = {
+        let store = alice.core.store();
+        let w = store.instance(&inst).unwrap().window(general).unwrap();
+        w.messages.iter().find(|m| m.content == "third").unwrap().id
+    };
+    bob.core
+        .delete_message(&inst, general, third)
+        .await
+        .unwrap();
+    eventually(&alice.core, "the delete", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.window(general))
+            .and_then(|w| w.get(third))
+            .is_some_and(|m| m.deleted)
+    })
+    .await;
+    assert!(!build(&alice).contains(&"third".to_owned()));
+}

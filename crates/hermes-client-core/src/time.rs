@@ -1,6 +1,6 @@
-//! Local time for message timestamps without a date/time crate: the UTC offset is read once at
-//! startup (`date +%z` on unix, `GetTimeZoneInformation` on Windows), and `[buffer]
-//! timestamp_format` supports `%H %M %S %d %m %Y %y %%`.
+//! Local time for message timestamps without a date/time crate (shared by the GUI and TUI): the
+//! UTC offset is read once at startup (`date +%z` on unix, `GetTimeZoneInformation` on Windows),
+//! and `[buffer] timestamp_format` supports `%H %M %S %d %m %Y %y %%`.
 
 /// The local UTC offset in seconds (0 if it cannot be determined).
 pub fn local_offset_secs() -> i64 {

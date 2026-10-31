@@ -9,12 +9,15 @@ use hermes_client_core::proto::id::Id;
 use iced::widget::pane_grid::{self, Axis, Configuration, Node};
 
 use crate::buffer::Buffer;
+use crate::buffer::channel::ChannelView;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pane {
     pub buffer: Buffer,
     /// The member list is docked on the right.
     pub members: bool,
+    /// Scroll position and measured rows of a channel buffer (not saved).
+    pub channel: ChannelView,
 }
 
 impl Pane {
@@ -22,6 +25,7 @@ impl Pane {
         Pane {
             buffer,
             members: false,
+            channel: ChannelView::default(),
         }
     }
 }
@@ -115,6 +119,7 @@ fn config_of(table: &toml::Table) -> Option<Configuration<Pane>> {
             .get("members")
             .and_then(toml::Value::as_bool)
             .unwrap_or(false),
+        channel: ChannelView::default(),
     }))
 }
 
@@ -175,7 +180,7 @@ mod tests {
         let odd: toml::Table = toml::from_str("buffer = \"mystery\"").unwrap();
         assert!(matches!(
             restore(&[odd]),
-            Some(Configuration::Pane(p)) if p == Pane::new(Buffer::Empty)
+            Some(Configuration::Pane(p)) if p.buffer == Buffer::Empty && !p.members
         ));
     }
 }

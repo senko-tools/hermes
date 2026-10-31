@@ -5,7 +5,7 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::pane_grid;
 use iced::{Size, window};
 
-use crate::buffer::settings;
+use crate::buffer::{channel, settings};
 use crate::modal::{add_instance, command_bar, new_dm};
 use crate::panes::PaneAction;
 use crate::sidebar::collapsed::Node;
@@ -55,4 +55,5 @@ pub enum Message {
     Key(Key, Physical, Modifiers, bool),
     CloseRequested(window::Id),
     CommandBar(command_bar::Message),
+    Channel(pane_grid::Pane, channel::Message),
 }

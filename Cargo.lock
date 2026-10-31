@@ -2360,6 +2360,7 @@ dependencies = [
  "toml",
  "toml_edit 0.22.27",
  "tracing",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2434,7 +2435,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "windows 0.62.2",
 ]
 
 [[package]]

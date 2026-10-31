@@ -1,6 +1,7 @@
 //! Buffers: what a pane shows (PLAN.md section 15.1). Mentions, Search, Logs, VoiceRoom and
 //! SpaceSettings come with their features.
 
+pub mod channel;
 pub mod settings;
 
 use hermes_client_core::InstanceId;

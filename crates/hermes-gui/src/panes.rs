@@ -8,6 +8,7 @@ use iced::widget::pane_grid::{self, Axis, PaneGrid};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable};
 use iced::{Alignment, Border, Element, Fill, Length};
 
+use crate::buffer::channel::{self, ChannelView};
 use crate::buffer::{Buffer, settings};
 use crate::font::Fonts;
 use crate::message::Message;
@@ -55,18 +56,27 @@ impl Panes {
         }
     }
 
-    /// Shows `buffer` in the focused pane.
+    /// Shows `buffer` in the focused pane. A channel starts at the bottom, with the divider
+    /// before the messages newer than `read_marker`.
     pub fn open(&mut self, buffer: Buffer) {
-        if let Some(pane) = self.state.get_mut(self.focus) {
+        self.open_with_marker(buffer, None);
+    }
+
+    pub fn open_with_marker(&mut self, buffer: Buffer, read_marker: Option<Id>) {
+        if let Some(pane) = self.state.get_mut(self.focus)
+            && pane.buffer != buffer
+        {
             pane.buffer = buffer;
+            pane.channel = ChannelView::new(read_marker);
         }
     }
 
     /// Splits `pane`; the new pane shows the same buffer and gets the focus.
     pub fn split(&mut self, pane: pane_grid::Pane, axis: Axis) {
-        let Some(current) = self.state.get(pane).cloned() else {
+        let Some(mut current) = self.state.get(pane).cloned() else {
             return;
         };
+        current.channel = ChannelView::new(current.channel.read_marker);
         if let Some((new, _)) = self.state.split(axis, pane, current) {
             self.focus = new;
         }
@@ -199,7 +209,7 @@ impl Panes {
             .padding([6, 10])
             .style(move |_| style::pane_header(theme));
 
-            pane_grid::Content::new(body(pane, ctx))
+            pane_grid::Content::new(body(id, pane, ctx))
                 .title_bar(title_bar)
                 .style(move |_| container::Style {
                     background: Some(theme.general.background.0.into()),
@@ -230,6 +240,7 @@ pub struct Context<'a> {
     pub theme: &'a Theme,
     pub config: &'a hermes_client_core::config::ClientConfig,
     pub themes: &'a [String],
+    pub utc_offset: i64,
 }
 
 /// Actions from a pane header.
@@ -267,7 +278,7 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
     }
 }
 
-fn body<'a>(pane: &'a Pane, ctx: &Context<'a>) -> Element<'a, Message> {
+fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     match &pane.buffer {
@@ -299,14 +310,23 @@ fn body<'a>(pane: &'a Pane, ctx: &Context<'a>) -> Element<'a, Message> {
             settings::view(ctx.config, ctx.themes, fonts, theme).map(Message::Settings)
         }
         Buffer::Channel { inst, channel } => {
-            let messages = container(
-                small("The message view is not built yet.", fonts).color(theme.text.tertiary.0),
+            let messages = channel::view(
+                &channel::Context {
+                    core: ctx.core,
+                    config: ctx.config,
+                    fonts,
+                    theme,
+                    utc_offset: ctx.utc_offset,
+                },
+                inst,
+                *channel,
+                &pane.channel,
             )
-            .center(Fill);
+            .map(move |m| Message::Channel(id, m));
             if pane.members {
                 row![messages, member_list(ctx, inst, *channel)].into()
             } else {
-                messages.into()
+                messages
             }
         }
     }

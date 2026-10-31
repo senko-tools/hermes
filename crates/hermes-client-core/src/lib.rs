@@ -13,6 +13,7 @@ pub mod known_hosts;
 pub mod notify;
 pub mod rest;
 pub mod store;
+pub mod time;
 pub mod tls;
 pub mod tokens;
 pub mod view;

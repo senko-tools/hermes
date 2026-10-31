@@ -28,6 +28,10 @@ toml.workspace = true
 toml_edit.workspace = true
 tracing.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# The local UTC offset for timestamps (time.rs).
+windows = { workspace = true, features = ["Win32_System_Time"] }
+
 [dev-dependencies]
 # Integration tests run a real server (PLAN.md section 19); never a normal dependency.
 hermes-server = { path = "../hermes-server" }
