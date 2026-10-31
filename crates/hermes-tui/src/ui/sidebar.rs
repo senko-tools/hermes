@@ -39,6 +39,36 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 ListItem::new(Line::from(Span::styled(format!(" {name}"), bold())))
             }
             SidebarItem::DmHeader => ListItem::new(Line::from(Span::styled(" DMs", bold()))),
+            SidebarItem::VoiceUser {
+                name,
+                speaking,
+                muted,
+                deafened,
+                ..
+            } => {
+                let flags = format!(
+                    "{}{}",
+                    if *speaking { " *" } else { "" },
+                    if *deafened {
+                        " d"
+                    } else if *muted {
+                        " m"
+                    } else {
+                        ""
+                    }
+                );
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("     {name}"),
+                        if *speaking {
+                            Style::default().fg(Color::Green)
+                        } else {
+                            Style::default().fg(Color::Gray)
+                        },
+                    ),
+                    Span::styled(flags, Style::default().fg(Color::Yellow)),
+                ]))
+            }
             SidebarItem::Channel {
                 inst,
                 channel,

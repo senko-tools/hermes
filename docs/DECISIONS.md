@@ -1044,3 +1044,18 @@ Approved by the developer as a plan before implementation.
   joining with noise suppression off (not persisted).
 - **Per-user volume menu** (right-click a participant in the sidebar or the voice room): a
   0–200 % slider applied live and saved to `user_volumes.toml`, plus "Mute for me" (not saved).
+
+## 2026-11-01: TUI voice details
+
+Approved by the developer as a plan before implementation.
+
+- **`J`** joins the room of the selected sidebar entry (voice channel, DM, or someone listed in a
+  room), or of the open channel when the messages have the focus. `L` leaves, `m` toggles mute
+  (unmuting while deafened undeafens), `D` toggles deafen. `q` asks for confirmation in voice.
+- **`:voice [channel]`** (alias `:v`): without a name it answers the ringing call (opening the
+  DM), else joins the open channel's room. `:leave`, `:mute`, `:deafen` and the slash commands
+  `/join <voice channel>`, `/leave`, `/mute`, `/deafen` do the same as the keys.
+- **Incoming calls** ring the terminal bell and say "<name> is calling: :voice to answer"; the
+  status line says when the caller stops.
+- **`Core::join_or_call`** (client-core) is the shared "join" of both UIs: an empty DM room starts
+  a call, anything else joins.

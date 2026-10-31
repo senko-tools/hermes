@@ -14,6 +14,7 @@ use std::time::Duration;
 use hermes_audio::{AudioEvent, AudioSettings, Engine, InputMode, Io, Sound};
 use hermes_proto::api::{VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest};
 use hermes_proto::id::Id;
+use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
 use hermes_proto::voice::{
     self, AudioHeader, ClientControl, KickReason, Participant, ServerControl,
@@ -475,6 +476,30 @@ impl Core {
         self.join_voice(inst, channel).await?;
         self.rest(inst)?.ring(channel, None).await?;
         Ok(())
+    }
+
+    /// What the UIs' "join" does: joins the room, except that a DM room nobody else is in
+    /// starts a call (rings the others).
+    pub async fn join_or_call(&self, inst: &str, channel: Id) -> Result<()> {
+        let (dm, others) = {
+            let store = self.store();
+            let s = store.instance(inst);
+            let dm = s
+                .and_then(|s| s.channel(channel))
+                .is_some_and(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm));
+            let others = s.is_some_and(|s| {
+                let me = s.me_id();
+                s.voice_states
+                    .values()
+                    .any(|v| v.channel_id == channel && Some(v.user_id) != me)
+            });
+            (dm, others)
+        };
+        if dm && !others {
+            self.start_call(inst, channel).await
+        } else {
+            self.join_voice(inst, channel).await
+        }
     }
 
     /// Leaves voice (no-op when not in voice).

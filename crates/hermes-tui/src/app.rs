@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::commands::{self, Command};
 use crate::input::Input;
 use crate::keymap::{Action, Key, Keymap, Lookup};
+use crate::voice;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -54,6 +55,16 @@ pub enum SidebarItem {
         depth: u8,
         unread: bool,
         mentions: u32,
+    },
+    /// Someone in a voice room, under its channel or DM (whether I am in voice or not).
+    VoiceUser {
+        inst: InstanceId,
+        channel: Id,
+        user: Id,
+        name: String,
+        speaking: bool,
+        muted: bool,
+        deafened: bool,
     },
     DmHeader,
 }
@@ -103,6 +114,8 @@ pub enum ConfirmAction {
         invite: Option<String>,
     },
     RemoveInstance(InstanceId),
+    /// `q` while in voice.
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +182,8 @@ pub struct App {
     pub quit: bool,
     /// Messages per page for Ctrl+u/d (set by the UI from the pane height).
     pub page: usize,
+    /// A ringing incoming call: instance, DM, caller name.
+    pub ringing: Option<(InstanceId, Id, String)>,
 }
 
 impl App {
@@ -197,6 +212,7 @@ impl App {
             utc_offset,
             quit: false,
             page: 10,
+            ringing: None,
         };
         if let Some(w) = warnings.first() {
             app.error(w.clone());
@@ -241,6 +257,7 @@ impl App {
                         name: space.space.name.clone(),
                     });
                     for c in view::channel_tree(s, space.space.id) {
+                        let (id, kind) = (c.id, c.kind);
                         items.push(SidebarItem::Channel {
                             inst: inst.clone(),
                             channel: c.id,
@@ -250,12 +267,22 @@ impl App {
                             unread: c.unread,
                             mentions: c.mentions,
                         });
+                        if kind == ChannelKind::Voice {
+                            items.extend(voice::voice_users(
+                                &self.core,
+                                s,
+                                &inst,
+                                id,
+                                Some(space.space.id),
+                            ));
+                        }
                     }
                 }
                 let dms = view::dm_list(s);
                 if !dms.is_empty() {
                     items.push(SidebarItem::DmHeader);
                     for c in dms {
+                        let id = c.id;
                         items.push(SidebarItem::Channel {
                             inst: inst.clone(),
                             channel: c.id,
@@ -265,6 +292,7 @@ impl App {
                             unread: c.unread,
                             mentions: c.mentions,
                         });
+                        items.extend(voice::voice_users(&self.core, s, &inst, id, None));
                     }
                 }
             }
@@ -278,6 +306,18 @@ impl App {
             (SidebarItem::Channel { channel: x, .. }, SidebarItem::Channel { channel: y, .. }) => {
                 x == y
             }
+            (
+                SidebarItem::VoiceUser {
+                    channel: x,
+                    user: u,
+                    ..
+                },
+                SidebarItem::VoiceUser {
+                    channel: y,
+                    user: v,
+                    ..
+                },
+            ) => x == y && u == v,
             _ => a == b,
         };
         if let Some(sel) = selected
@@ -296,9 +336,9 @@ impl App {
             .iter()
             .rev()
             .find_map(|item| match item {
-                SidebarItem::Instance { inst, .. } | SidebarItem::Channel { inst, .. } => {
-                    Some(inst.clone())
-                }
+                SidebarItem::Instance { inst, .. }
+                | SidebarItem::Channel { inst, .. }
+                | SidebarItem::VoiceUser { inst, .. } => Some(inst.clone()),
                 _ => None,
             })
             .or_else(|| self.core.instance_ids().into_iter().next())
@@ -468,6 +508,7 @@ impl App {
                         | Changed::Channel(_)
                         | Changed::ReadState(_)
                         | Changed::Dms
+                        | Changed::VoiceStates
                 ) {
                     self.rebuild_sidebar();
                 }
@@ -496,7 +537,14 @@ impl App {
                     notification.author, notification.title, notification.preview
                 ));
             }
-            CoreEvent::IncomingCall { .. } => self.info("Incoming call (voice comes later)".into()),
+            CoreEvent::IncomingCall {
+                inst,
+                channel,
+                caller,
+            } => self.incoming_call(inst, channel, caller),
+            CoreEvent::CallRingStopped { inst, channel } => self.call_ring_stopped(&inst, channel),
+            // The sidebar shows who speaks.
+            CoreEvent::Speaking { .. } => self.rebuild_sidebar(),
             CoreEvent::ConfigReloaded { warnings } => {
                 let (keymap, key_warnings) = Keymap::new(&self.core.config().tui.keys);
                 self.keymap = keymap;
@@ -506,11 +554,9 @@ impl App {
                 }
             }
             CoreEvent::Error(e) => self.error(e),
-            // The voice status line and speaking markers come with the voice UI (Phase 5).
-            CoreEvent::VoiceStatus(_)
-            | CoreEvent::Speaking { .. }
-            | CoreEvent::InputLevel(_)
-            | CoreEvent::CallRingStopped { .. } => {}
+            // The status line reads the voice state when it is drawn.
+            CoreEvent::VoiceStatus(_) => self.rebuild_sidebar(),
+            CoreEvent::InputLevel(_) => {}
         }
     }
 
@@ -736,9 +782,10 @@ impl App {
             },
             Action::PageUp => self.move_selection(-(self.page.max(1) as isize)),
             Action::PageDown => self.move_selection(self.page.max(1) as isize),
-            Action::ToggleMute | Action::ToggleDeafen | Action::JoinVoice | Action::LeaveVoice => {
-                self.info("Voice comes in a later version.".into())
-            }
+            Action::ToggleMute => self.toggle_mute(),
+            Action::ToggleDeafen => self.toggle_deafen(),
+            Action::JoinVoice => self.join_selected(),
+            Action::LeaveVoice => self.leave_voice(),
             Action::ToggleMembers => {
                 self.show_members = !self.show_members;
                 if !self.show_members && self.focus == Focus::Members {
@@ -749,6 +796,12 @@ impl App {
             Action::Command => {
                 self.command.clear();
                 self.mode = Mode::Command;
+            }
+            Action::Quit if self.core.voice_channel().is_some() => {
+                self.popup = Some(Popup::Confirm {
+                    text: "You are in voice. Quit anyway? (y/n)".into(),
+                    action: ConfirmAction::Quit,
+                });
             }
             Action::Quit => self.quit = true,
         }
@@ -926,12 +979,10 @@ impl App {
         }
         match command {
             SlashCommand::Send(_) | SlashCommand::Me(_) => unreachable!("handled above"),
-            SlashCommand::Join(_)
-            | SlashCommand::Leave
-            | SlashCommand::Mute
-            | SlashCommand::Deafen => {
-                self.info("Voice comes in a later version.".into());
-            }
+            SlashCommand::Join(name) => self.voice_command(&name),
+            SlashCommand::Leave => self.leave_voice(),
+            SlashCommand::Mute => self.toggle_mute(),
+            SlashCommand::Deafen => self.toggle_deafen(),
             SlashCommand::Status(status) => {
                 self.core.set_presence(status);
                 self.info(format!("status: {status:?}").to_lowercase());
@@ -1069,9 +1120,10 @@ impl App {
                 Some(inst) => self.open_dm(&inst, &user),
                 None => self.error("no instance".into()),
             },
-            Command::Voice(_) | Command::Leave | Command::Mute | Command::Deafen => {
-                self.info("Voice comes in a later version.".into());
-            }
+            Command::Voice(name) => self.voice_command(&name),
+            Command::Leave => self.leave_voice(),
+            Command::Mute => self.toggle_mute(),
+            Command::Deafen => self.toggle_deafen(),
             Command::Status(status) => {
                 self.core.set_presence(status);
                 self.info(format!("status: {status:?}").to_lowercase());
@@ -1502,6 +1554,7 @@ impl App {
                     Err(e) => self.error(e.to_string()),
                 }
             }
+            ConfirmAction::Quit => self.quit = true,
             ConfirmAction::RemoveInstance(inst) => {
                 if self.current.as_ref().is_some_and(|(i, _)| *i == inst) {
                     self.current = None;

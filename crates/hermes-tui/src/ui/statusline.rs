@@ -1,4 +1,4 @@
-//! The bottom line: mode, connection, voice (later) and hints or the last message.
+//! The bottom line: mode, connection, voice and hints or the last message.
 
 use std::time::Duration;
 
@@ -46,6 +46,13 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         };
         spans.push(Span::raw("│"));
         spans.push(status);
+    }
+    if let Some(voice) = crate::voice::status_text(&app.core) {
+        spans.push(Span::raw("│"));
+        spans.push(Span::styled(
+            format!(" {voice} "),
+            Style::default().fg(Color::Green),
+        ));
     }
     spans.push(Span::raw("│"));
     let message = app.status.as_ref().filter(|(_, error, at)| {

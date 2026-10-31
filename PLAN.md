@@ -1604,7 +1604,7 @@ Goal: remove the biggest unknowns before writing real code.
 
 ### Phase 5: Voice UI (1–2 weeks)
 - [x] GUI: voice users in the sidebar (visible without joining), double-click to join, voice panel, voice room buffer, speaking rings, per-user volume menu, mute/deafen keybinds, global push-to-talk and global mute, incoming-call banner, audio settings page with level meter and mic test.
-- [ ] TUI: voice users in sidebar, `J`/`L`/`m`/`D`, status line.
+- [x] TUI: voice users in sidebar, `J`/`L`/`m`/`D`, status line.
 
 **Done when:** voice is usable daily from both clients.
 

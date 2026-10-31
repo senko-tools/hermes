@@ -9,6 +9,7 @@ pub enum Command {
     /// Open a channel by name (`#` optional).
     Join(String),
     Dm(String),
+    /// Join a voice room: a voice channel by name, or (empty) the ringing call / open channel.
     Voice(String),
     Leave,
     Mute,
@@ -33,7 +34,7 @@ pub enum Command {
     Quit,
 }
 
-pub const HELP: &str = ":join <channel>  :dm <user>  :status <s>  :upload <path>  :open <n>  \
+pub const HELP: &str = ":join <channel>  :dm <user>  :voice [channel]  :leave  :mute  :deafen  :status <s>  :upload <path>  :open <n>  \
 :invite  :instance add <link|host>  :instance remove  :login  :logout  :set <key> <value>  \
 :offline  :online  :retry  :quit";
 
@@ -53,7 +54,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
     Ok(match name {
         "join" | "j" => Command::Join(need(":join <channel>")?.trim_start_matches('#').to_owned()),
         "dm" => Command::Dm(need(":dm <user>")?.trim_start_matches('@').to_owned()),
-        "voice" => Command::Voice(need(":voice <channel>")?),
+        "voice" | "v" => Command::Voice(arg.to_owned()),
         "leave" => Command::Leave,
         "mute" => Command::Mute,
         "deafen" => Command::Deafen,

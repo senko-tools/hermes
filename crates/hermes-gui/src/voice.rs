@@ -89,32 +89,11 @@ pub struct VolumeMenu {
     pub muted: bool,
 }
 
-/// Whether someone other than me is in the voice room of `channel`.
-fn others_in_room(core: &Core, inst: &str, channel: Id) -> bool {
-    let store = core.store();
-    store.instance(inst).is_some_and(|s| {
-        let me = s.me_id();
-        s.voice_states
-            .values()
-            .any(|v| v.channel_id == channel && Some(v.user_id) != me)
-    })
-}
-
-fn is_dm(core: &Core, inst: &str, channel: Id) -> bool {
-    core.store()
-        .instance(inst)
-        .and_then(|s| s.channel(channel))
-        .is_some_and(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm))
-}
-
 /// Joins a room; an empty DM room starts a call instead.
 pub async fn join(core: Core, inst: InstanceId, channel: Id) -> Result<(), String> {
-    let result = if is_dm(&core, &inst, channel) && !others_in_room(&core, &inst, channel) {
-        core.start_call(&inst, channel).await
-    } else {
-        core.join_voice(&inst, channel).await
-    };
-    result.map_err(|e| e.to_string())
+    core.join_or_call(&inst, channel)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 impl App {

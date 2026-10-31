@@ -7,7 +7,10 @@ mod input;
 mod keymap;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_voice;
 mod ui;
+mod voice;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
