@@ -817,3 +817,15 @@ Approved by the developer as a plan before implementation.
   viewer (Escape or a click closes it). Other files show a card with a Download button. Downloads
   go to the Downloads folder with a sanitized name (no directory parts, no characters Windows
   forbids, no device names) and never overwrite a file (` (1)`, ` (2)`, …).
+
+## 2026-10-31: TUI `:open` no longer goes through a shell
+
+- **Bug:** `:open` saved an attachment under its uploaded name and ran `cmd /C start "" <path>`.
+  The server allows `&` in filenames and Rust only quotes arguments with spaces or quotes, so a
+  file named like `x&calc.exe` made cmd run a second command on the opener's Windows machine.
+- **Fix (approved):** on Windows the TUI calls `ShellExecuteW` directly (`windows` crate features
+  `Win32_UI_Shell` and `Win32_UI_WindowsAndMessaging`, `cfg(windows)` only); other platforms
+  already ran `open`/`xdg-open` without a shell. Saved names go through
+  `hermes_client_core::files::safe_filename` (shared with the GUI), and files that would run code
+  when opened (`.exe`, `.bat`, `.lnk`, `.ps1`, …, see `files::is_program`) are saved but not
+  opened.

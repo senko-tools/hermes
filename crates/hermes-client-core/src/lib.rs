@@ -8,6 +8,7 @@ pub mod address;
 pub mod commands;
 pub mod config;
 mod core;
+pub mod files;
 pub mod gateway;
 pub mod known_hosts;
 pub mod notify;

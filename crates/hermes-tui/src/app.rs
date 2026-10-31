@@ -1223,14 +1223,24 @@ impl App {
                     .join("hermes-tui")
                     .join(attachment.id.to_string());
                 std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let path = dir.join(&attachment.filename);
+                // The name comes from another user: no directory parts or odd characters.
+                let name = hermes_client_core::files::safe_filename(&attachment.filename);
+                let path = dir.join(&name);
                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                // Opening a program would run it; only save those.
+                if hermes_client_core::files::is_program(&name) {
+                    return Ok::<_, String>((path, false));
+                }
                 open_with_os(&path).map_err(|e| e.to_string())?;
-                Ok::<_, String>(path)
+                Ok((path, true))
             }
             .await;
             let _ = tasks.send(match result {
-                Ok(path) => TaskMsg::Info(format!("opened {}", path.display())),
+                Ok((path, true)) => TaskMsg::Info(format!("opened {}", path.display())),
+                Ok((path, false)) => TaskMsg::Info(format!(
+                    "saved {} (not opened: it is a program)",
+                    path.display()
+                )),
                 Err(e) => TaskMsg::Error(e),
             });
         });
@@ -1504,14 +1514,44 @@ impl App {
     }
 }
 
-/// Opens a file with the system's default application.
+/// Opens a file with the system's default application. On Windows this calls `ShellExecuteW`
+/// directly: going through `cmd /C start` would let `&` and similar characters in a filename run
+/// other commands.
+#[cfg(windows)]
+#[allow(unsafe_code)]
 fn open_with_os(path: &std::path::Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]).arg(path);
-        c
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{PCWSTR, w};
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call; the other
+    // pointers are static strings or null.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
     };
+    // Values above 32 mean success.
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "could not open the file (error {})",
+            result.0 as usize
+        )))
+    }
+}
+
+/// Opens a file with the system's default application (no shell involved).
+#[cfg(not(windows))]
+fn open_with_os(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let mut cmd = {
         let mut c = std::process::Command::new("open");

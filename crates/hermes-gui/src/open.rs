@@ -35,38 +35,7 @@ pub fn url(url: &str) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// A filename that is safe to create on any platform: no directory parts, no characters Windows
-/// forbids, not a reserved device name, not empty.
-pub fn safe_filename(name: &str) -> String {
-    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    let mut out: String = base
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    out = out.trim_matches(|c: char| c == ' ' || c == '.').to_owned();
-    if out.is_empty() {
-        out = "download".into();
-    }
-    let stem = out
-        .split('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit());
-    if reserved {
-        out.insert(0, '_');
-    }
-    out
-}
+pub use hermes_client_core::files::safe_filename;
 
 /// The Downloads folder (or the home folder, or the current one).
 pub fn downloads_dir() -> PathBuf {
@@ -114,22 +83,6 @@ pub fn save_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn filenames_are_made_safe() {
-        assert_eq!(safe_filename("cat.png"), "cat.png");
-        assert_eq!(safe_filename("..\\..\\evil.exe"), "evil.exe");
-        assert_eq!(safe_filename("a/b/c.txt"), "c.txt");
-        assert_eq!(
-            safe_filename("x&calc.exe"),
-            "x&calc.exe",
-            "never passed to a shell"
-        );
-        assert_eq!(safe_filename("what?<>|.txt"), "what____.txt");
-        assert_eq!(safe_filename("CON.txt"), "_CON.txt");
-        assert_eq!(safe_filename("com1"), "_com1");
-        assert_eq!(safe_filename(" .. "), "download");
-    }
 
     #[test]
     fn saving_never_overwrites() {

@@ -18,6 +18,10 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# ShellExecuteW for `:open` (no shell parsing of file names).
+windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 # The end-to-end test runs a real server (PLAN.md section 19); never a normal dependency.
 hermes-server = { path = "../hermes-server" }
