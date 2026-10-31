@@ -10,24 +10,36 @@ use tokio::task::JoinError;
 
 use crate::state::AppState;
 use crate::tls::Tls;
-use crate::{api, files};
+use crate::{api, files, voice};
 
 /// How long open requests may take to finish after the shutdown signal. Together with closing
 /// the database this stays within the 10 s the plan allows.
 pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Serves on `tcp` until `signal` completes, then stops accepting connections, closes every
-/// gateway connection with 4100, waits up to [`DRAIN_TIMEOUT`] for open requests and closes the
+/// How long QUIC gets to tell clients the connection is closing.
+const QUIC_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Serves on `tcp` (and voice on `quic`, see [`voice::endpoint::bind`]) until `signal`
+/// completes, then stops accepting connections, closes every gateway connection with 4100 and
+/// every QUIC connection, waits up to [`DRAIN_TIMEOUT`] for open requests and closes the
 /// database. Logs `Hermes is ready on <bind>:<port>` once serving.
 pub async fn run(
     state: Arc<AppState>,
     tcp: TcpListener,
     tls: Tls,
+    quic: Option<quinn::Endpoint>,
     signal: impl Future<Output = ()> + Send,
 ) -> io::Result<()> {
     let port = tcp.local_addr()?.port();
     let app = api::router(state.clone());
     let cleanup = tokio::spawn(files::cleanup_task(state.clone()));
+    let calls = state
+        .voice
+        .take_after()
+        .map(|rx| tokio::spawn(voice::calls::task(state.clone(), rx)));
+    let voice_task = quic
+        .clone()
+        .map(|endpoint| tokio::spawn(voice::endpoint::serve(state.clone(), endpoint)));
     let reload = tls.reloader().cloned().map(|r| tokio::spawn(r.watch()));
     let (stop, stopped) = oneshot::channel::<()>();
     let graceful = {
@@ -45,6 +57,9 @@ pub async fn run(
         () = signal => {
             tracing::info!("shutting down");
             let _ = stop.send(());
+            if let Some(quic) = &quic {
+                quic.close(0u32.into(), b"server restarting");
+            }
             match tokio::time::timeout(DRAIN_TIMEOUT, &mut server).await {
                 Ok(result) => joined(result),
                 Err(_) => {
@@ -59,6 +74,13 @@ pub async fn run(
         }
     };
     cleanup.abort();
+    if let Some(quic) = &quic {
+        quic.close(0u32.into(), b"server restarting");
+        let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
+    }
+    for task in [calls, voice_task].into_iter().flatten() {
+        task.abort();
+    }
     if let Some(reload) = reload {
         reload.abort();
     }

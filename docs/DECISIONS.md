@@ -876,3 +876,47 @@ Approved by the developer as a plan before implementation.
 - **Close to tray:** with `general.close_to_tray` (default on) the close button hides the window
   (the layout is saved); Quit in the tray saves and exits. `general.start_minimized` starts hidden
   only when the tray exists.
+
+## 2026-11-01: Voice server details the plan leaves open
+
+Approved by the developer as a plan before implementation.
+
+- **New dependency:** `bytes = "=1.12.1"` (already in the lock file through quinn) for the cheap
+  datagram clones section 12.4 names (`bytes::Bytes`).
+- **Endpoint:** quinn binds `network.bind:network.port` over UDP with `voice-cert.pem` /
+  `voice-key.pem` (same generator and SANs as the self-signed HTTPS certificate), TLS 1.3 only,
+  ALPN `hermes-voice/1`, idle timeout 15 s, keep-alive 5 s. A failed bind stops the server.
+  `ready.voice` and `/voice/join` carry the fingerprint as `"3F:A9:…"` and `public_port`.
+- **QUIC host** in `/voice/join`: `instance.public_host`, or the host of the request's `Host`
+  header when that is empty (brackets and port removed).
+- **Tokens:** `hms_` + 32 random bytes like session tokens, kept in memory only.
+- **Control stream:** the client opens one bi-stream; `auth` must come within 10 s. A bad or
+  expired token, or any other op first, answers `error {code: "UNAUTHORIZED"}` and closes the
+  connection. A bad `switch` token only answers `error`. Error codes are `ErrorCode` names.
+  `kicked` reasons: `joined_elsewhere`, `disconnected` (moderator or `POST /voice/leave`),
+  `channel_deleted`, `removed`. After `kicked` and `leave` the connection stays open for a
+  later `switch`.
+- **Self mute/deafen** arrives both as `PATCH /voice/@me` and `set_state`; a change that changes
+  nothing publishes nothing, so one gateway event goes out.
+- **Leaving rooms:** the registry removes everyone who can no longer `VIEW_CHANNEL` their room
+  (channel deleted, left/kicked/banned from the space, left the group DM, permissions changed).
+  Losing `CONNECT` alone does not kick; losing `SPEAK` stops forwarding within 1 s (the bit is
+  re-checked at most once a second per speaker).
+- **Moderation:** `PATCH /spaces/{id}/voice-states/{uid}` checks the bits in the user's current
+  channel (and `MOVE_MEMBERS` in the target one, which the user must be able to view and connect
+  to). No role hierarchy check. Audit actions `member_voice_update`, `member_move`,
+  `member_disconnect`. A move sends `moved {token}`; the token ignores `user_limit`.
+- **Limits:** `user_limit` counts users other than the joining one and is bypassed by
+  `MOVE_MEMBERS`; `voice.max_users_per_room` always applies. Both are checked at `/voice/join`
+  and again at `auth`/`switch`.
+- **DM calls:** a DM room that goes from empty to one participant posts the system message
+  `"<display name> started a call"` (author: the caller); when it empties, `"Call ended · N min"`
+  (at least 1, same author). Ringing (`call_ring`) needs `CONNECT` in the DM, goes to the listed
+  recipients (default: all) who are not in the call, and stops (`call_ring_stop`) for a user when
+  they join, and for everyone rung when the caller leaves or the room empties. Rings are forgotten
+  after 60 s; the 30 s ring timeout is the client's.
+- **`ready.dm_voice_states`** (new field, defaults to empty): voice states of DM and group DM
+  calls, which have no space snapshot to live in.
+- **Shutdown:** the QUIC endpoint closes with code 0 ("server restarting") with the gateway; clients
+  reconnect like after a network loss.
+- **`docs/protocol.md`** now exists (human-readable reference, kept in sync with `hermes-proto`).

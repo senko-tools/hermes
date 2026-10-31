@@ -44,7 +44,10 @@ async fn identify_ready_and_heartbeat() {
         json!([{ "user_id": owner_id, "status": "online" }])
     );
     assert_eq!(ready["voice"]["enabled"], true);
-    assert_eq!(ready["voice"]["quic_port"], 7700);
+    // The test server's voice endpoint listens on a random port.
+    let quic_port = server.state.voice.endpoint().unwrap().port;
+    assert_eq!(ready["voice"]["quic_port"], quic_port);
+    assert!(ready["voice"]["cert_sha256"].is_string());
     assert_eq!(ready["instance"]["name"], "Test Instance");
     assert_eq!(ready["instance"]["limits"]["max_message_length"], 4000);
 

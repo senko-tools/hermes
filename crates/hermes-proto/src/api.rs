@@ -365,6 +365,64 @@ pub struct CreateDmRequest {
     pub recipient_ids: Vec<Id>,
 }
 
+/// `POST /voice/join`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceJoinRequest {
+    pub channel_id: Id,
+    #[serde(default)]
+    pub self_mute: bool,
+    #[serde(default)]
+    pub self_deaf: bool,
+}
+
+/// Where to connect for voice: `host:port` over UDP, certificate pinned to `cert_sha256`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuicEndpoint {
+    pub host: String,
+    pub port: u16,
+    /// `"3F:A9:…"`.
+    pub cert_sha256: String,
+}
+
+/// Answer to `POST /voice/join`: a single-use token for `auth` or `switch`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceJoinResponse {
+    pub token: String,
+    pub expires_in_secs: u64,
+    pub quic: QuicEndpoint,
+}
+
+/// `PATCH /voice/@me`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceSelfStateRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_mute: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_deaf: Option<bool>,
+}
+
+/// `PATCH /spaces/{id}/voice-states/{uid}`. `channel_id: null` disconnects the user.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceStatePatchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_mute: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_deaf: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub channel_id: Patch<Id>,
+}
+
+/// `POST /channels/{id}/call/ring`. Without `user_ids`, every recipient not in the call.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallRingRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_ids: Option<Vec<Id>>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

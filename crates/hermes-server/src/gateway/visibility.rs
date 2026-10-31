@@ -84,6 +84,7 @@ pub fn publish_changes(state: &AppState, space_id: Id, before: &Visible) -> Visi
             Audience::User(user_id),
         );
     }
+    state.voice.revalidate(state);
     after
 }
 

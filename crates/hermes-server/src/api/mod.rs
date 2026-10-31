@@ -16,6 +16,7 @@ mod roles;
 mod spaces;
 mod users;
 mod validate;
+mod voice;
 
 use std::io;
 use std::net::SocketAddr;
@@ -135,6 +136,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .post(invites::join)
                 .delete(invites::delete),
         )
+        .route("/voice/join", post(voice::join))
+        .route("/voice/leave", post(voice::leave))
+        .route("/voice/@me", patch(voice::update_me))
+        .route(
+            "/spaces/{id}/voice-states/{uid}",
+            patch(voice::update_state),
+        )
+        .route("/channels/{id}/call/ring", post(voice::ring))
         .fallback(not_found)
         .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
     let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);

@@ -994,6 +994,7 @@ pub(crate) mod tests {
                 status: Status::Online,
             }],
             notification_settings: vec![],
+            dm_voice_states: vec![],
             voice: VoiceInfo {
                 enabled: true,
                 quic_port: Some(7700),

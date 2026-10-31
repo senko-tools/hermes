@@ -60,6 +60,7 @@ async fn start(name: &str) -> Server {
         Arc::new(state),
         tcp,
         tls,
+        None,
         signal,
     ));
     Server {

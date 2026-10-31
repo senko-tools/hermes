@@ -66,7 +66,18 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
         .collect();
     presences.sort_by_key(|p| p.user_id);
 
-    let voice_enabled = config.voice.enabled;
+    let dm_voice_states = {
+        let dms: Vec<Id> = cache.dm_ids(user_id).collect();
+        let mut states: Vec<_> = cache
+            .voice_states
+            .values()
+            .filter(|v| dms.contains(&v.channel_id))
+            .copied()
+            .collect();
+        states.sort_by_key(|v| v.user_id);
+        states
+    };
+    let endpoint = state.voice.endpoint();
     Some(Ready {
         session_id,
         user,
@@ -75,11 +86,11 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
         read_states,
         presences,
         notification_settings: rows.notification_settings,
+        dm_voice_states,
         voice: VoiceInfo {
-            enabled: voice_enabled,
-            quic_port: voice_enabled.then(|| config.public_port()),
-            // The voice certificate comes with the voice server (Phase 4).
-            cert_sha256: None,
+            enabled: endpoint.is_some(),
+            quic_port: endpoint.map(|e| e.port),
+            cert_sha256: endpoint.map(|e| e.cert_sha256.clone()),
         },
         instance: InstanceInfo {
             name: config.instance.name.clone(),

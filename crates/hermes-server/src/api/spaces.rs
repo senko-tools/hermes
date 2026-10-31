@@ -195,6 +195,7 @@ pub async fn delete(
         ServerEvent::SpaceDelete { id: space_id },
         Audience::Users(members),
     );
+    state.voice.revalidate(&state);
     Ok(StatusCode::NO_CONTENT)
 }
 

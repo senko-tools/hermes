@@ -45,6 +45,8 @@ pub struct AppState {
     pub files: Files,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
+    /// Voice rooms, join tokens and the QUIC endpoint's address.
+    pub voice: crate::voice::Voice,
     /// Fingerprint of the self-signed HTTPS certificate, for invite links. Set by the caller of
     /// [`load`](Self::load) once TLS is set up.
     pub fingerprint: Option<Fingerprint>,
@@ -57,6 +59,7 @@ impl AppState {
         let cache = load_from_db(&db).await?;
         let used = crate::db::attachments::total_size(&db.read).await?;
         let files = Files::open(&config.storage.data_dir, used)?;
+        let voice = crate::voice::Voice::new(config.voice.enabled);
         Ok(Self {
             config,
             db,
@@ -67,6 +70,7 @@ impl AppState {
             message_limiter: KeyedLimiter::default(),
             files,
             gateway: Gateway::default(),
+            voice,
             fingerprint: None,
         })
     }

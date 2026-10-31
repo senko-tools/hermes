@@ -1595,7 +1595,7 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** a non-technical friend can install the GUI, click an invite link, create an account and chat comfortably.
 
 ### Phase 4: Voice backend and audio engine (3–4 weeks)
-- [ ] Server: quinn endpoint on the same port number (UDP), voice cert, `/voice/join` tokens, control stream protocol, room registry, forwarding rules, voice states over the gateway, server mute/deafen/move, user limits, DM rooms and ringing.
+- [x] Server: quinn endpoint on the same port number (UDP), voice cert, `/voice/join` tokens, control stream protocol, room registry, forwarding rules, voice states over the gateway, server mute/deafen/move, user limits, DM rooms and ringing.
 - [ ] `hermes-audio`: full capture and playback pipelines, jitter buffer, mixer, device enumeration, device-loss recovery, UI sounds.
 - [ ] Client core: voice connection, join/switch/leave/reconnect, speaking detection, per-user volume, events.
 - [ ] `hermes-voicebot` and voice integration tests.

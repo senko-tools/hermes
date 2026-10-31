@@ -142,6 +142,7 @@ pub fn store() -> InstanceStore {
         ],
         presences: vec![],
         notification_settings: vec![],
+        dm_voice_states: vec![],
         voice: VoiceInfo {
             enabled: true,
             quic_port: Some(7700),

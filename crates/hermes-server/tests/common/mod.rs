@@ -3,6 +3,8 @@
 
 #![allow(dead_code)] // Each test binary uses a different subset.
 
+pub mod voice;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -114,6 +116,18 @@ pub async fn start_with(
     config.limits.messages_per_5s = 100_000;
     let mut state = AppState::load(config).await.unwrap();
     configure(&mut state);
+    let quic = state.config.voice.enabled.then(|| {
+        let (endpoint, cert_sha256) =
+            hermes_server::voice::endpoint::bind(&state.config, "127.0.0.1:0".parse().unwrap())
+                .unwrap();
+        state
+            .voice
+            .set_endpoint(hermes_server::voice::EndpointInfo {
+                cert_sha256,
+                port: endpoint.local_addr().unwrap().port(),
+            });
+        endpoint
+    });
     let state = Arc::new(state);
     let links = setup::first_start(&state, None).await.unwrap().unwrap();
     let setup_code = links.web.rsplit('/').next().unwrap().to_owned();
@@ -125,7 +139,7 @@ pub async fn start_with(
         let shutdown = shutdown.clone();
         async move { shutdown.notified().await }
     };
-    let task = tokio::spawn(server::run(state.clone(), tcp, Tls::Off, signal));
+    let task = tokio::spawn(server::run(state.clone(), tcp, Tls::Off, quic, signal));
     TestServer {
         base: format!("{root}/api/v1"),
         root,

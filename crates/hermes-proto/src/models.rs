@@ -324,10 +324,16 @@ pub enum AuditAction {
     OverrideDelete,
     /// A moderator deleted someone else's message.
     MessageDelete,
+    /// Server mute or deafen changed (`details`: the changed fields).
+    MemberVoiceUpdate,
+    /// Moved to another voice channel (`details.channel_id`).
+    MemberMove,
+    /// Disconnected from voice.
+    MemberDisconnect,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 17] = [
+    pub const ALL: [AuditAction; 20] = [
         AuditAction::SpaceUpdate,
         AuditAction::SpaceTransfer,
         AuditAction::MemberUpdate,
@@ -345,6 +351,9 @@ impl AuditAction {
         AuditAction::OverrideUpdate,
         AuditAction::OverrideDelete,
         AuditAction::MessageDelete,
+        AuditAction::MemberVoiceUpdate,
+        AuditAction::MemberMove,
+        AuditAction::MemberDisconnect,
     ];
 
     /// The snake_case name, as on the wire and in `audit_log.action`.
@@ -367,6 +376,9 @@ impl AuditAction {
             AuditAction::OverrideUpdate => "override_update",
             AuditAction::OverrideDelete => "override_delete",
             AuditAction::MessageDelete => "message_delete",
+            AuditAction::MemberVoiceUpdate => "member_voice_update",
+            AuditAction::MemberMove => "member_move",
+            AuditAction::MemberDisconnect => "member_disconnect",
         }
     }
 

@@ -86,6 +86,11 @@ const AUTHENTICATED: &[(&str, &str)] = &[
     ("DELETE", "/dms/1000/recipients/1000"),
     ("POST", "/invites/abcdefgh"),
     ("DELETE", "/invites/abcdefgh"),
+    ("POST", "/voice/join"),
+    ("POST", "/voice/leave"),
+    ("PATCH", "/voice/@me"),
+    ("PATCH", "/spaces/1000/voice-states/1000"),
+    ("POST", "/channels/1000/call/ring"),
 ];
 
 #[tokio::test]
@@ -134,6 +139,7 @@ async fn each_space_permission_bit_gates_its_endpoint() {
         victims.push(server.member(&owner, &space, name).await.1);
     }
     let general = server.channel_id(&space, "general");
+    let voice_channel = server.channel_id(&space, "General");
     let everyone = space.clone(); // @everyone's role ID is the space ID
     server
         .patch(
@@ -301,6 +307,15 @@ async fn each_space_permission_bit_gates_its_endpoint() {
             method: Method::PUT,
             path: format!("/channels/{general}/messages/{owner_message}/pin"),
             body: Value::Null,
+            denied: forbidden,
+        },
+        // MUTE_MEMBERS, DEAFEN_MEMBERS and MOVE_MEMBERS need someone in voice; tests/voice.rs.
+        Case {
+            bit: Permissions::CONNECT,
+            base: view,
+            method: Method::POST,
+            path: "/voice/join".into(),
+            body: json!({ "channel_id": voice_channel }),
             denied: forbidden,
         },
     ];

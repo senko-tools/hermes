@@ -323,6 +323,11 @@ pub async fn update(
         ServerEvent::ChannelUpdate(channel.clone()),
         Audience::Channel(channel_id),
     );
+    if let Some(bitrate) = channel.bitrate {
+        state
+            .voice
+            .bitrate_changed(channel_id, bitrate.min(state.config.voice.max_bitrate));
+    }
     Ok(Json(channel))
 }
 
@@ -388,6 +393,7 @@ pub async fn delete(
         let id = child.id;
         state.publish(ServerEvent::ChannelUpdate(child), Audience::Channel(id));
     }
+    state.voice.revalidate(&state);
     Ok(StatusCode::NO_CONTENT)
 }
 

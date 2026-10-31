@@ -266,6 +266,7 @@ async fn remove(state: &AppState, actor: Id, channel_id: Id, user_id: Id) -> Api
     if let Some(dm) = dm {
         state.publish(ServerEvent::DmUpdate(dm), Audience::Users(remaining));
     }
+    state.voice.revalidate(state);
     Ok(StatusCode::NO_CONTENT)
 }
 

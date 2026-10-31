@@ -185,7 +185,26 @@ async fn serve(config: Config) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match server::run(Arc::new(state), tcp, tls, server::shutdown_signal()).await {
+    let quic = if state.config.voice.enabled {
+        match crate::voice::endpoint::bind(&state.config, addr) {
+            Ok((endpoint, cert_sha256)) => {
+                tracing::info!("voice (QUIC) listens on udp {addr}, certificate {cert_sha256}");
+                state.voice.set_endpoint(crate::voice::EndpointInfo {
+                    cert_sha256,
+                    port: state.config.public_port(),
+                });
+                Some(endpoint)
+            }
+            Err(err) => {
+                tracing::error!("{err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        tracing::info!("voice is disabled (voice.enabled = false)");
+        None
+    };
+    match server::run(Arc::new(state), tcp, tls, quic, server::shutdown_signal()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!("server error: {err}");

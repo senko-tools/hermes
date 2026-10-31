@@ -272,7 +272,7 @@ pub fn load_or_generate(dir: &Path, name: &str, sans: &[String]) -> Result<CertP
 
 /// SANs of the self-signed HTTPS certificate: `public_host` and the bind IP (when it is a
 /// specific address). Clients pin the fingerprint, so these are informational.
-fn self_signed_sans(config: &Config) -> Vec<String> {
+pub fn self_signed_sans(config: &Config) -> Vec<String> {
     let mut sans = Vec::new();
     let host = config.instance.public_host.trim();
     let host = host

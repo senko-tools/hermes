@@ -239,6 +239,7 @@ fn publish_removal(state: &AppState, space_id: Id, user_id: Id) {
         ServerEvent::SpaceDelete { id: space_id },
         Audience::User(user_id),
     );
+    state.voice.revalidate(state);
 }
 
 /// `BAN_MEMBERS`. Oldest first.
