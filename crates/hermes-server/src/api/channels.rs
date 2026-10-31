@@ -1,5 +1,6 @@
 //! Space channels and their permission overrides: `/spaces/{id}/channels`, `/channels/{id}` and
-//! `/channels/{id}/overrides/{role_id}`. DM and group DM changes come with the DM item.
+//! `/channels/{id}/overrides/{role_id}`, and their gateway events. Renaming and leaving group
+//! DMs through `/channels/{id}` is handled in `dms`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,16 +10,19 @@ use axum::http::StatusCode;
 use hermes_proto::api::{
     ChannelPosition, CreateChannelRequest, OverrideRequest, UpdateChannelRequest,
 };
+use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, Channel, ChannelKind, Override};
 use hermes_proto::permissions::Permissions;
 use serde_json::{Map, Value, json};
 
 use super::validate::{self, Fields};
-use super::{ApiResult, Error, Json, Path, audit, perms};
+use super::{ApiResult, Error, Json, Path, audit, dms, perms};
 use crate::auth::Auth;
 use crate::config::Config;
 use crate::db;
+use crate::gateway::bus::Audience;
+use crate::gateway::visibility::{self, Visible};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -172,6 +176,10 @@ pub async fn create(
     state
         .cache_mut()
         .insert_channel(channel.clone(), Vec::new());
+    state.publish(
+        ServerEvent::ChannelCreate(channel.clone()),
+        Audience::Channel(channel.id),
+    );
     Ok(Json(channel))
 }
 
@@ -203,6 +211,9 @@ pub async fn update(
     Path(channel_id): Path<Id>,
     Json(req): Json<UpdateChannelRequest>,
 ) -> ApiResult<Json<Channel>> {
+    if is_private(&state, channel_id) {
+        return dms::update(state, auth, channel_id, req).await;
+    }
     let config = &state.config;
     let _writes = state.writes.lock().await;
     let (channel, space_id, details) = {
@@ -308,22 +319,39 @@ pub async fn update(
     if let Some(cached) = state.cache_mut().channels.get_mut(&channel_id) {
         cached.channel = channel.clone();
     }
+    state.publish(
+        ServerEvent::ChannelUpdate(channel.clone()),
+        Audience::Channel(channel_id),
+    );
     Ok(Json(channel))
 }
 
+/// Whether the channel is a DM or group DM (whose `/channels/{id}` requests `dms` handles).
+fn is_private(state: &AppState, channel_id: Id) -> bool {
+    state
+        .cache()
+        .channels
+        .get(&channel_id)
+        .is_some_and(|c| c.channel.kind.is_private())
+}
+
 /// `MANAGE_CHANNELS`. Deletes the messages too; children of a category move to the top level.
+/// For a group DM this means leaving it.
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     auth: Auth,
     Path(channel_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
+    if is_private(&state, channel_id) {
+        return dms::leave(state, auth, channel_id).await;
+    }
     let _writes = state.writes.lock().await;
-    let (channel, space_id, _) = manageable(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        Permissions::empty(),
-    )?;
+    let (channel, space_id, viewers) = {
+        let cache = state.cache();
+        let (channel, space_id, _) =
+            manageable(&cache, channel_id, auth.user_id, Permissions::empty())?;
+        (channel, space_id, cache.channel_viewers(channel_id))
+    };
     let mut tx = state.db.write.begin().await?;
     db::channels::delete_channel(&mut tx, channel_id).await?;
     audit::record(
@@ -337,12 +365,28 @@ pub async fn delete(
     )
     .await?;
     tx.commit().await?;
-    let mut cache = state.cache_mut();
-    cache.channels.remove(&channel_id);
-    for child in cache.channels.values_mut() {
-        if child.channel.parent_id == Some(channel_id) {
-            child.channel.parent_id = None;
+    let children: Vec<Channel> = {
+        let mut cache = state.cache_mut();
+        cache.channels.remove(&channel_id);
+        let mut children = Vec::new();
+        for child in cache.channels.values_mut() {
+            if child.channel.parent_id == Some(channel_id) {
+                child.channel.parent_id = None;
+                children.push(child.channel.clone());
+            }
         }
+        children
+    };
+    state.publish(
+        ServerEvent::ChannelDelete {
+            id: channel_id,
+            space_id,
+        },
+        Audience::Users(viewers.into_iter().collect()),
+    );
+    for child in children {
+        let id = child.id;
+        state.publish(ServerEvent::ChannelUpdate(child), Audience::Channel(id));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -413,12 +457,19 @@ pub async fn reorder(
         tx.commit().await?;
     }
 
-    let mut cache = state.cache_mut();
-    for channel in changed {
-        if let Some(cached) = cache.channels.get_mut(&channel.id) {
-            cached.channel = channel;
+    {
+        let mut cache = state.cache_mut();
+        for channel in &changed {
+            if let Some(cached) = cache.channels.get_mut(&channel.id) {
+                cached.channel = channel.clone();
+            }
         }
     }
+    for channel in changed {
+        let id = channel.id;
+        state.publish(ServerEvent::ChannelUpdate(channel), Audience::Channel(id));
+    }
+    let cache = state.cache();
     let mut visible: Vec<Channel> = cache
         .space_channels(space_id)
         .filter(|c| {
@@ -441,7 +492,7 @@ pub async fn put_override(
     Json(req): Json<OverrideRequest>,
 ) -> ApiResult<StatusCode> {
     let _writes = state.writes.lock().await;
-    let space_id = {
+    let (space_id, before) = {
         let cache = state.cache();
         let (_, space_id, have) =
             manageable(&cache, channel_id, auth.user_id, Permissions::MANAGE_ROLES)?;
@@ -462,7 +513,7 @@ pub async fn put_override(
         if !have.contains(bits) {
             return Err(perms::missing(bits.difference(have), "channel"));
         }
-        space_id
+        (space_id, Visible::of_space(&cache, space_id))
     };
 
     let o = Override {
@@ -489,6 +540,7 @@ pub async fn put_override(
         overrides.push(o);
         overrides.sort_by_key(|o| o.role_id);
     }
+    publish_override_change(&state, space_id, channel_id, &before);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -499,12 +551,12 @@ pub async fn delete_override(
     Path((channel_id, role_id)): Path<(Id, Id)>,
 ) -> ApiResult<StatusCode> {
     let _writes = state.writes.lock().await;
-    let (_, space_id, _) = manageable(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        Permissions::MANAGE_ROLES,
-    )?;
+    let (space_id, before) = {
+        let cache = state.cache();
+        let (_, space_id, _) =
+            manageable(&cache, channel_id, auth.user_id, Permissions::MANAGE_ROLES)?;
+        (space_id, Visible::of_space(&cache, space_id))
+    };
     let mut tx = state.db.write.begin().await?;
     if !db::channels::delete_override(&mut tx, channel_id, role_id).await? {
         return Err(Error::not_found("override"));
@@ -526,5 +578,23 @@ pub async fn delete_override(
             .overrides
             .retain(|existing| existing.role_id != role_id);
     }
+    publish_override_change(&state, space_id, channel_id, &before);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `channel_update` to members who still see the channel; `channel_create` / `channel_delete`
+/// to those who gained or lost it.
+fn publish_override_change(state: &AppState, space_id: Id, channel_id: Id, before: &Visible) {
+    let after = visibility::publish_changes(state, space_id, before);
+    let channel = state
+        .cache()
+        .channels
+        .get(&channel_id)
+        .map(|c| c.channel.clone());
+    if let Some(channel) = channel {
+        state.publish(
+            ServerEvent::ChannelUpdate(channel),
+            visibility::kept_viewers(before, &after, channel_id),
+        );
+    }
 }

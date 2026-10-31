@@ -31,7 +31,9 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
+futures-util.workspace = true
 reqwest.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

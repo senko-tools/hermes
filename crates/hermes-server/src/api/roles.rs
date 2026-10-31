@@ -1,4 +1,5 @@
-//! `/spaces/{id}/roles`: create, update, delete and reorder (`MANAGE_ROLES` + hierarchy).
+//! `/spaces/{id}/roles`: create, update, delete and reorder (`MANAGE_ROLES` + hierarchy), and
+//! their gateway events.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateRoleRequest, RolePosition, UpdateRoleRequest};
+use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, Role};
 use hermes_proto::permissions::Permissions;
@@ -16,6 +18,8 @@ use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, audit, perms};
 use crate::auth::Auth;
 use crate::db;
+use crate::gateway::bus::Audience;
+use crate::gateway::visibility::{self, Visible};
 use crate::state::AppState;
 
 /// Largest `0xRRGGBB` value.
@@ -96,6 +100,11 @@ pub async fn create(
         space.roles.push(role.clone());
         space.sort_roles();
     }
+    // Clients shift the other roles' positions up by one themselves, as the server did.
+    state.publish(
+        ServerEvent::RoleCreate(role.clone()),
+        Audience::space(space_id),
+    );
     Ok(Json(role))
 }
 
@@ -116,7 +125,7 @@ pub async fn update(
     Json(req): Json<UpdateRoleRequest>,
 ) -> ApiResult<Json<Role>> {
     let _writes = state.writes.lock().await;
-    let (role, details) = {
+    let (role, details, before) = {
         let cache = state.cache();
         let access =
             perms::require_space(&cache, space_id, auth.user_id, Permissions::MANAGE_ROLES)?;
@@ -178,7 +187,7 @@ pub async fn update(
         if role.permissions != old.permissions {
             details.insert("permissions".into(), json!(role.permissions));
         }
-        (role, details)
+        (role, details, Visible::of_space(&cache, space_id))
     };
     if details.is_empty() {
         return Ok(Json(role));
@@ -205,6 +214,11 @@ pub async fn update(
     {
         *cached = role.clone();
     }
+    state.publish(
+        ServerEvent::RoleUpdate(role.clone()),
+        Audience::space(space_id),
+    );
+    visibility::publish_changes(&state, space_id, &before);
     Ok(Json(role))
 }
 
@@ -215,7 +229,7 @@ pub async fn delete(
     Path((space_id, role_id)): Path<(Id, Id)>,
 ) -> ApiResult<StatusCode> {
     let _writes = state.writes.lock().await;
-    let name = {
+    let (name, before) = {
         let cache = state.cache();
         let access =
             perms::require_space(&cache, space_id, auth.user_id, Permissions::MANAGE_ROLES)?;
@@ -232,7 +246,7 @@ pub async fn delete(
         if !access.outranks_role(role) {
             return Err(access.hierarchy_error("roles"));
         }
-        role.name.clone()
+        (role.name.clone(), Visible::of_space(&cache, space_id))
     };
 
     let mut tx = state.db.write.begin().await?;
@@ -249,18 +263,29 @@ pub async fn delete(
     .await?;
     tx.commit().await?;
 
-    let mut cache = state.cache_mut();
-    if let Some(space) = cache.spaces.get_mut(&space_id) {
-        space.roles.retain(|r| r.id != role_id);
-        for member in space.members.values_mut() {
-            member.role_ids.retain(|&id| id != role_id);
+    {
+        let mut cache = state.cache_mut();
+        if let Some(space) = cache.spaces.get_mut(&space_id) {
+            space.roles.retain(|r| r.id != role_id);
+            for member in space.members.values_mut() {
+                member.role_ids.retain(|&id| id != role_id);
+            }
+        }
+        for channel in cache.channels.values_mut() {
+            if channel.channel.space_id == Some(space_id) {
+                channel.channel.overrides.retain(|o| o.role_id != role_id);
+            }
         }
     }
-    for channel in cache.channels.values_mut() {
-        if channel.channel.space_id == Some(space_id) {
-            channel.channel.overrides.retain(|o| o.role_id != role_id);
-        }
-    }
+    // Clients drop the role from members and overrides themselves.
+    state.publish(
+        ServerEvent::RoleDelete {
+            id: role_id,
+            space_id,
+        },
+        Audience::space(space_id),
+    );
+    visibility::publish_changes(&state, space_id, &before);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -326,14 +351,26 @@ pub async fn reorder(
         .await?;
         tx.commit().await?;
     }
-    let mut cache = state.cache_mut();
-    let space = cache
-        .spaces
-        .get_mut(&space_id)
-        .ok_or_else(|| Error::not_found("space"))?;
-    set_positions(&mut space.roles, &changed);
-    space.sort_roles();
-    Ok(Json(space.roles.clone()))
+    let roles = {
+        let mut cache = state.cache_mut();
+        let space = cache
+            .spaces
+            .get_mut(&space_id)
+            .ok_or_else(|| Error::not_found("space"))?;
+        set_positions(&mut space.roles, &changed);
+        space.sort_roles();
+        space.roles.clone()
+    };
+    for role in roles
+        .iter()
+        .filter(|r| changed.iter().any(|(id, _)| *id == r.id))
+    {
+        state.publish(
+            ServerEvent::RoleUpdate(role.clone()),
+            Audience::space(space_id),
+        );
+    }
+    Ok(Json(roles))
 }
 
 /// Sorts the roles other than `@everyone` by their requested (or current) position and ID,

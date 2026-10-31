@@ -14,6 +14,8 @@
 pub mod audit;
 pub mod auth;
 pub mod channels;
+pub mod dms;
+pub mod gateway;
 pub mod invites;
 pub mod members;
 pub mod messages;

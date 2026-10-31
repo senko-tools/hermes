@@ -364,3 +364,29 @@ Approved by the developer as a plan before implementation.
   not offline/invisible; presence comes with the gateway, so until then it counts nobody.
 - **Ack:** `VIEW_CHANNEL`; the message must be in the channel (deleted is fine). `last_read_id` is set
   to it, even if that is older (marking a channel unread), and `mention_count` is reset to 0.
+
+## 2026-10-31: Gateway and DM details the plan leaves open
+
+- **Group DM ownership:** when the owner leaves (or is removed), the remaining recipient with the
+  lowest user ID becomes the owner. When the last recipient leaves, the group DM is deleted.
+- **1:1 DMs cannot be left:** `DELETE /channels/{id}` on a 1:1 DM answers `BAD_REQUEST`; `PATCH`
+  answers `MISSING_PERMISSION`; `PUT/DELETE /dms/{id}/recipients/{uid}` answer `BAD_REQUEST`.
+- **`Channel.recipients` lists everyone,** the requesting user included, sorted by ID.
+- **`POST /dms`:** the caller may list themselves; they are ignored. `max_group_dm_size` counts the
+  caller. With `dm_policy = "shared_space"` the caller must share a space with every recipient
+  (and with anyone they add to a group DM); otherwise `MISSING_PERMISSION`.
+- **`ReactionSummary.me` is `false` in broadcast `message_update`:** one payload is serialized for
+  all viewers, so it cannot carry per-viewer flags. Clients keep their own `me` from
+  `reaction_add` / `reaction_remove`. The REST response to the editor still has the correct `me`.
+- **`ready.presences` lists only users who are not offline;** clients treat missing users as
+  offline. A user's own sessions also receive their `presence_update` events.
+- **`ready.voice.cert_sha256` is `None`** until the voice server exists (Phase 4);
+  `quic_port` is the public port when voice is enabled.
+- **Ops before identify:** every op except `identify`/`resume` (heartbeat included) closes with
+  4003. A connection that neither identifies nor heartbeats for two intervals is closed with 4009.
+  After `invalid_session` the client may identify on the same connection.
+- **`typing_start`** is not sent back to the typing user; `read_state_update` goes to all of the
+  user's sessions, including the one that acked.
+- **Resuming a session that still has a connection** closes the old connection with 4009.
+- **Test-only dependency:** `futures-util` (already in the lock file through axum) is a
+  dev-dependency of `hermes-server` for the gateway test client's `StreamExt`/`SinkExt`.

@@ -1,13 +1,13 @@
-//! `/channels/{id}/messages`, pins, reactions, typing and ack. Gateway events for these come with
-//! the gateway item.
+//! `/channels/{id}/messages`, pins, reactions, typing and ack, and their gateway events.
 
 use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessageRequest};
+use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
-use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind};
+use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadState};
 use hermes_proto::permissions::Permissions;
 use hermes_proto::{ApiError, ErrorCode};
 use serde_json::json;
@@ -17,7 +17,8 @@ use super::{ApiResult, Error, Json, Path, Query, audit, perms};
 use crate::auth::Auth;
 use crate::db;
 use crate::db::messages::MessageRow;
-use crate::messages::{self, MAX_REACTION_EMOJI};
+use crate::gateway::bus::Audience;
+use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -229,6 +230,16 @@ pub async fn send(
 
     let mut message = one_to_wire(&state, row, auth.user_id).await?;
     message.nonce = Some(req.nonce);
+    // The nonce goes only to the author's sessions.
+    state.publish_except(
+        ServerEvent::MessageCreate(broadcast_copy(&message)),
+        Audience::Channel(channel_id),
+        auth.user_id,
+    );
+    state.publish(
+        ServerEvent::MessageCreate(message.clone()),
+        Audience::User(auth.user_id),
+    );
     Ok(Json(message))
 }
 
@@ -275,7 +286,12 @@ pub async fn edit(
     tx.commit().await?;
     row.content = req.content;
     row.edited_at = Some(now);
-    Ok(Json(one_to_wire(&state, row, auth.user_id).await?))
+    let message = one_to_wire(&state, row, auth.user_id).await?;
+    state.publish(
+        ServerEvent::MessageUpdate(broadcast_copy(&message)),
+        Audience::Channel(channel_id),
+    );
+    Ok(Json(message))
 }
 
 /// The author, or `MANAGE_MESSAGES` (audited). A soft delete: the message stays as a tombstone.
@@ -310,6 +326,13 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
+    state.publish(
+        ServerEvent::MessageDelete {
+            id: message_id,
+            channel_id,
+        },
+        Audience::Channel(channel_id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -346,8 +369,17 @@ async fn set_pinned(
     if !t.kind.is_private() {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
-    live_message(state, channel_id, message_id).await?;
+    let mut row = live_message(state, channel_id, message_id).await?;
+    if row.pinned == pinned {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     db::messages::set_pinned(&state.db.write, message_id, pinned).await?;
+    row.pinned = pinned;
+    let message = one_to_wire(state, row, auth.user_id).await?;
+    state.publish(
+        ServerEvent::MessageUpdate(broadcast_copy(&message)),
+        Audience::Channel(channel_id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -396,7 +428,13 @@ pub async fn add_reaction(
             ));
         }
     }
-    db::messages::add_reaction(&state.db.write, message_id, &emoji, auth.user_id, now_ms()).await?;
+    let added =
+        db::messages::add_reaction(&state.db.write, message_id, &emoji, auth.user_id, now_ms())
+            .await?;
+    drop(_writes);
+    if added {
+        publish_reaction(&state, true, channel_id, message_id, emoji, auth.user_id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -413,7 +451,9 @@ pub async fn remove_own_reaction(
         Permissions::VIEW_CHANNEL,
     )?;
     live_message(&state, channel_id, message_id).await?;
-    db::messages::remove_reaction(&state.db.write, message_id, &emoji, auth.user_id).await?;
+    if db::messages::remove_reaction(&state.db.write, message_id, &emoji, auth.user_id).await? {
+        publish_reaction(&state, false, channel_id, message_id, emoji, auth.user_id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -430,11 +470,35 @@ pub async fn remove_reaction(
         Permissions::MANAGE_MESSAGES,
     )?;
     live_message(&state, channel_id, message_id).await?;
-    db::messages::remove_reaction(&state.db.write, message_id, &emoji, user_id).await?;
+    if db::messages::remove_reaction(&state.db.write, message_id, &emoji, user_id).await? {
+        publish_reaction(&state, false, channel_id, message_id, emoji, user_id);
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `SEND_MESSAGES`. Broadcasting `typing_start` comes with the gateway.
+fn publish_reaction(
+    state: &AppState,
+    added: bool,
+    channel_id: Id,
+    message_id: Id,
+    emoji: String,
+    user_id: Id,
+) {
+    let reaction = ReactionEvent {
+        message_id,
+        channel_id,
+        emoji,
+        user_id,
+    };
+    let event = if added {
+        ServerEvent::ReactionAdd(reaction)
+    } else {
+        ServerEvent::ReactionRemove(reaction)
+    };
+    state.publish(event, Audience::Channel(channel_id));
+}
+
+/// `SEND_MESSAGES`. Sends `typing_start` to everyone else who can see the channel.
 pub async fn typing(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -446,6 +510,15 @@ pub async fn typing(
         auth.user_id,
         Permissions::SEND_MESSAGES,
     )?;
+    state.publish_except(
+        ServerEvent::TypingStart {
+            channel_id,
+            user_id: auth.user_id,
+            timestamp: now_ms(),
+        },
+        Audience::Channel(channel_id),
+        auth.user_id,
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -470,5 +543,13 @@ pub async fn ack(
         return Err(Error::not_found("message"));
     }
     db::messages::set_read(&state.db.write, auth.user_id, channel_id, req.message_id).await?;
+    state.publish(
+        ServerEvent::ReadStateUpdate(ReadState {
+            channel_id,
+            last_read_id: req.message_id,
+            mention_count: 0,
+        }),
+        Audience::User(auth.user_id),
+    );
     Ok(StatusCode::NO_CONTENT)
 }

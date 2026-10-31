@@ -1,10 +1,16 @@
 //! Test harness: a real server on a random port with a temp data dir, TLS off, plus a small JSON
-//! client on top of `reqwest`.
+//! client on top of `reqwest` and a gateway client on top of `tokio-tungstenite`.
 
 #![allow(dead_code)] // Each test binary uses a different subset.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message as WsMessage;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use hermes_server::config::{Config, RegistrationMode, TlsMode};
 use hermes_server::state::AppState;
@@ -77,6 +83,15 @@ impl Res {
 
 /// Starts a server; `name` must be unique per test (it names the temp dir).
 pub async fn start(name: &str, mode: RegistrationMode) -> TestServer {
+    start_with(name, mode, |_| {}).await
+}
+
+/// [`start`], with a chance to change the state (e.g. gateway timings) before serving.
+pub async fn start_with(
+    name: &str,
+    mode: RegistrationMode,
+    configure: impl FnOnce(&mut AppState),
+) -> TestServer {
     // reqwest is built without a default crypto provider; HTTPS is not used, but building a
     // client still needs one.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -86,7 +101,9 @@ pub async fn start(name: &str, mode: RegistrationMode) -> TestServer {
     config.storage.data_dir = dir.path().join("data");
     config.tls.mode = TlsMode::Off;
     config.registration.mode = mode;
-    let state = Arc::new(AppState::load(config).await.unwrap());
+    let mut state = AppState::load(config).await.unwrap();
+    configure(&mut state);
+    let state = Arc::new(state);
     let links = setup::first_start(&state, None).await.unwrap().unwrap();
     let setup_code = links.web.rsplit('/').next().unwrap().to_owned();
 
@@ -258,11 +275,141 @@ impl TestServer {
         .await
     }
 
+    /// Opens a gateway connection and reads `hello`.
+    pub async fn connect(&self) -> Ws {
+        let url = format!("{}/gateway", self.base.replacen("http://", "ws://", 1));
+        let (stream, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let mut ws = Ws { stream };
+        let hello = ws.recv().await;
+        assert_eq!(hello["op"], "hello", "{hello}");
+        ws
+    }
+
+    /// Connects and identifies; returns the connection and the `ready` payload.
+    pub async fn identify(&self, token: &str) -> (Ws, Value) {
+        let mut ws = self.connect().await;
+        ws.send_identify(token).await;
+        let ready = ws.recv_op("ready").await["d"].clone();
+        (ws, ready)
+    }
+
     /// Runs a raw SQL statement on the write pool (for fixtures the API cannot create yet).
     pub async fn sql(&self, sql: &str) {
         sqlx::query(sqlx::AssertSqlSafe(sql.to_owned()))
             .execute(&self.state.db.write)
             .await
             .unwrap();
+    }
+}
+
+/// How long a test waits for a gateway frame.
+const WS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A gateway client.
+pub struct Ws {
+    stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+}
+
+impl Ws {
+    pub async fn send(&mut self, frame: Value) {
+        self.send_raw(&frame.to_string()).await;
+    }
+
+    pub async fn send_raw(&mut self, text: &str) {
+        self.stream
+            .send(WsMessage::Text(text.into()))
+            .await
+            .unwrap();
+    }
+
+    pub async fn send_identify(&mut self, token: &str) {
+        self.send(json!({ "op": "identify", "d": {
+            "token": token,
+            "protocol_version": 1,
+            "client": { "name": "test", "version": "0", "os": "test" },
+        }}))
+        .await;
+    }
+
+    pub async fn send_resume(&mut self, token: &str, session_id: &str, last_seq: u64) {
+        self.send(json!({ "op": "resume", "d": {
+            "token": token, "session_id": session_id, "last_seq": last_seq,
+        }}))
+        .await;
+    }
+
+    /// The next frame; panics on close or timeout.
+    pub async fn recv(&mut self) -> Value {
+        match self.next_message(WS_TIMEOUT).await {
+            Some(WsMessage::Text(text)) => serde_json::from_str(&text).unwrap(),
+            other => panic!("expected a text frame, got {other:?}"),
+        }
+    }
+
+    /// The next frame that is not a `presence_update` (presences change whenever anyone
+    /// connects, so most tests skip them).
+    pub async fn next_event(&mut self) -> Value {
+        loop {
+            let frame = self.recv().await;
+            if frame["op"] != "presence_update" {
+                return frame;
+            }
+        }
+    }
+
+    /// Skips frames until one with `op` arrives and returns it.
+    pub async fn recv_op(&mut self, op: &str) -> Value {
+        loop {
+            let frame = self.recv().await;
+            if frame["op"] == op {
+                return frame;
+            }
+        }
+    }
+
+    /// Asserts that no frame other than `presence_update` arrives within `ms`.
+    pub async fn assert_silent(&mut self, ms: u64) {
+        let until = tokio::time::Instant::now() + Duration::from_millis(ms);
+        loop {
+            let left = until.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            match self.next_message(left).await {
+                None => return,
+                Some(WsMessage::Text(text)) => {
+                    let frame: Value = serde_json::from_str(&text).unwrap();
+                    assert_eq!(frame["op"], "presence_update", "unexpected frame {frame}");
+                }
+                Some(other) => panic!("unexpected message {other:?}"),
+            }
+        }
+    }
+
+    /// Reads until the server closes the connection; returns the close code.
+    pub async fn closed(&mut self) -> u16 {
+        loop {
+            match self.next_message(WS_TIMEOUT).await {
+                Some(WsMessage::Close(frame)) => {
+                    return frame.map_or(1005, |f| u16::from(f.code));
+                }
+                Some(_) => {}
+                None => panic!("timed out waiting for close"),
+            }
+        }
+    }
+
+    /// The next message, or `None` on timeout. Pings are answered by tungstenite.
+    async fn next_message(&mut self, timeout: Duration) -> Option<WsMessage> {
+        loop {
+            let msg = tokio::time::timeout(timeout, self.stream.next())
+                .await
+                .ok()?
+                .expect("connection ended without a close frame")
+                .unwrap();
+            if !matches!(msg, WsMessage::Ping(_) | WsMessage::Pong(_)) {
+                return Some(msg);
+            }
+        }
     }
 }

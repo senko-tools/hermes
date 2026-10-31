@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM dm_recipients WHERE channel_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "3fbb656c2f01415876bcfe32b72b54a3922ae2821e82496a7c01958410a7c0d7"
+}

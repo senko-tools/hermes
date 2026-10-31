@@ -1,4 +1,4 @@
-//! `/spaces`: create, update, delete and transfer.
+//! `/spaces`: create, update, delete and transfer, and their gateway events.
 
 use std::sync::Arc;
 
@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateSpaceRequest, TransferSpaceRequest, UpdateSpaceRequest};
-use hermes_proto::gateway::SpaceSnapshot;
+use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, Space};
 use hermes_proto::permissions::Permissions;
@@ -16,6 +16,8 @@ use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, audit, perms};
 use crate::auth::Auth;
 use crate::db;
+use crate::gateway::bus::Audience;
+use crate::gateway::visibility::{self, Visible};
 use crate::setup::DefaultSpace;
 use crate::state::AppState;
 use crate::time::now_ms;
@@ -71,11 +73,15 @@ pub async fn create(
     space.insert(&mut tx, now).await?;
     tx.commit().await?;
     space.cache(&state, now);
-    state
+    let snapshot = state
         .cache()
         .space_snapshot(space_id, auth.user_id)
-        .map(Json)
-        .ok_or_else(|| Error::internal("new space missing from the cache"))
+        .ok_or_else(|| Error::internal("new space missing from the cache"))?;
+    state.publish(
+        ServerEvent::SpaceCreate(Box::new(snapshot.clone())),
+        Audience::User(auth.user_id),
+    );
+    Ok(Json(snapshot))
 }
 
 /// `MANAGE_SPACE`. `icon_id` must be an image the caller uploaded.
@@ -152,6 +158,10 @@ pub async fn update(
     if let Some(state) = state.cache_mut().spaces.get_mut(&space_id) {
         state.space = space.clone();
     }
+    state.publish(
+        ServerEvent::SpaceUpdate(space.clone()),
+        Audience::space(space_id),
+    );
     Ok(Json(space))
 }
 
@@ -169,13 +179,22 @@ pub async fn delete(
     Path(space_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
     let _writes = state.writes.lock().await;
-    if !perms::space(&state.cache(), space_id, auth.user_id)?.is_owner() {
-        return Err(owner_only("delete"));
-    }
+    let members: Vec<Id> = {
+        let cache = state.cache();
+        let access = perms::space(&cache, space_id, auth.user_id)?;
+        if !access.is_owner() {
+            return Err(owner_only("delete"));
+        }
+        access.space.members.keys().copied().collect()
+    };
     let mut tx = state.db.write.begin().await?;
     db::spaces::delete_space(&mut tx, space_id).await?;
     tx.commit().await?;
     state.cache_mut().remove_space(space_id);
+    state.publish(
+        ServerEvent::SpaceDelete { id: space_id },
+        Audience::Users(members),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -187,7 +206,7 @@ pub async fn transfer(
     Json(req): Json<TransferSpaceRequest>,
 ) -> ApiResult<StatusCode> {
     let _writes = state.writes.lock().await;
-    {
+    let before = {
         let cache = state.cache();
         if !perms::space(&cache, space_id, auth.user_id)?.is_owner() {
             return Err(owner_only("transfer"));
@@ -204,7 +223,8 @@ pub async fn transfer(
                 "must be a member of the space",
             ));
         }
-    }
+        Visible::of_space(&cache, space_id)
+    };
     let mut tx = state.db.write.begin().await?;
     db::spaces::set_owner(&mut tx, space_id, req.user_id).await?;
     audit::record(
@@ -218,8 +238,16 @@ pub async fn transfer(
     )
     .await?;
     tx.commit().await?;
-    if let Some(space) = state.cache_mut().spaces.get_mut(&space_id) {
-        space.space.owner_id = req.user_id;
+    let space = {
+        let mut cache = state.cache_mut();
+        cache.spaces.get_mut(&space_id).map(|s| {
+            s.space.owner_id = req.user_id;
+            s.space.clone()
+        })
+    };
+    if let Some(space) = space {
+        state.publish(ServerEvent::SpaceUpdate(space), Audience::space(space_id));
     }
+    visibility::publish_changes(&state, space_id, &before);
     Ok(StatusCode::NO_CONTENT)
 }

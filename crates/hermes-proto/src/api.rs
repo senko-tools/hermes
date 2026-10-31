@@ -329,6 +329,13 @@ pub struct AckRequest {
     pub message_id: Id,
 }
 
+/// `POST /dms`: one other user reuses (or creates) the 1:1 DM, two or more create a group DM.
+/// The caller is implicit; listing them is allowed and ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateDmRequest {
+    pub recipient_ids: Vec<Id>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

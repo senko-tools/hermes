@@ -89,6 +89,18 @@ pub async fn to_wire(
         .collect())
 }
 
+/// The form of a message broadcast to everyone who can see it: without the nonce, and with
+/// `ReactionSummary::me` false, because one payload is shared by all viewers (clients keep their
+/// own `me` from `reaction_add` / `reaction_remove`).
+pub fn broadcast_copy(message: &Message) -> Message {
+    let mut message = message.clone();
+    message.nonce = None;
+    for reaction in &mut message.reactions {
+        reaction.me = false;
+    }
+    message
+}
+
 /// The cached user, or a placeholder (users are never deleted in v1, so this should not happen).
 fn author(cache: &Cache, user_id: Id) -> User {
     cache.users.get(&user_id).map_or_else(

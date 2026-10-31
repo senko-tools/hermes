@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT target_id, level, muted_until FROM notification_settings WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "target_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_settings",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "name": "level",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "notification_settings",
+            "name": "level"
+          }
+        }
+      },
+      {
+        "name": "muted_until",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "notification_settings",
+            "name": "muted_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c1325d559a64b7ca3f902f2b371a06a0f5863ffb354f13f8d856bdd3bcbaa559"
+}

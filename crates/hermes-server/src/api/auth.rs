@@ -6,6 +6,7 @@ use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{AuthResponse, LoginRequest, RegisterRequest, SessionInfo};
+use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::User;
 use sqlx::SqliteConnection;
@@ -15,6 +16,7 @@ use super::{ApiResult, Error, Json, Path, PeerAddr};
 use crate::auth::{self, Auth};
 use crate::config::RegistrationMode;
 use crate::db;
+use crate::gateway::bus::Audience;
 use crate::invites;
 use crate::setup::DefaultSpace;
 use crate::state::{AppState, CachedUser};
@@ -158,7 +160,14 @@ pub async fn register(
         space.cache(&state, now);
     }
     if let Some(space_id) = join_space {
-        state.cache_mut().insert_member(space_id, user_id, now);
+        let member = {
+            let mut cache = state.cache_mut();
+            cache.insert_member(space_id, user_id, now);
+            cache.member(space_id, user_id)
+        };
+        if let Some(member) = member {
+            state.publish(ServerEvent::MemberAdd(member), Audience::space(space_id));
+        }
     }
     tracing::debug!(user_id = %user_id, session_id = %session_id, "registered");
     Ok(Json(AuthResponse {
@@ -245,8 +254,10 @@ pub async fn login(
     Ok(Json(AuthResponse { token, user }))
 }
 
+/// Revokes the current session and closes its gateway connections (4011).
 pub async fn logout(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<StatusCode> {
     db::auth::delete_session(&state.db.write, auth.user_id, auth.session_id).await?;
+    state.gateway.revoke(&[auth.session_id]);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -269,13 +280,14 @@ pub async fn list_sessions(
     ))
 }
 
-/// Revokes one of the caller's own sessions (closing its gateway comes with the gateway).
+/// Revokes one of the caller's own sessions and closes its gateway connections (4011).
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
     auth: Auth,
     Path(session_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
     if db::auth::delete_session(&state.db.write, auth.user_id, session_id).await? {
+        state.gateway.revoke(&[session_id]);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(Error::not_found("session"))

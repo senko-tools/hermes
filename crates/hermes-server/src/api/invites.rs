@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::CreateInviteRequest;
-use hermes_proto::gateway::SpaceSnapshot;
+use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::Invite;
 use hermes_proto::permissions::Permissions;
@@ -16,6 +16,8 @@ use super::{ApiResult, Error, Json, Path, perms};
 use crate::auth::Auth;
 use crate::db;
 use crate::db::invites::InviteRow;
+use crate::gateway::bus::Audience;
+use crate::gateway::presence;
 use crate::invites;
 use crate::state::{AppState, Cache};
 use crate::time::{SECOND_MS, now_ms};
@@ -167,12 +169,28 @@ pub async fn join(
     }
     tx.commit().await?;
 
-    let mut cache = state.cache_mut();
-    cache.insert_member(space_id, auth.user_id, now);
-    cache
-        .space_snapshot(space_id, auth.user_id)
-        .map(Json)
-        .ok_or_else(invite_invalid)
+    let (snapshot, member) = {
+        let mut cache = state.cache_mut();
+        cache.insert_member(space_id, auth.user_id, now);
+        (
+            cache.space_snapshot(space_id, auth.user_id),
+            cache.member(space_id, auth.user_id),
+        )
+    };
+    let snapshot = snapshot.ok_or_else(invite_invalid)?;
+    state.publish(
+        ServerEvent::SpaceCreate(Box::new(snapshot.clone())),
+        Audience::User(auth.user_id),
+    );
+    if let Some(member) = member {
+        state.publish_except(
+            ServerEvent::MemberAdd(member),
+            Audience::space(space_id),
+            auth.user_id,
+        );
+    }
+    presence::joined_space(&state, space_id, auth.user_id);
+    Ok(Json(snapshot))
 }
 
 fn existing_member_snapshot(state: &AppState, space_id: Id, user_id: Id) -> Option<SpaceSnapshot> {

@@ -1,4 +1,6 @@
-//! `/spaces/{id}/members` and `/spaces/{id}/bans`.
+//! `/spaces/{id}/members` and `/spaces/{id}/bans`, and their gateway events.
+
+use std::collections::HashMap;
 
 use std::sync::Arc;
 
@@ -6,6 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{BanRequest, Pagination, UpdateMemberRequest};
+use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, Ban, Member};
 use hermes_proto::permissions::Permissions;
@@ -15,6 +18,8 @@ use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query, audit, perms, user_ref};
 use crate::auth::Auth;
 use crate::db;
+use crate::gateway::bus::Audience;
+use crate::gateway::visibility::{self, Visible};
 use crate::state::AppState;
 use crate::time::{HOUR_MS, now_ms};
 
@@ -63,7 +68,7 @@ pub async fn update(
     let _writes = state.writes.lock().await;
     let is_self = user_id == auth.user_id;
     let mut details = Map::new();
-    let (member, nickname_changed, roles_changed) = {
+    let (member, nickname_changed, roles_changed, before) = {
         let cache = state.cache();
         let access = perms::space(&cache, space_id, auth.user_id)?;
         let mut member = cache
@@ -127,7 +132,8 @@ pub async fn update(
                 roles_changed = true;
             }
         }
-        (member, nickname_changed, roles_changed)
+        let before = roles_changed.then(|| Visible::of_space(&cache, space_id));
+        (member, nickname_changed, roles_changed, before)
     };
     if !nickname_changed && !roles_changed {
         return Ok(Json(member));
@@ -162,6 +168,13 @@ pub async fn update(
     {
         cached.nickname = member.nickname.clone();
         cached.role_ids = member.role_ids.clone();
+    }
+    state.publish(
+        ServerEvent::MemberUpdate(member.clone()),
+        Audience::space(space_id),
+    );
+    if let Some(before) = before {
+        visibility::publish_changes(&state, space_id, &before);
     }
     Ok(Json(member))
 }
@@ -212,7 +225,20 @@ pub async fn remove(
     }
     tx.commit().await?;
     state.cache_mut().remove_member(space_id, user_id);
+    publish_removal(&state, space_id, user_id);
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `member_remove` to the remaining members, `space_delete` to the removed user.
+fn publish_removal(state: &AppState, space_id: Id, user_id: Id) {
+    state.publish(
+        ServerEvent::MemberRemove { space_id, user_id },
+        Audience::space(space_id),
+    );
+    state.publish(
+        ServerEvent::SpaceDelete { id: space_id },
+        Audience::User(user_id),
+    );
 }
 
 /// `BAN_MEMBERS`. Oldest first.
@@ -326,6 +352,20 @@ pub async fn ban(
     .await?;
     tx.commit().await?;
     state.cache_mut().remove_member(space_id, user_id);
+    if was_member {
+        publish_removal(&state, space_id, user_id);
+    }
+    let mut by_channel: HashMap<Id, Vec<Id>> = HashMap::new();
+    for (message_id, channel_id) in deleted {
+        by_channel.entry(channel_id).or_default().push(message_id);
+    }
+    for (channel_id, mut ids) in by_channel {
+        ids.sort();
+        state.publish(
+            ServerEvent::MessageDeleteBulk { ids, channel_id },
+            Audience::Channel(channel_id),
+        );
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

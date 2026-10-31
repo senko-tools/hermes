@@ -4,6 +4,7 @@
 mod audit;
 mod auth;
 mod channels;
+mod dms;
 mod invites;
 mod members;
 mod messages;
@@ -38,6 +39,7 @@ use crate::tls::{Tls, TlsListener};
 /// The `/api/v1` router plus everything outside it.
 pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
+        .route("/gateway", get(crate::gateway::handler))
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
@@ -100,6 +102,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/channels/{id}/typing", post(messages::typing))
         .route("/channels/{id}/ack", post(messages::ack))
+        .route("/dms", get(dms::list).post(dms::create))
+        .route(
+            "/dms/{id}/recipients/{uid}",
+            put(dms::add_recipient).delete(dms::remove_recipient),
+        )
         .route(
             "/spaces/{id}/invites",
             post(invites::create).get(invites::list),

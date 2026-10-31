@@ -1566,8 +1566,8 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Auth: register/login/logout/sessions, first-start setup invite, invites.
 - [x] Spaces, channels, roles, members, overrides REST + audit log.
 - [x] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).
-- [ ] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
-- [ ] DMs and group DMs.
+- [x] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
+- [x] DMs and group DMs.
 - [ ] Attachments upload/download/thumbnails.
 - [ ] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
 - [ ] TLS certificate reload on SIGHUP / file change.

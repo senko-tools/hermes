@@ -4,21 +4,23 @@
 //! states live here, so permission checks never hit the database. Messages are not cached.
 //! Lock rule: never hold the cache lock across an `.await`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use axum::http::HeaderMap;
-use hermes_proto::gateway::SpaceSnapshot;
+use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Channel, CurrentUser, Member, PresenceStatus, Role, Space, SpacePreview, User, VoiceState,
+    Channel, CurrentUser, Member, Presence, PresenceStatus, Role, Space, SpacePreview, Status,
+    User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::state::Snapshot;
+use crate::gateway::bus::{Audience, Gateway};
 use crate::messages::Slowmode;
 use crate::snowflake::Snowflake;
 
@@ -34,6 +36,8 @@ pub struct AppState {
     /// Never take it while holding the cache lock.
     pub writes: tokio::sync::Mutex<()>,
     pub slowmode: Slowmode,
+    /// Gateway sessions and the EventBus.
+    pub gateway: Gateway,
 }
 
 impl AppState {
@@ -48,7 +52,24 @@ impl AppState {
             cache: RwLock::new(cache),
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
+            gateway: Gateway::default(),
         })
+    }
+
+    /// Publishes a dispatch event to `audience`, resolved with the cache as it is now. Call it
+    /// after the change is in the cache, and never while holding the cache lock.
+    pub fn publish(&self, event: ServerEvent, audience: Audience) {
+        self.publish_inner(&event, &audience, None);
+    }
+
+    /// [`publish`](Self::publish) to everyone in `audience` except `user_id`.
+    pub fn publish_except(&self, event: ServerEvent, audience: Audience, user_id: Id) {
+        self.publish_inner(&event, &audience, Some(user_id));
+    }
+
+    fn publish_inner(&self, event: &ServerEvent, audience: &Audience, except: Option<Id>) {
+        let users = audience.resolve(&self.cache());
+        self.gateway.send(&users, except, event);
     }
 
     /// Read access to the cache. A poisoned lock is still used: every write is a short,
@@ -384,6 +405,86 @@ impl Cache {
             role_ids: member.role_ids.clone(),
             joined_at: member.joined_at,
         })
+    }
+
+    /// Users who can see a channel: DM recipients, or space members with `VIEW_CHANNEL`.
+    pub fn channel_viewers(&self, channel_id: Id) -> HashSet<Id> {
+        let Some(state) = self.channels.get(&channel_id) else {
+            return HashSet::new();
+        };
+        let Some(space_id) = state.channel.space_id else {
+            return state.recipient_ids.iter().copied().collect();
+        };
+        let Some(space) = self.spaces.get(&space_id) else {
+            return HashSet::new();
+        };
+        space
+            .members
+            .keys()
+            .copied()
+            .filter(|&user_id| {
+                self.channel_permissions(channel_id, user_id)
+                    .contains(Permissions::VIEW_CHANNEL)
+            })
+            .collect()
+    }
+
+    /// The wire form of a DM or group DM, with `recipients` filled in (everyone, sorted by ID).
+    pub fn dm_channel(&self, channel_id: Id) -> Option<Channel> {
+        let state = self
+            .channels
+            .get(&channel_id)
+            .filter(|c| c.channel.kind.is_private())?;
+        let mut channel = state.channel.clone();
+        channel.recipients = state
+            .recipient_ids
+            .iter()
+            .filter_map(|id| self.users.get(id).map(|u| u.user.clone()))
+            .collect();
+        Some(channel)
+    }
+
+    /// The DMs and group DMs `user_id` is a recipient of, in no particular order.
+    pub fn dm_ids(&self, user_id: Id) -> impl Iterator<Item = Id> + '_ {
+        self.channels
+            .values()
+            .filter(move |c| {
+                c.channel.kind.is_private() && c.recipient_ids.binary_search(&user_id).is_ok()
+            })
+            .map(|c| c.channel.id)
+    }
+
+    /// Whether two users are members of at least one common space.
+    pub fn shares_space(&self, a: Id, b: Id) -> bool {
+        self.spaces
+            .values()
+            .any(|s| s.members.contains_key(&a) && s.members.contains_key(&b))
+    }
+
+    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, and
+    /// themselves.
+    pub fn presence_audience(&self, user_id: Id) -> HashSet<Id> {
+        let mut users = HashSet::from([user_id]);
+        for space in self.spaces.values() {
+            if space.members.contains_key(&user_id) {
+                users.extend(space.members.keys().copied());
+            }
+        }
+        for dm in self.dm_ids(user_id) {
+            users.extend(self.channels[&dm].recipient_ids.iter().copied());
+        }
+        users
+    }
+
+    /// What other users see of `user_id`'s presence.
+    pub fn presence(&self, user_id: Id) -> Presence {
+        Presence {
+            user_id,
+            status: self
+                .presences
+                .get(&user_id)
+                .map_or(Status::Offline, |p| p.visible_status()),
+        }
     }
 
     /// A user's space-level permissions; empty if they are not a member.
