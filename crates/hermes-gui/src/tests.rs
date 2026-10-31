@@ -523,3 +523,188 @@ async fn channel_buffer_rows_follow_history_reads_and_deletes() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test]
+async fn input_box_completes_sends_attaches_replies_and_edits() {
+    use crate::buffer::channel::{self, input};
+    use hermes_client_core::proto::id::Id;
+    use iced::widget::text_editor::{Action as EditorAction, Motion};
+
+    let server = start("input-box").await;
+    let mut alice = app();
+    probe(&mut alice, &server.link).await;
+    submit(&mut alice, "alice", "correct horse").await;
+    let inst = server.host.display();
+    let space = first_space(&alice.core, &inst).await;
+    let general = alice.core.store().instance(&inst).unwrap().spaces[&space]
+        .channels
+        .values()
+        .find(|c| c.name.as_deref() == Some("general"))
+        .unwrap()
+        .id;
+    let invite = alice
+        .core
+        .rest(&inst)
+        .unwrap()
+        .create_invite(space, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let mut bob = app();
+    probe(
+        &mut bob,
+        &alice.core.invite_link(&inst, &invite.code).unwrap(),
+    )
+    .await;
+    submit(&mut bob, "bob", "battery staple").await;
+    first_space(&bob.core, &inst).await;
+    let bob_id = bob.core.store().instance(&inst).unwrap().me_id().unwrap();
+    eventually(&alice.core, "alice knows bob", |s| {
+        s.instance(&inst)
+            .is_some_and(|s| s.users.contains_key(&bob_id))
+    })
+    .await;
+
+    let _ = alice.update(Message::Select(inst.clone(), general));
+    alice.core.open_channel(&inst, general).await.unwrap();
+    let pane = alice.panes.focus;
+    let input_msg = |app: &mut App, m: input::Message| {
+        let _ = app.update(Message::Channel(pane, channel::Message::Input(m)));
+    };
+    fn composer<'a>(app: &'a App, inst: &str, general: Id) -> &'a input::Composer {
+        app.composers.get(&(inst.to_owned(), general)).unwrap()
+    }
+
+    // Typing "@bo" offers Bob; accepting inserts his ID form.
+    alice
+        .composers
+        .get_mut(&(inst.clone(), general))
+        .unwrap()
+        .set_text("hi @bo");
+    input_msg(
+        &mut alice,
+        input::Message::Edit(EditorAction::Move(Motion::DocumentEnd)),
+    );
+    assert!(
+        composer(&alice, &inst, general)
+            .suggestions
+            .iter()
+            .any(|s| s.insert == format!("<@{bob_id}> ")),
+        "{:?}",
+        composer(&alice, &inst, general).suggestions
+    );
+    input_msg(&mut alice, input::Message::Accept(usize::MAX));
+    assert!(
+        composer(&alice, &inst, general)
+            .content
+            .text()
+            .starts_with(&format!("hi <@{bob_id}> ")),
+        "the insert ends with a space to keep typing"
+    );
+
+    // A file is attached: it must finish uploading before sending.
+    let file = std::env::temp_dir().join(format!("hermes-gui-{}-note.txt", std::process::id()));
+    std::fs::write(&file, b"remember the snacks").unwrap();
+    let _ = alice.update(Message::FilesPicked(
+        inst.clone(),
+        general,
+        vec![file.clone()],
+    ));
+    let local = composer(&alice, &inst, general).uploads[0].local;
+    input_msg(&mut alice, input::Message::Submit);
+    assert!(
+        !composer(&alice, &inst, general).is_empty(),
+        "not sent while uploading"
+    );
+    let uploaded = alice
+        .core
+        .upload(&inst, &file)
+        .await
+        .map_err(|e| e.to_string());
+    let _ = alice.update(Message::Uploaded(inst.clone(), general, local, uploaded));
+    input_msg(&mut alice, input::Message::Submit);
+    assert!(composer(&alice, &inst, general).is_empty());
+    assert!(composer(&alice, &inst, general).uploads.is_empty());
+
+    let first = loop {
+        let found = bob
+            .core
+            .rest(&inst)
+            .unwrap()
+            .messages(general, &Default::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.author.username == "alice" && !m.attachments.is_empty());
+        if let Some(m) = found {
+            break m;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(first.content, format!("hi <@{bob_id}>"));
+    assert_eq!(first.mentions.users, [bob_id]);
+    assert_eq!(
+        first.attachments[0].filename,
+        file.file_name().unwrap().to_string_lossy()
+    );
+
+    // Reply mode: the next message replies to the first; Escape-like Cancel leaves the mode.
+    eventually(&alice.core, "alice's own message", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.window(general))
+            .is_some_and(|w| w.get(first.id).is_some())
+    })
+    .await;
+    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    assert_eq!(composer(&alice, &inst, general).reply_to, Some(first.id));
+    input_msg(&mut alice, input::Message::Cancel);
+    assert_eq!(composer(&alice, &inst, general).reply_to, None);
+    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    alice
+        .composers
+        .get_mut(&(inst.clone(), general))
+        .unwrap()
+        .set_text("/shrug sure");
+    input_msg(&mut alice, input::Message::Submit);
+    let reply = loop {
+        let found = bob
+            .core
+            .rest(&inst)
+            .unwrap()
+            .messages(general, &Default::default())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|m| m.reply_to.is_some());
+        if let Some(m) = found {
+            break m;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(reply.reply_to.unwrap().id, first.id);
+    assert!(reply.content.starts_with("sure "), "{}", reply.content);
+
+    // Up in an empty box edits my last message.
+    eventually(&alice.core, "the reply", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.window(general))
+            .is_some_and(|w| w.get(reply.id).is_some())
+    })
+    .await;
+    input_msg(&mut alice, input::Message::EditLast);
+    assert_eq!(composer(&alice, &inst, general).editing, Some(reply.id));
+    assert_eq!(composer(&alice, &inst, general).text(), reply.content);
+    input_msg(&mut alice, input::Message::Cancel);
+    assert_eq!(composer(&alice, &inst, general).editing, None);
+    assert!(composer(&alice, &inst, general).is_empty());
+
+    // Drafts stay with their channel.
+    alice
+        .composers
+        .get_mut(&(inst.clone(), general))
+        .unwrap()
+        .set_text("unfinished");
+    let _ = alice.update(Message::OpenSettings);
+    let _ = alice.update(Message::Select(inst.clone(), general));
+    assert_eq!(composer(&alice, &inst, general).text(), "unfinished");
+    let _ = std::fs::remove_file(&file);
+}

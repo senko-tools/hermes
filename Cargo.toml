@@ -84,6 +84,7 @@ emojis = "=0.9.1"
 
 # Desktop integration
 arboard = "=3.7.0"
+rfd = "=0.17.2"  # file dialog for the GUI "+" button (PLAN.md 15.3; approved, see docs/DECISIONS.md)
 notify-rust = "=4.18.2"
 tray-icon = "=0.26.1"
 global-hotkey = "=0.9.0"

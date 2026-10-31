@@ -13,6 +13,7 @@ use iced::widget::pane_grid::Axis;
 use iced::widget::{button, column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
+use crate::buffer::channel::input::{self, Composer, Upload, UploadState};
 use crate::buffer::channel::message::{Images, Img};
 use crate::buffer::{Buffer, channel, settings};
 use crate::font::Fonts;
@@ -67,6 +68,9 @@ pub struct App {
     pub images: Images,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
+    /// The draft of each channel.
+    pub composers: std::collections::HashMap<(InstanceId, Id), Composer>,
+    next_upload: u64,
     /// The add-instance / sign-in dialog.
     pub add_instance: Option<add_instance::AddInstance>,
     /// Where later launches forward their links (section 15.7).
@@ -102,6 +106,8 @@ impl App {
             focused: true,
             images: Images::new(),
             viewer: None,
+            composers: std::collections::HashMap::new(),
+            next_upload: 0,
             fonts: Fonts::from_config(&config.font),
             theme: Theme::dark(),
             iced_theme: style::iced_theme(&Theme::dark()),
@@ -128,7 +134,10 @@ impl App {
     }
 
     /// Loads the first page of every channel the restored layout shows.
-    pub fn open_restored(&self) -> Task<Message> {
+    pub fn open_restored(&mut self) -> Task<Message> {
+        for key in self.panes.visible_channels() {
+            self.composers.entry(key).or_default();
+        }
         Task::batch(
             self.panes
                 .visible_channels()
@@ -217,6 +226,37 @@ impl App {
                 }
             }
             Message::CloseViewer => self.viewer = None,
+            Message::FilesPicked(inst, channel, paths) => {
+                let uploads: Vec<_> = input::files_only(paths)
+                    .into_iter()
+                    .map(|p| self.start_upload(inst.clone(), channel, p, None))
+                    .collect();
+                // The dialog took the focus; give it back to the input.
+                let focus = self
+                    .composers
+                    .get(&(inst, channel))
+                    .map_or_else(Task::none, |c| operation::focus(c.editor_id.clone()));
+                return Task::batch(uploads).chain(focus);
+            }
+            Message::FileDropped(path) => {
+                if let Some((inst, channel)) = self.panes.focused_channel()
+                    && path.is_file()
+                {
+                    return self.start_upload(inst, channel, path, None);
+                }
+            }
+            Message::Uploaded(inst, channel, local, result) => {
+                if let Some(upload) = self
+                    .composers
+                    .get_mut(&(inst, channel))
+                    .and_then(|c| c.uploads.iter_mut().find(|u| u.local == local))
+                {
+                    upload.state = match result {
+                        Ok(attachment) => UploadState::Ready(attachment),
+                        Err(err) => UploadState::Failed(err),
+                    };
+                }
+            }
             Message::DownloadViewer => {
                 if let Some(viewer) = &self.viewer {
                     return self.download(viewer.inst.clone(), viewer.attachment.clone());
@@ -315,7 +355,9 @@ impl App {
             },
             marker,
         );
-        self.load_channel(inst, channel)
+        let composer = self.composers.entry((inst.clone(), channel)).or_default();
+        let focus = operation::focus(composer.editor_id.clone());
+        self.load_channel(inst, channel).chain(focus)
     }
 
     fn on_channel(
@@ -410,6 +452,16 @@ impl App {
                 );
             }
             channel::Message::Download(attachment) => return self.download(inst, attachment),
+            channel::Message::Input(message) => return self.on_input(inst, channel, message),
+            channel::Message::Reply(id) => {
+                let composer = self.composers.entry((inst, channel)).or_default();
+                if composer.editing.is_some() {
+                    composer.clear();
+                }
+                composer.reply_to = Some(id);
+                return operation::focus(composer.editor_id.clone());
+            }
+            channel::Message::StartEdit(id) => return self.start_edit(inst, channel, id),
             channel::Message::OlderLoaded => view.loading_older = false,
             channel::Message::JumpToPresent => {
                 let id = view.scroll_id.clone();
@@ -450,6 +502,377 @@ impl App {
             }
         }
         Task::none()
+    }
+
+    fn on_input(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: input::Message,
+    ) -> Task<Message> {
+        let key = (inst.clone(), channel);
+        let composer = self.composers.entry(key.clone()).or_default();
+        match message {
+            input::Message::Edit(action) => {
+                let edit = action.is_edit();
+                composer.content.perform(action);
+                let text = composer.text();
+                if edit && !text.is_empty() && !text.starts_with('/') && composer.editing.is_none()
+                {
+                    self.core.typing(&inst, channel);
+                }
+                self.refresh_suggestions(&inst, channel);
+            }
+            input::Message::Suggest(delta) => {
+                let len = composer.suggestions.len() as i32;
+                if len > 0 {
+                    composer.selected = (composer.selected as i32 + delta).rem_euclid(len) as usize;
+                }
+            }
+            input::Message::Accept(n) => {
+                let n = if n == usize::MAX {
+                    composer.selected
+                } else {
+                    n
+                };
+                if let (Some(token), Some(s)) = (composer.token(), composer.suggestions.get(n)) {
+                    let insert = s.insert.clone();
+                    composer.replace_token(&token, &insert);
+                }
+                composer.suggestions.clear();
+                return operation::focus(composer.editor_id.clone());
+            }
+            input::Message::Cancel => {
+                if !composer.suggestions.is_empty() {
+                    composer.suggestions.clear();
+                } else if composer.editing.is_some() {
+                    let uploads = std::mem::take(&mut composer.uploads);
+                    composer.clear();
+                    composer.uploads = uploads;
+                } else if composer.reply_to.is_some() {
+                    composer.reply_to = None;
+                } else {
+                    return self.key_action(keybinds::Action::MarkRead);
+                }
+            }
+            input::Message::EditLast => {
+                let last = {
+                    let store = self.core.store();
+                    let s = store.instance(&inst);
+                    let me = s.and_then(|s| s.me_id());
+                    s.and_then(|s| s.window(channel)).and_then(|w| {
+                        w.messages
+                            .iter()
+                            .rev()
+                            .find(|m| Some(m.author.id) == me && !m.deleted)
+                            .map(|m| m.id)
+                    })
+                };
+                if let Some(id) = last {
+                    return self.start_edit(inst, channel, id);
+                }
+            }
+            input::Message::Paste => return self.paste(inst, channel),
+            input::Message::PickFiles => {
+                return Task::perform(
+                    async move {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Attach files")
+                            .pick_files()
+                            .await
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|f| f.path().to_path_buf())
+                            .collect::<Vec<_>>()
+                    },
+                    move |paths| Message::FilesPicked(inst.clone(), channel, paths),
+                );
+            }
+            input::Message::RemoveUpload(local) => composer.uploads.retain(|u| u.local != local),
+            input::Message::Submit => return self.submit(inst, channel),
+        }
+        Task::none()
+    }
+
+    /// Autocomplete for the token at the cursor.
+    fn refresh_suggestions(&mut self, inst: &InstanceId, channel: Id) {
+        let key = (inst.clone(), channel);
+        let Some(composer) = self.composers.get_mut(&key) else {
+            return;
+        };
+        let suggestions = match composer.token() {
+            Some(token) => self
+                .core
+                .store()
+                .instance(inst)
+                .map(|s| {
+                    hermes_client_core::view::complete(s, channel, &token, input::MAX_SUGGESTIONS)
+                })
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if suggestions != composer.suggestions {
+            composer.selected = 0;
+        }
+        composer.suggestions = suggestions;
+    }
+
+    fn start_edit(&mut self, inst: InstanceId, channel: Id, id: Id) -> Task<Message> {
+        let content = self
+            .core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.window(channel))
+            .and_then(|w| w.get(id))
+            .map(|m| m.content.clone());
+        let Some(content) = content else {
+            return Task::none();
+        };
+        let composer = self.composers.entry((inst, channel)).or_default();
+        composer.reply_to = None;
+        composer.suggestions.clear();
+        composer.editing = Some(id);
+        composer.set_text(&content);
+        operation::focus(composer.editor_id.clone())
+    }
+
+    /// Sends the draft (or saves the edit, or runs a slash command).
+    fn submit(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
+        use hermes_client_core::commands::{self, SlashCommand};
+
+        let key = (inst.clone(), channel);
+        let composer = self.composers.entry(key).or_default();
+        let text = composer.text();
+        if let Some(message) = composer.editing {
+            if text.trim().is_empty() {
+                self.error("A message cannot be empty; delete it instead.".into());
+                return Task::none();
+            }
+            composer.clear();
+            let core = self.core.clone();
+            return Task::perform(
+                async move { core.edit_message(&inst, channel, message, &text).await },
+                |result| match result {
+                    Ok(()) => Message::ChannelOpened,
+                    Err(err) => Message::Done(Err(format!("could not edit: {err}"))),
+                },
+            );
+        }
+        let attachments = match composer.ready_attachments() {
+            Ok(a) => a,
+            Err(err) => {
+                self.info(err.into());
+                return Task::none();
+            }
+        };
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Task::none();
+        }
+        let command = if text.trim().is_empty() {
+            SlashCommand::Send(String::new())
+        } else {
+            match commands::parse(&text) {
+                Ok(c) => c,
+                Err(err) => {
+                    self.error(err.to_string());
+                    return Task::none();
+                }
+            }
+        };
+        if let Some(content) = command.message_text() {
+            let draft = hermes_client_core::Draft {
+                content,
+                reply_to: composer.reply_to,
+                attachments,
+            };
+            composer.clear();
+            if let Err(err) = self.core.send_message(&inst, channel, draft) {
+                self.error(err.to_string());
+            }
+            // Sending scrolls to the newest message.
+            let scroll = self
+                .panes
+                .state
+                .iter()
+                .find(|(_, p)| {
+                    p.buffer
+                        == Buffer::Channel {
+                            inst: inst.clone(),
+                            channel,
+                        }
+                })
+                .map(|(_, p)| p.channel.scroll_id.clone());
+            return match scroll {
+                Some(id) => operation::snap_to(
+                    id,
+                    iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+                ),
+                None => Task::none(),
+            };
+        }
+        composer.clear();
+        match command {
+            SlashCommand::Send(_) | SlashCommand::Me(_) => Task::none(),
+            SlashCommand::Join(_)
+            | SlashCommand::Leave
+            | SlashCommand::Mute
+            | SlashCommand::Deafen => {
+                self.info("Voice comes in a later version".into());
+                Task::none()
+            }
+            SlashCommand::Status(status) => {
+                self.core.set_presence(status);
+                self.info(format!("Status: {status:?}"));
+                Task::none()
+            }
+            SlashCommand::Nick(nick) => {
+                let space = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.space_of(channel));
+                let Some(space) = space else {
+                    self.error("Nicknames are per space; open a space channel.".into());
+                    return Task::none();
+                };
+                let core = self.core.clone();
+                Task::perform(
+                    async move {
+                        let req = hermes_client_core::proto::api::UpdateMemberRequest {
+                            nickname: Some(nick),
+                            role_ids: None,
+                        };
+                        core.rest(&inst)?.update_member(space, None, &req).await?;
+                        Ok::<_, hermes_client_core::CoreError>(())
+                    },
+                    |result| match result {
+                        Ok(()) => Message::Done(Ok("Nickname changed".into())),
+                        Err(err) => Message::Done(Err(err.to_string())),
+                    },
+                )
+            }
+            SlashCommand::Dm(name) => {
+                let wanted = name.trim().trim_start_matches('@').to_lowercase();
+                let user = self.core.store().instance(&inst).and_then(|s| {
+                    let me = s.me_id();
+                    s.users
+                        .values()
+                        .filter(|u| Some(u.id) != me)
+                        .find(|u| u.username == wanted)
+                        .or_else(|| {
+                            s.users
+                                .values()
+                                .filter(|u| Some(u.id) != me)
+                                .find(|u| u.name().to_lowercase() == wanted)
+                        })
+                        .map(|u| u.id)
+                });
+                match user {
+                    Some(user) => self.message_user(inst, user),
+                    None => {
+                        self.error(format!("No user {name:?} known here"));
+                        Task::none()
+                    }
+                }
+            }
+            SlashCommand::Invite => {
+                let space = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.space_of(channel));
+                match space {
+                    Some(space) => {
+                        self.run_action(Target::Space(inst, space), Action::InvitePeople)
+                    }
+                    None => {
+                        self.error("Invites are for spaces; open a space channel.".into());
+                        Task::none()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Ctrl+V: an image on the clipboard is attached, text is pasted.
+    fn paste(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
+        let mut clipboard = match arboard::Clipboard::new() {
+            Ok(c) => c,
+            Err(err) => {
+                self.error(format!("clipboard unavailable: {err}"));
+                return Task::none();
+            }
+        };
+        if let Ok(image) = clipboard.get_image() {
+            let png = match encode_png(image.width, image.height, &image.bytes) {
+                Ok(png) => png,
+                Err(err) => {
+                    self.error(format!("could not read the pasted image: {err}"));
+                    return Task::none();
+                }
+            };
+            let dir = std::env::temp_dir().join("hermes-gui");
+            self.next_upload += 1;
+            let path = dir.join(format!(
+                "paste-{}-{}.png",
+                std::process::id(),
+                self.next_upload
+            ));
+            if let Err(err) =
+                std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, png))
+            {
+                self.error(format!("could not keep the pasted image: {err}"));
+                return Task::none();
+            }
+            return self.start_upload(inst, channel, path, Some("pasted image.png".into()));
+        }
+        if let Ok(text) = clipboard.get_text()
+            && let Some(composer) = self.composers.get_mut(&(inst.clone(), channel))
+        {
+            composer
+                .content
+                .perform(iced::widget::text_editor::Action::Edit(
+                    iced::widget::text_editor::Edit::Paste(std::sync::Arc::new(text)),
+                ));
+            self.refresh_suggestions(&inst, channel);
+        }
+        Task::none()
+    }
+
+    /// Adds an upload chip and starts uploading `path`.
+    fn start_upload(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        path: std::path::PathBuf,
+        name: Option<String>,
+    ) -> Task<Message> {
+        self.next_upload += 1;
+        let local = self.next_upload;
+        let name = name.unwrap_or_else(|| {
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "file".into())
+        });
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        self.composers
+            .entry((inst.clone(), channel))
+            .or_default()
+            .uploads
+            .push(Upload {
+                local,
+                name,
+                size,
+                state: UploadState::Uploading,
+            });
+        let core = self.core.clone();
+        Task::perform(
+            async move {
+                let result = core.upload(&inst, &path).await.map_err(|e| e.to_string());
+                (inst, result)
+            },
+            move |(inst, result)| Message::Uploaded(inst, channel, local, result),
+        )
     }
 
     /// Starts loading the thumbnails of a message's images that are not loaded yet.
@@ -1272,6 +1695,7 @@ impl App {
             themes: &self.themes,
             utc_offset: self.utc_offset,
             images: &self.images,
+            composers: &self.composers,
         }));
 
         let layout = if !self.sidebar_visible {
@@ -1405,6 +1829,17 @@ fn confirm_text(action: Action) -> (&'static str, &'static str) {
         ),
         _ => ("Are you sure?", ""),
     }
+}
+
+/// RGBA pixels from the clipboard as a PNG file.
+fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    let image = image::RgbaImage::from_raw(width as u32, height as u32, rgba.to_vec())
+        .ok_or("the image data has the wrong size")?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 fn focus_input(id: Option<&'static str>) -> Task<Message> {

@@ -829,3 +829,29 @@ Approved by the developer as a plan before implementation.
   `hermes_client_core::files::safe_filename` (shared with the GUI), and files that would run code
   when opened (`.exe`, `.bat`, `.lnk`, `.ps1`, …, see `files::is_program`) are saved but not
   opened.
+
+## 2026-10-31: GUI input box
+
+Approved by the developer as a plan before implementation.
+
+- **`rfd = "=0.17.2"`** (approved; named in section 15.3, not listed in section 6): the native
+  file dialog behind the "+" button.
+- **Composer:** one draft per channel (kept when switching channels, shared by panes showing the
+  same channel), an iced `text_editor`. Enter sends and Shift+Enter is a new line; with
+  `buffer.enter_sends = false`, Enter is a new line and Ctrl/Shift+Enter sends. Only the focused
+  editor reacts to keys (iced asks every editor). Trailing whitespace is not sent. The popup, the
+  reply/edit bar and the upload chips have fixed places in the layout so the editor keeps its
+  focus when they appear.
+- **Autocomplete:** `view::complete` for the token before the cursor: `@` and `#` anywhere, `:`
+  with at least two characters after it, `/` only at the start of the message. Up/Down move,
+  Tab/Enter accept, Escape closes. Accepted mentions are inserted in their ID form.
+- **Modes:** Reply and Edit (own messages) in the hover toolbar; Up in an empty box edits my last
+  message; Escape (or ✕) leaves the popup, then the mode, and otherwise marks the channel read.
+- **Slash commands** through `hermes_client_core::commands`, as in the TUI; `/join`, `/leave`,
+  `/mute` and `/deafen` say voice comes later.
+- **Attachments:** the "+" dialog (multi-select), files dropped on the window (for the focused
+  pane's channel) and Ctrl+V with an image on the clipboard (`arboard`, saved as PNG through the
+  `image` crate into the temp folder, uploaded as `pasted image.png`); Ctrl+V with text pastes the
+  text. Each file is a chip ("uploading…", its size when ready, the error when it failed, ✕ to
+  remove). The core reports no byte progress, so there is no percentage. Sending waits until all
+  uploads finished; failed ones are left out.

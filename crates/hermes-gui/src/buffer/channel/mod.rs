@@ -2,6 +2,7 @@
 //! with grouping, day separators, the "New messages" divider, reply previews, pending messages,
 //! the typing line and "Jump to present".
 
+pub mod input;
 pub mod list;
 pub mod markup;
 pub mod message;
@@ -115,6 +116,11 @@ pub enum Message {
     Link(Id, markup::Link),
     OpenImage(Attachment),
     Download(Attachment),
+    Input(input::Message),
+    /// Reply to a message (toolbar).
+    Reply(Id),
+    /// Edit my message (toolbar).
+    StartEdit(Id),
 }
 
 /// What the view needs besides the pane state.
@@ -125,6 +131,7 @@ pub struct Context<'a> {
     pub theme: &'a Theme,
     pub utc_offset: i64,
     pub images: &'a message::Images,
+    pub composer: Option<&'a input::Composer>,
 }
 
 pub fn view<'a>(
@@ -163,7 +170,8 @@ pub fn view<'a>(
             centered(
                 small(format!("This is the start of {title}."), fonts).color(theme.text.tertiary.0)
             ),
-            typing_line(ctx, s, channel)
+            typing_line(ctx, s, channel),
+            composer(ctx, s, channel),
         ]
         .into();
     }
@@ -212,7 +220,36 @@ pub fn view<'a>(
         );
     }
 
-    column![layers, typing_line(ctx, s, channel)].into()
+    column![
+        layers,
+        typing_line(ctx, s, channel),
+        composer(ctx, s, channel)
+    ]
+    .into()
+}
+
+fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
+    let title = s
+        .channel(channel)
+        .map(|c| hermes_client_core::view::channel_title(s, c))
+        .unwrap_or_default();
+    let placeholder = if title.starts_with('#') {
+        format!("Message {title}")
+    } else {
+        format!("Message @{title}")
+    };
+    let can_send = hermes_client_core::view::can(
+        s,
+        channel,
+        hermes_client_core::proto::permissions::Permissions::SEND_MESSAGES,
+    );
+    let reply_name = ctx.composer.and_then(|c| c.reply_to).map(|id| {
+        s.window(channel)
+            .and_then(|w| w.get(id))
+            .map(|m| s.display_name(s.space_of(channel), m.author.id))
+            .unwrap_or_else(|| "a message".into())
+    });
+    input::view(ctx, ctx.composer, placeholder, can_send, reply_name).map(Message::Input)
 }
 
 fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {

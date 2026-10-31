@@ -180,9 +180,14 @@ pub fn view<'a>(
     let mut layers = stack![content];
     if hovered {
         layers = layers.push(
-            container(toolbar(ctx, id, state.palette == Some(id)))
-                .align_right(Fill)
-                .padding([0, 12]),
+            container(toolbar(
+                ctx,
+                id,
+                state.palette == Some(id),
+                s.me_id() == Some(msg.author.id) && !m.system,
+            ))
+            .align_right(Fill)
+            .padding([0, 12]),
         );
     }
     mouse_area(layers)
@@ -191,7 +196,7 @@ pub fn view<'a>(
         .into()
 }
 
-fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool) -> Element<'a, Message> {
+fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     let mut bar = row![].spacing(2).align_y(Alignment::Center);
@@ -208,7 +213,11 @@ fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool) -> Element<'a, Message>
     } else {
         bar = bar
             .push(tool("React").on_press(Message::Palette(Some(id))))
-            .push(tool("⋯").on_press(Message::More(id)));
+            .push(tool("Reply").on_press(Message::Reply(id)));
+        if own {
+            bar = bar.push(tool("Edit").on_press(Message::StartEdit(id)));
+        }
+        bar = bar.push(tool("⋯").on_press(Message::More(id)));
     }
     container(bar)
         .padding(2)

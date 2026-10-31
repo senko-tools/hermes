@@ -63,4 +63,15 @@ pub enum Message {
     CloseViewer,
     /// Saves the viewer's image to the Downloads folder.
     DownloadViewer,
+    /// Files chosen in the "+" dialog for a channel.
+    FilesPicked(InstanceId, Id, Vec<std::path::PathBuf>),
+    /// Files dropped on the window (for the focused pane's channel).
+    FileDropped(std::path::PathBuf),
+    /// An upload finished (instance, channel, local upload number).
+    Uploaded(
+        InstanceId,
+        Id,
+        u64,
+        Result<hermes_client_core::proto::models::Attachment, String>,
+    ),
 }

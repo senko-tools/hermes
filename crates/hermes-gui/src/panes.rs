@@ -242,6 +242,7 @@ pub struct Context<'a> {
     pub themes: &'a [String],
     pub utc_offset: i64,
     pub images: &'a channel::message::Images,
+    pub composers: &'a std::collections::HashMap<(InstanceId, Id), channel::input::Composer>,
 }
 
 /// Actions from a pane header.
@@ -319,6 +320,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     theme,
                     utc_offset: ctx.utc_offset,
                     images: ctx.images,
+                    composer: ctx.composers.get(&(inst.clone(), *channel)),
                 },
                 inst,
                 *channel,
