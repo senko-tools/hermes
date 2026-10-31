@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::gateway::InstanceLimits;
 use crate::id::Id;
 use crate::models::{ChannelKind, CurrentUser};
 use crate::permissions::Permissions;
@@ -37,6 +38,34 @@ impl Pagination {
             .unwrap_or(Self::DEFAULT_LIMIT)
             .clamp(1, Self::MAX_LIMIT)
     }
+}
+
+/// `registration.mode` of an instance: who may create an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrationMode {
+    Open,
+    #[default]
+    InviteOnly,
+    Closed,
+}
+
+/// `GET /instance` (no auth): what a client shows when adding an instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceResponse {
+    pub name: String,
+    pub description: String,
+    /// Server version (`CARGO_PKG_VERSION`).
+    pub version: String,
+    pub protocol_version: u32,
+    pub registration_mode: RegistrationMode,
+    pub limits: InstanceLimits,
+    pub voice: InstanceVoice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceVoice {
+    pub enabled: bool,
 }
 
 /// `POST /auth/register`.

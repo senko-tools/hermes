@@ -529,3 +529,21 @@ Approved by the developer as a plan before implementation.
   can run as that user.
 - **`.gitattributes`** forces LF for `deploy/**` and `*.sh`, so scripts work when checked out on
   Windows with `core.autocrlf`.
+
+## 2026-10-31: `GET /instance` and endpoint coverage tests
+
+- **`GET /api/v1/instance`** was in section 10 but not built yet; it is added with the integration
+  tests item because the client (Phase 2) needs it to probe instances. The body is
+  `hermes_proto::api::InstanceResponse` (`name`, `description`, `version`, `protocol_version`,
+  `registration_mode`, `limits`, `voice.enabled`). `RegistrationMode` moved from the server config
+  to `hermes-proto` (the server re-exports it) so both sides share the enum.
+- **`tests/endpoints.rs`** adds the cross-cutting checks of sections 13 and 19:
+  - every authenticated route refuses a missing, unknown or logged-out token with
+    `401 UNAUTHORIZED`;
+  - each space permission bit (`ADMINISTRATOR` through `MANAGE_MESSAGES`) is tested on one
+    endpoint, once without the bit (refused) and once with it (allowed). `MENTION_EVERYONE` and
+    `BYPASS_SLOWMODE` change results instead of refusing and stay covered in `messages.rs`.
+  
+  The voice bits come with Phase 4.
+- **Not covered:** endpoints that belong to later phases (`PATCH /users/@me`, `GET /users/{id}`,
+  search, voice, notification settings, admin) do not exist yet.

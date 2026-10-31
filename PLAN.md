@@ -1573,7 +1573,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] TLS certificate reload on SIGHUP / file change.
 - [x] Landing page `/` and invite page `/invite/<code>`.
 - [ ] **Minimal deployability early**: `install.sh` + systemd unit (and the Dockerfile + compose file), and deploy the server to `hermes.senko.tools` following [18.8](#188-reference-deployment-hermessenkotools-on-hetzner-debian-13), so a real test instance runs from now on.
-- [ ] Integration tests for all of the above.
+- [x] Integration tests for all of the above.
 
 **Done when:** the integration test suite passes and the server runs on `hermes.senko.tools` with a valid Let's Encrypt certificate.
 

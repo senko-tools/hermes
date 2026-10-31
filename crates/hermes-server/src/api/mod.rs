@@ -6,6 +6,7 @@ mod audit;
 mod auth;
 mod channels;
 mod dms;
+mod instance;
 mod invites;
 mod members;
 mod messages;
@@ -50,6 +51,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let limits = &state.config.limits;
     let api = Router::new()
         .route("/gateway", get(crate::gateway::handler))
+        .route("/instance", get(instance::get))
         .route("/auth/register", post(auth::register))
         .route(
             "/auth/login",
