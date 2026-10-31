@@ -12,7 +12,7 @@ use hermes_proto::models::Invite;
 use hermes_proto::permissions::Permissions;
 
 use super::validate::Fields;
-use super::{ApiResult, Error, Json, Path};
+use super::{ApiResult, Error, Json, Path, perms};
 use crate::auth::Auth;
 use crate::db;
 use crate::db::invites::InviteRow;
@@ -41,10 +41,7 @@ fn to_wire(row: InviteRow, cache: &Cache) -> Invite {
 /// `user_id`'s permissions in a space; `NOT_FOUND` if the space does not exist or they are not
 /// a member (non-members must not learn whether a space exists).
 fn space_permissions(cache: &Cache, space_id: Id, user_id: Id) -> ApiResult<Permissions> {
-    if !cache.is_member(space_id, user_id) {
-        return Err(Error::not_found("space"));
-    }
-    Ok(cache.space_permissions(space_id, user_id))
+    perms::space(cache, space_id, user_id).map(|access| access.perms)
 }
 
 pub async fn create(

@@ -11,8 +11,13 @@
 //! cargo sqlx prepare -- --all-targets
 //! ```
 
+pub mod audit;
 pub mod auth;
+pub mod channels;
 pub mod invites;
+pub mod members;
+pub mod messages;
+pub mod roles;
 pub mod spaces;
 pub mod state;
 

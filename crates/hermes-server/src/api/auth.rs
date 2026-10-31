@@ -124,7 +124,7 @@ pub async fn register(
         result => result?,
     }
     let default_space = if first_user {
-        let space = DefaultSpace::new(&state, user_id);
+        let space = DefaultSpace::new(&state, user_id, state.config.instance.name.clone());
         space.insert(&mut tx, now).await?;
         Some(space)
     } else {

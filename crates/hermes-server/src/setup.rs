@@ -47,8 +47,8 @@ fn print_banner(link: &str) {
     );
 }
 
-/// The first user's space: named after `instance.name`, with `@everyone`, `#general` (text) and
-/// `General` (voice).
+/// A new space with `@everyone`, `#general` (text) and `General` (voice): the first user's space
+/// (named after `instance.name`) and every space created with `POST /spaces`.
 #[derive(Debug, Clone)]
 pub struct DefaultSpace {
     pub space: Space,
@@ -57,11 +57,11 @@ pub struct DefaultSpace {
 }
 
 impl DefaultSpace {
-    pub fn new(state: &AppState, owner_id: Id) -> Self {
+    pub fn new(state: &AppState, owner_id: Id, name: String) -> Self {
         let space_id = state.ids.next();
         let space = Space {
             id: space_id,
-            name: state.config.instance.name.clone(),
+            name,
             description: None,
             icon: None,
             owner_id,

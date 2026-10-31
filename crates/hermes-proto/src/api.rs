@@ -1,9 +1,43 @@
 //! REST request and response bodies (PLAN.md section 10) that are not plain models.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::id::Id;
-use crate::models::CurrentUser;
+use crate::models::{ChannelKind, CurrentUser};
+use crate::permissions::Permissions;
+
+/// A field of a `PATCH` body that can be cleared: absent = unchanged (`None`), `null` = clear
+/// (`Some(None)`), a value = set (`Some(Some(v))`). Use with
+/// `#[serde(default, deserialize_with = "patch", skip_serializing_if = "Option::is_none")]`.
+pub type Patch<T> = Option<Option<T>>;
+
+/// Deserializes a present field (even `null`) as `Some`, so a missing field stays `None`.
+pub fn patch<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Patch<T>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// `?before&after&limit` of list endpoints (PLAN.md section 10, "Pagination").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pagination {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+impl Pagination {
+    pub const DEFAULT_LIMIT: u32 = 50;
+    pub const MAX_LIMIT: u32 = 100;
+
+    /// `limit` with the default applied, clamped to `1..=MAX_LIMIT`.
+    pub fn limit(&self) -> u32 {
+        self.limit
+            .unwrap_or(Self::DEFAULT_LIMIT)
+            .clamp(1, Self::MAX_LIMIT)
+    }
+}
 
 /// `POST /auth/register`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +100,177 @@ impl CreateInviteRequest {
     pub const MAX_EXPIRES_IN_SECS: u64 = 30 * 24 * 60 * 60;
 }
 
+/// `POST /spaces`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateSpaceRequest {
+    pub name: String,
+}
+
+/// `PATCH /spaces/{id}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateSpaceRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Patch<String>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub icon_id: Patch<Id>,
+}
+
+/// `POST /spaces/{id}/transfer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferSpaceRequest {
+    pub user_id: Id,
+}
+
+/// `PATCH /spaces/{id}/members/{uid}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateMemberRequest {
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub nickname: Patch<String>,
+    /// The complete new list of explicitly assigned roles (never `@everyone`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_ids: Option<Vec<Id>>,
+}
+
+/// `PUT /spaces/{id}/bans/{uid}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BanRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Soft-deletes the user's messages in the space from the last N hours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_messages_hours: Option<u32>,
+}
+
+impl BanRequest {
+    pub const MAX_DELETE_MESSAGES_HOURS: u32 = 168;
+}
+
+/// `POST /spaces/{id}/roles`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateRoleRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hoist: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentionable: Option<bool>,
+    /// Empty when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Permissions>,
+}
+
+/// `PATCH /spaces/{id}/roles/{rid}`. The position changes only through `PUT …/roles/order`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRoleRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub color: Patch<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hoist: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentionable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<Permissions>,
+}
+
+/// One entry of `PUT /spaces/{id}/roles/order`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolePosition {
+    pub id: Id,
+    pub position: i32,
+}
+
+/// `POST /spaces/{id}/channels`. Only `text`, `voice` and `category` are allowed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateChannelRequest {
+    pub kind: ChannelKind,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Voice only; `voice.default_bitrate` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<u32>,
+    /// Voice only; absent or 0 = unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_limit: Option<u32>,
+}
+
+/// `PATCH /channels/{id}`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateChannelRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub topic: Patch<String>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Patch<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<u32>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_limit: Patch<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slowmode_secs: Option<u32>,
+}
+
+impl UpdateChannelRequest {
+    pub const MAX_SLOWMODE_SECS: u32 = 6 * 60 * 60;
+}
+
+/// One entry of `PUT /spaces/{id}/channels/order`. `parent_id`: absent = unchanged, `null` = top
+/// level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPosition {
+    pub id: Id,
+    pub position: i32,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub parent_id: Patch<Id>,
+}
+
+/// `PUT /channels/{id}/overrides/{role_id}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverrideRequest {
+    pub allow: Permissions,
+    pub deny: Permissions,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -107,6 +312,42 @@ mod tests {
         assert_eq!(value["user"]["id"], "5");
         assert_eq!(value["user"]["instance_admin"], true);
         assert_eq!(serde_json::from_value::<AuthResponse>(value).unwrap(), res);
+    }
+
+    #[test]
+    fn patch_fields_tell_absent_from_null() {
+        let req: UpdateSpaceRequest = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(req, UpdateSpaceRequest::default());
+        let req: UpdateSpaceRequest =
+            serde_json::from_value(json!({ "description": null, "icon_id": "7" })).unwrap();
+        assert_eq!(req.description, Some(None));
+        assert_eq!(req.icon_id, Some(Some(Id(7))));
+        assert_eq!(req.name, None);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "description": null, "icon_id": "7" })
+        );
+    }
+
+    #[test]
+    fn channel_position_parent_is_a_patch() {
+        let p: ChannelPosition =
+            serde_json::from_value(json!({ "id": "1", "position": 2 })).unwrap();
+        assert_eq!(p.parent_id, None);
+        let p: ChannelPosition =
+            serde_json::from_value(json!({ "id": "1", "position": 2, "parent_id": null })).unwrap();
+        assert_eq!(p.parent_id, Some(None));
+    }
+
+    #[test]
+    fn pagination_limit_is_clamped() {
+        assert_eq!(Pagination::default().limit(), 50);
+        let page = |limit| Pagination {
+            limit: Some(limit),
+            ..Pagination::default()
+        };
+        assert_eq!(page(0).limit(), 1);
+        assert_eq!(page(500).limit(), 100);
     }
 
     #[test]

@@ -247,3 +247,68 @@ Newest entries at the bottom. Each entry: date, what changed, why.
   process, including `SystemRoot`. On Windows, other tests running in parallel then fail to create
   sockets (WSA error 10106). The jail now only clears the environment when a `HERMES*`/`SERVER_PORT`
   variable is set, and puts all other variables back right away.
+
+## 2026-10-31: Spaces, channels, roles, members, overrides REST and the audit log
+
+Approved by the developer as a plan before implementation.
+
+- **Gateway events** for these changes come with the gateway item ("all dispatch events for the
+  above"); the handlers only update the database and the cache for now.
+- **`PATCH` bodies:** a missing field is unchanged; for fields that can be empty (`description`,
+  `icon_id`, `topic`, `nickname`, `color`, `parent_id`, `user_limit`) `null` clears them
+  (`hermes_proto::api::Patch<T>`). A `PATCH` that changes nothing writes nothing and is not audited.
+- **Write lock:** `AppState::writes` (a `tokio::sync::Mutex`) is held by handlers that read the cache,
+  write the database and then update the cache, so two changes cannot interleave and leave the cache
+  different from the database.
+- **One permission path:** `api::perms` (`space`/`require_space`, `channel`/`require_channel`) is used by
+  every space and channel handler (section 13). Non-members get `NOT_FOUND` for spaces, and users
+  without `VIEW_CHANNEL` get `NOT_FOUND` for channels.
+- **Spaces:** `POST /spaces` returns a `SpaceSnapshot` like `ready` and creates the same layout as the
+  first-start space (`@everyone`, `#general`, `General`). `limits.max_spaces_per_user` counts owned
+  spaces (`BAD_REQUEST` when reached; `0` = `MISSING_PERMISSION` for everyone but instance admins);
+  instance admins have no limit. Names 2–64 characters, descriptions up to 512. `icon_id` must be an
+  image (`image/*`) uploaded by the caller. Transfer: owner only, to another member.
+- **Roles:**
+  - Names 1–32 characters; `color` at most `0xFFFFFF`.
+  - A new role goes in at position 1 and the other roles move up by one.
+  - `PATCH` cannot change `position`; only `PUT …/roles/order` can. A reorder may only move roles
+    below the caller's highest role to positions below it; afterwards all positions are renumbered
+    1..n in the new order (ties broken by ID). It returns every role of the space.
+  - Roles and overrides can only add bits the caller has (owners and administrators have all).
+    Removing bits is not restricted.
+  - Of `@everyone` only `permissions` can change (`BAD_REQUEST` otherwise).
+- **Members:**
+  - `{uid}` may be `@me` in `PATCH` and `DELETE /spaces/{id}/members/{uid}`.
+  - Nicknames 1–32 characters. Your own needs `CHANGE_NICKNAME` (or `MANAGE_NICKNAMES`); anyone
+    else's needs `MANAGE_NICKNAMES` and the hierarchy rule.
+  - `role_ids` is the complete new list; every added or removed role must be below the caller's
+    highest role, and the target must be below the caller unless it is the caller.
+  - Changing your own nickname is not audited; leaving is not audited. The owner cannot leave
+    (`BAD_REQUEST`).
+  - `GET …/members` is ordered by user ID (`?after&limit`).
+- **Bans:** `BAN_MEMBERS` plus the hierarchy rule when the user is a member; users who are not members
+  can be banned too. A ban removes the membership. Banning again replaces the reason but keeps the
+  date. `delete_messages_hours` (0–168) soft-deletes the user's messages in the space from that
+  window: content cleared, unpinned, reactions and mentions removed, attachments unlinked.
+  `reason` up to 512 characters.
+- **Channels:**
+  - Names 1–100 characters (no lowercasing), topics up to 1024, `slowmode_secs` up to 21600 (not
+    for categories).
+  - Only voice channels take `bitrate` (6000 to `voice.max_bitrate`, default
+    `voice.default_bitrate`) and `user_limit` (up to `voice.max_users_per_room`; `0` is stored as
+    unlimited).
+  - A parent must be a category of the same space; categories have no parent.
+  - New channels go last in the space (highest position + 1).
+  - Deleting a category moves its children to the top level.
+  - `PUT …/channels/order` sets the given positions (no renumbering); `parent_id` absent = unchanged,
+    `null` = top level. It returns the space's channels the caller can see.
+  - DMs are not handled here: they answer `MISSING_PERMISSION` until the DM item.
+- **Overrides:** `MANAGE_CHANNELS` + `MANAGE_ROLES` in the channel. `allow` and `deny` must not share
+  bits (`VALIDATION_FAILED`). The bits must be ones the caller has in the channel.
+- **Audit log:** actions are `space_update`, `space_transfer`, `member_update`, `member_kick`,
+  `member_ban`, `member_unban`, `role_create`, `role_update`, `role_delete`, `roles_reorder`,
+  `channel_create`, `channel_update`, `channel_delete`, `channels_reorder`, `override_update`,
+  `override_delete` and `message_delete` (used by the messages item). `details` is a JSON object,
+  usually the changed fields. Entries are written in the same transaction as the change.
+  `GET …/audit-log` is newest first (`?before&limit`). `AuditEntry` and `Ban` are new
+  `hermes-proto` models.

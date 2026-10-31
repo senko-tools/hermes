@@ -1,8 +1,14 @@
 //! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
 //! mapping of errors to HTTP responses.
 
+mod audit;
 mod auth;
+mod channels;
 mod invites;
+mod members;
+mod perms;
+mod roles;
+mod spaces;
 mod users;
 mod validate;
 
@@ -12,13 +18,14 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::connect_info::Connected;
-use axum::extract::rejection::{JsonRejection, PathRejection};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::serve::IncomingStream;
+use hermes_proto::id::Id;
 use hermes_proto::{ApiError, ErrorBody, ErrorCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -37,6 +44,36 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/sessions/{id}", delete(auth::delete_session))
         .route("/users/@me", get(users::me))
         .route("/users/@me/password", post(users::change_password))
+        .route("/spaces", post(spaces::create))
+        .route("/spaces/{id}", patch(spaces::update).delete(spaces::delete))
+        .route("/spaces/{id}/transfer", post(spaces::transfer))
+        .route("/spaces/{id}/members", get(members::list))
+        .route(
+            "/spaces/{id}/members/{uid}",
+            patch(members::update).delete(members::remove),
+        )
+        .route("/spaces/{id}/bans", get(members::list_bans))
+        .route(
+            "/spaces/{id}/bans/{uid}",
+            put(members::ban).delete(members::unban),
+        )
+        .route("/spaces/{id}/audit-log", get(audit::list))
+        .route("/spaces/{id}/roles", post(roles::create))
+        .route("/spaces/{id}/roles/order", put(roles::reorder))
+        .route(
+            "/spaces/{id}/roles/{rid}",
+            patch(roles::update).delete(roles::delete),
+        )
+        .route("/spaces/{id}/channels", post(channels::create))
+        .route("/spaces/{id}/channels/order", put(channels::reorder))
+        .route(
+            "/channels/{id}",
+            patch(channels::update).delete(channels::delete),
+        )
+        .route(
+            "/channels/{id}/overrides/{role_id}",
+            put(channels::put_override).delete(channels::delete_override),
+        )
         .route(
             "/spaces/{id}/invites",
             post(invites::create).get(invites::list),
@@ -168,4 +205,33 @@ impl<S: Send + Sync, T: DeserializeOwned + Send> FromRequestParts<S> for Path<T>
 
 fn path_rejection(rejection: PathRejection) -> Error {
     Error::new(ErrorCode::BadRequest, rejection.body_text())
+}
+
+/// `axum::extract::Query` with rejections turned into `BAD_REQUEST` error bodies.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Query<T>(pub T);
+
+impl<S: Send + Sync, T: DeserializeOwned> FromRequestParts<S> for Query<T> {
+    type Rejection = Error;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> ApiResult<Self> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(Query(value)),
+            Err(rejection) => Err(query_rejection(rejection)),
+        }
+    }
+}
+
+fn query_rejection(rejection: QueryRejection) -> Error {
+    Error::new(ErrorCode::BadRequest, rejection.body_text())
+}
+
+/// A user ID path segment that may also be `@me`.
+pub fn user_ref(segment: &str, me: Id) -> ApiResult<Id> {
+    if segment == "@me" {
+        return Ok(me);
+    }
+    segment
+        .parse()
+        .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid user ID"))
 }

@@ -28,6 +28,10 @@ pub struct AppState {
     pub db: Db,
     pub ids: Snowflake,
     pub cache: RwLock<Cache>,
+    /// Held by handlers that read the cache, write the database and then update the cache, so
+    /// two such changes cannot interleave and leave the cache different from the database.
+    /// Never take it while holding the cache lock.
+    pub writes: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -40,6 +44,7 @@ impl AppState {
             db,
             ids: Snowflake::new(),
             cache: RwLock::new(cache),
+            writes: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -152,6 +157,15 @@ impl SpaceState {
             roles,
             members: HashMap::new(),
         }
+    }
+
+    pub fn role(&self, role_id: Id) -> Option<&Role> {
+        self.roles.iter().find(|r| r.id == role_id)
+    }
+
+    /// Restores the sort order of `roles` after positions changed.
+    pub fn sort_roles(&mut self) {
+        self.roles.sort_by_key(|r| (r.position, r.id));
     }
 }
 
@@ -273,6 +287,27 @@ impl Cache {
                 },
             );
         }
+    }
+
+    /// Removes a space and its channels.
+    pub fn remove_space(&mut self, space_id: Id) {
+        self.spaces.remove(&space_id);
+        self.channels
+            .retain(|_, c| c.channel.space_id != Some(space_id));
+    }
+
+    pub fn remove_member(&mut self, space_id: Id, user_id: Id) {
+        if let Some(space) = self.spaces.get_mut(&space_id) {
+            space.members.remove(&user_id);
+        }
+    }
+
+    /// The channels of a space, in no particular order.
+    pub fn space_channels(&self, space_id: Id) -> impl Iterator<Item = &Channel> {
+        self.channels
+            .values()
+            .map(|c| &c.channel)
+            .filter(move |c| c.space_id == Some(space_id))
     }
 
     pub fn is_member(&self, space_id: Id, user_id: Id) -> bool {

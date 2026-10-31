@@ -141,6 +141,79 @@ impl TestServer {
         self.request(Method::DELETE, path, token, None).await
     }
 
+    pub async fn patch(&self, path: &str, token: Option<&str>, body: Value) -> Res {
+        self.request(Method::PATCH, path, token, Some(body)).await
+    }
+
+    pub async fn put(&self, path: &str, token: Option<&str>, body: Value) -> Res {
+        self.request(Method::PUT, path, token, Some(body)).await
+    }
+
+    /// Registers `username` and joins `space_id` through a new invite created by `inviter`;
+    /// returns `(token, user_id)`.
+    pub async fn member(&self, inviter: &str, space_id: &str, username: &str) -> (String, String) {
+        let invite = self
+            .post(
+                &format!("/spaces/{space_id}/invites"),
+                Some(inviter),
+                json!({}),
+            )
+            .await
+            .ok();
+        let code = invite["code"].as_str().unwrap();
+        let (token, user_id) = self.register(username, Some(code)).await;
+        (token, user_id)
+    }
+
+    /// The ID of the channel called `name` in `space_id`.
+    pub fn channel_id(&self, space_id: &str, name: &str) -> String {
+        let space_id = space_id.parse().unwrap();
+        self.state
+            .cache()
+            .space_channels(space_id)
+            .find(|c| c.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no channel {name}"))
+            .id
+            .to_string()
+    }
+
+    /// Creates a role with `permissions` (as `Permissions` bits); returns its ID.
+    pub async fn role(&self, token: &str, space_id: &str, name: &str, permissions: u64) -> String {
+        let role = self
+            .post(
+                &format!("/spaces/{space_id}/roles"),
+                Some(token),
+                json!({ "name": name, "permissions": permissions.to_string() }),
+            )
+            .await
+            .ok();
+        role["id"].as_str().unwrap().to_owned()
+    }
+
+    /// Sets a member's roles.
+    pub async fn assign(&self, token: &str, space_id: &str, user_id: &str, role_ids: &[&str]) {
+        self.patch(
+            &format!("/spaces/{space_id}/members/{user_id}"),
+            Some(token),
+            json!({ "role_ids": role_ids }),
+        )
+        .await
+        .ok();
+    }
+
+    /// The space's audit log actions, newest first.
+    pub async fn audit_actions(&self, token: &str, space_id: &str) -> Vec<String> {
+        let log = self
+            .get(&format!("/spaces/{space_id}/audit-log"), Some(token))
+            .await
+            .ok();
+        log.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["action"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
     pub async fn register_raw(&self, username: &str, invite: Option<&str>) -> Res {
         let mut body = json!({
             "username": username,

@@ -1564,7 +1564,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] SQLite + migrations, snowflake generator, state cache load.
 - [x] TLS modes (`self_signed` with persisted cert, `files`, `off`).
 - [x] Auth: register/login/logout/sessions, first-start setup invite, invites.
-- [ ] Spaces, channels, roles, members, overrides REST + audit log.
+- [x] Spaces, channels, roles, members, overrides REST + audit log.
 - [ ] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).
 - [ ] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
 - [ ] DMs and group DMs.
