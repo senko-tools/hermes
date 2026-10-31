@@ -9,6 +9,7 @@ mod dms;
 mod invites;
 mod members;
 mod messages;
+pub mod pages;
 mod perms;
 mod roles;
 mod spaces;
@@ -138,6 +139,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/healthz", get(healthz))
+        .route("/", get(pages::landing))
+        .route("/invite/{code}", get(pages::invite))
         .with_state(state)
 }
 

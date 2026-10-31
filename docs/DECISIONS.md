@@ -451,3 +451,19 @@ Approved by the developer as a plan before implementation.
 - **Failures:** a pair that cannot be read, parsed or does not match is logged as an error and the
   old certificate stays in use. A broken pair is reported once per change, not every minute.
 - **Open connections** are not touched; only new handshakes get the new certificate.
+
+## 2026-10-31: Landing and invite page details the plan leaves open
+
+- **Space icon:** attachment downloads need a token, so the invite page inlines the icon's
+  thumbnail as a `data:image/webp;base64,…` URI. Without an icon (or thumbnail) it shows the
+  first letter of the space name.
+- **Account-only invites** (the first-start setup invite and `hermes-server invite create` without
+  `--space`) show the instance name and "Create your account on this Hermes server."
+- **Landing page** shows the instance name, its description, the address to type in the app
+  (`host`, or `host:port` when the public port is not 7700) and the download link.
+- **Headers:** `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+  img-src data:; …`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Referrer-Policy: no-referrer` (the invite code is in the URL), `Cache-Control: no-store` on
+  invite pages and `no-cache` on the landing page. Invalid, expired and used-up codes answer 404.
+- **The fingerprint for `#fp=`** in the "Open in Hermes" link comes from `AppState::fingerprint`,
+  set by `run` after TLS is loaded.

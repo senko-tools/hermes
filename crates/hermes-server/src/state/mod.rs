@@ -25,6 +25,7 @@ use crate::gateway::bus::{Audience, Gateway};
 use crate::messages::Slowmode;
 use crate::ratelimit::KeyedLimiter;
 use crate::snowflake::Snowflake;
+use crate::tls::Fingerprint;
 
 /// Everything the request handlers share.
 #[derive(Debug)]
@@ -44,6 +45,9 @@ pub struct AppState {
     pub files: Files,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
+    /// Fingerprint of the self-signed HTTPS certificate, for invite links. Set by the caller of
+    /// [`load`](Self::load) once TLS is set up.
+    pub fingerprint: Option<Fingerprint>,
 }
 
 impl AppState {
@@ -63,6 +67,7 @@ impl AppState {
             message_limiter: KeyedLimiter::default(),
             files,
             gateway: Gateway::default(),
+            fingerprint: None,
         })
     }
 

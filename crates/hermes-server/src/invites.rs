@@ -55,6 +55,15 @@ pub fn links(config: &Config, fingerprint: Option<&Fingerprint>, code: &str) -> 
     }
 }
 
+/// The address users type in "Add instance": `host`, or `host:port` when the port is not 7700.
+pub fn address(config: &Config) -> String {
+    let host = link_host(config);
+    match config.public_port() {
+        DEFAULT_PORT => host,
+        port => format!("{host}:{port}"),
+    }
+}
+
 /// `instance.public_host`, or the bind address when it is empty (`localhost` if that is a
 /// wildcard). IPv6 addresses get brackets.
 fn link_host(config: &Config) -> String {

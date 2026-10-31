@@ -158,9 +158,10 @@ async fn serve(config: Config) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let addr = SocketAddr::new(config.network.bind, config.network.port);
-    let Some(state) = open_state(config).await else {
+    let Some(mut state) = open_state(config).await else {
         return ExitCode::FAILURE;
     };
+    state.fingerprint = tls.fingerprint().copied();
     if let Err(err) = setup::first_start(&state, tls.fingerprint()).await {
         tracing::error!("could not create the setup invite: {err}");
         return ExitCode::FAILURE;

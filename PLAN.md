@@ -1571,7 +1571,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] Attachments upload/download/thumbnails.
 - [x] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
 - [x] TLS certificate reload on SIGHUP / file change.
-- [ ] Landing page `/` and invite page `/invite/<code>`.
+- [x] Landing page `/` and invite page `/invite/<code>`.
 - [ ] **Minimal deployability early**: `install.sh` + systemd unit (and the Dockerfile + compose file), and deploy the server to `hermes.senko.tools` following [18.8](#188-reference-deployment-hermessenkotools-on-hetzner-debian-13), so a real test instance runs from now on.
 - [ ] Integration tests for all of the above.
 

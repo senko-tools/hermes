@@ -117,7 +117,13 @@ pub async fn preview(
     State(state): State<Arc<AppState>>,
     Path(code): Path<String>,
 ) -> ApiResult<Json<Invite>> {
-    let row = usable_invite(&state, &code).await?;
+    Ok(Json(invite_preview(&state, &code).await?))
+}
+
+/// A usable invite as shown to anyone with the code; `INVITE_INVALID` otherwise (also when its
+/// space is gone). Shared with the invite web page.
+pub(super) async fn invite_preview(state: &AppState, code: &str) -> ApiResult<Invite> {
+    let row = usable_invite(state, code).await?;
     let cache = state.cache();
     if row
         .space_id
@@ -125,7 +131,7 @@ pub async fn preview(
     {
         return Err(invite_invalid());
     }
-    Ok(Json(to_wire(row, &cache)))
+    Ok(to_wire(row, &cache))
 }
 
 /// Joins the invite's space and returns it as in `ready`. Already being a member is not an error
