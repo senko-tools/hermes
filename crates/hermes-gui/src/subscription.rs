@@ -10,6 +10,7 @@ use hermes_client_core::CoreEvents;
 use iced::{Event, Subscription, event, window};
 
 use crate::message::Message;
+use crate::single_instance::{self, Endpoint};
 
 /// The core's event stream; the subscription takes it out once.
 #[derive(Debug, Clone)]
@@ -72,6 +73,27 @@ fn watch_dir(dir: PathBuf) -> impl Stream<Item = Message> {
                 break;
             }
         }
+    })
+}
+
+/// Links forwarded by later launches (section 15.7).
+pub fn single_instance(endpoint: Endpoint) -> Subscription<Message> {
+    Subscription::run_with(endpoint, |endpoint| {
+        let endpoint = endpoint.clone();
+        iced::stream::channel(8, async move |mut output| {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let server = tokio::spawn(single_instance::serve(endpoint, tx));
+            while let Some(link) = rx.recv().await {
+                if output.send(Message::Forwarded(link)).await.is_err() {
+                    break;
+                }
+            }
+            // Ends here when `serve` failed (another client listens already).
+            server.abort();
+            if let Ok(Err(err)) = server.await {
+                tracing::warn!("not receiving links from later launches: {err}");
+            }
+        })
     })
 }
 

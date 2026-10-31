@@ -1585,7 +1585,7 @@ Goal: remove the biggest unknowns before writing real code.
 
 ### Phase 3: iced GUI, text features to parity (4–6 weeks)
 - [x] App skeleton, theme system (dark/light), fonts, settings persistence.
-- [ ] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
+- [x] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
 - [ ] Sidebar tree with unread/mention badges, DMs section, context menus.
 - [ ] Pane grid with save/restore, command bar, keybinds.
 - [ ] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.

@@ -14,7 +14,7 @@ use std::time::Duration;
 use hermes_proto::api::{HistoryQuery, InstanceResponse, LoginRequest, RegisterRequest};
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
-use hermes_proto::models::{Attachment, Message, PresenceStatus};
+use hermes_proto::models::{Attachment, Invite, Message, PresenceStatus};
 use hermes_proto::{ErrorCode, PROTOCOL_VERSION};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
@@ -585,6 +585,14 @@ impl Core {
             })
             .await?;
         self.signed_in(host, &res.user.user.username, &res.token)
+    }
+
+    /// `GET /invites/{code}` without signing in: what an invite leads to (space name, icon,
+    /// member count), shown before the account step.
+    pub async fn invite_preview(&self, host: &HostPort, code: &str) -> Result<Invite> {
+        self.check_trusted(host).await?;
+        let rest = Rest::new(host, self.trust(host))?;
+        Ok(rest.invite_preview(code).await?)
     }
 
     fn signed_in(&self, host: &HostPort, username: &str, token: &str) -> Result<InstanceId> {

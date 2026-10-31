@@ -24,5 +24,9 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[dev-dependencies]
+# The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.
+hermes-server = { path = "../hermes-server" }
+
 [lints]
 workspace = true

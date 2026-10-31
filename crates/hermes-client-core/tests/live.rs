@@ -186,6 +186,18 @@ async fn probe_pin_register_and_chat() {
         .await
         .unwrap();
     let (bob, mut bob_events) = core();
+    // The preview needs no account, only a trusted certificate.
+    assert!(matches!(
+        bob.invite_preview(&server.host, &invite.code).await,
+        Err(CoreError::UntrustedCertificate(_))
+    ));
+    bob.trust_fingerprint(&server.host, server.fingerprint)
+        .unwrap();
+    let preview = bob
+        .invite_preview(&server.host, &invite.code)
+        .await
+        .unwrap();
+    assert_eq!(preview.space.unwrap().id, space);
     sign_up(&server, &bob, &mut bob_events, "bob", Some(&invite.code)).await;
     eventually(&alice, "alice sees bob join", |s| {
         s.instance(&inst).unwrap().spaces[&space].members.len() == 2
@@ -313,6 +325,18 @@ async fn offline_messages_queue_and_missed_events_replay_on_resume() {
         .await
         .unwrap();
     let (bob, mut bob_events) = core();
+    // The preview needs no account, only a trusted certificate.
+    assert!(matches!(
+        bob.invite_preview(&server.host, &invite.code).await,
+        Err(CoreError::UntrustedCertificate(_))
+    ));
+    bob.trust_fingerprint(&server.host, server.fingerprint)
+        .unwrap();
+    let preview = bob
+        .invite_preview(&server.host, &invite.code)
+        .await
+        .unwrap();
+    assert_eq!(preview.space.unwrap().id, space);
     sign_up(&server, &bob, &mut bob_events, "bob", Some(&invite.code)).await;
     bob.set_visible_channels([(inst.clone(), channel)]);
     bob.open_channel(&inst, channel).await.unwrap();

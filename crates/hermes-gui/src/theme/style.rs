@@ -5,6 +5,7 @@ use iced::widget::{button, container, rule};
 use iced::{Background, Border, Color};
 
 use super::{Button, Theme};
+use crate::app::Level;
 
 /// The iced theme for `theme`: drives the default look of every widget.
 pub fn iced_theme(theme: &Theme) -> iced::Theme {
@@ -52,11 +53,11 @@ pub fn pane_header(theme: &Theme) -> container::Style {
 }
 
 /// A one-line message bar (warnings, errors).
-pub fn status_bar(theme: &Theme, error: bool) -> container::Style {
-    let color = if error {
-        theme.text.error.0
-    } else {
-        theme.text.warning.0
+pub fn status_bar(theme: &Theme, level: Level) -> container::Style {
+    let color = match level {
+        Level::Info => theme.text.info.0,
+        Level::Warning => theme.text.warning.0,
+        Level::Error => theme.text.error.0,
     };
     container::Style {
         text_color: Some(color),
@@ -79,8 +80,45 @@ pub fn rule(theme: &Theme) -> rule::Style {
     }
 }
 
+pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
+    filled(&theme.buttons.primary, status)
+}
+
+pub fn danger(theme: &Theme, status: button::Status) -> button::Style {
+    filled(&theme.buttons.danger, status)
+}
+
+/// A tab header; `selected` uses the primary colors.
+pub fn tab(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    if selected {
+        filled(&theme.buttons.primary, status)
+    } else {
+        filled(&theme.buttons.secondary, status)
+    }
+}
+
 pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
     filled(&theme.buttons.secondary, status)
+}
+
+/// A flat row in the sidebar; `selected` keeps the highlight.
+pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    let background = if selected {
+        Some(theme.sidebar.selected.0)
+    } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+        Some(theme.sidebar.hover.0)
+    } else {
+        None
+    };
+    button::Style {
+        background: background.map(Background::Color),
+        text_color: theme.text.primary.0,
+        border: Border {
+            radius: 4.0.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
 }
 
 fn filled(colors: &Button, status: button::Status) -> button::Style {

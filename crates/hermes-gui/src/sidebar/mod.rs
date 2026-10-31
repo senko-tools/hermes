@@ -23,12 +23,31 @@ pub fn view<'a>(core: &Core, fonts: &Fonts, theme: &'a Theme, width: u16) -> Ele
     for id in ids {
         let status = core.status(&id);
         let (dot, color) = status_dot(&status, theme);
+        let logged_out = status == ConnStatus::LoggedOut;
+        let mut item = row![
+            label(dot, fonts).color(color),
+            label(id.clone(), fonts).width(Fill)
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        if logged_out {
+            item = item.push(small("Sign in", fonts).color(theme.text.link.0));
+        }
         instances = instances.push(
-            row![label(dot, fonts).color(color), label(id, fonts).width(Fill)]
-                .spacing(6)
-                .padding([4, 8]),
+            button(item)
+                .padding([4, 8])
+                .width(Fill)
+                .style(|_, s| style::sidebar_item(theme, s, false))
+                .on_press_maybe(logged_out.then_some(Message::SignIn(id))),
         );
     }
+    instances = instances.push(
+        button(small("+ Add instance", fonts).color(theme.text.secondary.0))
+            .padding([4, 8])
+            .width(Fill)
+            .style(|_, s| style::sidebar_item(theme, s, false))
+            .on_press(Message::OpenAddInstance),
+    );
 
     let user = core
         .instance_ids()

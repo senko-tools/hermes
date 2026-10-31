@@ -2369,6 +2369,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hermes-client-core",
+ "hermes-server",
  "iced",
  "notify",
  "serde",

@@ -7,8 +7,12 @@ mod app;
 mod buffer;
 mod font;
 mod message;
+mod modal;
 mod sidebar;
+mod single_instance;
 mod subscription;
+#[cfg(test)]
+mod tests;
 mod theme;
 mod widget;
 
@@ -21,6 +25,7 @@ use hermes_client_core::config::{ClientConfig, ConfigPaths};
 use hermes_client_core::{Core, CoreOptions};
 
 use crate::app::App;
+use crate::single_instance::Endpoint;
 use crate::subscription::CoreEventsHandle;
 
 #[derive(Debug, Parser)]
@@ -30,6 +35,9 @@ struct Cli {
     /// config directory, or the executable's directory in portable mode).
     #[arg(long)]
     config_dir: Option<PathBuf>,
+    /// An invite link or address to add (also `hermes://` links). If Hermes is already running,
+    /// the link is handed to it.
+    link: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -41,6 +49,11 @@ fn main() -> ExitCode {
             None => return fail("Could not find a config directory; pass --config-dir"),
         },
     };
+    // Single instance (section 15.7): hand the link to a running client and exit.
+    let endpoint = Endpoint::for_config_dir(&paths.dir);
+    if forward_to_running(&endpoint, cli.link.as_deref()) {
+        return ExitCode::SUCCESS;
+    }
     let loaded = match ClientConfig::load(&paths.config()) {
         Ok(loaded) => loaded,
         Err(err) => return fail(&format!("Invalid config: {err}")),
@@ -56,10 +69,10 @@ fn main() -> ExitCode {
     let fonts = font::Fonts::from_config(&loaded.config.font);
 
     // `boot` runs once, inside iced's tokio runtime, which the core needs.
-    let boot_state = Mutex::new(Some((loaded, options)));
+    let boot_state = Mutex::new(Some((loaded, options, cli.link)));
     let result = iced::application(
         move || {
-            let (loaded, options) = boot_state
+            let (loaded, options, link) = boot_state
                 .lock()
                 .expect("boot lock")
                 .take()
@@ -69,14 +82,22 @@ fn main() -> ExitCode {
                 tracing::warn!("config hot reload unavailable: {err}");
             }
             core.start();
-            let mut app = App::new(core, Some(CoreEventsHandle::new(events)));
+            let mut app = App::new(
+                core,
+                Some(CoreEventsHandle::new(events)),
+                Some(endpoint.clone()),
+            );
             if let Some(warning) = loaded.warnings.into_iter().next() {
                 app.status = Some(app::Status {
                     text: format!("config: {warning}"),
-                    error: false,
+                    level: app::Level::Warning,
                 });
             }
-            (app, app::load_fonts())
+            let open = match link {
+                Some(link) => app.open_link(link),
+                None => iced::Task::none(),
+            };
+            (app, app::load_fonts().chain(open))
         },
         App::update,
         App::view,
@@ -93,6 +114,19 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&format!("hermes: {err}")),
     }
+}
+
+/// `true` if another client for this config directory is running and took `link`.
+fn forward_to_running(endpoint: &Endpoint, link: Option<&str>) -> bool {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    runtime
+        .block_on(single_instance::forward(endpoint, link))
+        .is_ok()
 }
 
 fn fail(message: &str) -> ExitCode {

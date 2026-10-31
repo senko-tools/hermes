@@ -3,13 +3,15 @@
 use std::path::PathBuf;
 
 use hermes_client_core::config::ClientConfig;
-use hermes_client_core::{Core, CoreEvent};
-use iced::widget::{button, column, container, row};
-use iced::{Element, Fill, Subscription, Task};
+use hermes_client_core::{Core, CoreEvent, InstanceId};
+use iced::widget::{button, column, container, operation, row};
+use iced::{Element, Fill, Subscription, Task, window};
 
 use crate::buffer::settings;
 use crate::font::Fonts;
 use crate::message::Message;
+use crate::modal::{self, add_instance};
+use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
 use crate::widget::{heading, label, small};
@@ -25,7 +27,14 @@ pub enum Screen {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub text: String,
-    pub error: bool,
+    pub level: Level,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warning,
+    Error,
 }
 
 pub struct App {
@@ -39,10 +48,18 @@ pub struct App {
     pub fonts: Fonts,
     pub screen: Screen,
     pub status: Option<Status>,
+    /// The add-instance / sign-in dialog.
+    pub add_instance: Option<add_instance::AddInstance>,
+    /// Where later launches forward their links (section 15.7).
+    single_instance: Option<Endpoint>,
 }
 
 impl App {
-    pub fn new(core: Core, events: Option<CoreEventsHandle>) -> App {
+    pub fn new(
+        core: Core,
+        events: Option<CoreEventsHandle>,
+        single_instance: Option<Endpoint>,
+    ) -> App {
         let config = core.config();
         let mut app = App {
             fonts: Fonts::from_config(&config.font),
@@ -54,6 +71,8 @@ impl App {
             events,
             screen: Screen::Welcome,
             status: None,
+            add_instance: None,
+            single_instance,
         };
         app.reload_theme();
         app
@@ -84,8 +103,79 @@ impl App {
             Message::Settings(message) => self.on_settings(message),
             Message::DismissStatus => self.status = None,
             Message::FontLoaded => {}
+            Message::OpenAddInstance => return self.open_add_instance(String::new()),
+            Message::SignIn(inst) => return self.sign_in(&inst),
+            Message::AddInstance(message) => return self.on_add_instance(message),
+            Message::Forwarded(link) => {
+                tracing::info!(
+                    "another launch handed over {}",
+                    if link.is_empty() { "nothing" } else { "a link" }
+                );
+                let show = window::oldest().then(|id| match id {
+                    Some(id) => window::minimize(id, false).chain(window::gain_focus(id)),
+                    None => Task::none(),
+                });
+                let open = if link.is_empty() {
+                    Task::none()
+                } else {
+                    self.open_link(link)
+                };
+                return show.chain(open);
+            }
         }
         Task::none()
+    }
+
+    /// Starts the add-instance flow with an invite link or address (command line, a forwarded
+    /// `hermes://` link).
+    pub fn open_link(&mut self, link: String) -> Task<Message> {
+        let focus = self.open_add_instance(link);
+        focus.chain(self.on_add_instance(add_instance::Message::SubmitAddress))
+    }
+
+    fn open_add_instance(&mut self, input: String) -> Task<Message> {
+        let dialog = add_instance::AddInstance::new(input);
+        let focus = dialog.focus();
+        self.add_instance = Some(dialog);
+        focus_input(focus)
+    }
+
+    /// Signs in again to an instance that is logged out.
+    fn sign_in(&mut self, inst: &InstanceId) -> Task<Message> {
+        let Some(entry) = self.core.config().instance(inst).cloned() else {
+            return Task::none();
+        };
+        self.add_instance = Some(add_instance::AddInstance::sign_in(
+            &entry.url,
+            &entry.username,
+        ));
+        self.on_add_instance(add_instance::Message::SubmitAddress)
+    }
+
+    fn on_add_instance(&mut self, message: add_instance::Message) -> Task<Message> {
+        let Some(dialog) = &mut self.add_instance else {
+            return Task::none();
+        };
+        let before = dialog.focus();
+        match dialog.update(message, &self.core) {
+            add_instance::Action::None => {
+                let after = dialog.focus();
+                if after != before {
+                    return focus_input(after);
+                }
+                Task::none()
+            }
+            add_instance::Action::Run(task) => task.map(Message::AddInstance),
+            add_instance::Action::Close => {
+                self.add_instance = None;
+                Task::none()
+            }
+            add_instance::Action::SignedIn(inst) => {
+                self.add_instance = None;
+                self.info(format!("Signed in to {inst}"));
+                Task::none()
+            }
+        }
     }
 
     fn on_core(&mut self, event: CoreEvent) {
@@ -161,14 +251,28 @@ impl App {
         }
     }
 
+    fn info(&mut self, text: String) {
+        tracing::info!("{text}");
+        self.status = Some(Status {
+            text,
+            level: Level::Info,
+        });
+    }
+
     fn warn(&mut self, text: String) {
         tracing::warn!("{text}");
-        self.status = Some(Status { text, error: false });
+        self.status = Some(Status {
+            text,
+            level: Level::Warning,
+        });
     }
 
     fn error(&mut self, text: String) {
         tracing::error!("{text}");
-        self.status = Some(Status { text, error: true });
+        self.status = Some(Status {
+            text,
+            level: Level::Error,
+        });
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -178,6 +282,9 @@ impl App {
         }
         if let Some(dir) = self.themes_dir() {
             subscriptions.push(subscription::themes(dir));
+        }
+        if let Some(endpoint) = &self.single_instance {
+            subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
         Subscription::batch(subscriptions)
     }
@@ -196,15 +303,30 @@ impl App {
         );
 
         let content: Element<'_, Message> = match self.screen {
-            Screen::Welcome => container(
-                column![
-                    heading("Welcome to Hermes", fonts),
-                    label("Open a channel from the sidebar.", fonts).color(theme.text.secondary.0),
-                ]
-                .spacing(8),
-            )
-            .center(Fill)
-            .into(),
+            Screen::Welcome => {
+                let mut welcome = column![heading("Welcome to Hermes", fonts)].spacing(12);
+                if self.core.instance_ids().is_empty() {
+                    welcome = welcome
+                        .push(
+                            label(
+                                "Paste an invite link from a friend, or the address of a server.",
+                                fonts,
+                            )
+                            .color(theme.text.secondary.0),
+                        )
+                        .push(
+                            button(label("Add an instance", fonts))
+                                .style(|_, s| style::primary(theme, s))
+                                .on_press(Message::OpenAddInstance),
+                        );
+                } else {
+                    welcome = welcome.push(
+                        label("Open a channel from the sidebar.", fonts)
+                            .color(theme.text.secondary.0),
+                    );
+                }
+                container(welcome).center(Fill).into()
+            }
             Screen::Settings => {
                 settings::view(&self.config, &self.themes, fonts, theme).map(Message::Settings)
             }
@@ -224,7 +346,7 @@ impl App {
                     .align_y(iced::Alignment::Center),
                 )
                 .padding([4, 8])
-                .style(|_| style::status_bar(theme, status.error)),
+                .style(|_| style::status_bar(theme, status.level)),
             );
         }
         main = main.push(content);
@@ -236,11 +358,26 @@ impl App {
         } else {
             row![sidebar, main]
         };
-        container(layout)
+        let base = container(layout)
             .width(Fill)
             .height(Fill)
-            .style(|_| style::app(theme))
-            .into()
+            .style(|_| style::app(theme));
+        match &self.add_instance {
+            Some(dialog) => modal::overlay(
+                base,
+                dialog.view(fonts, theme).map(Message::AddInstance),
+                theme,
+                None,
+            ),
+            None => base.into(),
+        }
+    }
+}
+
+fn focus_input(id: Option<&'static str>) -> Task<Message> {
+    match id {
+        Some(id) => operation::focus(iced::widget::Id::new(id)),
+        None => Task::none(),
     }
 }
 
@@ -272,7 +409,7 @@ mod tests {
         let config = ClientConfig::load(&paths.config()).unwrap().config;
         let options = CoreOptions::with_paths("hermes-gui-test", paths).unwrap();
         let (core, _events) = Core::new(config, options);
-        App::new(core, None)
+        App::new(core, None, None)
     }
 
     #[tokio::test]

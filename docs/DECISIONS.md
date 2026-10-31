@@ -691,3 +691,27 @@ Approved by the developer as a plan before implementation.
   UI scale, sidebar position and width). Each change is written with `Core::set_setting`, so
   `config.toml` keeps its comments; sliders preview live and save on release. Edits to
   `config.toml` from outside apply live through the core's hot reload.
+
+## 2026-10-31: GUI add-instance, sign-in, links and single-instance details
+
+Approved by the developer as a plan before implementation.
+
+- **`Core::invite_preview(host, code)`** (new in `hermes-client-core`): `GET /invites/{code}`
+  without a session, so the dialog shows the invite's space and member count before the account
+  step. Like `login`, it requires a trusted (CA-valid or pinned) certificate.
+- **Dialog:** address or invite link → probe → certificate step (unknown: trust on first use;
+  changed: red warning with both fingerprints and "I re-generated the certificate, trust the new
+  one") → preview with Sign in / Create account tabs. An invite's `#fp=` is trusted without asking
+  (section 13), as in the TUI. Invite links start on Create account. Create account is enabled for
+  `open` registration or whenever there is an invite (the server decides for `closed`, where only
+  the setup invite works). Signing in with an invite link also joins its space. A logged-out
+  instance in the sidebar opens the same dialog with the username filled in.
+- **Single instance:** one channel per config directory, so portable copies do not collide:
+  the named pipe `\.\pipe\hermes-<FNV-1a of the lowercased config dir path>` on Windows, the unix
+  socket `<config dir>/hermes.sock` elsewhere (a stale socket is removed). A message is one line:
+  the link, or an empty line meaning "show the window". The running client unminimizes and
+  focuses its window and starts the dialog with the link. Local IPC only, in `hermes-gui`.
+- **`hermes://` registration** in the Windows registry stays with the installer (Phase 7); the
+  client already accepts the link as its argument.
+- **Test-only dependency:** `hermes-server` is a dev-dependency of `hermes-gui` for the end-to-end
+  dialog tests, as for `hermes-tui`.
