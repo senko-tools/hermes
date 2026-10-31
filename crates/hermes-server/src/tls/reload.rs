@@ -104,10 +104,12 @@ impl CertReloader {
     }
 
     /// Reloads on SIGHUP (unix) and when the files change (checked every [`CHECK_INTERVAL`]),
-    /// forever.
-    pub async fn watch(self: Arc<Self>) {
-        let mut interval = tokio::time::interval(CHECK_INTERVAL);
-        interval.tick().await;
+    /// forever. The SIGHUP handler is installed when this is called, not when the returned
+    /// future first runs, so a SIGHUP right after startup cannot hit the default action
+    /// (terminating the process). Must be called inside a tokio runtime.
+    // Not an `async fn`: the handler must be installed before the first poll.
+    #[allow(clippy::manual_async_fn)]
+    pub fn watch(self: Arc<Self>) -> impl std::future::Future<Output = ()> + Send + 'static {
         #[cfg(unix)]
         let mut hangup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         {
@@ -117,6 +119,23 @@ impl CertReloader {
                 None
             }
         };
+        async move {
+            let mut interval = tokio::time::interval(CHECK_INTERVAL);
+            interval.tick().await;
+            self.watch_loop(
+                &mut interval,
+                #[cfg(unix)]
+                &mut hangup,
+            )
+            .await;
+        }
+    }
+
+    async fn watch_loop(
+        &self,
+        interval: &mut tokio::time::Interval,
+        #[cfg(unix)] hangup: &mut Option<tokio::signal::unix::Signal>,
+    ) {
         loop {
             #[cfg(unix)]
             let sighup = async {
