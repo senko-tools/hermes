@@ -449,9 +449,19 @@ impl InstanceStore {
         window.loaded = true;
         match anchor {
             HistoryAnchor::Latest => {
+                // Messages that arrived live while the page was loading are newer than it.
+                let newest_in_page = page.last().map(|m| m.id);
+                let live: Vec<Message> = std::mem::take(&mut window.messages)
+                    .into_iter()
+                    .filter(|m| newest_in_page.is_none_or(|n| m.id > n))
+                    .collect();
                 window.messages = page;
+                for m in live {
+                    window.upsert(m);
+                }
                 window.reached_end = true;
                 window.reached_start = !full;
+                window.cap_start();
             }
             HistoryAnchor::Before(_) => {
                 for m in page {
@@ -516,9 +526,9 @@ impl InstanceStore {
         {
             channel.last_message_id = Some(message.id);
         }
+        // A window that is still loading keeps live messages too (see `merge_history`).
         if let Some(window) = self.windows.get_mut(&channel_id)
-            && window.loaded
-            && window.reached_end
+            && (!window.loaded || window.reached_end)
             && window.get(message.id).is_none()
         {
             window.upsert(message);
@@ -1091,6 +1101,38 @@ pub(crate) mod tests {
         let ids: Vec<u64> = w.messages.iter().map(|m| m.id.0).collect();
         assert_eq!(ids, [200, 201]);
         assert!(!s.unread(Id(11)), "own messages mark the channel read");
+    }
+
+    #[test]
+    fn live_messages_survive_a_slower_first_page() {
+        let mut s = store();
+        let bob = user(2, "bob");
+        let me = user(1, "me");
+        // The window exists (a pending message) but its first page has not arrived yet.
+        s.add_pending(PendingMessage {
+            local_id: 1,
+            nonce: "n1".into(),
+            channel_id: Id(11),
+            content: "mine".into(),
+            reply_to: None,
+            attachments: vec![],
+            state: PendingState::Sending,
+            created_at: 0,
+        });
+        let mut mine = message(30, 11, &me, "mine");
+        mine.nonce = Some("n1".into());
+        s.apply(ServerEvent::MessageCreate(mine), 0);
+        // The page was read before message 30 existed.
+        s.merge_history(
+            Id(11),
+            HistoryAnchor::Latest,
+            vec![message(10, 11, &bob, "a"), message(20, 11, &bob, "b")],
+            PAGE,
+        );
+        let w = s.window(Id(11)).unwrap();
+        let ids: Vec<u64> = w.messages.iter().map(|m| m.id.0).collect();
+        assert_eq!(ids, [10, 20, 30]);
+        assert!(w.pending.is_empty());
     }
 
     #[test]
