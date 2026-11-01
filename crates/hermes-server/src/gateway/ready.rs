@@ -43,7 +43,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
     // Most recently active first; closed ones are left out.
     let mut dms: Vec<Channel> = cache
         .open_dm_ids(user_id)
-        .filter_map(|id| cache.dm_channel(id))
+        .filter_map(|id| cache.dm_for(id, user_id))
         .collect();
     dms.sort_by_key(|c| std::cmp::Reverse((c.last_message_id, c.id)));
 
@@ -87,6 +87,11 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
         presences,
         notification_settings: rows.notification_settings,
         dm_voice_states,
+        privacy: cache
+            .users
+            .get(&user_id)
+            .map(|u| u.privacy)
+            .unwrap_or_default(),
         voice: VoiceInfo {
             enabled: endpoint.is_some(),
             quic_port: endpoint.map(|e| e.port),

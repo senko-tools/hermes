@@ -2,7 +2,8 @@
 //! by `hermes_client_core::commands`.
 
 use hermes_client_core::commands::parse_status;
-use hermes_client_core::proto::models::PresenceStatus;
+use hermes_client_core::proto::api::UpdatePrivacyRequest;
+use hermes_client_core::proto::models::{DmFrom, PresenceStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -51,8 +52,14 @@ pub enum Command {
     Topic(String),
     /// `:delete-channel`: delete the open channel (asks first).
     DeleteChannel,
-    /// `:close`: close the open 1:1 DM (it comes back with the next message).
+    /// `:close`: close the open 1:1 DM (it comes back with the next message), or ignore the
+    /// open message request.
     CloseDm,
+    /// `:accept`: accept the open message request.
+    Accept,
+    /// `:privacy dms everyone|spaces|nobody` / `:privacy requests on|off` on the open channel's
+    /// instance.
+    Privacy(UpdatePrivacyRequest),
     Kick(String),
     /// `:ban <user> [reason]`.
     Ban(String, String),
@@ -95,7 +102,8 @@ pub const HELP: &str = ":join <channel>  :dm <user>  :voice [channel]  :leave  :
 :offline  :online  :retry  :messages  :quit  \
 :search <words> (:search! everywhere)  :mentions  :pins  :read  :menu  \
 :notify all|mentions|none|default|mute|unmute [space]  \
-:create text|voice|category <name>  :space <name>  :rename <name>  :topic [text]  :delete-channel  :close  \
+:create text|voice|category <name>  :space <name>  :rename <name>  :topic [text]  :delete-channel  :close  :accept  \
+:privacy dms everyone|spaces|nobody  :privacy requests on|off  \
 :kick <user>  :ban <user> [reason]  :unban <user>  :role <user> +role|-role  \
 :profile name|status <text>";
 
@@ -202,6 +210,21 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "topic" => Command::Topic(arg.to_owned()),
         "delete-channel" => Command::DeleteChannel,
         "close" => Command::CloseDm,
+        "accept" => Command::Accept,
+        "privacy" => {
+            let usage = "usage: :privacy dms everyone|spaces|nobody | :privacy requests on|off";
+            let (what, value) = arg.split_once(char::is_whitespace).ok_or(usage)?;
+            let mut req = UpdatePrivacyRequest::default();
+            match (what, value.trim()) {
+                ("dms", "everyone") => req.dm_from = Some(DmFrom::Everyone),
+                ("dms", "spaces") => req.dm_from = Some(DmFrom::Spaces),
+                ("dms", "nobody") => req.dm_from = Some(DmFrom::Nobody),
+                ("requests", "on") => req.message_requests = Some(true),
+                ("requests", "off") => req.message_requests = Some(false),
+                _ => return Err(usage.into()),
+            }
+            Command::Privacy(req)
+        }
         "kick" => Command::Kick(need(":kick <user>")?.trim_start_matches('@').to_owned()),
         "ban" => {
             let rest = need(":ban <user> [reason]")?;

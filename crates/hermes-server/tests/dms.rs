@@ -417,3 +417,192 @@ async fn closing_and_reopening_a_dm() {
     assert_eq!(aws.next_event().await["op"], "dm_create");
     assert!(listed(&server.get("/dms", Some(&alice)).await.ok()).contains(&dm_id));
 }
+
+#[tokio::test]
+async fn privacy_settings_and_message_requests() {
+    let server = start_with("dm-privacy", RegistrationMode::Open, |state| {
+        state.config.privacy.dm_policy = DmPolicy::Anyone;
+    })
+    .await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (bob, bob_id) = server.member(&owner, &space_id, "bob").await;
+    let (stranger, _) = server.register("stranger", None).await;
+    let (mut aws, ready) = server.identify(&alice).await;
+    assert_eq!(
+        ready["privacy"],
+        json!({ "dm_from": "everyone", "message_requests": true })
+    );
+
+    // Only people in her spaces reach Alice directly; everyone else becomes a request.
+    let privacy = server
+        .patch(
+            "/users/@me/privacy",
+            Some(&alice),
+            json!({ "dm_from": "spaces" }),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        privacy,
+        json!({ "dm_from": "spaces", "message_requests": true })
+    );
+    assert_eq!(aws.next_event().await["op"], "privacy_update");
+    assert_eq!(
+        server.get("/users/@me/privacy", Some(&alice)).await.ok(),
+        privacy
+    );
+    server
+        .patch(
+            "/users/@me/privacy",
+            Some(&alice),
+            json!({ "dm_from": "sometimes" }),
+        )
+        .await
+        .err(400, "BAD_REQUEST");
+
+    let direct = server
+        .post("/dms", Some(&bob), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .ok();
+    let created = aws.recv_op("dm_create").await;
+    assert_eq!(created["d"]["id"], direct["id"]);
+    assert_eq!(created["d"].get("request"), None, "{created}");
+
+    let dm = server
+        .post(
+            "/dms",
+            Some(&stranger),
+            json!({ "recipient_ids": [alice_id] }),
+        )
+        .await
+        .ok();
+    let dm_id = dm["id"].as_str().unwrap().to_owned();
+    // The sender sees a normal DM; Alice sees a request, also in her list and in ready.
+    assert_eq!(dm.get("request"), None);
+    let created = aws.recv_op("dm_create").await;
+    assert_eq!(created["d"]["id"], dm_id);
+    assert_eq!(created["d"]["request"], true);
+    let list = server.get("/dms", Some(&alice)).await.ok();
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == dm_id.as_str())
+        .unwrap();
+    assert_eq!(listed["request"], true);
+    let (_ws, ready) = server.identify(&alice).await;
+    let in_ready = ready["dms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == dm_id.as_str())
+        .unwrap();
+    assert_eq!(in_ready["request"], true);
+    // A request shares no presence with the sender.
+    let (_sws, sready) = server.identify(&stranger).await;
+    assert!(
+        !sready["presences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["user_id"] == alice_id.as_str()),
+        "{sready}"
+    );
+
+    // Messages still arrive, but a call does not ring.
+    send_message(&server, &stranger, &dm_id, "hello?").await;
+    assert_eq!(aws.next_event().await["op"], "message_create");
+    server
+        .post(
+            &format!("/channels/{dm_id}/call/ring"),
+            Some(&stranger),
+            json!({}),
+        )
+        .await
+        .ok();
+    aws.assert_silent(300).await;
+
+    // Ignoring closes the request for good: more messages do not bring it back.
+    server
+        .delete(&format!("/dms/{dm_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(aws.next_event().await["op"], "dm_delete");
+    send_message(&server, &stranger, &dm_id, "please").await;
+    aws.assert_silent(300).await;
+    assert!(
+        !server
+            .get("/dms", Some(&alice))
+            .await
+            .ok()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == dm_id.as_str())
+    );
+
+    // Accepting brings it back as a normal DM.
+    let accepted = server
+        .post(&format!("/dms/{dm_id}/accept"), Some(&alice), json!({}))
+        .await
+        .ok();
+    assert_eq!(accepted.get("request"), None);
+    let back = aws.next_event().await;
+    assert_eq!(back["op"], "dm_create");
+    assert_eq!(back["d"].get("request"), None);
+    server
+        .post(&format!("/dms/{dm_id}/accept"), Some(&bob), json!({}))
+        .await
+        .err(404, "NOT_FOUND");
+
+    // Nobody, without requests: new DMs to Alice are refused, also as part of a group.
+    server
+        .patch(
+            "/users/@me/privacy",
+            Some(&alice),
+            json!({ "dm_from": "nobody", "message_requests": false }),
+        )
+        .await
+        .ok();
+    let (carol, _) = server.member(&owner, &space_id, "carol").await;
+    server
+        .post("/dms", Some(&carol), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .err(403, "MISSING_PERMISSION");
+    server
+        .post(
+            "/dms",
+            Some(&carol),
+            json!({ "recipient_ids": [alice_id, bob_id] }),
+        )
+        .await
+        .err(403, "MISSING_PERMISSION");
+    // Existing DMs keep working.
+    send_message(&server, &bob, direct["id"].as_str().unwrap(), "still ok").await;
+
+    // Answering a request with a message accepts it.
+    server
+        .patch(
+            "/users/@me/privacy",
+            Some(&alice),
+            json!({ "message_requests": true }),
+        )
+        .await
+        .ok();
+    let (dave, _) = server.register("dave", None).await;
+    let dave_dm = server
+        .post("/dms", Some(&dave), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .ok();
+    let dave_dm_id = dave_dm["id"].as_str().unwrap();
+    send_message(&server, &alice, dave_dm_id, "hi dave").await;
+    let list = server.get("/dms", Some(&alice)).await.ok();
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == dave_dm_id)
+        .unwrap();
+    assert_eq!(listed.get("request"), None, "{listed}");
+}

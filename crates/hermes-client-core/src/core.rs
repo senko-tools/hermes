@@ -901,12 +901,36 @@ impl Core {
             ServerEvent::MessageCreate(m) => Some(m.clone()),
             _ => None,
         };
+        // A message request notifies once, when it first arrives.
+        let request = match &event {
+            ServerEvent::DmCreate(dm) if dm.request => self
+                .with_store(inst, |s| !s.dms.get(&dm.id).is_some_and(|d| d.request))
+                .unwrap_or(false)
+                .then(|| dm.clone()),
+            _ => None,
+        };
         let Some(changed) = self.with_store(inst, |s| s.apply(event, now)) else {
             return;
         };
         self.changed(inst, changed);
         if let Some(message) = message {
             self.maybe_notify(inst, &message, now);
+        }
+        if let Some(dm) = request
+            && self.config().notifications.enabled
+        {
+            let notification = {
+                let store = self.store();
+                store
+                    .instance(inst)
+                    .and_then(|s| notify::request(s, &dm, self.presence()))
+            };
+            if let Some(notification) = notification {
+                self.emit(CoreEvent::Notification {
+                    inst: inst.to_owned(),
+                    notification,
+                });
+            }
         }
     }
 

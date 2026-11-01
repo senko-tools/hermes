@@ -81,6 +81,31 @@ pub enum Message {
     CopyDebugInfo,
     OpenLogs,
     OpenProjectPage,
+    /// Who may start DMs with me on the Account tab's instance.
+    DmFrom(DmFrom),
+    AllowRequests(bool),
+}
+
+/// `PrivacySettings::dm_from`, as offered in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmFrom(pub hermes_client_core::proto::models::DmFrom);
+
+impl DmFrom {
+    pub const ALL: [DmFrom; 3] = {
+        use hermes_client_core::proto::models::DmFrom as D;
+        [DmFrom(D::Everyone), DmFrom(D::Spaces), DmFrom(D::Nobody)]
+    };
+}
+
+impl fmt::Display for DmFrom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use hermes_client_core::proto::models::DmFrom as D;
+        f.write_str(match self.0 {
+            D::Everyone => "Everyone",
+            D::Spaces => "People in my spaces",
+            D::Nobody => "Nobody",
+        })
+    }
 }
 
 /// A slider-driven setting, saved on release.

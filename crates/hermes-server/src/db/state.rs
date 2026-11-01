@@ -1,7 +1,9 @@
 //! Queries that load everything the state cache holds (PLAN.md section 4: "State cache").
 
 use hermes_proto::id::Id;
-use hermes_proto::models::{AttachmentRef, Channel, ChannelKind, Override, Role, Space, User};
+use hermes_proto::models::{
+    AttachmentRef, Channel, ChannelKind, Override, PrivacySettings, Role, Space, User,
+};
 use hermes_proto::permissions::Permissions;
 use sqlx::SqlitePool;
 
@@ -13,6 +15,7 @@ pub struct UserRow {
     pub user: User,
     pub instance_admin: bool,
     pub disabled: bool,
+    pub privacy: PrivacySettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +76,7 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
     sqlx::query!(
         r#"SELECT u.id, u.username, u.display_name, u.status_text,
                   u.instance_admin AS "instance_admin: bool", u.disabled AS "disabled: bool",
+                  u.dm_from, u.message_requests AS "message_requests: bool",
                   u.avatar_id, a.filename AS "avatar_filename?"
            FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id"#
     )
@@ -90,6 +94,10 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
             },
             instance_admin: r.instance_admin,
             disabled: r.disabled,
+            privacy: PrivacySettings {
+                dm_from: super::users::parse_dm_from(&r.dm_from),
+                message_requests: r.message_requests,
+            },
         })
     })
     .collect()
@@ -212,6 +220,7 @@ async fn channels(pool: &SqlitePool) -> Result<Vec<Channel>, sqlx::Error> {
             recipients: Vec::new(),
             owner_id: r.owner_id.map(Id::from_i64),
             last_message_id: r.last_message_id.map(Id::from_i64),
+            request: false,
         })
     })
     .collect()
@@ -241,10 +250,12 @@ pub struct DmRecipientRow {
     pub user_id: Id,
     /// They closed the DM (it is not listed for them until it reopens).
     pub closed: bool,
+    /// It is a message request they have not accepted.
+    pub request: bool,
 }
 
 async fn dm_recipients(pool: &SqlitePool) -> Result<Vec<DmRecipientRow>, sqlx::Error> {
-    let rows = sqlx::query!("SELECT channel_id, user_id, closed FROM dm_recipients")
+    let rows = sqlx::query!("SELECT channel_id, user_id, closed, request FROM dm_recipients")
         .fetch_all(pool)
         .await?;
     Ok(rows
@@ -253,6 +264,7 @@ async fn dm_recipients(pool: &SqlitePool) -> Result<Vec<DmRecipientRow>, sqlx::E
             channel_id: Id::from_i64(r.channel_id),
             user_id: Id::from_i64(r.user_id),
             closed: r.closed != 0,
+            request: r.request != 0,
         })
         .collect())
 }

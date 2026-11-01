@@ -1,7 +1,7 @@
 //! Profile, notification settings and admin flags of users.
 
 use hermes_proto::id::Id;
-use hermes_proto::models::{NotificationLevel, NotificationSetting, User};
+use hermes_proto::models::{DmFrom, NotificationLevel, NotificationSetting, PrivacySettings, User};
 use sqlx::SqliteConnection;
 
 pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<(), sqlx::Error> {
@@ -35,6 +35,41 @@ pub async fn set_flags(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+pub async fn set_privacy(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    privacy: &PrivacySettings,
+) -> Result<(), sqlx::Error> {
+    let id = user_id.to_i64();
+    let dm_from = dm_from_name(privacy.dm_from);
+    sqlx::query!(
+        "UPDATE users SET dm_from = ?, message_requests = ? WHERE id = ?",
+        dm_from,
+        privacy.message_requests,
+        id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+pub const fn dm_from_name(dm_from: DmFrom) -> &'static str {
+    match dm_from {
+        DmFrom::Everyone => "everyone",
+        DmFrom::Spaces => "spaces",
+        DmFrom::Nobody => "nobody",
+    }
+}
+
+/// The stored `users.dm_from`; anything unknown counts as the default.
+pub fn parse_dm_from(name: &str) -> DmFrom {
+    match name {
+        "spaces" => DmFrom::Spaces,
+        "nobody" => DmFrom::Nobody,
+        _ => DmFrom::Everyone,
+    }
 }
 
 pub const fn level_name(level: NotificationLevel) -> &'static str {

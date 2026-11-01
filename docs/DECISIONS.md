@@ -1398,3 +1398,23 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   Group DMs are still left, not closed. The GUI has "Close conversation" in a DM's menu and an
   X on hover; the TUI has `:close`.
 - **Why:** there was no way to remove a 1:1 DM from the list.
+
+## 2026-11-02: Privacy settings and message requests
+
+- **What (additions to PLAN.md sections 7.3, 10 and 11):** each user chooses who may start DMs
+  with them: `dm_from` = everyone (default) / people in my spaces / nobody, and whether everyone
+  else gets through as a **message request** (`message_requests`, default on). Stored in
+  `users.dm_from` / `users.message_requests` and `dm_recipients.request` (migration 0005);
+  `GET`/`PATCH /users/@me/privacy`, `ready.privacy`, `privacy_update`, `POST /dms/{id}/accept`,
+  and `Channel.request` (set only in the recipient's copy).
+- **Rules:** the server's `dm_policy` still applies first. Existing 1:1 DMs are always reused, so
+  changing the setting never cuts off a conversation. A request notifies once (when it arrives);
+  its messages never notify or count as unread; calls do not ring it; no presence is shared
+  either way until it is accepted. Accepting (button, menu, `:accept`) or answering with a
+  message turns it into a normal DM. Ignoring closes it for good: its events stop and new
+  messages do not reopen it (the sender is not told). Ignoring a group request leaves the group.
+- **Clients:** GUI: Settings → Account → Privacy; requests sit under "Requests" in the Messages
+  tab with accept and ignore buttons. TUI: a Requests heading, `:accept`, `:close`,
+  `:privacy dms everyone|spaces|nobody`, `:privacy requests on|off`.
+- **Why:** the developer asked for per-user DM privacy with message requests that only notify
+  for the request itself.

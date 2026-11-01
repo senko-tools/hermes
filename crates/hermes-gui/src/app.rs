@@ -2609,6 +2609,10 @@ impl App {
                 me: account_inst
                     .as_ref()
                     .and_then(|i| self.core.store().instance(i).and_then(|s| s.me.clone())),
+                privacy: account_inst
+                    .as_ref()
+                    .and_then(|i| self.core.store().instance(i).map(|s| s.privacy))
+                    .unwrap_or_default(),
                 sessions: &self.sessions,
                 utc_offset: self.utc_offset,
             },

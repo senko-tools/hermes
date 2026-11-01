@@ -59,6 +59,8 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 | `PUT /users/@me/notification-settings/{target_id}` `{level, muted_until?}` | 204 | a space you are in or a channel you can see; `muted_until`: `null`, `-1` (forever) or Unix ms; sends `notification_settings_update` |
 | `DELETE /users/@me/notification-settings/{target_id}` | 204 | back to the default; sends `notification_settings_delete {target_id}` (an addition to PLAN.md section 10) |
 | `GET /search` `?q&space_id?&channel_id?&author_id?&before?&limit?` | `{messages, total}`, newest first | every word must match as a prefix; only channels with `VIEW_CHANNEL` + `READ_HISTORY` (DMs you are in); deleted messages never match; an empty `q` is `VALIDATION_FAILED` |
+| `GET /users/@me/privacy` | `{dm_from, message_requests}` | `dm_from`: `everyone` (default), `spaces` (people sharing a space with you) or `nobody`; `message_requests` (default `true`) (an addition to PLAN.md section 10) |
+| `PATCH /users/@me/privacy` `{dm_from?, message_requests?}` | `{dm_from, message_requests}` | sends `privacy_update` to your sessions; existing DMs are unchanged |
 | `GET /admin/users` `?after&limit` | `[User + {disabled, instance_admin}]` | instance admins only |
 | `PATCH /admin/users/{id}` `{disabled?, instance_admin?}` | 204 | instance admins only; disabling signs the user out everywhere; admins cannot disable or demote themselves |
 
@@ -66,6 +68,8 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 
 | Request | Response | Notes |
 |---|---|---|
+| `POST /dms` `{recipient_ids}` | `Channel` | a new DM to someone whose `dm_from` leaves you out is a message request for them (their copy has `request: true`), or `MISSING_PERMISSION` if their `message_requests` is off; an existing 1:1 DM is always reused; the server's `dm_policy` applies first |
+| `POST /dms/{id}/accept` | `Channel` | accepts your message request (`dm_update`, or `dm_create` if you had ignored it); sending a message in it accepts it too; no-op for other DMs |
 | `DELETE /dms/{id}` | 204 | closes a 1:1 DM for you: `dm_delete {id}` to your sessions, and it leaves `GET /dms` and `ready`; a message or call ring in it, or `POST /dms` to the same person, reopens it with `dm_create` first; group DMs answer `BAD_REQUEST` (leave them with `DELETE /channels/{id}`) (an addition to PLAN.md section 10) |
 
 ### Voice endpoints
@@ -131,7 +135,13 @@ and group DM calls you are a recipient of.
 `role_update`, `role_delete {id, space_id}`, `member_add` / `member_update`,
 `member_remove {space_id, user_id}`, `user_update`, `presence_update`, `voice_state_update`,
 `call_ring {channel_id, caller_id}`, `call_ring_stop {channel_id}`, `dm_create`, `dm_update`,
-`dm_delete {id}`, `notification_settings_update`, `notification_settings_delete {target_id}`.
+`dm_delete {id}`, `notification_settings_update`, `notification_settings_delete {target_id}`,
+`privacy_update {dm_from, message_requests}` (own sessions).
+
+A DM in `ready.dms`, `GET /dms`, `dm_create` and `dm_update` carries `request: true` when it is
+a message request for you (the field is left out otherwise). A request is never rung and shares
+no presence until accepted; ignoring one (`DELETE /dms/{id}`) closes it for good: its events
+stop and new messages do not reopen it. `ready.privacy` holds your privacy settings.
 
 `voice_state_update` carries a full `VoiceState`
 `{user_id, channel_id, self_mute, self_deaf, server_mute, server_deaf, joined_at}`, or

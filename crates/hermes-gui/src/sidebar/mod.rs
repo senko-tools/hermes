@@ -522,6 +522,75 @@ fn row_view<'a>(
                     .into()
             }
         }
+        Row::Requests { count, .. } => column![
+            Space::new().height(style::GAP_S),
+            container(section_title(&format!("Requests ({count})"), fonts, theme))
+                .padding([0.0, style::ROW_PAD.left + indent(1)]),
+        ]
+        .into(),
+        Row::Request {
+            inst,
+            id,
+            name,
+            group,
+            selected,
+        } => {
+            let state = RowState::of(*selected, false, false, false);
+            let target = Target::Channel(inst.clone(), *id);
+            let face: Element<'a, Message> = if *group {
+                icon(icon::USERS, 14.0).color(theme.text.secondary.0).into()
+            } else {
+                avatar::view(name, None, SLOT, fonts)
+            };
+            let small = |glyph: char, color: Color, message: Message| {
+                button(icon(glyph, 14.0).color(color))
+                    .padding(2)
+                    .style(move |_, s| style::ghost(theme, s, false))
+                    .on_press(message)
+            };
+            // Ignoring a group request leaves it (confirmed); a 1:1 request is closed for good.
+            let ignore = if *group {
+                menu::Action::LeaveGroup
+            } else {
+                menu::Action::CloseDm
+            };
+            item(
+                row![
+                    slot(face),
+                    name_text(name, state, false, fonts, theme),
+                    tip_at(
+                        small(
+                            icon::CHECK,
+                            theme.accent.base.0,
+                            Message::Menu(target.clone(), menu::Action::AcceptRequest),
+                        ),
+                        "Accept",
+                        iced::widget::tooltip::Position::Top,
+                        fonts,
+                        theme,
+                    ),
+                    tip_at(
+                        small(
+                            icon::CLOSE,
+                            theme.text.secondary.0,
+                            Message::Menu(target.clone(), ignore),
+                        ),
+                        "Ignore",
+                        iced::widget::tooltip::Position::Top,
+                        fonts,
+                        theme,
+                    ),
+                ]
+                .spacing(style::GAP_XS)
+                .align_y(Alignment::Center),
+                1,
+                state,
+                theme,
+                Message::Select(inst.clone(), *id),
+                Some(target),
+                menu,
+            )
+        }
         // Starting a conversation is the first entry of an instance's DMs.
         Row::NewDm { inst } => row_button(
             row![

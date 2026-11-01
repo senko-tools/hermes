@@ -1,7 +1,7 @@
 //! When a message notifies (PLAN.md section 14.5). The UI decides how to show it.
 
 use hermes_proto::id::Id;
-use hermes_proto::models::{Message, NotificationLevel, PresenceStatus};
+use hermes_proto::models::{Channel, Message, NotificationLevel, PresenceStatus};
 
 use crate::store::InstanceStore;
 
@@ -50,6 +50,8 @@ pub fn check(
         || my_status == PresenceStatus::Dnd
         || Some(message.author.id) == store.me_id()
         || message.deleted
+        // A message request notified once, when it arrived.
+        || store.channel(message.channel_id).is_some_and(|c| c.request)
     {
         return None;
     }
@@ -92,6 +94,32 @@ pub fn check(
     })
 }
 
+/// The one notification of a new message request (`dm_create` with `request`).
+pub fn request(
+    store: &InstanceStore,
+    dm: &Channel,
+    my_status: PresenceStatus,
+) -> Option<Notification> {
+    if !dm.request || my_status == PresenceStatus::Dnd {
+        return None;
+    }
+    let me = store.me_id();
+    let from = dm
+        .recipients
+        .iter()
+        .find(|u| Some(u.id) != me)
+        .map_or_else(|| "Someone".to_owned(), |u| u.name().to_owned());
+    Some(Notification {
+        channel_id: dm.id,
+        space_id: None,
+        message_id: dm.last_message_id.unwrap_or(dm.id),
+        author: from.clone(),
+        title: "Message request".into(),
+        preview: format!("{from} wants to send you messages"),
+        mention: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +135,32 @@ mod tests {
         dm.recipients = vec![user(1, "me"), user(2, "bob")];
         s.apply(ServerEvent::DmCreate(dm), 0);
         s
+    }
+
+    #[test]
+    fn message_requests_notify_once_and_stay_quiet() {
+        let mut s = store();
+        let stranger = user(7, "stranger");
+        let mut dm = channel(60, None, ChannelKind::Dm, "");
+        dm.name = None;
+        dm.recipients = vec![user(1, "me"), stranger.clone()];
+        dm.request = true;
+        let n = request(&s, &dm, PresenceStatus::Online).unwrap();
+        assert_eq!(n.title, "Message request");
+        assert_eq!(n.author, "stranger");
+        assert!(request(&s, &dm, PresenceStatus::Dnd).is_none());
+        s.apply(ServerEvent::DmCreate(dm.clone()), 0);
+        let hello = message(70, 60, &stranger, "hello");
+        assert!(check(&s, &hello, false, PresenceStatus::Online, 0).is_none());
+        assert_eq!(crate::view::dm_requests(&s).len(), 1);
+        assert!(crate::view::dm_list(&s).iter().all(|d| d.id != Id(60)));
+
+        // Accepted, it is a normal DM.
+        dm.request = false;
+        assert!(request(&s, &dm, PresenceStatus::Online).is_none());
+        s.apply(ServerEvent::DmUpdate(dm), 0);
+        assert!(check(&s, &hello, false, PresenceStatus::Online, 0).is_some());
+        assert!(crate::view::dm_requests(&s).is_empty());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::Id;
 use crate::models::{
     Channel, CurrentUser, Member, Message, NotificationSetting, Presence, PresenceStatus,
-    ReadState, Role, Space, User, VoiceState,
+    PrivacySettings, ReadState, Role, Space, User, VoiceState,
 };
 
 pub use crate::PROTOCOL_VERSION;
@@ -159,6 +159,9 @@ pub struct Ready {
     /// `spaces[].voice_states`).
     #[serde(default)]
     pub dm_voice_states: Vec<VoiceState>,
+    /// Your privacy settings.
+    #[serde(default)]
+    pub privacy: PrivacySettings,
     pub voice: VoiceInfo,
     pub instance: InstanceInfo,
 }
@@ -288,6 +291,8 @@ pub enum ServerEvent {
     NotificationSettingsDelete {
         target_id: Id,
     },
+    /// Own sessions only.
+    PrivacyUpdate(PrivacySettings),
 }
 
 impl ServerEvent {
@@ -541,6 +546,10 @@ mod tests {
             ),
             (ServerEvent::DmDelete { id: Id(1) }, "dm_delete"),
             (
+                ServerEvent::PrivacyUpdate(PrivacySettings::default()),
+                "privacy_update",
+            ),
+            (
                 ServerEvent::NotificationSettingsUpdate(NotificationSetting {
                     target_id: Id(1),
                     level: NotificationLevel::None,
@@ -613,6 +622,7 @@ mod tests {
             presences: vec![],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,
                 quic_port: Some(7700),

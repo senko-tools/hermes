@@ -12,8 +12,8 @@ use axum::http::HeaderMap;
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Channel, CurrentUser, Member, Presence, PresenceStatus, Role, Space, SpacePreview, Status,
-    User, VoiceState,
+    Channel, CurrentUser, Member, Presence, PresenceStatus, PrivacySettings, Role, Space,
+    SpacePreview, Status, User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
@@ -148,6 +148,7 @@ pub struct CachedUser {
     pub user: User,
     pub instance_admin: bool,
     pub disabled: bool,
+    pub privacy: PrivacySettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +176,8 @@ pub struct ChannelState {
     pub recipient_ids: Vec<Id>,
     /// Recipients who closed the DM, sorted: it is not listed for them until it reopens.
     pub closed: Vec<Id>,
+    /// Recipients for whom the DM is a message request they have not accepted, sorted.
+    pub requests: Vec<Id>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -231,6 +234,7 @@ impl Cache {
                         user: r.user,
                         instance_admin: r.instance_admin,
                         disabled: r.disabled,
+                        privacy: r.privacy,
                     };
                     (user.user.id, user)
                 })
@@ -282,6 +286,7 @@ impl Cache {
                 channel,
                 recipient_ids: Vec::new(),
                 closed: Vec::new(),
+                requests: Vec::new(),
             };
             cache.channels.insert(state.channel.id, state);
         }
@@ -296,12 +301,16 @@ impl Cache {
                 if r.closed {
                     state.closed.push(r.user_id);
                 }
+                if r.request {
+                    state.requests.push(r.user_id);
+                }
             }
         }
         for state in cache.channels.values_mut() {
             state.channel.overrides.sort_by_key(|o| o.role_id);
             state.recipient_ids.sort();
             state.closed.sort();
+            state.requests.sort();
         }
 
         cache
@@ -326,6 +335,7 @@ impl Cache {
                 channel,
                 recipient_ids,
                 closed: Vec::new(),
+                requests: Vec::new(),
             },
         );
     }
@@ -438,13 +448,22 @@ impl Cache {
         })
     }
 
-    /// Users who can see a channel: DM recipients, or space members with `VIEW_CHANNEL`.
+    /// Users who get a channel's events: DM recipients (except those who ignored it as a
+    /// message request), or space members with `VIEW_CHANNEL`.
     pub fn channel_viewers(&self, channel_id: Id) -> HashSet<Id> {
         let Some(state) = self.channels.get(&channel_id) else {
             return HashSet::new();
         };
         let Some(space_id) = state.channel.space_id else {
-            return state.recipient_ids.iter().copied().collect();
+            let ignored = |id: &Id| {
+                state.closed.binary_search(id).is_ok() && state.requests.binary_search(id).is_ok()
+            };
+            return state
+                .recipient_ids
+                .iter()
+                .copied()
+                .filter(|id| !ignored(id))
+                .collect();
         };
         let Some(space) = self.spaces.get(&space_id) else {
             return HashSet::new();
@@ -472,6 +491,17 @@ impl Cache {
             .iter()
             .filter_map(|id| self.users.get(id).map(|u| u.user.clone()))
             .collect();
+        Some(channel)
+    }
+
+    /// [`Cache::dm_channel`] as `viewer` sees it: `request` is set when it is a message request
+    /// for them.
+    pub fn dm_for(&self, channel_id: Id, viewer: Id) -> Option<Channel> {
+        let mut channel = self.dm_channel(channel_id)?;
+        channel.request = self.channels[&channel_id]
+            .requests
+            .binary_search(&viewer)
+            .is_ok();
         Some(channel)
     }
 
@@ -507,8 +537,18 @@ impl Cache {
                 users.extend(space.members.keys().copied());
             }
         }
+        // A message request shares no presence until it is accepted, in either direction.
         for dm in self.dm_ids(user_id) {
-            users.extend(self.channels[&dm].recipient_ids.iter().copied());
+            let c = &self.channels[&dm];
+            if c.requests.binary_search(&user_id).is_ok() {
+                continue;
+            }
+            users.extend(
+                c.recipient_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| c.requests.binary_search(id).is_err()),
+            );
         }
         users
     }

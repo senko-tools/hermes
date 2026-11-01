@@ -67,6 +67,8 @@ pub enum SidebarItem {
         deafened: bool,
     },
     DmHeader,
+    /// Over the message requests (accept with `:accept`, ignore with `:close`).
+    RequestHeader,
 }
 
 impl SidebarItem {
@@ -360,6 +362,21 @@ impl App {
                                 Some(space.space.id),
                             ));
                         }
+                    }
+                }
+                let requests = view::dm_requests(s);
+                if !requests.is_empty() {
+                    items.push(SidebarItem::RequestHeader);
+                    for c in requests {
+                        items.push(SidebarItem::Channel {
+                            inst: inst.clone(),
+                            channel: c.id,
+                            kind: c.kind,
+                            name: c.name,
+                            depth: 1,
+                            unread: false,
+                            mentions: 0,
+                        });
                     }
                 }
                 let dms = view::dm_list(s);

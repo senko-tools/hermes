@@ -154,6 +154,7 @@ pub async fn create(
             recipients: Vec::new(),
             owner_id: None,
             last_message_id: None,
+            request: false,
         }
     };
 

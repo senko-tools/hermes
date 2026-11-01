@@ -91,6 +91,16 @@ pub enum Row {
     },
     /// "New message", the first row of an instance's DMs.
     NewDm { inst: InstanceId },
+    /// The heading over an instance's message requests.
+    Requests { inst: InstanceId, count: usize },
+    /// A message request: open it to read, accept or ignore it from the row.
+    Request {
+        inst: InstanceId,
+        id: Id,
+        name: String,
+        group: bool,
+        selected: bool,
+    },
     Dm {
         inst: InstanceId,
         id: Id,
@@ -136,6 +146,8 @@ pub fn tab_badges(store: &Store, instances: &[InstanceId]) -> (Badge, Badge) {
                 mentions: dm.mentions,
             });
         }
+        // Waiting requests show as a dot, never as mentions.
+        dms.unread |= !view::dm_requests(s).is_empty();
     }
     (spaces, dms)
 }
@@ -326,6 +338,22 @@ fn dm_rows(
     rows: &mut Vec<Row>,
 ) {
     rows.push(Row::NewDm { inst: inst.clone() });
+    let requests = view::dm_requests(s);
+    if !requests.is_empty() {
+        rows.push(Row::Requests {
+            inst: inst.clone(),
+            count: requests.len(),
+        });
+        for r in requests {
+            rows.push(Row::Request {
+                inst: inst.clone(),
+                id: r.id,
+                name: r.name,
+                group: r.kind == ChannelKind::GroupDm,
+                selected: selected == Some(r.id),
+            });
+        }
+    }
     for dm in view::dm_list(s) {
         let id = dm.id;
         rows.push(Row::Dm {
@@ -386,6 +414,8 @@ mod tests {
                     if *speaking { " speaking" } else { "" }
                 ),
                 Row::NewDm { .. } => "new dm".to_owned(),
+                Row::Requests { count, .. } => format!("requests {count}"),
+                Row::Request { name, .. } => format!("request {name}"),
                 Row::Dm {
                     name, group, badge, ..
                 } => format!("dm {name} group={group} unread={}", badge.unread),
@@ -459,6 +489,31 @@ mod tests {
         );
         assert_eq!(Tab::of(ChannelKind::GroupDm), Tab::Dms);
         assert_eq!(Tab::of(ChannelKind::Voice), Tab::Spaces);
+    }
+
+    #[test]
+    fn message_requests_are_listed_apart() {
+        let mut store = store();
+        let s = store.instances.get_mut("h").unwrap();
+        let mut request = s.dms.values().next().unwrap().clone();
+        request.id = Id(99);
+        request.name = Some("Stranger".into());
+        request.request = true;
+        s.dms.insert(request.id, request);
+        let list = rows(
+            &store,
+            &connected(),
+            &Collapsed::default(),
+            None,
+            Tab::Dms,
+            &|_, _| false,
+        );
+        let shown = names(&list);
+        assert_eq!(
+            shown[..4],
+            ["instance h", "new dm", "requests 1", "request Stranger"]
+        );
+        assert_eq!(shown.iter().filter(|n| n.contains("Stranger")).count(), 1);
     }
 
     #[test]

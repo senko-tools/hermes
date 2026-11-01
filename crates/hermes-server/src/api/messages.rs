@@ -236,6 +236,10 @@ pub async fn send(
         let last = &mut cached.channel.last_message_id;
         *last = (*last).max(Some(row.id));
     }
+    if kind.is_private() {
+        // Answering a message request accepts it.
+        super::dms::accept_request(&state, channel_id, auth.user_id).await?;
+    }
     if kind == ChannelKind::Dm {
         super::dms::reopen(&state, channel_id).await?;
     }

@@ -258,7 +258,7 @@ pub async fn ring(
     if state.voice.endpoint().is_none() {
         return Err(disabled());
     }
-    let targets = {
+    let targets: Vec<Id> = {
         let cache = state.cache();
         let access =
             perms::require_channel(&cache, channel_id, auth.user_id, Permissions::CONNECT)?;
@@ -268,13 +268,14 @@ pub async fn ring(
                 "Only DMs and group DMs can ring",
             ));
         }
-        let recipients = &cache.channels[&channel_id].recipient_ids;
+        // Nobody is rung for a message request they have not accepted.
+        let dm = &cache.channels[&channel_id];
+        let ringable = |id: &Id| {
+            dm.recipient_ids.binary_search(id).is_ok() && dm.requests.binary_search(id).is_err()
+        };
         match req.user_ids {
-            Some(ids) => ids
-                .into_iter()
-                .filter(|id| recipients.binary_search(id).is_ok())
-                .collect(),
-            None => recipients.clone(),
+            Some(ids) => ids.into_iter().filter(ringable).collect(),
+            None => dm.recipient_ids.iter().copied().filter(ringable).collect(),
         }
     };
     super::dms::reopen(&state, channel_id).await?;

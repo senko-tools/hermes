@@ -67,6 +67,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/users/@me/password", post(users::change_password))
         .route("/users/@me/mentions", get(users::mentions))
         .route(
+            "/users/@me/privacy",
+            get(users::privacy).patch(users::update_privacy),
+        )
+        .route(
             "/users/@me/notification-settings/{target_id}",
             put(users::put_notification_setting).delete(users::delete_notification_setting),
         )
@@ -134,6 +138,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/attachments/{id}/{filename}", get(attachments::download))
         .route("/dms", get(dms::list).post(dms::create))
         .route("/dms/{id}", delete(dms::close))
+        .route("/dms/{id}/accept", post(dms::accept))
         .route(
             "/dms/{id}/recipients/{uid}",
             put(dms::add_recipient).delete(dms::remove_recipient),

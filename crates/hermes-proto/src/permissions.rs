@@ -542,6 +542,7 @@ mod tests {
             recipients: vec![],
             owner_id: None,
             last_message_id: None,
+            request: false,
         }
     }
 

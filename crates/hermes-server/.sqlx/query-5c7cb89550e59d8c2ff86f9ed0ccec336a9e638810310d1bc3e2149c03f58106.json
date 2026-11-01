@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO dm_recipients (channel_id, user_id, request) VALUES (?, ?, ?)\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5c7cb89550e59d8c2ff86f9ed0ccec336a9e638810310d1bc3e2149c03f58106"
+}

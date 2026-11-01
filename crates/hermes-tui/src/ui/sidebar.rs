@@ -39,6 +39,9 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 ListItem::new(Line::from(Span::styled(format!(" {name}"), bold())))
             }
             SidebarItem::DmHeader => ListItem::new(Line::from(Span::styled(" DMs", bold()))),
+            SidebarItem::RequestHeader => {
+                ListItem::new(Line::from(Span::styled(" Requests", bold())))
+            }
             SidebarItem::VoiceUser {
                 name,
                 speaking,

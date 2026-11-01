@@ -4,13 +4,13 @@
 use hermes_client_core::InstanceId;
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::SessionInfo;
-use hermes_client_core::proto::models::CurrentUser;
+use hermes_client_core::proto::models::{CurrentUser, PrivacySettings};
 use hermes_client_core::time;
 use iced::widget::{column, container, row, slider, text_input};
 use iced::{Alignment, Element, Fill};
 
 use super::page::{dropdown, group, group_with, page, setting, toggle};
-use super::settings::Message;
+use super::settings::{DmFrom, Message};
 use super::space_settings::Remote;
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Action, Keybinds};
@@ -23,6 +23,8 @@ pub struct AccountView<'a> {
     pub instances: Vec<InstanceId>,
     pub selected: Option<InstanceId>,
     pub me: Option<CurrentUser>,
+    /// My privacy settings on the selected instance.
+    pub privacy: PrivacySettings,
     pub sessions: &'a Remote<Vec<SessionInfo>>,
     pub utc_offset: i64,
 }
@@ -133,6 +135,34 @@ pub fn account<'a>(
         theme,
     ));
 
+    let privacy = view.privacy;
+    let privacy_rows = vec![
+        setting(
+            "Direct messages from",
+            "Who can start a conversation with you on this instance. Conversations you already \
+             have stay open.",
+            dropdown(
+                &DmFrom::ALL[..],
+                Some(DmFrom(privacy.dm_from)),
+                Message::DmFrom,
+                fonts,
+                theme,
+            ),
+            fonts,
+            theme,
+        ),
+        toggle(
+            "Message requests",
+            "Messages from everyone else wait in Requests under Messages: you are notified \
+             once per request, and they stay quiet until you accept. Off: they cannot message \
+             you at all.",
+            privacy.message_requests,
+            Message::AllowRequests,
+            fonts,
+            theme,
+        ),
+    ];
+
     let mut device_rows = Vec::new();
     match view.sessions {
         Remote::Idle | Remote::Loading => {
@@ -193,7 +223,11 @@ pub fn account<'a>(
     page(
         "Account",
         None,
-        vec![group("Account", account_rows, fonts, theme), devices],
+        vec![
+            group("Account", account_rows, fonts, theme),
+            group("Privacy", privacy_rows, fonts, theme),
+            devices,
+        ],
         fonts,
         theme,
     )

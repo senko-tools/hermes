@@ -91,6 +91,7 @@ impl DefaultSpace {
             recipients: Vec::new(),
             owner_id: None,
             last_message_id: None,
+            request: false,
         };
         let channels = vec![
             channel(ChannelKind::Text, "general", 0, None),

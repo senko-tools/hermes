@@ -164,6 +164,11 @@ impl App {
                 )
             }
 
+            (Target::Channel(inst, channel), Action::AcceptRequest) => {
+                self.call_status(&inst, "Request accepted", move |r| async move {
+                    r.accept_dm(channel).await
+                })
+            }
             (Target::Channel(inst, channel), Action::CloseDm) => {
                 self.panes.clear_where(
                     |b| matches!(b, Buffer::Channel { inst: i, channel: c } if *i == inst && *c == channel),
