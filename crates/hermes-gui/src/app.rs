@@ -1557,8 +1557,46 @@ impl App {
         }
         match self.keybinds.action(key, physical, modifiers) {
             Some(action) => self.key_action(action),
-            None => Task::none(),
+            None => self.type_into_composer(key, modifiers, captured),
         }
+    }
+
+    /// Typing while nothing has the keyboard goes into the focused channel's message box, as in
+    /// other chat apps.
+    fn type_into_composer(
+        &mut self,
+        key: &keyboard::Key,
+        modifiers: Modifiers,
+        captured: bool,
+    ) -> Task<Message> {
+        let keyboard::Key::Character(text) = key else {
+            return Task::none();
+        };
+        if captured || modifiers.control() || modifiers.alt() || modifiers.logo() {
+            return Task::none();
+        }
+        let Some((inst, channel)) = self.panes.focused_channel() else {
+            return Task::none();
+        };
+        let can_send = self.core.store().instance(&inst).is_some_and(|s| {
+            hermes_client_core::view::can(
+                s,
+                channel,
+                hermes_client_core::proto::permissions::Permissions::SEND_MESSAGES,
+            )
+        });
+        if !can_send {
+            return Task::none();
+        }
+        let composer = self.composers.entry((inst.clone(), channel)).or_default();
+        composer
+            .content
+            .perform(iced::widget::text_editor::Action::Edit(
+                iced::widget::text_editor::Edit::Paste(std::sync::Arc::new(text.to_string())),
+            ));
+        let focus = operation::focus(composer.editor_id.clone());
+        self.refresh_suggestions(&inst, channel);
+        focus
     }
 
     /// The open menu's entries (separators left out).
