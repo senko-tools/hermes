@@ -312,7 +312,7 @@ pub struct Context<'a> {
     pub fonts: &'a Fonts,
     pub theme: &'a Theme,
     pub config: &'a hermes_client_core::config::ClientConfig,
-    pub themes: &'a [String],
+    pub themes: &'a [(String, Result<Theme, String>)],
     pub utc_offset: i64,
     pub images: &'a channel::message::Images,
     pub composers: &'a std::collections::HashMap<(InstanceId, Id), channel::input::Composer>,

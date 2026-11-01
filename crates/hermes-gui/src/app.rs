@@ -66,6 +66,8 @@ pub struct App {
     pub theme: Theme,
     pub iced_theme: iced::Theme,
     pub themes: Vec<String>,
+    /// Every theme loaded, for the previews in Settings (or what is wrong with its file).
+    pub theme_previews: Vec<(String, Result<Theme, String>)>,
     pub fonts: Fonts,
     pub status: Option<Status>,
     pub panes: Panes,
@@ -175,6 +177,7 @@ impl App {
             theme: Theme::dark(),
             iced_theme: style::iced_theme(&Theme::dark()),
             themes: Vec::new(),
+            theme_previews: Vec::new(),
             config,
             core,
             events,
@@ -2343,11 +2346,53 @@ impl App {
         ) || matches!((&combo.key, key), (keybinds::KeyName::Char(c), keyboard::Key::Character(k)) if k.to_lowercase() == *c)
     }
 
+    /// Writes the current theme to `<themes>/<name>-custom.toml` (a free name) and returns the
+    /// new theme's name. Built-in themes are copied with every key.
+    fn copy_theme(&mut self) -> Result<String, String> {
+        let dir = self.themes_dir().ok_or("no config directory")?;
+        let name = &self.config.general.theme;
+        let text = match std::fs::read_to_string(dir.join(format!("{name}.toml"))) {
+            Ok(text) => text,
+            Err(_) => theme::BUILTIN
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, text)| (*text).to_owned())
+                .ok_or_else(|| format!("theme `{name}` not found"))?,
+        };
+        let mut copy = format!("{name}-custom");
+        let mut n = 2;
+        while dir.join(format!("{copy}.toml")).exists() {
+            copy = format!("{name}-custom-{n}");
+            n += 1;
+        }
+        let path = dir.join(format!("{copy}.toml"));
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        self.reload_theme();
+        self.info(format!(
+            "Copied to {}: edit it and the changes show up at once",
+            path.display()
+        ));
+        Ok(copy)
+    }
+
     /// Loads the configured theme again (from disk if it is a user theme).
     fn reload_theme(&mut self) {
         let dir = self.themes_dir();
         let loaded = Theme::load(&self.config.general.theme, dir.as_deref());
         self.themes = theme::available(dir.as_deref());
+        self.theme_previews = self
+            .themes
+            .iter()
+            .map(|name| {
+                let preview = Theme::load(name, dir.as_deref());
+                let failed = preview
+                    .warnings
+                    .into_iter()
+                    .find(|w| w.contains("not loaded") || w.contains("not found"));
+                (name.clone(), failed.map_or(Ok(preview.theme), Err))
+            })
+            .collect();
         self.iced_theme = style::iced_theme(&loaded.theme);
         self.theme = loaded.theme;
         if let Some(warning) = loaded.warnings.into_iter().next() {
@@ -2515,7 +2560,7 @@ impl App {
             fonts,
             theme,
             config: &self.config,
-            themes: &self.themes,
+            themes: &self.theme_previews,
             utc_offset: self.utc_offset,
             images: &self.images,
             composers: &self.composers,
@@ -2833,6 +2878,40 @@ mod tests {
         assert_eq!(saved.sidebar.width, 300);
         assert_eq!(saved.sidebar.member_list_width, 232);
         assert!(app.status.is_none(), "{:?}", app.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn themes_have_previews_and_can_be_copied() {
+        let dir = temp_dir("copy-theme");
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(dir.join("themes").join("broken.toml"), "not toml [").unwrap();
+        let mut app = app_in(&dir);
+        let preview = |app: &App, name: &str| {
+            app.theme_previews
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| t.is_ok())
+        };
+        assert_eq!(preview(&app, "neko"), Some(true));
+        assert_eq!(preview(&app, "broken"), Some(false));
+
+        let _ = app.update(Message::Settings(settings::Message::Theme("neko".into())));
+        let _ = app.update(Message::Settings(settings::Message::CopyTheme));
+        let copied = dir.join("themes").join("neko-custom.toml");
+        assert_eq!(
+            std::fs::read_to_string(&copied).unwrap(),
+            crate::theme::BUILTIN[3].1
+        );
+        assert_eq!(app.theme.name, "neko-custom");
+        assert_eq!(
+            app.theme.accent.base,
+            Theme::builtin("neko").unwrap().accent.base
+        );
+        // A second copy gets a free name.
+        let _ = app.update(Message::Settings(settings::Message::Theme("neko".into())));
+        let _ = app.update(Message::Settings(settings::Message::CopyTheme));
+        assert_eq!(app.theme.name, "neko-custom-2");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

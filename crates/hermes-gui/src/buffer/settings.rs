@@ -9,7 +9,7 @@ use hermes_client_core::config::ClientConfig;
 use iced::widget::{button, column, container, progress_bar, row, scrollable, slider, text_input};
 use iced::{Element, Fill};
 
-use super::page::{dropdown, group, nav_item, nav_title, page, setting, toggle};
+use super::page::{dropdown, group, group_with, nav_item, nav_title, page, setting, toggle};
 use crate::font::{self, Fonts};
 use crate::theme::{Theme, style};
 use crate::widget::label;
@@ -22,6 +22,9 @@ pub const PTT_INPUT: &str = "settings-ptt-key";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Theme(String),
+    OpenThemesFolder,
+    /// Copy the current theme to a new file in the themes folder, to edit it.
+    CopyTheme,
     /// A family picked from the font list ([`CUSTOM_FONT`] shows the name field).
     Font(FontSlot, String),
     /// The custom family name field changed.
@@ -303,7 +306,7 @@ pub const SCALE_PRESETS: [f64; 5] = [0.9, 1.0, 1.1, 1.25, 1.5];
 #[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     config: &'a ClientConfig,
-    themes: &'a [String],
+    themes: &'a [(String, Result<Theme, String>)],
     tab: Tab,
     ui_scale_draft: Option<f64>,
     voice: &VoiceView<'a>,
@@ -361,12 +364,24 @@ pub fn view<'a>(
 
 fn appearance<'a>(
     config: &'a ClientConfig,
-    themes: &'a [String],
+    themes: &'a [(String, Result<Theme, String>)],
     ui_scale_draft: Option<f64>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let current_theme = themes.iter().find(|t| **t == config.general.theme).cloned();
+    let cards = row(themes.iter().map(|(name, loaded)| {
+        crate::widget::theme_card::card(
+            name,
+            loaded,
+            *name == config.general.theme,
+            Message::Theme(name.clone()),
+            fonts,
+            theme,
+        )
+    }))
+    .spacing(style::GAP)
+    .wrap()
+    .vertical_spacing(style::GAP);
     let scale = ui_scale_draft.unwrap_or(config.font.ui_scale);
     let saved_scale = config.font.ui_scale;
     let preset = |value: f64| {
@@ -387,16 +402,27 @@ fn appearance<'a>(
         "Appearance",
         None,
         vec![
-            group(
+            group_with(
                 "Theme",
-                vec![setting(
-                    "Theme",
-                    "Built-in themes, plus any .toml file in the themes folder of the config \
-                     directory (changes there show up at once).",
-                    dropdown(themes, current_theme, Message::Theme, fonts, theme),
-                    fonts,
-                    theme,
-                )],
+                vec![
+                    text_button("Open themes folder", ButtonKind::Secondary, fonts, theme)
+                        .on_press(Message::OpenThemesFolder)
+                        .into(),
+                    text_button("Copy current theme", ButtonKind::Secondary, fonts, theme)
+                        .on_press(Message::CopyTheme)
+                        .into(),
+                ],
+                vec![
+                    cards.into(),
+                    crate::widget::caption(
+                        "Your own themes are .toml files in the themes folder: copy one to start, \
+                         and changes show up as soon as you save. Keys you leave out come from \
+                         the dark theme.",
+                        fonts,
+                    )
+                    .color(theme.text.tertiary.0)
+                    .into(),
+                ],
                 fonts,
                 theme,
             ),

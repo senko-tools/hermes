@@ -162,6 +162,22 @@ impl App {
                 let text = self.debug_info();
                 self.update(Message::Copy(text, "Debug info"))
             }
+            S::OpenThemesFolder => {
+                if let Some(dir) = self.themes_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(err) = crate::open::path(&dir) {
+                        self.error(format!("could not open {}: {err}", dir.display()));
+                    }
+                }
+                Task::none()
+            }
+            S::CopyTheme => match self.copy_theme() {
+                Ok(name) => self.update(Message::Settings(S::Theme(name))),
+                Err(err) => {
+                    self.error(format!("theme not copied: {err}"));
+                    Task::none()
+                }
+            },
             S::OpenLogs => {
                 if let Some(paths) = self.core.paths() {
                     let dir = paths.dir.join("logs");
