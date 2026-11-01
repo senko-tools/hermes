@@ -590,6 +590,29 @@ impl Core {
         Ok(())
     }
 
+    /// An invite link's `#fp=` (PLAN.md section 13): pinned only for a host this client has
+    /// never trusted. A host that is already pinned keeps its pin, and an instance that is
+    /// already added (trusted through its CA certificate when it has no pin) is never switched
+    /// to a pin by a link: a pin replaces CA validation, so a crafted link could otherwise
+    /// hand someone else's certificate the trust of a real server. Returns whether it pinned.
+    pub fn trust_invite_fingerprint(
+        &self,
+        host: &HostPort,
+        fingerprint: Fingerprint,
+    ) -> Result<bool> {
+        let added = self
+            .config()
+            .instances
+            .iter()
+            .any(|i| i.url.authority() == host.authority());
+        let mut known = self.inner.known_hosts.lock().expect("known hosts");
+        if added || known.get(host).is_some() {
+            return Ok(false);
+        }
+        known.trust(host, fingerprint)?;
+        Ok(true)
+    }
+
     /// Fails unless the host's certificate is trusted (CA-valid or pinned).
     async fn check_trusted(&self, host: &HostPort) -> Result<()> {
         let probe = self.probe_instance(host).await?;

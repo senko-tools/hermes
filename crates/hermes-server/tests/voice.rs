@@ -409,6 +409,64 @@ async fn moderators_mute_move_and_disconnect() {
 }
 
 #[tokio::test]
+async fn moderators_cannot_act_on_higher_members() {
+    let server = start("voice-hierarchy", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (bob, bob_id) = server.member(&owner, &space_id, "bob").await;
+    let general = server.channel_id(&space_id, "General");
+    let moderator = server
+        .role(
+            &owner,
+            &space_id,
+            "moderator",
+            (Permissions::MUTE_MEMBERS | Permissions::DEAFEN_MEMBERS | Permissions::MOVE_MEMBERS)
+                .bits(),
+        )
+        .await;
+    server
+        .assign(&owner, &space_id, &bob_id, &[&moderator])
+        .await;
+    let (_o, _) = server.voice_join(&owner, &general).await;
+    let (_a, _) = server.voice_join(&alice, &general).await;
+    let alice_path = format!("/spaces/{space_id}/voice-states/{alice_id}");
+
+    // Below him: fine.
+    server
+        .patch(&alice_path, Some(&bob), json!({ "server_mute": true }))
+        .await
+        .ok();
+    // The owner is out of reach.
+    for body in [
+        json!({ "server_mute": true }),
+        json!({ "server_deaf": true }),
+        json!({ "channel_id": null }),
+    ] {
+        server
+            .patch(
+                &format!("/spaces/{space_id}/voice-states/{owner_id}"),
+                Some(&bob),
+                body,
+            )
+            .await
+            .err(403, "MISSING_PERMISSION");
+    }
+    // So is someone with the same highest role.
+    server
+        .assign(&owner, &space_id, &alice_id, &[&moderator])
+        .await;
+    server
+        .patch(&alice_path, Some(&bob), json!({ "server_mute": false }))
+        .await
+        .err(403, "MISSING_PERMISSION");
+    // Her own state is hers to change (she has the bit).
+    server
+        .patch(&alice_path, Some(&alice), json!({ "server_mute": false }))
+        .await
+        .ok();
+}
+
+#[tokio::test]
 async fn user_limits() {
     let server = start("voice-limits", RegistrationMode::Open).await;
     let (owner, _, space_id) = server.owner().await;

@@ -54,8 +54,32 @@ struct Cli {
     link: Option<String>,
 }
 
+impl Cli {
+    /// The command line. Started for a `hermes://` link (by a browser, through the protocol
+    /// handler), only the link counts: the rest of that command line comes from the link's
+    /// author, so a crafted link that smuggles in flags (`--config-dir \\host\share`) changes
+    /// nothing.
+    fn from_args() -> Cli {
+        Cli::from_raw(std::env::args_os().collect())
+    }
+
+    fn from_raw(args: Vec<std::ffi::OsString>) -> Cli {
+        let link = args.iter().skip(1).map(|a| a.to_string_lossy()).find(|a| {
+            a.get(..7)
+                .is_some_and(|s| s.eq_ignore_ascii_case("hermes:"))
+        });
+        match link {
+            Some(link) => Cli {
+                config_dir: None,
+                link: Some(link.into_owned()),
+            },
+            None => Cli::parse_from(args),
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::from_args();
     let paths = match cli.config_dir {
         Some(dir) => ConfigPaths::in_dir(dir),
         None => match ConfigPaths::detect() {
@@ -203,4 +227,29 @@ fn init_logging(paths: &ConfigPaths) {
         .with_ansi(false)
         .with_writer(Mutex::new(file))
         .init();
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::Cli;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::from_raw(args.iter().map(Into::into).collect())
+    }
+
+    #[test]
+    fn a_hermes_link_ignores_every_other_argument() {
+        let cli = parse(&[
+            "hermes.exe",
+            "--config-dir",
+            r"\\evil\share",
+            "HERMES://example.org/invite/abc",
+        ]);
+        assert_eq!(cli.config_dir, None);
+        assert_eq!(cli.link.as_deref(), Some("HERMES://example.org/invite/abc"));
+
+        let cli = parse(&["hermes.exe", "--config-dir", "dev", "https://h/invite/x"]);
+        assert_eq!(cli.config_dir, Some("dev".into()));
+        assert_eq!(cli.link.as_deref(), Some("https://h/invite/x"));
+    }
 }

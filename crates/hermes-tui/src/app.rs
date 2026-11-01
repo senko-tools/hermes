@@ -1505,8 +1505,9 @@ impl App {
                 let name = hermes_client_core::files::safe_filename(&attachment.filename);
                 let path = dir.join(&name);
                 std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                // Opening a program would run it; only save those.
-                if hermes_client_core::files::is_program(&name) {
+                hermes_client_core::files::mark_downloaded(&path);
+                // Only pictures, sound, video, PDFs and text open; anything else could run code.
+                if !hermes_client_core::files::opens_in_viewer(&name) {
                     return Ok::<_, String>((path, false));
                 }
                 open_with_os(&path).map_err(|e| e.to_string())?;
@@ -1516,7 +1517,7 @@ impl App {
             let _ = tasks.send(match result {
                 Ok((path, true)) => TaskMsg::Info(format!("opened {}", path.display())),
                 Ok((path, false)) => TaskMsg::Info(format!(
-                    "saved {} (not opened: it is a program)",
+                    "saved {} (not opened: only pictures, sound, video, PDFs and text open)",
                     path.display()
                 )),
                 Err(e) => TaskMsg::Error(e),
@@ -1537,9 +1538,9 @@ impl App {
                 fingerprint,
             }) => (host, Some(code), fingerprint),
         };
-        // An invite's fingerprint is trusted without asking (section 13).
+        // An invite's fingerprint is trusted without asking for a new host (section 13).
         if let Some(fp) = fp
-            && let Err(e) = self.core.trust_fingerprint(&host, fp)
+            && let Err(e) = self.core.trust_invite_fingerprint(&host, fp)
         {
             return self.error(e.to_string());
         }

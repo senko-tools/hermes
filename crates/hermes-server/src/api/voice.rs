@@ -158,6 +158,15 @@ pub async fn update_state(
         if req.channel_id.is_some() {
             access.require(Permissions::MOVE_MEMBERS)?;
         }
+        // Moderators act only on members below their highest role (docs/DECISIONS.md
+        // 2026-11-02); anyone may change their own state.
+        if user_id != auth.user_id {
+            let space = perms::space(&cache, space_id, auth.user_id)?;
+            let target = cache.member(space_id, user_id).ok_or_else(not_in_voice)?;
+            if !space.outranks_member(&target) {
+                return Err(space.hierarchy_error("members"));
+            }
+        }
         if let Some(Some(target)) = req.channel_id {
             let not_voice = || Error::not_found("voice channel");
             let channel = cache.channels.get(&target).ok_or_else(not_voice)?;

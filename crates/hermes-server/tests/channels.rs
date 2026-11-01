@@ -426,3 +426,52 @@ async fn reorder() {
         .ok();
     assert_eq!(log[1]["details"]["channels"].as_array().unwrap().len(), 3);
 }
+
+#[tokio::test]
+async fn overrides_only_for_lower_roles() {
+    let server = start("channels-override-hierarchy", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    // New roles go in right above @everyone: "senior" ends up above "manager".
+    let senior = server.role(&owner, &space_id, "senior", 0).await;
+    let manager = server
+        .role(
+            &owner,
+            &space_id,
+            "manager",
+            (Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES | Permissions::VIEW_CHANNEL)
+                .bits(),
+        )
+        .await;
+    let junior = server.role(&owner, &space_id, "junior", 0).await;
+    server
+        .assign(&owner, &space_id, &alice_id, &[&manager])
+        .await;
+    let deny_view = json!({ "allow": "0", "deny": bits(Permissions::VIEW_CHANNEL) });
+
+    // A higher role cannot be locked out by the manager; the owner can.
+    let path = format!("/channels/{general}/overrides/{senior}");
+    server
+        .put(&path, Some(&alice), deny_view.clone())
+        .await
+        .err(403, "MISSING_PERMISSION");
+    server
+        .put(&path, Some(&owner), deny_view.clone())
+        .await
+        .ok();
+    server
+        .delete(&path, Some(&alice))
+        .await
+        .err(403, "MISSING_PERMISSION");
+    // Lower roles, her own and @everyone are fine.
+    let deny_send = json!({ "allow": "0", "deny": bits(Permissions::SEND_MESSAGES) });
+    for role in [&junior, &manager, &space_id] {
+        let path = format!("/channels/{general}/overrides/{role}");
+        server
+            .put(&path, Some(&alice), deny_send.clone())
+            .await
+            .ok();
+        server.delete(&path, Some(&alice)).await.ok();
+    }
+}

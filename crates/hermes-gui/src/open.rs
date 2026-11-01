@@ -1,38 +1,40 @@
 //! Opening links in the browser and saving downloads. Nothing here goes through a shell: on
-//! Windows `cmd /C start` would re-parse `&` and similar characters in a URL or filename.
+//! Windows `cmd /C start` would re-parse `&` and similar characters in a URL or filename. On
+//! Windows no program is started by name either (`rundll32`, `explorer`): Windows looks for it
+//! in the application's own folder first, so a file saved next to a portable `hermes.exe` (in
+//! Downloads, say) could stand in for it. `ShellExecuteW` is called instead.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+/// Whether `url` is a web link that is safe to hand to the system: `http(s)://`, then no
+/// whitespace, control characters, quotes, backslashes or other characters a URL never has
+/// unencoded (a launcher could read them as something else).
+pub fn is_web_link(url: &str) -> bool {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"));
+    rest.is_some_and(|rest| {
+        !rest.is_empty()
+            && !rest.chars().any(|c| {
+                c.is_whitespace()
+                    || c.is_control()
+                    || matches!(
+                        c,
+                        '"' | '\'' | '<' | '>' | '\\' | '^' | '`' | '{' | '|' | '}'
+                    )
+            })
+    })
+}
 
 /// Opens an `http(s)` URL with the system's default browser.
 pub fn url(url: &str) -> std::io::Result<()> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
+    if !is_web_link(url) {
         return Err(std::io::Error::other(
-            "only http and https links are opened",
+            "only plain http and https links are opened",
         ));
     }
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = std::process::Command::new("rundll32");
-        c.arg("url.dll,FileProtocolHandler").arg(url);
-        c
-    };
-    #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = std::process::Command::new("open");
-        c.arg(url);
-        c
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = {
-        let mut c = std::process::Command::new("xdg-open");
-        c.arg(url);
-        c
-    };
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+    launch(OsStr::new(url))
 }
 
 /// Opens a folder in the system's file manager.
@@ -40,13 +42,52 @@ pub fn path(dir: &Path) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Err(std::io::Error::other("not a folder"));
     }
-    #[cfg(windows)]
-    let mut cmd = std::process::Command::new("explorer");
-    #[cfg(target_os = "macos")]
-    let mut cmd = std::process::Command::new("open");
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = std::process::Command::new("xdg-open");
-    cmd.arg(dir)
+    launch(dir.as_os_str())
+}
+
+/// `ShellExecuteW(open)`: the default browser for a URL, the file manager for a folder.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn launch(target: &OsStr) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::core::{PCWSTR, w};
+
+    let wide: Vec<u16> = target.encode_wide().chain([0]).collect();
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call; the other
+    // pointers are static strings or null.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // Values above 32 mean success.
+    if result.0 as usize > 32 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "could not open it (error {})",
+            result.0 as usize
+        )))
+    }
+}
+
+/// `open` (macOS) or `xdg-open`, found on `PATH`.
+#[cfg(not(windows))]
+fn launch(target: &OsStr) -> std::io::Result<()> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(opener)
+        .arg(target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -90,6 +131,8 @@ pub fn save_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf
         {
             Ok(mut file) => {
                 file.write_all(bytes)?;
+                drop(file);
+                hermes_client_core::files::mark_downloaded(&candidate);
                 return Ok(candidate);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -119,5 +162,19 @@ mod tests {
     fn only_web_links_open() {
         assert!(url("file:///etc/passwd").is_err());
         assert!(url("javascript:alert(1)").is_err());
+        assert!(is_web_link("https://example.com/a_(b)?q=1&r=%20#x"));
+        assert!(is_web_link("https://例え.jp/パス"));
+        for bad in [
+            "https://",
+            "https://a.b/\"\\..\\calc.exe",
+            "https://a.b/ c",
+            "https://a.b/\u{7}",
+            "https://a.b/`x`",
+            "https://a.b\\..\\x",
+            "HTTPS://a.b",
+        ] {
+            assert!(!is_web_link(bad), "{bad:?}");
+            assert!(url(bad).is_err(), "{bad:?}");
+        }
     }
 }

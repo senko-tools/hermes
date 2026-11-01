@@ -1418,3 +1418,21 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   `:privacy dms everyone|spaces|nobody`, `:privacy requests on|off`.
 - **Why:** the developer asked for per-user DM privacy with message requests that only notify
   for the request itself.
+
+## 2026-11-02: Security pass after 1.0.0
+
+- **Invite fingerprints (PLAN.md section 13 deviation):** an invite's `#fp=` is trusted without
+  asking only for a host this client has never trusted. A pin replaces CA validation, so a link
+  could otherwise move the trust of a known server to an attacker's certificate.
+- **Role hierarchy for voice moderation and channel overrides (PLAN.md section 10 deviation):**
+  `PATCH /spaces/{id}/voice-states/{uid}` acts only on members below the caller's highest role
+  (your own state is always yours); channel overrides are set and removed only for `@everyone`,
+  roles below the caller's highest role and the caller's own roles.
+- **Names:** filenames and every single-line name refuse text direction overrides
+  (U+202A–202E, U+2066–2069).
+- **Clients:** links and folders open through `ShellExecuteW` on Windows (never a program by
+  name); the TUI opens only viewer file types; downloads get the Mark of the Web; a `hermes:`
+  command line ignores every other argument (`--config-dir` needs an `https://` invite link).
+- The full list is in `docs/security-review.md`.
+- **Why:** the developer asked for a security pass focused on code execution and on users acting
+  on other people's things.

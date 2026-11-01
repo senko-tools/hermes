@@ -80,15 +80,31 @@ pub fn password(raw: &str, min_chars: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Bidirectional overrides, embeddings and isolates: in a name or filename they reorder what
+/// follows, so `invoice<U+202E>fdp.exe` reads as `invoiceexe.pdf` and a display name can look
+/// like someone else's. (Zero-width joiners stay allowed: emoji need them.)
+pub fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Why `name` is not acceptable as a single-line name or filename, if it is not.
+pub fn name_characters(name: &str) -> Result<(), String> {
+    if name.chars().any(char::is_control) {
+        return Err("must not contain control characters".into());
+    }
+    if name.chars().any(is_bidi_control) {
+        return Err("must not contain text direction overrides".into());
+    }
+    Ok(())
+}
+
 /// Trims, then requires 1 to 64 characters without control characters.
 pub fn device_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if !(1..=MAX_DEVICE_NAME_CHARS).contains(&name.chars().count()) {
         return Err(format!("must be 1 to {MAX_DEVICE_NAME_CHARS} characters"));
     }
-    if name.chars().any(char::is_control) {
-        return Err("must not contain control characters".into());
-    }
+    name_characters(name)?;
     Ok(name.to_owned())
 }
 
@@ -100,15 +116,14 @@ pub const CHANNEL_TOPIC_CHARS: usize = 1024;
 pub const NICKNAME_CHARS: (usize, usize) = (1, 32);
 pub const BAN_REASON_CHARS: usize = 512;
 
-/// A single-line name: trims, then requires `min..=max` characters without control characters.
+/// A single-line name: trims, then requires `min..=max` characters without control characters
+/// or text direction overrides.
 pub fn name(raw: &str, (min, max): (usize, usize)) -> Result<String, String> {
     let name = raw.trim();
     if !(min..=max).contains(&name.chars().count()) {
         return Err(format!("must be {min} to {max} characters"));
     }
-    if name.chars().any(char::is_control) {
-        return Err("must not contain control characters".into());
-    }
+    name_characters(name)?;
     Ok(name.to_owned())
 }
 
