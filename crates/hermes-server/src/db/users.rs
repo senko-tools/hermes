@@ -82,3 +82,67 @@ pub async fn delete_notification_setting(
     .await?;
     Ok(())
 }
+
+/// `(id, disabled, instance_admin)` of every user, for the admin refresh and the CLI.
+pub async fn flags(e: impl sqlx::SqliteExecutor<'_>) -> Result<Vec<(Id, bool, bool)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT id, disabled AS "disabled: bool", instance_admin AS "instance_admin: bool"
+           FROM users ORDER BY id"#
+    )
+    .fetch_all(e)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (Id::from_i64(r.id), r.disabled, r.instance_admin))
+        .collect())
+}
+
+/// `(id, username, disabled, instance_admin)` of the user called `username` (any case).
+pub async fn by_username(
+    e: impl sqlx::SqliteExecutor<'_>,
+    username: &str,
+) -> Result<Option<(Id, String, bool, bool)>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT id, username, disabled AS "disabled: bool",
+                  instance_admin AS "instance_admin: bool"
+           FROM users WHERE username = ?"#,
+        username
+    )
+    .fetch_optional(e)
+    .await?;
+    Ok(row.map(|r| (Id::from_i64(r.id), r.username, r.disabled, r.instance_admin)))
+}
+
+/// `(id, username, display_name, disabled, instance_admin, created_at)` of every user.
+pub async fn list(
+    e: impl sqlx::SqliteExecutor<'_>,
+) -> Result<Vec<(Id, String, Option<String>, bool, bool, i64)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT id, username, display_name, disabled AS "disabled: bool",
+                  instance_admin AS "instance_admin: bool", created_at
+           FROM users ORDER BY id"#
+    )
+    .fetch_all(e)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                Id::from_i64(r.id),
+                r.username,
+                r.display_name,
+                r.disabled,
+                r.instance_admin,
+                r.created_at,
+            )
+        })
+        .collect())
+}
+
+/// Every live session ID.
+pub async fn session_ids(e: impl sqlx::SqliteExecutor<'_>) -> Result<Vec<Id>, sqlx::Error> {
+    let ids = sqlx::query_scalar!("SELECT id FROM sessions")
+        .fetch_all(e)
+        .await?;
+    Ok(ids.into_iter().map(Id::from_i64).collect())
+}

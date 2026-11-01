@@ -1622,7 +1622,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [ ] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
 - [ ] `install.sh` + systemd unit; Pterodactyl egg tested on a real panel; reverse proxy docs.
 - [ ] `docs/self-hosting.md` written for non-experts (with screenshots).
-- [ ] Admin CLI complete (`backup`, `user …`, `invite create`).
+- [x] Admin CLI complete (`backup`, `user …`, `invite create`).
 
 **Done when:** a person who has never seen the project can host an instance by following `docs/self-hosting.md` with any of the three methods in under 15 minutes.
 

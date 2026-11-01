@@ -1180,3 +1180,15 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   separate tab: the sidebar's instance menu has everything it would (sign in/out, remove).
 - **Muted channels** (muted, or level "nothing") show no unread dot and are drawn dimmed; mentions
   still count (`view::TreeChannel::muted`, shared with the TUI).
+
+## 2026-11-01: Admin CLI (Phase 7)
+
+- `hermes-server user list | reset-password <name> | set-admin <name> <true|false> |
+  disable <name> | enable <name>` and `hermes-server version`. `list` and `enable` are additions
+  to section 9.1 (otherwise a disabled account could only be re-enabled over the API).
+- Reset passwords are 16 letters and digits without look-alikes (0/O, 1/l/I); reset and disable
+  delete every session of the user.
+- **Pick-up by a running server:** a task compares the database with the cache every 10 seconds
+  (`users::refresh`): it copies `disabled` / `instance_admin` and closes gateway connections whose
+  session no longer exists. REST requests check the session in the database on every request,
+  so they stop at once.

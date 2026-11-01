@@ -295,3 +295,34 @@ async fn admins_manage_users() {
     let alice = server.login("alice", "correct horse").await.ok();
     assert_eq!(alice["user"]["instance_admin"], true);
 }
+
+#[tokio::test]
+async fn the_server_applies_changes_made_by_the_user_commands() {
+    let server = start("users-refresh", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (mut ws, _) = server.identify(&alice).await;
+
+    // What `hermes-server user disable alice` writes.
+    server
+        .sql(&format!(
+            "UPDATE users SET disabled = 1 WHERE id = {alice_id}"
+        ))
+        .await;
+    server
+        .sql(&format!("DELETE FROM sessions WHERE user_id = {alice_id}"))
+        .await;
+    let (users, sessions) = hermes_server::users::refresh(&server.state).await.unwrap();
+    assert_eq!((users, sessions), (1, 1));
+    assert_eq!(ws.closed().await, 4011);
+    server
+        .get("/users/@me", Some(&alice))
+        .await
+        .err(401, "UNAUTHORIZED");
+    let id = alice_id.parse().unwrap();
+    assert!(server.state.cache().users[&id].disabled);
+    assert_eq!(
+        hermes_server::users::refresh(&server.state).await.unwrap(),
+        (0, 0)
+    );
+}

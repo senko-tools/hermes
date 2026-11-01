@@ -16,4 +16,5 @@ pub mod snowflake;
 pub mod state;
 pub mod time;
 pub mod tls;
+pub mod users;
 pub mod voice;

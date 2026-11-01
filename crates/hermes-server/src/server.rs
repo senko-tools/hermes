@@ -33,6 +33,7 @@ pub async fn run(
     let port = tcp.local_addr()?.port();
     let app = api::router(state.clone());
     let cleanup = tokio::spawn(files::cleanup_task(state.clone()));
+    let refresh = tokio::spawn(crate::users::refresh_task(state.clone()));
     let calls = state
         .voice
         .take_after()
@@ -74,6 +75,7 @@ pub async fn run(
         }
     };
     cleanup.abort();
+    refresh.abort();
     if let Some(quic) = &quic {
         quic.close(0u32.into(), b"server restarting");
         let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
