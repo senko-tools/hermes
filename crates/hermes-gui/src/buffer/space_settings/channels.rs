@@ -14,6 +14,7 @@ use iced::{Alignment, Element, Fill};
 use super::{Ctx, Message, side_list};
 use crate::drag::Kind;
 use crate::theme::style;
+use crate::widget::icon;
 use crate::widget::{ButtonKind, text_button};
 use crate::widget::{caption, label, strong};
 
@@ -72,26 +73,25 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for c in view::channel_tree(ctx.s, ctx.space) {
         let is_selected = selected == Some(c.id);
-        let content: Element<'a, Message> = if c.kind == ChannelKind::Category {
-            caption(c.name.to_uppercase(), fonts)
+        let glyph = match c.kind {
+            ChannelKind::Category => icon::FOLDER,
+            ChannelKind::Voice => icon::VOLUME,
+            _ => icon::HASH,
+        };
+        let name: Element<'a, Message> = if c.kind == ChannelKind::Category {
+            crate::widget::section_title(&c.name, fonts)
                 .color(theme.text.tertiary.0)
                 .into()
         } else {
-            row![
-                label(
-                    if c.kind == ChannelKind::Voice {
-                        "♪"
-                    } else {
-                        "#"
-                    },
-                    fonts
-                )
-                .color(theme.text.tertiary.0),
-                label(c.name.clone(), fonts),
-            ]
-            .spacing(style::GAP_S)
-            .into()
+            label(c.name.clone(), fonts).into()
         };
+        let content: Element<'a, Message> = row![
+            icon::icon(glyph, style::ROW_ICON).color(theme.icons.default.0),
+            name
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center)
+        .into();
         let targeted = ctx.drop_target == Some((Kind::Channel, c.id));
         let indent = if c.depth > 0 { 14.0 } else { 0.0 };
         let handle = if manage {
@@ -128,12 +128,21 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     }
     let actions: Element<'a, Message> = if manage {
         row![
-            text_button("+ Channel", ButtonKind::Secondary, fonts, theme)
-                .on_press(Message::CreateChannel(None)),
-            text_button("+ Category", ButtonKind::Secondary, fonts, theme)
-                .on_press(Message::CreateCategory),
+            crate::widget::tip(
+                crate::widget::icon_button(icon::PLUS, false, theme)
+                    .on_press(Message::CreateChannel(None)),
+                "Create channel",
+                fonts,
+                theme,
+            ),
+            crate::widget::tip(
+                crate::widget::icon_button(icon::FOLDER_PLUS, false, theme)
+                    .on_press(Message::CreateCategory),
+                "Create category",
+                fonts,
+                theme,
+            ),
         ]
-        .spacing(style::GAP_XS)
         .into()
     } else {
         Space::new().into()

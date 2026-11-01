@@ -51,6 +51,8 @@ pub const ROW_H: f32 = 32.0;
 pub const VOICE_ROW_H: f32 = 28.0;
 /// One level of indentation in the sidebar tree.
 pub const INDENT: f32 = 12.0;
+/// Width of the control column of a settings row.
+pub const CONTROL_COL: f32 = 280.0;
 /// Height of an on/off switch.
 pub const TOGGLER: f32 = 20.0;
 /// Height of the pane header and the sidebar's top bar.

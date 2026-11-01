@@ -6,12 +6,11 @@ use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Role;
 use hermes_client_core::proto::permissions::{CATALOG, PermissionGroup, Permissions};
 use hermes_client_core::view;
-use iced::widget::{
-    Space, button, checkbox, column, container, mouse_area, row, scrollable, text_input,
-};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text_input};
 use iced::{Alignment, Border, Element, Fill, Length};
 
 use super::{Ctx, Message, color_hex, parse_color, rgb, side_list};
+use crate::buffer::page::toggle_maybe;
 use crate::drag::Kind;
 use crate::theme::style;
 use crate::widget::{ButtonKind, text_button};
@@ -108,9 +107,13 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         rows.push(area.into());
     }
     let create: Element<'a, Message> = if can_manage {
-        text_button("+ Create role", ButtonKind::Secondary, fonts, theme)
-            .on_press(Message::CreateRole)
-            .into()
+        crate::widget::tip(
+            crate::widget::icon_button(crate::widget::icon::PLUS, false, theme)
+                .on_press(Message::CreateRole),
+            "Create role",
+            fonts,
+            theme,
+        )
     } else {
         Space::new().into()
     };
@@ -182,7 +185,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
         let mut swatches = row![].spacing(style::GAP_XS);
         for color in SWATCHES {
             let chosen = parsed == Ok(Some(color));
-            let swatch = button(Space::new().width(18).height(18))
+            let swatch = button(Space::new().width(20).height(20))
                 .padding(0)
                 .style(move |_, _| button::Style {
                     background: Some(rgb(color).into()),
@@ -193,7 +196,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
                             iced::Color::TRANSPARENT
                         },
                         width: 2.0,
-                        radius: 4.0.into(),
+                        radius: 10.0.into(),
                     },
                     ..button::Style::default()
                 });
@@ -208,7 +211,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             .style(move |_, st| style::input(theme, st))
             .font(fonts.mono)
             .size(fonts.size)
-            .width(110);
+            .width(Fill);
         let hex = if editable {
             hex.on_input(Message::RoleColor)
         } else {
@@ -235,60 +238,49 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             fonts,
             theme,
         ));
-        let check = |on: bool, text: &'static str, f: fn(bool) -> Message| {
-            let c = checkbox(on)
-                .label(text)
-                .font(fonts.ui)
-                .text_size(fonts.size);
-            if editable { c.on_toggle(f) } else { c }
-        };
-        col = col.push(super::field(
-            "Display",
-            "",
-            column![
-                check(
-                    draft.hoist,
-                    "Show members with this role separately in the member list",
-                    Message::RoleHoist
-                ),
-                check(
-                    draft.mentionable,
-                    "Anyone can @mention this role",
-                    Message::RoleMentionable
-                ),
-            ]
-            .spacing(style::GAP_S),
-            fonts,
-            theme,
-        ));
+        col = col
+            .push(toggle_maybe(
+                "Show separately",
+                "Members with this role get their own group in the member list.",
+                draft.hoist,
+                editable.then_some(Message::RoleHoist),
+                fonts,
+                theme,
+            ))
+            .push(toggle_maybe(
+                "Mentionable",
+                "Anyone can @mention this role.",
+                draft.mentionable,
+                editable.then_some(Message::RoleMentionable),
+                fonts,
+                theme,
+            ));
     }
 
     for group in PermissionGroup::ALL {
-        let mut list = column![strong(group.title(), fonts)].spacing(style::GAP_S);
-        for info in CATALOG.iter().filter(|i| i.group == group) {
-            let on = draft.permissions.contains(info.flag);
-            let grantable = editable && (on || mine.contains(info.flag));
-            let flag = info.flag;
-            let mut c = checkbox(on)
-                .label(info.name)
-                .font(fonts.medium())
-                .text_size(fonts.size);
-            if grantable {
-                c = c.on_toggle(move |v| Message::RolePermission(flag, v));
-            }
-            list = list.push(
-                column![
-                    c,
-                    container(caption(info.description, fonts).color(theme.text.tertiary.0))
-                        .padding(iced::Padding {
-                            left: 26.0,
-                            ..iced::Padding::ZERO
-                        }),
-                ]
-                .spacing(2),
-            );
-        }
-        col = col.push(super::field_block(list.into(), theme));
+        let rows = CATALOG
+            .iter()
+            .filter(|i| i.group == group)
+            .map(|info| {
+                let on = draft.permissions.contains(info.flag);
+                let grantable = editable && (on || mine.contains(info.flag));
+                let flag = info.flag;
+                toggle_maybe(
+                    info.name,
+                    info.description,
+                    on,
+                    grantable.then_some(move |v| Message::RolePermission(flag, v)),
+                    fonts,
+                    theme,
+                )
+            })
+            .collect();
+        col = col.push(crate::buffer::page::group(
+            group.title(),
+            rows,
+            fonts,
+            theme,
+        ));
     }
 
     let dirty = draft_dirty(role, draft);
@@ -322,11 +314,15 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             );
     }
     col = col.push(buttons);
-    scrollable(container(col).padding(style::GAP_XL).width(Fill))
-        .style(move |_, st| style::scrollbar(theme, st))
-        .height(Fill)
-        .width(Length::Fill)
-        .into()
+    scrollable(
+        container(col)
+            .padding(iced::Padding::ZERO.left(style::GAP_XL).right(style::GAP_L))
+            .width(Fill),
+    )
+    .style(move |_, st| style::scrollbar(theme, st))
+    .height(Fill)
+    .width(Length::Fill)
+    .into()
 }
 
 /// Whether the draft differs from the stored role.

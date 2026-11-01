@@ -25,7 +25,7 @@ use crate::buffer::channel::message::{Images, Img};
 use crate::buffer::{Buffer, channel, settings, space_settings};
 use crate::desktop::tray::{Tray, TrayAction};
 use crate::desktop::{self, CloseAction};
-use crate::font::Fonts;
+use crate::font::{self, Fonts};
 use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
 use crate::modal::image_viewer::{self, Viewer};
@@ -102,6 +102,9 @@ pub struct App {
     pub(crate) cursor: Cursor,
     /// The sidebar or member list being resized.
     pub(crate) resize: Option<crate::resize::Resize>,
+    /// The UI scale slider's value while it is dragged: applied on release, because the
+    /// slider would change size under the pointer otherwise.
+    pub(crate) ui_scale_draft: Option<f64>,
     window_size: Size,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
@@ -184,6 +187,7 @@ impl App {
             menu_index: None,
             cursor: Cursor::default(),
             resize: None,
+            ui_scale_draft: None,
             window_size: Size::new(1200.0, 800.0),
             confirm: None,
             new_dm: None,
@@ -1717,6 +1721,9 @@ impl App {
             K::ToggleMemberList => self.panes.toggle_members(focus),
             K::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             K::Settings => self.page = Some(Buffer::Settings),
+            K::ZoomIn => self.set_ui_scale(self.config.font.ui_scale + 0.1),
+            K::ZoomOut => self.set_ui_scale(self.config.font.ui_scale - 0.1),
+            K::ZoomReset => self.set_ui_scale(1.0),
             K::MarkRead => {
                 if let Some((inst, channel)) = self.panes.focused_channel() {
                     return self.run_action(Target::Channel(inst, channel), Action::MarkRead);
@@ -2213,8 +2220,13 @@ impl App {
                 self.fonts = Fonts::from_config(&self.config.font);
             }
             settings::Message::UiScale(scale) => {
-                self.config.font.ui_scale = (scale * 100.0).round() / 100.0;
-                self.fonts = Fonts::from_config(&self.config.font);
+                self.ui_scale_draft = Some((scale * 100.0).round() / 100.0);
+            }
+            settings::Message::UiScalePreset(scale) => self.set_ui_scale(scale),
+            settings::Message::Save(settings::Setting::UiScale) => {
+                if let Some(scale) = self.ui_scale_draft.take() {
+                    self.set_ui_scale(scale);
+                }
             }
             settings::Message::ResetWidths => {
                 for edge in [Edge::Sidebar, Edge::Members] {
@@ -2236,6 +2248,15 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Applies and saves a UI scale (rounded to whole percents, within the allowed range).
+    pub(crate) fn set_ui_scale(&mut self, scale: f64) {
+        self.ui_scale_draft = None;
+        let scale = ((scale * 100.0).round() / 100.0).clamp(font::MIN_SCALE, font::MAX_SCALE);
+        self.config.font.ui_scale = scale;
+        self.fonts = Fonts::from_config(&self.config.font);
+        self.persist("font.ui_scale", &format!("{scale:.2}"));
     }
 
     /// The current width of a resizable panel.
@@ -2521,6 +2542,7 @@ impl App {
             },
             menu: self.menu.as_ref().map(|(target, _)| target),
             resizing: self.resize.map(|r| r.edge),
+            ui_scale_draft: self.ui_scale_draft,
         };
         main = main.push(match &self.page {
             Some(page) => panes::page_view(page, &ctx),

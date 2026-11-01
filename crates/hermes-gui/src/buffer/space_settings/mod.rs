@@ -13,13 +13,13 @@ use hermes_client_core::proto::models::{AuditEntry, Ban, Invite, Role};
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::view;
-use iced::widget::{Space, button, column, container, row, rule, scrollable, space, text_input};
-use iced::{Alignment, Element, Fill, Length};
+use iced::widget::{Space, column, container, row, rule, scrollable, text_input};
+use iced::{Alignment, Element, Fill};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
 use crate::widget::{ButtonKind, text_button};
-use crate::widget::{caption, heading, label, strong};
+use crate::widget::{caption, label};
 
 pub use channels::Tri;
 pub use roles::reorder_roles;
@@ -41,7 +41,7 @@ impl Tab {
         match self {
             Tab::Overview => "Overview",
             Tab::Roles => "Roles",
-            Tab::Channels => "Channels & permissions",
+            Tab::Channels => "Channels",
             Tab::Members => "Members",
             Tab::Invites => "Invites",
             Tab::Bans => "Bans",
@@ -287,7 +287,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             .into();
     };
     let current = ctx.state.tab;
-    use crate::widget::icon::{self as i, icon};
+    use crate::widget::icon as i;
     let mut nav = column![
         row![
             crate::widget::avatar::space_icon(&space.space.name, 24.0, fonts),
@@ -310,34 +310,28 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             Tab::Bans => i::BAN,
             Tab::Audit => i::FILE,
         };
-        nav = nav.push(
-            button(
-                row![
-                    icon(glyph, style::ROW_ICON).color(if selected {
-                        theme.accent.base.0
-                    } else {
-                        theme.text.tertiary.0
-                    }),
-                    label(tab.title(), fonts).color(if selected {
-                        theme.text.primary.0
-                    } else {
-                        theme.text.secondary.0
-                    }),
-                ]
-                .spacing(style::GAP)
-                .align_y(Alignment::Center),
-            )
-            .padding([style::GAP_S, style::GAP])
-            .width(Fill)
-            .style(move |_, s| style::sidebar_item(theme, s, selected))
-            .on_press(Message::Tab(tab)),
-        );
+        nav = nav.push(crate::buffer::page::nav_item(
+            glyph,
+            tab.title(),
+            selected,
+            Message::Tab(tab),
+            fonts,
+            theme,
+        ));
     }
     let content: Element<'a, Message> = match current {
-        Tab::Overview => scrollable(container(overview(ctx)).padding(style::GAP_XL).width(Fill))
-            .style(move |_, st| style::scrollbar(theme, st))
-            .height(Fill)
-            .into(),
+        Tab::Overview => scrollable(
+            container(overview(ctx))
+                .padding(
+                    iced::Padding::ZERO
+                        .bottom(style::HEADER)
+                        .right(style::GAP_L),
+                )
+                .width(Fill),
+        )
+        .style(move |_, st| style::scrollbar(theme, st))
+        .height(Fill)
+        .into(),
         Tab::Roles => roles::view(ctx),
         Tab::Channels => channels::view(ctx),
         Tab::Members => members::view(ctx),
@@ -348,7 +342,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     crate::buffer::page_frame(
         nav.into(),
         container(content)
-            .padding(iced::Padding::ZERO.top(28.0))
+            .padding(iced::Padding::ZERO.top(style::HEADER))
             .into(),
         Message::Close,
         fonts,
@@ -384,14 +378,13 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             input
         }
     };
-    let mut col = column![
-        heading("Overview", fonts),
+    let mut space_rows = vec![
         field(
             "Space name",
             "",
             input("Name", &name, Message::Name),
             fonts,
-            theme
+            theme,
         ),
         field(
             "Description",
@@ -399,14 +392,12 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             input(
                 "What is this space about?",
                 &description,
-                Message::Description
+                Message::Description,
             ),
             fonts,
             theme,
         ),
-    ]
-    .spacing(style::GAP)
-    .max_width(720);
+    ];
     if editable {
         let icon = if st.space.icon.is_some() {
             row![
@@ -421,33 +412,40 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                     .on_press(Message::PickIcon),
             ]
         };
-        col = col
-            .push(field(
-                "Icon",
-                "A square PNG or JPEG works best.",
-                icon.spacing(style::GAP_S),
-                fonts,
-                theme,
-            ))
-            .push(
+        space_rows.push(field(
+            "Icon",
+            "A square PNG or JPEG works best.",
+            icon.spacing(style::GAP_S),
+            fonts,
+            theme,
+        ));
+        if dirty {
+            space_rows.push(
                 row![
-                    space::horizontal(),
+                    caption("You have unsaved changes.", fonts)
+                        .color(theme.text.warning.0)
+                        .width(Fill),
                     text_button("Reset", ButtonKind::Secondary, fonts, theme)
-                        .on_press_maybe(dirty.then_some(Message::ResetOverview)),
+                        .on_press(Message::ResetOverview),
                     text_button("Save changes", ButtonKind::Primary, fonts, theme)
-                        .on_press_maybe(dirty.then_some(Message::SaveOverview)),
+                        .on_press(Message::SaveOverview),
                 ]
-                .spacing(style::GAP_S),
+                .spacing(style::GAP_S)
+                .align_y(Alignment::Center)
+                .into(),
             );
+        }
     } else {
-        col = col.push(
+        space_rows.push(
             caption(
                 "You need the Manage space permission to change these.",
                 fonts,
             )
-            .color(theme.text.tertiary.0),
+            .color(theme.text.tertiary.0)
+            .into(),
         );
     }
+    let mut about_rows = Vec::new();
     let members = st.members.len();
     let channels = st
         .channels
@@ -455,7 +453,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         .filter(|c| c.kind.has_messages())
         .count();
     let owner = ctx.s.display_name(Some(ctx.space), st.space.owner_id);
-    col = col.push(field(
+    about_rows.push(field(
         "About",
         &format!(
             "Owned by {owner} · {members} member{} · {channels} channel{}",
@@ -470,7 +468,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         theme,
     ));
     if ctx.can(Permissions::CREATE_INVITES) {
-        col = col.push(field(
+        about_rows.push(field(
             "Invite people",
             "Creates a link that works for 7 days and copies it.",
             text_button("Copy invite link", ButtonKind::Primary, fonts, theme)
@@ -479,11 +477,8 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             theme,
         ));
     }
-    col = col
-        .push(Space::new().height(style::GAP_L))
-        .push(strong("Danger zone", fonts).color(theme.text.error.0));
-    if ctx.is_owner() {
-        col = col.push(field(
+    let danger = if ctx.is_owner() {
+        field(
             "Delete space",
             "Deletes every channel and message for everyone. This cannot be undone. To keep the \
              space, give it to someone else from the Members tab first.",
@@ -491,25 +486,35 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .on_press(Message::DeleteSpace),
             fonts,
             theme,
-        ));
+        )
     } else {
-        col = col.push(field(
+        field(
             "Leave space",
             "You will need a new invite to come back.",
             text_button("Leave space", ButtonKind::Danger, fonts, theme)
                 .on_press(Message::LeaveSpace),
             fonts,
             theme,
-        ));
-    }
-    col.into()
+        )
+    };
+    crate::buffer::page::page(
+        "Overview",
+        None,
+        vec![
+            group("Space", space_rows, fonts, theme),
+            group("About", about_rows, fonts, theme),
+            group("Danger zone", vec![danger], fonts, theme),
+        ],
+        fonts,
+        theme,
+    )
 }
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// A labelled row: name and hint on the left, the control on the right.
+/// A labelled row: name and hint on the left, the control in the control column.
 fn field<'a>(
     name: &str,
     hint: &str,
@@ -517,22 +522,16 @@ fn field<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    column![
-        rule::horizontal(1).style(move |_| style::rule(theme)),
-        row![
-            column![
-                label(name.to_owned(), fonts),
-                caption(hint.to_owned(), fonts).color(theme.text.tertiary.0)
-            ]
-            .spacing(2)
-            .width(Length::FillPortion(2)),
-            container(control.into()).width(Length::FillPortion(3)),
-        ]
-        .spacing(style::GAP_L)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(style::GAP_S)
-    .into()
+    crate::buffer::page::setting(name, hint, control, fonts, theme)
+}
+
+fn group<'a>(
+    title: &str,
+    rows: Vec<Element<'a, Message>>,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    crate::buffer::page::group(title, rows, fonts, theme)
 }
 
 /// A full-width block under a rule.
@@ -560,12 +559,14 @@ fn side_list<'a>(
     container(
         column![
             row![
-                caption(title.to_uppercase(), fonts)
+                crate::widget::section_title(title, fonts)
                     .color(theme.text.tertiary.0)
                     .width(Fill),
                 actions
             ]
+            .spacing(style::GAP_XS)
             .align_y(Alignment::Center)
+            .height(style::ICON_BUTTON)
             .padding([0.0, style::GAP_XS]),
             scrollable(list)
                 .style(move |_, st| style::scrollbar(theme, st))
@@ -574,11 +575,14 @@ fn side_list<'a>(
         .spacing(style::GAP_S),
     )
     .padding(style::GAP_S)
-    .width(240)
+    .width(SIDE_LIST)
     .height(Fill)
     .style(move |_| style::sidebar(theme))
     .into()
 }
+
+/// Width of the list column of the Roles, Channels and Members tabs.
+pub const SIDE_LIST: f32 = 240.0;
 
 /// A small "Loading…" / error / empty placeholder for REST lists.
 fn placeholder<'a, T>(

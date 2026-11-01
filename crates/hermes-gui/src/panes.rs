@@ -331,6 +331,8 @@ pub struct Context<'a> {
     pub menu: Option<&'a Target>,
     /// The panel being resized, to mark its edge.
     pub resizing: Option<crate::resize::Edge>,
+    /// The UI scale slider's value while dragged.
+    pub ui_scale_draft: Option<f64>,
 }
 
 /// Actions from a pane header.
@@ -722,6 +724,7 @@ pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message>
             ctx.config,
             ctx.themes,
             ctx.settings_tab,
+            ctx.ui_scale_draft,
             &ctx.voice,
             &ctx.account,
             fonts,

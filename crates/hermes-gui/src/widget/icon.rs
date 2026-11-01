@@ -56,6 +56,8 @@ pub const INFO: char = '\u{f02fd}'; // md-information_outline
 pub const LOG_OUT: char = '\u{f0343}'; // md-logout
 pub const ADD_USER: char = '\u{f0014}'; // md-account_plus
 pub const HOME: char = '\u{f06a1}'; // md-home_outline
+pub const FOLDER: char = '\u{f024b}'; // md-folder
+pub const FOLDER_PLUS: char = '\u{f0b9d}'; // md-folder_plus_outline
 
 /// `glyph` at `size` logical pixels, centered in a square box so icons line up with each other.
 pub fn icon<'a>(glyph: char, size: f32) -> Text<'a> {

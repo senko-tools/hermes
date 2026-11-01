@@ -1328,3 +1328,19 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Why:** the developer found the UI messy (many text sizes, buttons of different heights) and
   wants richer custom themes, e.g. a port of their Vencord theme, which the old keys could not
   express (surface levels, accent-coloured icons, square corners, row state colours).
+
+## 2026-11-01: GUI: settings on one grid, resizable panels, steady UI scale
+
+- **Settings layout:** every settings row (user and space settings) is a name and hint on the
+  left and the control in a fixed 280 px column on the right; rows are grouped under small
+  titles; every on/off setting is its own row with the switch at the right edge (role
+  permissions too, instead of checkboxes). Kick, Ban and Transfer moved to a "Danger zone"
+  group; the space settings tab "Channels & permissions" is now "Channels".
+- **UI scale** applies when the slider is released (it changed the window scale while dragging,
+  so the slider jumped), with presets (90–150 %) and new keybinds `zoom_in` (Ctrl+=),
+  `zoom_out` (Ctrl+-) and `zoom_reset` (Ctrl+0).
+- **Resizable panels:** the sidebar and the member list are resized by dragging their inner
+  edge (double-click resets); new config key `sidebar.member_list_width` (default 232). The
+  "Sidebar width" slider became a Reset button.
+- **Why:** the developer found settings messy (switches not in one column, controls of
+  different widths) and the UI scale slider unusable, and asked for a draggable sidebar.

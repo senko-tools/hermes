@@ -1,6 +1,7 @@
 //! Buffers: what a pane shows (PLAN.md section 15.1).
 
 pub mod channel;
+pub mod page;
 pub mod results;
 pub mod settings;
 pub mod settings_tabs;

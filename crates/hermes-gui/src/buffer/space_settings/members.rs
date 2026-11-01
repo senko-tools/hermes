@@ -7,7 +7,7 @@ use hermes_client_core::proto::models::Member;
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{time, view};
-use iced::widget::{Space, button, checkbox, column, container, row, scrollable, text_input};
+use iced::widget::{button, checkbox, column, container, row, scrollable, text_input};
 use iced::{Alignment, Element, Fill};
 
 use super::{Ctx, Message, rgb};
@@ -60,11 +60,17 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         let name_color = color(ctx.s, ctx.space, m).map_or(theme.text.primary.0, rgb);
         list = list.push(
             button(
-                column![
-                    label(name, fonts).color(name_color),
-                    caption(format!("@{}", m.user.username), fonts).color(theme.text.tertiary.0),
+                row![
+                    crate::widget::avatar::view(&name, None, 28.0, fonts),
+                    column![
+                        label(name.clone(), fonts).color(name_color),
+                        caption(format!("@{}", m.user.username), fonts)
+                            .color(theme.text.tertiary.0),
+                    ]
+                    .spacing(0),
                 ]
-                .spacing(0),
+                .spacing(style::GAP_S)
+                .align_y(Alignment::Center),
             )
             .padding([style::GAP_XS, style::GAP_S])
             .width(Fill)
@@ -98,7 +104,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         .spacing(style::GAP_S),
     )
     .padding(style::GAP_S)
-    .width(260)
+    .width(super::SIDE_LIST)
     .height(Fill)
     .style(move |_| style::sidebar(theme));
 
@@ -161,18 +167,27 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
                 .on_press(Message::Nickname(user)),
         );
     }
-    actions = actions.push(Space::new().width(Fill));
+    col = col.push(actions);
+    // Kick, ban and transfer go in a danger zone at the bottom, away from everyday buttons.
+    let mut danger = Vec::new();
     if above && ctx.can(Permissions::KICK_MEMBERS) {
-        actions = actions.push(
+        danger.push(crate::buffer::page::setting(
+            "Kick",
+            "Removes them from the space; they can come back with a new invite.",
             text_button("Kick", ButtonKind::Danger, fonts, theme).on_press(Message::Kick(user)),
-        );
+            fonts,
+            theme,
+        ));
     }
     if above && ctx.can(Permissions::BAN_MEMBERS) {
-        actions = actions.push(
+        danger.push(crate::buffer::page::setting(
+            "Ban",
+            "Removes them and keeps them out.",
             text_button("Ban…", ButtonKind::Danger, fonts, theme).on_press(Message::Ban(user)),
-        );
+            fonts,
+            theme,
+        ));
     }
-    col = col.push(actions);
 
     // Roles.
     let mut roles = column![strong("Roles", fonts)].spacing(style::GAP_S);
@@ -261,30 +276,30 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     }
 
     if ctx.is_owner() && !me {
-        col = col.push(super::field_block(
-            row![
-                column![
-                    label("Transfer ownership", fonts),
-                    caption(
-                        "Makes them the owner of the space. You keep your roles but can no longer \
-                         delete the space.",
-                        fonts
-                    )
-                    .color(theme.text.tertiary.0),
-                ]
-                .spacing(2)
-                .width(Fill),
-                text_button("Transfer…", ButtonKind::Danger, fonts, theme)
-                    .on_press(Message::Transfer(user)),
-            ]
-            .spacing(style::GAP)
-            .align_y(Alignment::Center)
-            .into(),
+        danger.push(crate::buffer::page::setting(
+            "Transfer ownership",
+            "Makes them the owner of the space. You keep your roles but can no longer delete \
+             the space.",
+            text_button("Transfer…", ButtonKind::Danger, fonts, theme)
+                .on_press(Message::Transfer(user)),
+            fonts,
             theme,
         ));
     }
-    scrollable(container(col).padding(style::GAP_XL).width(Fill))
-        .style(move |_, st| style::scrollbar(theme, st))
-        .height(Fill)
-        .into()
+    if !danger.is_empty() {
+        col = col.push(crate::buffer::page::group(
+            "Danger zone",
+            danger,
+            fonts,
+            theme,
+        ));
+    }
+    scrollable(
+        container(col)
+            .padding(iced::Padding::ZERO.left(style::GAP_XL).right(style::GAP_L))
+            .width(Fill),
+    )
+    .style(move |_, st| style::scrollbar(theme, st))
+    .height(Fill)
+    .into()
 }
