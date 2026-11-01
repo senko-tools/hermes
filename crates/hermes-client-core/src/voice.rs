@@ -484,9 +484,12 @@ impl Core {
         let (dm, others) = {
             let store = self.store();
             let s = store.instance(inst);
-            let dm = s
-                .and_then(|s| s.channel(channel))
-                .is_some_and(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm));
+            // A DM created a moment ago may not be in the store yet; space channels always are.
+            let dm = s.is_none_or(|s| {
+                s.space_of(channel).is_none()
+                    || s.channel(channel)
+                        .is_some_and(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm))
+            });
             let others = s.is_some_and(|s| {
                 let me = s.me_id();
                 s.voice_states

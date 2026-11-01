@@ -359,7 +359,8 @@ async fn dm_call_rings_until_the_caller_leaves() {
         .await
         .unwrap()
         .id;
-    p.alice.start_call(&inst, dm).await.unwrap();
+    // Right after creating the DM (it may not be in the store yet): still a call that rings.
+    p.alice.join_or_call(&inst, dm).await.unwrap();
     wait_for(&mut p.bob_events, "incoming call", |e| {
         matches!(e, CoreEvent::IncomingCall { channel, caller, .. }
             if *channel == dm && *caller == alice_id)
