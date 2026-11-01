@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reactions WHERE message_id = ? AND emoji = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ac1e767ea06e0892af8d7e56d0d8dbe7f63b6cb7c83421ddaf5ccf54759d2bc0"
+}

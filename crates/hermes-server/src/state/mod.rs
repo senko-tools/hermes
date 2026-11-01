@@ -4,22 +4,28 @@
 //! states live here, so permission checks never hit the database. Messages are not cached.
 //! Lock rule: never hold the cache lock across an `.await`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use axum::http::HeaderMap;
-use hermes_proto::gateway::SpaceSnapshot;
+use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Channel, CurrentUser, Member, PresenceStatus, Role, Space, SpacePreview, User, VoiceState,
+    Channel, CurrentUser, Member, Presence, PresenceStatus, Role, Space, SpacePreview, Status,
+    User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
 use crate::config::Config;
 use crate::db::Db;
 use crate::db::state::Snapshot;
+use crate::files::Files;
+use crate::gateway::bus::{Audience, Gateway};
+use crate::messages::Slowmode;
+use crate::ratelimit::KeyedLimiter;
 use crate::snowflake::Snowflake;
+use crate::tls::Fingerprint;
 
 /// Everything the request handlers share.
 #[derive(Debug)]
@@ -28,6 +34,22 @@ pub struct AppState {
     pub db: Db,
     pub ids: Snowflake,
     pub cache: RwLock<Cache>,
+    /// Held by handlers that read the cache, write the database and then update the cache, so
+    /// two such changes cannot interleave and leave the cache different from the database.
+    /// Never take it while holding the cache lock.
+    pub writes: tokio::sync::Mutex<()>,
+    pub slowmode: Slowmode,
+    /// `limits.messages_per_5s`, keyed by `(channel_id, user_id)`.
+    pub message_limiter: KeyedLimiter<(Id, Id)>,
+    /// Uploaded files on disk.
+    pub files: Files,
+    /// Gateway sessions and the EventBus.
+    pub gateway: Gateway,
+    /// Voice rooms, join tokens and the QUIC endpoint's address.
+    pub voice: crate::voice::Voice,
+    /// Fingerprint of the self-signed HTTPS certificate, for invite links. Set by the caller of
+    /// [`load`](Self::load) once TLS is set up.
+    pub fingerprint: Option<Fingerprint>,
 }
 
 impl AppState {
@@ -35,12 +57,38 @@ impl AppState {
     pub async fn load(config: Config) -> Result<Self, sqlx::Error> {
         let db = Db::open(&config.storage.data_dir).await?;
         let cache = load_from_db(&db).await?;
+        let used = crate::db::attachments::total_size(&db.read).await?;
+        let files = Files::open(&config.storage.data_dir, used)?;
+        let voice = crate::voice::Voice::new(config.voice.enabled);
         Ok(Self {
             config,
             db,
             ids: Snowflake::new(),
             cache: RwLock::new(cache),
+            writes: tokio::sync::Mutex::new(()),
+            slowmode: Slowmode::default(),
+            message_limiter: KeyedLimiter::default(),
+            files,
+            gateway: Gateway::default(),
+            voice,
+            fingerprint: None,
         })
+    }
+
+    /// Publishes a dispatch event to `audience`, resolved with the cache as it is now. Call it
+    /// after the change is in the cache, and never while holding the cache lock.
+    pub fn publish(&self, event: ServerEvent, audience: Audience) {
+        self.publish_inner(&event, &audience, None);
+    }
+
+    /// [`publish`](Self::publish) to everyone in `audience` except `user_id`.
+    pub fn publish_except(&self, event: ServerEvent, audience: Audience, user_id: Id) {
+        self.publish_inner(&event, &audience, Some(user_id));
+    }
+
+    fn publish_inner(&self, event: &ServerEvent, audience: &Audience, except: Option<Id>) {
+        let users = audience.resolve(&self.cache());
+        self.gateway.send(&users, except, event);
     }
 
     /// Read access to the cache. A poisoned lock is still used: every write is a short,
@@ -53,33 +101,37 @@ impl AppState {
         self.cache.write().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The client's IP: the TCP peer, or, when the peer is one of `network.trusted_proxies`, the
-    /// last `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
-    /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
+    /// The client's IP; see [`client_ip`].
     pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-        let trusted = &self.config.network.trusted_proxies;
-        let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
-        let mut ip = peer.ip().to_canonical();
-        if !is_trusted(&ip) {
-            return ip;
-        }
-        let forwarded = headers
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .collect::<Vec<_>>();
-        for entry in forwarded.iter().rev() {
-            let Ok(hop) = entry.trim().parse::<IpAddr>() else {
-                break;
-            };
-            ip = hop.to_canonical();
-            if !is_trusted(&ip) {
-                break;
-            }
-        }
-        ip
+        client_ip(&self.config.network.trusted_proxies, peer, headers)
     }
+}
+
+/// The client's IP: the TCP peer, or, when the peer is one of `trusted` (proxies), the last
+/// `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
+/// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
+pub fn client_ip(trusted: &[IpAddr], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+    let mut ip = peer.ip().to_canonical();
+    if !is_trusted(&ip) {
+        return ip;
+    }
+    let forwarded = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .collect::<Vec<_>>();
+    for entry in forwarded.iter().rev() {
+        let Ok(hop) = entry.trim().parse::<IpAddr>() else {
+            break;
+        };
+        ip = hop.to_canonical();
+        if !is_trusted(&ip) {
+            break;
+        }
+    }
+    ip
 }
 
 pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {
@@ -152,6 +204,15 @@ impl SpaceState {
             roles,
             members: HashMap::new(),
         }
+    }
+
+    pub fn role(&self, role_id: Id) -> Option<&Role> {
+        self.roles.iter().find(|r| r.id == role_id)
+    }
+
+    /// Restores the sort order of `roles` after positions changed.
+    pub fn sort_roles(&mut self) {
+        self.roles.sort_by_key(|r| (r.position, r.id));
     }
 }
 
@@ -275,6 +336,27 @@ impl Cache {
         }
     }
 
+    /// Removes a space and its channels.
+    pub fn remove_space(&mut self, space_id: Id) {
+        self.spaces.remove(&space_id);
+        self.channels
+            .retain(|_, c| c.channel.space_id != Some(space_id));
+    }
+
+    pub fn remove_member(&mut self, space_id: Id, user_id: Id) {
+        if let Some(space) = self.spaces.get_mut(&space_id) {
+            space.members.remove(&user_id);
+        }
+    }
+
+    /// The channels of a space, in no particular order.
+    pub fn space_channels(&self, space_id: Id) -> impl Iterator<Item = &Channel> {
+        self.channels
+            .values()
+            .map(|c| &c.channel)
+            .filter(move |c| c.space_id == Some(space_id))
+    }
+
     pub fn is_member(&self, space_id: Id, user_id: Id) -> bool {
         self.spaces
             .get(&space_id)
@@ -346,6 +428,86 @@ impl Cache {
             role_ids: member.role_ids.clone(),
             joined_at: member.joined_at,
         })
+    }
+
+    /// Users who can see a channel: DM recipients, or space members with `VIEW_CHANNEL`.
+    pub fn channel_viewers(&self, channel_id: Id) -> HashSet<Id> {
+        let Some(state) = self.channels.get(&channel_id) else {
+            return HashSet::new();
+        };
+        let Some(space_id) = state.channel.space_id else {
+            return state.recipient_ids.iter().copied().collect();
+        };
+        let Some(space) = self.spaces.get(&space_id) else {
+            return HashSet::new();
+        };
+        space
+            .members
+            .keys()
+            .copied()
+            .filter(|&user_id| {
+                self.channel_permissions(channel_id, user_id)
+                    .contains(Permissions::VIEW_CHANNEL)
+            })
+            .collect()
+    }
+
+    /// The wire form of a DM or group DM, with `recipients` filled in (everyone, sorted by ID).
+    pub fn dm_channel(&self, channel_id: Id) -> Option<Channel> {
+        let state = self
+            .channels
+            .get(&channel_id)
+            .filter(|c| c.channel.kind.is_private())?;
+        let mut channel = state.channel.clone();
+        channel.recipients = state
+            .recipient_ids
+            .iter()
+            .filter_map(|id| self.users.get(id).map(|u| u.user.clone()))
+            .collect();
+        Some(channel)
+    }
+
+    /// The DMs and group DMs `user_id` is a recipient of, in no particular order.
+    pub fn dm_ids(&self, user_id: Id) -> impl Iterator<Item = Id> + '_ {
+        self.channels
+            .values()
+            .filter(move |c| {
+                c.channel.kind.is_private() && c.recipient_ids.binary_search(&user_id).is_ok()
+            })
+            .map(|c| c.channel.id)
+    }
+
+    /// Whether two users are members of at least one common space.
+    pub fn shares_space(&self, a: Id, b: Id) -> bool {
+        self.spaces
+            .values()
+            .any(|s| s.members.contains_key(&a) && s.members.contains_key(&b))
+    }
+
+    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, and
+    /// themselves.
+    pub fn presence_audience(&self, user_id: Id) -> HashSet<Id> {
+        let mut users = HashSet::from([user_id]);
+        for space in self.spaces.values() {
+            if space.members.contains_key(&user_id) {
+                users.extend(space.members.keys().copied());
+            }
+        }
+        for dm in self.dm_ids(user_id) {
+            users.extend(self.channels[&dm].recipient_ids.iter().copied());
+        }
+        users
+    }
+
+    /// What other users see of `user_id`'s presence.
+    pub fn presence(&self, user_id: Id) -> Presence {
+        Presence {
+            user_id,
+            status: self
+                .presences
+                .get(&user_id)
+                .map_or(Status::Offline, |p| p.visible_status()),
+        }
     }
 
     /// A user's space-level permissions; empty if they are not a member.

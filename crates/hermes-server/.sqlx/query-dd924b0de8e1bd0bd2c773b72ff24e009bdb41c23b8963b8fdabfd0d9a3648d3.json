@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM bans WHERE space_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "dd924b0de8e1bd0bd2c773b72ff24e009bdb41c23b8963b8fdabfd0d9a3648d3"
+}

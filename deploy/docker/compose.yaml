@@ -1,0 +1,20 @@
+# Hermes with Docker Compose (PLAN.md section 18.3).
+#   mkdir hermes && cd hermes
+#   curl -LO https://raw.githubusercontent.com/senko-tools/hermes/main/deploy/docker/compose.yaml
+#   # edit PUBLIC_HOST and NAME below
+#   mkdir -p data && sudo chown 10001:10001 data   # the server runs as UID 10001
+#   docker compose up -d
+#   docker compose logs hermes                     # shows the first-time setup invite link
+services:
+  hermes:
+    image: ghcr.io/senko-tools/hermes-server:latest
+    restart: unless-stopped
+    ports:
+      - "7700:7700/tcp"
+      - "7700:7700/udp"
+    environment:
+      HERMES__INSTANCE__NAME: "My Friends"
+      HERMES__INSTANCE__PUBLIC_HOST: "hermes.senko.tools"
+      HERMES__STORAGE__DATA_DIR: "/data"
+    volumes:
+      - ./data:/data

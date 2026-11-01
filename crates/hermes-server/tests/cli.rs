@@ -226,3 +226,212 @@ fn invite_create_prints_links() {
         stderr(&output)
     );
 }
+
+/// A free local TCP port (freed again before returning).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// `GET path` over plain HTTP/1.1; returns the whole response.
+fn http_get(port: u16, path: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+/// Lines of a child's stdout, read on a thread so waiting can time out.
+struct Lines(std::sync::mpsc::Receiver<String>);
+
+impl Lines {
+    fn new(child: &mut std::process::Child) -> Self {
+        use std::io::{BufRead, BufReader};
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self(rx)
+    }
+
+    /// Waits (at most 30 s) for a line containing `needle`.
+    #[track_caller]
+    fn wait_for(&self, needle: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            match self.0.recv_timeout(left) {
+                Ok(line) if line.contains(needle) => return,
+                Ok(line) => seen.push(line),
+                Err(_) => panic!("no line with {needle:?}; got: {seen:#?}"),
+            }
+        }
+    }
+}
+
+/// `hermes-server run` on `127.0.0.1:<port>` with JSON logs and stdout piped.
+fn run(dir: &Path, port: u16, env: &[(&str, &str)]) -> (std::process::Child, Lines) {
+    let mut cmd = server(dir);
+    cmd.arg("run")
+        .env("HERMES__NETWORK__BIND", "127.0.0.1")
+        .env("HERMES__NETWORK__PORT", port.to_string())
+        .env("HERMES__LOG__FORMAT", "json")
+        .stdout(std::process::Stdio::piped());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().unwrap();
+    let lines = Lines::new(&mut child);
+    (child, lines)
+}
+
+#[cfg(unix)]
+fn signal(child: &std::process::Child, name: &str) {
+    let status = Command::new("kill")
+        .args([&format!("-{name}"), &child.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+#[test]
+fn run_logs_ready_line_and_serves_healthz() {
+    let dir = TempDir::new("run");
+    let port = free_port();
+    let (mut child, lines) = run(dir.path(), port, &[("HERMES__TLS__MODE", "off")]);
+    lines.wait_for(&format!("Hermes is ready on 127.0.0.1:{port}"));
+    let response = http_get(port, "/healthz");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.ends_with("ok"), "{response}");
+
+    #[cfg(unix)]
+    {
+        signal(&child, "TERM");
+        lines.wait_for("Hermes stopped");
+        assert!(child.wait().unwrap().success());
+    }
+    #[cfg(not(unix))]
+    {
+        // Sending Ctrl+C to one process is not practical on Windows; the shutdown path itself
+        // is covered by `lifecycle::shutdown_closes_gateways_with_4100_and_stops_serving`.
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn sighup_reloads_the_certificate() {
+    let dir = TempDir::new("sighup");
+    let first =
+        hermes_server::tls::load_or_generate(dir.path(), "a", &["localhost".to_owned()]).unwrap();
+    let second =
+        hermes_server::tls::load_or_generate(dir.path(), "b", &["localhost".to_owned()]).unwrap();
+    let (cert, key) = (
+        dir.path().join("live-cert.pem"),
+        dir.path().join("live-key.pem"),
+    );
+    std::fs::copy(&first.cert_path, &cert).unwrap();
+    std::fs::copy(&first.key_path, &key).unwrap();
+    let port = free_port();
+    let (mut child, lines) = run(
+        dir.path(),
+        port,
+        &[
+            ("HERMES__TLS__MODE", "files"),
+            ("HERMES__TLS__CERT_FILE", cert.to_str().unwrap()),
+            ("HERMES__TLS__KEY_FILE", key.to_str().unwrap()),
+        ],
+    );
+    lines.wait_for("Hermes is ready on");
+
+    std::fs::copy(&second.cert_path, &cert).unwrap();
+    std::fs::copy(&second.key_path, &key).unwrap();
+    signal(&child, "HUP");
+    let fingerprint = hermes_server::tls::Fingerprint::of(&second.chain[0]).to_string();
+    lines.wait_for(&fingerprint);
+
+    // Still running after a reload with a broken file; the old certificate stays.
+    std::fs::write(&key, "garbage").unwrap();
+    signal(&child, "HUP");
+    lines.wait_for("still using the old one");
+    signal(&child, "TERM");
+    lines.wait_for("Hermes stopped");
+    assert!(child.wait().unwrap().success());
+}
+
+/// `hermes-server <args>` with the same bind/port/TLS variables as the running server.
+fn admin(dir: &Path, port: u16, tls: &str, args: &[&str]) -> Output {
+    server(dir)
+        .args(args)
+        .env("HERMES__NETWORK__BIND", "127.0.0.1")
+        .env("HERMES__NETWORK__PORT", port.to_string())
+        .env("HERMES__TLS__MODE", tls)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn healthcheck_reports_the_running_server() {
+    for tls in ["self_signed", "off"] {
+        let dir = TempDir::new(&format!("healthcheck-{tls}"));
+        let port = free_port();
+
+        let output = admin(dir.path(), port, tls, &["healthcheck"]);
+        assert!(!output.status.success(), "nothing listens yet ({tls})");
+        assert!(stderr(&output).contains("unhealthy"), "{}", stderr(&output));
+
+        let (mut child, lines) = run(dir.path(), port, &[("HERMES__TLS__MODE", tls)]);
+        lines.wait_for("Hermes is ready on");
+        let output = admin(dir.path(), port, tls, &["healthcheck"]);
+        assert!(output.status.success(), "{tls}: {}", stderr(&output));
+        assert_eq!(stdout(&output).trim(), "ok");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+#[test]
+fn backup_copies_the_database_while_running() {
+    let dir = TempDir::new("backup");
+    let port = free_port();
+    let out = dir.path().join("backup.db");
+
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(!output.status.success(), "no database yet");
+    assert!(!out.exists());
+
+    let (mut child, lines) = run(dir.path(), port, &[("HERMES__TLS__MODE", "off")]);
+    lines.wait_for("Hermes is ready on");
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("files"), "{}", stdout(&output));
+    let header = std::fs::read(&out).unwrap();
+    assert!(header.starts_with(b"SQLite format 3\0"));
+
+    let output = admin(dir.path(), port, "off", &["backup", out.to_str().unwrap()]);
+    assert!(!output.status.success(), "refuses to overwrite");
+    assert!(
+        stderr(&output).contains("already exists"),
+        "{}",
+        stderr(&output)
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+}

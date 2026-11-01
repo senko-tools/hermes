@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE space_members SET nickname = ? WHERE space_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "130277da202a07e63422b77d4ce83f96896791e13e47c7298a8cc39f84ea8799"
+}

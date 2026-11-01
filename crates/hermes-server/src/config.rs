@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use figment::Figment;
 use figment::providers::{Env, Format, Serialized, Toml};
+pub use hermes_proto::api::RegistrationMode;
 use serde::{Deserialize, Serialize};
 
 /// The commented default `hermes.toml` written by `hermes-server init`.
@@ -146,15 +147,6 @@ impl Default for RegistrationConfig {
             min_password_length: 8,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RegistrationMode {
-    Open,
-    #[default]
-    InviteOnly,
-    Closed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

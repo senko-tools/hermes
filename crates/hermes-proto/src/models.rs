@@ -294,6 +294,112 @@ pub struct Invite {
     pub expires_at: Option<i64>,
 }
 
+/// One entry of `GET /spaces/{id}/bans`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ban {
+    pub user: User,
+    pub reason: Option<String>,
+    pub created_at: i64,
+}
+
+/// What an audit log entry records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditAction {
+    SpaceUpdate,
+    SpaceTransfer,
+    MemberUpdate,
+    MemberKick,
+    MemberBan,
+    MemberUnban,
+    RoleCreate,
+    RoleUpdate,
+    RoleDelete,
+    RolesReorder,
+    ChannelCreate,
+    ChannelUpdate,
+    ChannelDelete,
+    ChannelsReorder,
+    OverrideUpdate,
+    OverrideDelete,
+    /// A moderator deleted someone else's message.
+    MessageDelete,
+    /// Server mute or deafen changed (`details`: the changed fields).
+    MemberVoiceUpdate,
+    /// Moved to another voice channel (`details.channel_id`).
+    MemberMove,
+    /// Disconnected from voice.
+    MemberDisconnect,
+}
+
+impl AuditAction {
+    pub const ALL: [AuditAction; 20] = [
+        AuditAction::SpaceUpdate,
+        AuditAction::SpaceTransfer,
+        AuditAction::MemberUpdate,
+        AuditAction::MemberKick,
+        AuditAction::MemberBan,
+        AuditAction::MemberUnban,
+        AuditAction::RoleCreate,
+        AuditAction::RoleUpdate,
+        AuditAction::RoleDelete,
+        AuditAction::RolesReorder,
+        AuditAction::ChannelCreate,
+        AuditAction::ChannelUpdate,
+        AuditAction::ChannelDelete,
+        AuditAction::ChannelsReorder,
+        AuditAction::OverrideUpdate,
+        AuditAction::OverrideDelete,
+        AuditAction::MessageDelete,
+        AuditAction::MemberVoiceUpdate,
+        AuditAction::MemberMove,
+        AuditAction::MemberDisconnect,
+    ];
+
+    /// The snake_case name, as on the wire and in `audit_log.action`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AuditAction::SpaceUpdate => "space_update",
+            AuditAction::SpaceTransfer => "space_transfer",
+            AuditAction::MemberUpdate => "member_update",
+            AuditAction::MemberKick => "member_kick",
+            AuditAction::MemberBan => "member_ban",
+            AuditAction::MemberUnban => "member_unban",
+            AuditAction::RoleCreate => "role_create",
+            AuditAction::RoleUpdate => "role_update",
+            AuditAction::RoleDelete => "role_delete",
+            AuditAction::RolesReorder => "roles_reorder",
+            AuditAction::ChannelCreate => "channel_create",
+            AuditAction::ChannelUpdate => "channel_update",
+            AuditAction::ChannelDelete => "channel_delete",
+            AuditAction::ChannelsReorder => "channels_reorder",
+            AuditAction::OverrideUpdate => "override_update",
+            AuditAction::OverrideDelete => "override_delete",
+            AuditAction::MessageDelete => "message_delete",
+            AuditAction::MemberVoiceUpdate => "member_voice_update",
+            AuditAction::MemberMove => "member_move",
+            AuditAction::MemberDisconnect => "member_disconnect",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|a| a.as_str() == name)
+    }
+}
+
+/// One entry of `GET /spaces/{id}/audit-log`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub id: Id,
+    pub actor_id: Id,
+    pub action: AuditAction,
+    /// The member, role, channel or message acted on.
+    pub target_id: Option<Id>,
+    /// A JSON object with action-specific details, usually the changed fields.
+    pub details: serde_json::Value,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationLevel {
@@ -424,6 +530,15 @@ pub(crate) mod tests {
         msg.nonce = Some("abc".into());
         let value = serde_json::to_value(&msg).unwrap();
         assert_eq!(value["nonce"], "abc");
+    }
+
+    #[test]
+    fn audit_action_names_match_serde() {
+        for action in AuditAction::ALL {
+            assert_eq!(json!(action), json!(action.as_str()));
+            assert_eq!(AuditAction::from_name(action.as_str()), Some(action));
+        }
+        assert_eq!(AuditAction::from_name("nope"), None);
     }
 
     #[test]

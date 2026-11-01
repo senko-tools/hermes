@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT DISTINCT emoji FROM reactions WHERE message_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "emoji",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "reactions",
+            "name": "emoji"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4401cc6e9f6669cb16a0b4416aa4804280ca5323ea11ec3d5e335cdf36aa26dd"
+}

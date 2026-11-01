@@ -1,7 +1,7 @@
 //! Spaces, roles, members and channels (PLAN.md section 7.3).
 
 use hermes_proto::id::Id;
-use hermes_proto::models::{Channel, ChannelKind, Role, Space};
+use hermes_proto::models::{AttachmentRef, Channel, ChannelKind, Role, Space};
 use sqlx::{SqliteConnection, SqliteExecutor};
 
 pub async fn insert_space(
@@ -111,6 +111,68 @@ fn channel_kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Dm => "dm",
         ChannelKind::GroupDm => "group_dm",
     }
+}
+
+/// Writes name, description and icon.
+pub async fn update_space(conn: &mut SqliteConnection, space: &Space) -> Result<(), sqlx::Error> {
+    let id = space.id.to_i64();
+    let icon_id = space.icon.as_ref().map(|i| i.id.to_i64());
+    sqlx::query!(
+        "UPDATE spaces SET name = ?, description = ?, icon_id = ? WHERE id = ?",
+        space.name,
+        space.description,
+        icon_id,
+        id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+pub async fn set_owner(
+    conn: &mut SqliteConnection,
+    space_id: Id,
+    owner_id: Id,
+) -> Result<(), sqlx::Error> {
+    let (space_id, owner_id) = (space_id.to_i64(), owner_id.to_i64());
+    sqlx::query!(
+        "UPDATE spaces SET owner_id = ? WHERE id = ?",
+        owner_id,
+        space_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Deletes a space with everything in it (`ON DELETE CASCADE`).
+pub async fn delete_space(conn: &mut SqliteConnection, space_id: Id) -> Result<(), sqlx::Error> {
+    let id = space_id.to_i64();
+    sqlx::query!("DELETE FROM spaces WHERE id = ?", id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// An image uploaded by `uploader_id`, usable as an icon.
+pub async fn own_image(
+    e: impl SqliteExecutor<'_>,
+    attachment_id: Id,
+    uploader_id: Id,
+) -> Result<Option<AttachmentRef>, sqlx::Error> {
+    let (id, uploader_id) = (attachment_id.to_i64(), uploader_id.to_i64());
+    let filename = sqlx::query_scalar!(
+        "SELECT filename FROM attachments
+         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'",
+        id,
+        uploader_id
+    )
+    .fetch_optional(e)
+    .await?;
+    Ok(filename.map(|filename| AttachmentRef {
+        id: attachment_id,
+        filename,
+    }))
 }
 
 pub async fn is_banned(

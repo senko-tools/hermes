@@ -1,5 +1,7 @@
 //! Command line interface (PLAN.md section 9.1).
 
+mod healthcheck;
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -16,7 +18,7 @@ use crate::config::{self, Config, LogConfig, LogFormat, TlsMode};
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
 use crate::tls::{self, Tls};
-use crate::{api, invites, setup};
+use crate::{invites, server, setup};
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes-server", version, about = "Hermes chat server")]
@@ -46,6 +48,14 @@ pub enum Command {
     /// Manage invites.
     #[command(subcommand)]
     Invite(InviteCommand),
+    /// Write a consistent copy of the database to a new file (safe while the server runs).
+    /// Uploaded files in `<data_dir>/files` must be copied separately.
+    Backup {
+        /// File to create; it must not exist yet.
+        output: PathBuf,
+    },
+    /// Check that the server on this machine answers `GET /healthz` (exit code 0 if it does).
+    Healthcheck,
 }
 
 #[derive(Debug, Subcommand)]
@@ -126,6 +136,8 @@ pub fn run() -> ExitCode {
             uses,
             expires,
         }) => invite_create(&cli.config, space, uses, expires),
+        Command::Backup { output } => backup(&cli.config, &output),
+        Command::Healthcheck => health(&cli.config),
     }
 }
 
@@ -158,9 +170,10 @@ async fn serve(config: Config) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let addr = SocketAddr::new(config.network.bind, config.network.port);
-    let Some(state) = open_state(config).await else {
+    let Some(mut state) = open_state(config).await else {
         return ExitCode::FAILURE;
     };
+    state.fingerprint = tls.fingerprint().copied();
     if let Err(err) = setup::first_start(&state, tls.fingerprint()).await {
         tracing::error!("could not create the setup invite: {err}");
         return ExitCode::FAILURE;
@@ -172,13 +185,26 @@ async fn serve(config: Config) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    tracing::info!("listening on {addr}");
-    // Graceful shutdown, `/healthz` and the "Hermes is ready" line come with their own
-    // PLAN.md section 20 item.
-    let state = Arc::new(state);
-    let result = api::serve(tcp, &tls, api::router(state.clone())).await;
-    state.db.close().await;
-    match result {
+    let quic = if state.config.voice.enabled {
+        match crate::voice::endpoint::bind(&state.config, addr) {
+            Ok((endpoint, cert_sha256)) => {
+                tracing::info!("voice (QUIC) listens on udp {addr}, certificate {cert_sha256}");
+                state.voice.set_endpoint(crate::voice::EndpointInfo {
+                    cert_sha256,
+                    port: state.config.public_port(),
+                });
+                Some(endpoint)
+            }
+            Err(err) => {
+                tracing::error!("{err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        tracing::info!("voice is disabled (voice.enabled = false)");
+        None
+    };
+    match server::run(Arc::new(state), tcp, tls, quic, server::shutdown_signal()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             tracing::error!("server error: {err}");
@@ -218,15 +244,8 @@ fn invite_create(path: &Path, space: Option<Id>, uses: Option<u32>, expires: Lif
         return ExitCode::FAILURE;
     };
     let config = loaded.config;
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("Could not start the async runtime: {err}");
-            return ExitCode::FAILURE;
-        }
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
     };
     runtime.block_on(async move {
         // Only a self-signed certificate puts a fingerprint into the link.
@@ -298,6 +317,67 @@ fn invite_create(path: &Path, space: Option<Id>, uses: Option<u32>, expires: Lif
         println!("\n{}\n{}", links.web, links.app);
         ExitCode::SUCCESS
     })
+}
+
+fn backup(path: &Path, output: &Path) -> ExitCode {
+    let Some(loaded) = load_or_report(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
+    };
+    let data_dir = loaded.config.storage.data_dir;
+    match runtime.block_on(crate::db::backup(&data_dir, output)) {
+        Ok(()) => {
+            println!(
+                "Wrote a copy of {} to {}",
+                data_dir.join(crate::db::DB_FILE).display(),
+                output.display()
+            );
+            println!(
+                "Uploaded files are not included; copy {} too.",
+                data_dir.join("files").display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Backup failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn health(path: &Path) -> ExitCode {
+    let Some(loaded) = load_or_report(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
+    };
+    match runtime.block_on(healthcheck::check(&loaded.config)) {
+        Ok(()) => {
+            println!("ok");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("unhealthy: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// A single-threaded runtime for the short admin subcommands.
+fn small_runtime() -> Option<tokio::runtime::Runtime> {
+    match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => Some(runtime),
+        Err(err) => {
+            eprintln!("Could not start the async runtime: {err}");
+            None
+        }
+    }
 }
 
 /// Loads (or on first start generates) the TLS certificate and logs what is used.

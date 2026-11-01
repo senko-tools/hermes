@@ -6,16 +6,18 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::CreateInviteRequest;
-use hermes_proto::gateway::SpaceSnapshot;
+use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::Invite;
 use hermes_proto::permissions::Permissions;
 
 use super::validate::Fields;
-use super::{ApiResult, Error, Json, Path};
+use super::{ApiResult, Error, Json, Path, perms};
 use crate::auth::Auth;
 use crate::db;
 use crate::db::invites::InviteRow;
+use crate::gateway::bus::Audience;
+use crate::gateway::presence;
 use crate::invites;
 use crate::state::{AppState, Cache};
 use crate::time::{SECOND_MS, now_ms};
@@ -41,10 +43,7 @@ fn to_wire(row: InviteRow, cache: &Cache) -> Invite {
 /// `user_id`'s permissions in a space; `NOT_FOUND` if the space does not exist or they are not
 /// a member (non-members must not learn whether a space exists).
 fn space_permissions(cache: &Cache, space_id: Id, user_id: Id) -> ApiResult<Permissions> {
-    if !cache.is_member(space_id, user_id) {
-        return Err(Error::not_found("space"));
-    }
-    Ok(cache.space_permissions(space_id, user_id))
+    perms::space(cache, space_id, user_id).map(|access| access.perms)
 }
 
 pub async fn create(
@@ -118,7 +117,13 @@ pub async fn preview(
     State(state): State<Arc<AppState>>,
     Path(code): Path<String>,
 ) -> ApiResult<Json<Invite>> {
-    let row = usable_invite(&state, &code).await?;
+    Ok(Json(invite_preview(&state, &code).await?))
+}
+
+/// A usable invite as shown to anyone with the code; `INVITE_INVALID` otherwise (also when its
+/// space is gone). Shared with the invite web page.
+pub(super) async fn invite_preview(state: &AppState, code: &str) -> ApiResult<Invite> {
+    let row = usable_invite(state, code).await?;
     let cache = state.cache();
     if row
         .space_id
@@ -126,7 +131,7 @@ pub async fn preview(
     {
         return Err(invite_invalid());
     }
-    Ok(Json(to_wire(row, &cache)))
+    Ok(to_wire(row, &cache))
 }
 
 /// Joins the invite's space and returns it as in `ready`. Already being a member is not an error
@@ -170,12 +175,28 @@ pub async fn join(
     }
     tx.commit().await?;
 
-    let mut cache = state.cache_mut();
-    cache.insert_member(space_id, auth.user_id, now);
-    cache
-        .space_snapshot(space_id, auth.user_id)
-        .map(Json)
-        .ok_or_else(invite_invalid)
+    let (snapshot, member) = {
+        let mut cache = state.cache_mut();
+        cache.insert_member(space_id, auth.user_id, now);
+        (
+            cache.space_snapshot(space_id, auth.user_id),
+            cache.member(space_id, auth.user_id),
+        )
+    };
+    let snapshot = snapshot.ok_or_else(invite_invalid)?;
+    state.publish(
+        ServerEvent::SpaceCreate(Box::new(snapshot.clone())),
+        Audience::User(auth.user_id),
+    );
+    if let Some(member) = member {
+        state.publish_except(
+            ServerEvent::MemberAdd(member),
+            Audience::space(space_id),
+            auth.user_id,
+        );
+    }
+    presence::joined_space(&state, space_id, auth.user_id);
+    Ok(Json(snapshot))
 }
 
 fn existing_member_snapshot(state: &AppState, space_id: Id, user_id: Id) -> Option<SpaceSnapshot> {

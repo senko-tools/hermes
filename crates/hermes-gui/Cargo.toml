@@ -8,7 +8,36 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[[bin]]
+name = "hermes"
+path = "src/main.rs"
+
 [dependencies]
+hermes-client-core.workspace = true
+arboard.workspace = true
+clap = { workspace = true, features = ["derive"] }
+directories.workspace = true
+futures-util.workspace = true
+global-hotkey.workspace = true
+iced = { workspace = true, features = ["tokio", "advanced", "image"] }
+image = { workspace = true, features = ["png"] }
+notify.workspace = true
+notify-rust.workspace = true
+rfd.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Push-to-talk key polling (PLAN.md section 21, Spike C decision).
+windows.workspace = true
+
+[dev-dependencies]
+# The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.
+hermes-server = { path = "../hermes-server" }
 
 [lints]
 workspace = true

@@ -1564,47 +1564,47 @@ Goal: remove the biggest unknowns before writing real code.
 - [x] SQLite + migrations, snowflake generator, state cache load.
 - [x] TLS modes (`self_signed` with persisted cert, `files`, `off`).
 - [x] Auth: register/login/logout/sessions, first-start setup invite, invites.
-- [ ] Spaces, channels, roles, members, overrides REST + audit log.
-- [ ] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).
-- [ ] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
-- [ ] DMs and group DMs.
-- [ ] Attachments upload/download/thumbnails.
-- [ ] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
-- [ ] TLS certificate reload on SIGHUP / file change.
-- [ ] Landing page `/` and invite page `/invite/<code>`.
+- [x] Spaces, channels, roles, members, overrides REST + audit log.
+- [x] Messages REST (send, edit, delete, history, reactions, pins, typing, ack/read states, mentions).
+- [x] Gateway: hello/identify/ready/heartbeat/resume, EventBus with audiences, all dispatch events for the above.
+- [x] DMs and group DMs.
+- [x] Attachments upload/download/thumbnails.
+- [x] Rate limits, validation, graceful shutdown, `/healthz`, the "Hermes is ready" log line.
+- [x] TLS certificate reload on SIGHUP / file change.
+- [x] Landing page `/` and invite page `/invite/<code>`.
 - [ ] **Minimal deployability early**: `install.sh` + systemd unit (and the Dockerfile + compose file), and deploy the server to `hermes.senko.tools` following [18.8](#188-reference-deployment-hermessenkotools-on-hetzner-debian-13), so a real test instance runs from now on.
-- [ ] Integration tests for all of the above.
+- [x] Integration tests for all of the above.
 
 **Done when:** the integration test suite passes and the server runs on `hermes.senko.tools` with a valid Let's Encrypt certificate.
 
 ### Phase 2: Client core + TUI text client (2–3 weeks)
-- [ ] `hermes-client-core`: instance management, probing, fingerprint pinning/known hosts, keyring tokens, REST client, gateway with resume/backoff, Store, optimistic sending, history windows, read-state handling, notifications logic, config loading + hot reload, slash commands.
-- [ ] `hermes-tui`: layout, modes, sidebar tree, message view, input with autocomplete, member list, commands, add instance/login flow.
+- [x] `hermes-client-core`: instance management, probing, fingerprint pinning/known hosts, keyring tokens, REST client, gateway with resume/backoff, Store, optimistic sending, history windows, read-state handling, notifications logic, config loading + hot reload, slash commands.
+- [x] `hermes-tui`: layout, modes, sidebar tree, message view, input with autocomplete, member list, commands, add instance/login flow.
 
 **Done when:** the author can use the TUI daily for text chat with a friend on the VPS instance, across reconnects, without bugs that lose messages.
 
 ### Phase 3: iced GUI, text features to parity (4–6 weeks)
-- [ ] App skeleton, theme system (dark/light), fonts, settings persistence.
-- [ ] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
-- [ ] Sidebar tree with unread/mention badges, DMs section, context menus.
-- [ ] Pane grid with save/restore, command bar, keybinds.
-- [ ] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.
-- [ ] Input box: multi-line, autocomplete, reply/edit modes, uploads (dialog, drag and drop, paste).
-- [ ] Notifications, tray icon, taskbar flash.
+- [x] App skeleton, theme system (dark/light), fonts, settings persistence.
+- [x] Add instance / login / register / fingerprint flows, `hermes://` link handling, single-instance forwarding.
+- [x] Sidebar tree with unread/mention badges, DMs section, context menus.
+- [x] Pane grid with save/restore, command bar, keybinds.
+- [x] Channel buffer: virtualized message list, grouping, replies, edits, reactions, attachments with previews and image viewer, typing, new-messages divider, jump to present.
+- [x] Input box: multi-line, autocomplete, reply/edit modes, uploads (dialog, drag and drop, paste).
+- [x] Notifications, tray icon, taskbar flash.
 
 **Done when:** a non-technical friend can install the GUI, click an invite link, create an account and chat comfortably.
 
 ### Phase 4: Voice backend and audio engine (3–4 weeks)
-- [ ] Server: quinn endpoint on the same port number (UDP), voice cert, `/voice/join` tokens, control stream protocol, room registry, forwarding rules, voice states over the gateway, server mute/deafen/move, user limits, DM rooms and ringing.
-- [ ] `hermes-audio`: full capture and playback pipelines, jitter buffer, mixer, device enumeration, device-loss recovery, UI sounds.
-- [ ] Client core: voice connection, join/switch/leave/reconnect, speaking detection, per-user volume, events.
-- [ ] `hermes-voicebot` and voice integration tests.
+- [x] Server: quinn endpoint on the same port number (UDP), voice cert, `/voice/join` tokens, control stream protocol, room registry, forwarding rules, voice states over the gateway, server mute/deafen/move, user limits, DM rooms and ringing.
+- [x] `hermes-audio`: full capture and playback pipelines, jitter buffer, mixer, device enumeration, device-loss recovery, UI sounds.
+- [x] Client core: voice connection, join/switch/leave/reconnect, speaking detection, per-user volume, events.
+- [x] `hermes-voicebot` and voice integration tests.
 
 **Done when:** two voicebots and two real users talk in one room for 30 minutes with no audible glitches on normal connections and audio recovers automatically after a 5-second network drop.
 
 ### Phase 5: Voice UI (1–2 weeks)
-- [ ] GUI: voice users in the sidebar (visible without joining), double-click to join, voice panel, voice room buffer, speaking rings, per-user volume menu, mute/deafen keybinds, global push-to-talk and global mute, incoming-call banner, audio settings page with level meter and mic test.
-- [ ] TUI: voice users in sidebar, `J`/`L`/`m`/`D`, status line.
+- [x] GUI: voice users in the sidebar (visible without joining), double-click to join, voice panel, voice room buffer, speaking rings, per-user volume menu, mute/deafen keybinds, global push-to-talk and global mute, incoming-call banner, audio settings page with level meter and mic test.
+- [x] TUI: voice users in sidebar, `J`/`L`/`m`/`D`, status line.
 
 **Done when:** voice is usable daily from both clients.
 

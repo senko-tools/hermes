@@ -203,4 +203,134 @@ mod tests {
         .await
         .expect("good clients are served while others stall");
     }
+
+    /// `files` mode on `<dir>/live-{cert,key}.pem`, starting with pair `a`; returns the TLS
+    /// setup and the certificates of pairs `a` and `b` (`b` is in `<dir>/b-*.pem`).
+    fn files_with_two_pairs(
+        dir: &TempDir,
+    ) -> (Tls, CertificateDer<'static>, CertificateDer<'static>) {
+        let a = tls::load_or_generate(dir.path(), "a", &["localhost".to_owned()]).unwrap();
+        let b = tls::load_or_generate(dir.path(), "b", &["localhost".to_owned()]).unwrap();
+        let (cert, key) = (
+            dir.path().join("live-cert.pem"),
+            dir.path().join("live-key.pem"),
+        );
+        std::fs::copy(&a.cert_path, &cert).unwrap();
+        std::fs::copy(&a.key_path, &key).unwrap();
+        let mut config = Config::default();
+        config.tls.mode = TlsMode::Files;
+        config.tls.cert_file = cert;
+        config.tls.key_file = key;
+        (
+            tls::load(&config).unwrap(),
+            a.chain[0].clone(),
+            b.chain[0].clone(),
+        )
+    }
+
+    fn install(dir: &TempDir, name: &str) {
+        for part in ["cert", "key"] {
+            std::fs::copy(
+                dir.path().join(format!("{name}-{part}.pem")),
+                dir.path().join(format!("live-{part}.pem")),
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_switches_new_handshakes_and_keeps_open_connections() {
+        let dir = TempDir::new("tls-reload");
+        let (tls, a, b) = files_with_two_pairs(&dir);
+        let reloader = tls.reloader().unwrap().clone();
+        assert_eq!(reloader.fingerprint(), tls::Fingerprint::of(&a));
+        let addr = echo_server(&tls).await;
+
+        // A connection made before the reload.
+        let tcp = TcpStream::connect(addr).await.unwrap();
+        let name = ServerName::try_from("localhost").unwrap();
+        let mut open = connector(a.clone()).connect(name, tcp).await.unwrap();
+
+        install(&dir, "b");
+        reloader.reload().unwrap();
+        assert_eq!(reloader.fingerprint(), tls::Fingerprint::of(&b));
+
+        // New handshakes use the new certificate only.
+        echo(&connector(b.clone()), addr, "localhost")
+            .await
+            .unwrap();
+        assert!(echo(&connector(a), addr, "localhost").await.is_err());
+        // The old connection still works.
+        open.write_all(b"still").await.unwrap();
+        let mut buf = Vec::new();
+        open.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(buf, b"still");
+    }
+
+    #[tokio::test]
+    async fn a_broken_new_pair_keeps_the_old_certificate() {
+        let dir = TempDir::new("tls-reload-broken");
+        let (tls, a, _) = files_with_two_pairs(&dir);
+        let reloader = tls.reloader().unwrap().clone();
+        let addr = echo_server(&tls).await;
+
+        std::fs::write(dir.path().join("live-cert.pem"), "garbage").unwrap();
+        assert!(matches!(
+            reloader.reload(),
+            Err(tls::TlsError::NoCertificate(_))
+        ));
+        // A certificate with the key of another one.
+        std::fs::copy(
+            dir.path().join("b-cert.pem"),
+            dir.path().join("live-cert.pem"),
+        )
+        .unwrap();
+        assert!(matches!(
+            reloader.reload(),
+            Err(tls::TlsError::Rustls { .. })
+        ));
+        std::fs::remove_file(dir.path().join("live-key.pem")).unwrap();
+        assert!(matches!(reloader.reload(), Err(tls::TlsError::Io { .. })));
+
+        assert_eq!(reloader.fingerprint(), tls::Fingerprint::of(&a));
+        echo(&connector(a), addr, "localhost").await.unwrap();
+    }
+
+    #[test]
+    fn reload_if_changed_follows_modification_times() {
+        let dir = TempDir::new("tls-reload-mtime");
+        let (tls, _, b) = files_with_two_pairs(&dir);
+        let reloader = tls.reloader().unwrap().clone();
+        assert!(!reloader.reload_if_changed().unwrap());
+
+        let touch = |name: &str, secs: u64| {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(dir.path().join(name))
+                .unwrap();
+            let when = std::time::SystemTime::now() + Duration::from_secs(secs);
+            file.set_modified(when).unwrap();
+        };
+        install(&dir, "b");
+        touch("live-cert.pem", 10);
+        touch("live-key.pem", 10);
+        assert!(reloader.reload_if_changed().unwrap());
+        assert_eq!(reloader.fingerprint(), tls::Fingerprint::of(&b));
+        assert!(!reloader.reload_if_changed().unwrap());
+
+        // A broken pair is reported once, then left alone until the files change again.
+        std::fs::write(dir.path().join("live-key.pem"), "garbage").unwrap();
+        touch("live-key.pem", 20);
+        assert!(reloader.reload_if_changed().is_err());
+        assert!(!reloader.reload_if_changed().unwrap());
+        assert_eq!(reloader.fingerprint(), tls::Fingerprint::of(&b));
+    }
+
+    #[test]
+    fn self_signed_and_off_do_not_reload() {
+        let dir = TempDir::new("tls-reload-none");
+        let (tls, _) = self_signed(&dir);
+        assert!(tls.reloader().is_none());
+        assert!(Tls::Off.reloader().is_none());
+    }
 }

@@ -1,0 +1,58 @@
+name: release
+
+# Builds the server release files on a `v*` tag and publishes them as a GitHub release
+# (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.1). For now only the parts of
+# PLAN.md section 18.1 that deploy/install.sh needs: the x86_64 musl server, hermes.service,
+# install.sh itself and SHA256SUMS. The other artifacts come with the Phase 7 release workflow.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  server-linux:
+    name: x86_64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+      - name: musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
+      - name: Build
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo build --release --locked -p hermes-server --target "$TARGET"
+      - name: Package
+        run: |
+          mkdir dist
+          bin="target/$TARGET/release/hermes-server"
+          file "$bin" | grep -Eq "static(ally|-pie) linked"
+          tar -czf "dist/hermes-server-$TARGET.tar.gz" -C "$(dirname "$bin")" hermes-server
+          cp deploy/systemd/hermes.service deploy/install.sh dist/
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "Hermes $TAG" --generate-notes $flags

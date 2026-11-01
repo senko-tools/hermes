@@ -1,0 +1,51 @@
+# Built-in high-contrast theme (PLAN.md section 15.5).
+
+[general]
+background = "#000000"
+border = "#ffffff"
+horizontal_rule = "#ffffff"
+unread_indicator = "#ffffff"
+scrollbar = "#ffffff"
+
+[text]
+primary = "#ffffff"
+secondary = "#ffffff"
+tertiary = "#d0d0d0"
+success = "#00ff7f"
+error = "#ff5c5c"
+warning = "#ffd700"
+info = "#7fd4ff"
+link = "#ffff00"
+mention_bg = "#4d3d00"
+code_bg = "#1a1a1a"
+
+[buttons.primary]
+background = "#ffff00"
+background_hover = "#ffffff"
+text = "#000000"
+
+[buttons.secondary]
+background = "#000000"
+background_hover = "#333333"
+text = "#ffffff"
+
+[buttons.danger]
+background = "#ff5c5c"
+background_hover = "#ff8a8a"
+text = "#000000"
+
+[sidebar]
+background = "#000000"
+selected = "#333333"
+hover = "#1a1a1a"
+
+[pane]
+header_bg = "#000000"
+focused_border = "#ffff00"
+
+[voice]
+speaking_ring = "#00ff7f"
+muted = "#ff5c5c"
+
+[roles]
+default_color = "#ffffff"

@@ -46,6 +46,13 @@ impl Fields {
     }
 }
 
+/// A `VALIDATION_FAILED` error for a single field.
+pub fn field_error(field: &str, problem: impl Into<String>) -> Error {
+    let mut fields = Fields::new();
+    fields.add(field, problem);
+    Error(ApiError::validation(fields.0))
+}
+
 /// Trims and lowercases, then requires `^[a-z0-9_.]{2,32}$`.
 pub fn username(raw: &str) -> Result<String, String> {
     let name = raw.trim().to_lowercase();
@@ -85,9 +92,91 @@ pub fn device_name(raw: &str) -> Result<String, String> {
     Ok(name.to_owned())
 }
 
+pub const SPACE_NAME_CHARS: (usize, usize) = (2, 64);
+pub const SPACE_DESCRIPTION_CHARS: usize = 512;
+pub const ROLE_NAME_CHARS: (usize, usize) = (1, 32);
+pub const CHANNEL_NAME_CHARS: (usize, usize) = (1, 100);
+pub const CHANNEL_TOPIC_CHARS: usize = 1024;
+pub const NICKNAME_CHARS: (usize, usize) = (1, 32);
+pub const BAN_REASON_CHARS: usize = 512;
+
+/// A single-line name: trims, then requires `min..=max` characters without control characters.
+pub fn name(raw: &str, (min, max): (usize, usize)) -> Result<String, String> {
+    let name = raw.trim();
+    if !(min..=max).contains(&name.chars().count()) {
+        return Err(format!("must be {min} to {max} characters"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("must not contain control characters".into());
+    }
+    Ok(name.to_owned())
+}
+
+/// Optional free text (descriptions, topics, reasons): trims; empty means `None`; at most `max`
+/// characters; no control characters except `\n` and `\t`.
+pub fn optional_text(raw: &str, max: usize) -> Result<Option<String>, String> {
+    let text = raw.trim();
+    if text.chars().count() > max {
+        return Err(format!("must be at most {max} characters"));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err("must not contain control characters".into());
+    }
+    Ok((!text.is_empty()).then(|| text.to_owned()))
+}
+
+/// Message content (raw markup, not trimmed): at most `max` characters; no control characters
+/// except `\n` and `\t` (PLAN.md section 13).
+pub fn message_content(raw: &str, max: usize) -> Result<(), String> {
+    if raw.chars().count() > max {
+        return Err(format!("must be at most {max} characters"));
+    }
+    if raw
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err("must not contain control characters other than newlines and tabs".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_contents() {
+        assert!(message_content("  hi\n\tthere ", 20).is_ok());
+        assert!(message_content("", 20).is_ok());
+        assert!(message_content(&"é".repeat(20), 20).is_ok());
+        assert!(message_content(&"é".repeat(21), 20).is_err());
+        assert!(message_content("a\r\nb", 20).is_err());
+        assert!(message_content("a\u{1b}[31m", 20).is_err());
+    }
+
+    #[test]
+    fn names() {
+        assert_eq!(name("  general ", (1, 100)).unwrap(), "general");
+        assert!(name(" ", (1, 100)).is_err());
+        assert!(name("a", SPACE_NAME_CHARS).is_err());
+        assert!(name("a\tb", (1, 100)).is_err());
+        assert!(name(&"é".repeat(32), ROLE_NAME_CHARS).is_ok());
+        assert!(name(&"é".repeat(33), ROLE_NAME_CHARS).is_err());
+    }
+
+    #[test]
+    fn optional_texts() {
+        assert_eq!(optional_text("  ", 10).unwrap(), None);
+        assert_eq!(
+            optional_text(" a\nb\t", 10).unwrap().as_deref(),
+            Some("a\nb")
+        );
+        assert!(optional_text("a\u{7}", 10).is_err());
+        assert!(optional_text(&"x".repeat(11), 10).is_err());
+    }
 
     #[test]
     fn usernames() {

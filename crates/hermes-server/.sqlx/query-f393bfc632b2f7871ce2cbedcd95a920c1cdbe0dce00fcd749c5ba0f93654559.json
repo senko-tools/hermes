@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE channels SET last_message_id = MAX(COALESCE(last_message_id, 0), ?) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f393bfc632b2f7871ce2cbedcd95a920c1cdbe0dce00fcd749c5ba0f93654559"
+}

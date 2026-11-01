@@ -33,7 +33,10 @@ phase checklists and is the source of truth for what to build next.
   or on the server (PLAN.md section 18.8 describes the server).
 - Windows-specific code must still compile on Linux (use `cfg(windows)` where needed); CI on GitHub Actions
   builds on both Windows and Linux.
-- Never try to connect to remote servers, and never read, print or commit secrets, private keys or tokens.
+- Do not connect to remote servers, with one exception: when the session runs on the developer's own PC,
+  Claude may connect to the production server with `ssh senko.tools` or `hetzner` (from that PC only,
+  never from a cloud VM).
+- Never read, print or commit secrets, private keys or tokens.
 
 ## Git
 - Commit messages: `area: what changed` (e.g. `server: add login endpoint`, `proto: add Message model`).

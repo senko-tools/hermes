@@ -7,6 +7,7 @@
 //! - [`permissions`]: permission bits and `compute`
 //! - [`gateway`]: WebSocket envelope, ops, events and close codes
 //! - [`markup`]: message markup parser
+//! - [`voice`]: voice control stream messages and audio datagrams
 
 pub mod api;
 pub mod error;
@@ -15,6 +16,7 @@ pub mod id;
 pub mod markup;
 pub mod models;
 pub mod permissions;
+pub mod voice;
 
 pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use id::Id;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM channel_overrides WHERE channel_id = ? AND role_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d4c83882f2153165ad5b1e3860330aa7cd0d1670f7b60364e673b139c9ec719c"
+}

@@ -155,6 +155,10 @@ pub struct Ready {
     /// Users sharing a space or DM with you.
     pub presences: Vec<Presence>,
     pub notification_settings: Vec<NotificationSetting>,
+    /// Voice states of DM and group DM calls you are a recipient of (space voice states are in
+    /// `spaces[].voice_states`).
+    #[serde(default)]
+    pub dm_voice_states: Vec<VoiceState>,
     pub voice: VoiceInfo,
     pub instance: InstanceInfo,
 }
@@ -604,6 +608,7 @@ mod tests {
             read_states: vec![],
             presences: vec![],
             notification_settings: vec![],
+            dm_voice_states: vec![],
             voice: VoiceInfo {
                 enabled: true,
                 quic_port: Some(7700),

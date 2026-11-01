@@ -1,0 +1,51 @@
+# Built-in light theme (PLAN.md section 15.5).
+
+[general]
+background = "#ffffff"
+border = "#d4d7dc"
+horizontal_rule = "#e3e5e8"
+unread_indicator = "#060607"
+scrollbar = "#c4c9ce"
+
+[text]
+primary = "#2e3338"
+secondary = "#4f5660"
+tertiary = "#80848e"
+success = "#248046"
+error = "#d83c3e"
+warning = "#c27c0e"
+info = "#1d6ad8"
+link = "#006ce7"
+mention_bg = "#fdf3d6"
+code_bg = "#f2f3f5"
+
+[buttons.primary]
+background = "#5865f2"
+background_hover = "#4752c4"
+text = "#ffffff"
+
+[buttons.secondary]
+background = "#e3e5e8"
+background_hover = "#d4d7dc"
+text = "#2e3338"
+
+[buttons.danger]
+background = "#d83c3e"
+background_hover = "#a12828"
+text = "#ffffff"
+
+[sidebar]
+background = "#f2f3f5"
+selected = "#d7dade"
+hover = "#e3e5e8"
+
+[pane]
+header_bg = "#f7f8f9"
+focused_border = "#5865f2"
+
+[voice]
+speaking_ring = "#248046"
+muted = "#d83c3e"
+
+[roles]
+default_color = "#2e3338"
