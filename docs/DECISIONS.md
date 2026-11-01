@@ -1284,3 +1284,31 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   member list and user panel show avatars with presence dots; the empty pane is titled "Home".
 - **Why:** the developer found the GUI cramped, unaligned and too plain, and asked for its own
   style (like Halloy) that still feels familiar to people coming from Discord.
+
+## 2026-11-01: GUI: Nerd Font, Material icons, full-window settings, calm splits
+
+- **Font:** the default `font.family` and `font.mono_family` are now `JetBrainsMono Nerd Font`
+  (bundled: Regular, Italic, Medium, Bold; SIL OFL in `JetBrainsMonoNerdFont-OFL.txt`) instead
+  of Inter / JetBrains Mono (PLAN.md section 15.5). Inter and JetBrains Mono stay bundled.
+  Settings → Appearance has a font and a code-font picker: the bundled families or "Custom…" for
+  any installed font. Existing `config.toml` files keep the family they already name.
+- **Icons:** the Lucide subset from the previous entry is gone; icons are the Material Design
+  glyphs inside the bundled Nerd Font (`widget/icon.rs`), so there is one font less. No emojis
+  in UI chrome.
+- **Theme keys:** new `[presence] online / idle / dnd / offline` (status dots everywhere,
+  including the status menu). Themes that leave them out get the `dark` values with a warning,
+  like every other key.
+- **Settings and Space settings** open over the whole window instead of in a pane (PLAN.md 15.1
+  lists them as pane buffers): navigation on the left, a round close button (Esc also closes).
+  Layouts saved with a settings pane still restore and show it in the pane.
+- **Split panes ("calm splits"):** 1 px dividers instead of boxed panes with gaps; the focused
+  pane is marked by a gold line under its header; unfocused panes show their header buttons only
+  on hover; only the focused pane shows its member list.
+- **Smaller changes:** right-click menus have a header naming their target, an icon per entry
+  and the check on the right, and the right-clicked row, message or person stays outlined while
+  its menu is open; the reply/edit bar and upload chips sit inside the composer; settings
+  checkboxes are switches; file attachments are cards with a download button; icon buttons are
+  34 px; grouped messages always lay out their timestamp (shown on hover) so rows never move.
+- **Why:** the developer's review of the previous round (too small, text-heavy, cluttered
+  settings and splits, unaligned elements) and their choices: full-window settings, calm
+  splits, Material icons via the Nerd Font, JetBrainsMono Nerd Font as the default.

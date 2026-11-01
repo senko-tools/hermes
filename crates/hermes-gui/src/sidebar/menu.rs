@@ -185,14 +185,74 @@ impl Action {
             Action::TransferOwnership => "Transfer ownership",
             Action::SetOnline => "Online",
             Action::SetIdle => "Idle",
-            Action::SetDnd => "Do not disturb (no notifications)",
-            Action::SetInvisible => "Invisible (appear offline)",
+            Action::SetDnd => "Do not disturb",
+            Action::SetInvisible => "Invisible",
             Action::OpenSettings => "Settings",
             Action::ShowMentions => "Mentions",
             Action::EditRole => "Edit role",
             Action::DeleteRole => "Delete role",
             Action::CopyInviteLink => "Copy invite link",
             Action::RevokeInvite => "Revoke invite",
+        }
+    }
+
+    /// The icon in front of the label (status entries show a colored dot instead).
+    pub fn icon(self) -> char {
+        use crate::widget::icon as i;
+        match self {
+            Action::Reconnect => i::LINK,
+            Action::GoOffline | Action::LogOut => i::LOG_OUT,
+            Action::GoOnline => i::SERVER,
+            Action::CreateSpace | Action::CreateChannel | Action::CreateCategory => i::PLUS,
+            Action::EditProfile | Action::ChangeNickname => i::ACCOUNT,
+            Action::RemoveInstance
+            | Action::DeleteSpace
+            | Action::DeleteChannel
+            | Action::DeleteMessage
+            | Action::DeleteRole => i::DELETE,
+            Action::SpaceSettings | Action::OpenSettings => i::SETTINGS,
+            Action::ChannelPermissions | Action::ManageRoles | Action::EditRole => i::SHIELD,
+            Action::InvitePeople => i::ADD_USER,
+            Action::MarkSpaceRead | Action::MarkRead => i::CHECK,
+            Action::SearchSpace => i::SEARCH,
+            Action::CopySpaceId
+            | Action::CopyChannelId
+            | Action::CopyText
+            | Action::CopyMessageId
+            | Action::CopyUsername
+            | Action::CopyUserId
+            | Action::CopyInviteLink => i::COPY,
+            Action::LeaveSpace | Action::LeaveGroup => i::LOG_OUT,
+            Action::NotifyAll | Action::NotifyMentions | Action::NotifyDefault => i::BELL,
+            Action::NotifyNothing | Action::Mute => i::BELL_OFF,
+            Action::Unmute => i::BELL,
+            Action::OpenInNewPane | Action::SplitRight => i::SPLIT_RIGHT,
+            Action::SplitDown => i::SPLIT_DOWN,
+            Action::ShowPins | Action::Pin | Action::Unpin => i::PIN,
+            Action::JoinVoice => i::PHONE,
+            Action::EditChannel | Action::RenameGroup | Action::Edit => i::PENCIL,
+            Action::MaximizePane => i::MAXIMIZE,
+            Action::ToggleMembers => i::USERS,
+            Action::ClosePane | Action::RevokeInvite => i::CLOSE,
+            Action::Reply | Action::QuoteText => i::REPLY,
+            Action::SendMessage => i::CHAT,
+            Action::Mention | Action::ShowMentions => i::AT,
+            Action::Kick => i::LOG_OUT,
+            Action::Ban => i::BAN,
+            Action::TransferOwnership => i::SHIELD,
+            Action::SetOnline | Action::SetIdle | Action::SetDnd | Action::SetInvisible => i::DOT,
+        }
+    }
+
+    /// The status a status entry sets, for its colored dot.
+    pub fn status(self) -> Option<hermes_client_core::proto::models::PresenceStatus> {
+        use hermes_client_core::proto::models::PresenceStatus as P;
+        match self {
+            Action::SetOnline => Some(P::Online),
+            Action::SetIdle => Some(P::Idle),
+            Action::SetDnd => Some(P::Dnd),
+            Action::SetInvisible => Some(P::Invisible),
+            _ => None,
         }
     }
 

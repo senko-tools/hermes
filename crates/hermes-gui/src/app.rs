@@ -92,6 +92,9 @@ pub struct App {
     pub collapsed: Collapsed,
     /// An open context menu and where it was opened.
     pub menu: Option<(Target, Point)>,
+    /// Settings or a space's settings, shown over the whole window instead of the sidebar
+    /// and panes.
+    pub page: Option<Buffer>,
     /// The entry chosen with the arrow keys in the open menu.
     pub menu_index: Option<usize>,
     pub(crate) cursor: Cursor,
@@ -173,6 +176,7 @@ impl App {
             single_instance,
             collapsed,
             menu: None,
+            page: None,
             menu_index: None,
             cursor: Cursor::default(),
             window_size: Size::new(1200.0, 800.0),
@@ -257,11 +261,12 @@ impl App {
     /// Runs the level meter (and allows the mic test) only while the Voice & Audio tab shows.
     fn sync_meter(&mut self) {
         let shown = self.settings_tab == settings::Tab::Voice
-            && self
-                .panes
-                .state
-                .iter()
-                .any(|(_, p)| p.buffer == Buffer::Settings);
+            && (self.page == Some(Buffer::Settings)
+                || self
+                    .panes
+                    .state
+                    .iter()
+                    .any(|(_, p)| p.buffer == Buffer::Settings));
         if shown != self.meter_on {
             self.meter_on = shown;
             self.core.set_level_meter(shown);
@@ -324,7 +329,7 @@ impl App {
                     self.mark_visible_read();
                 }
             }
-            Message::OpenSettings => self.panes.open(Buffer::Settings),
+            Message::OpenSettings => self.page = Some(Buffer::Settings),
             Message::Settings(message) => return self.on_settings(message),
             Message::DismissStatus => self.status = None,
             Message::FontLoaded | Message::ChannelOpened => {}
@@ -484,6 +489,8 @@ impl App {
                     self.new_dm = None;
                 } else if self.add_instance.is_some() {
                     self.add_instance = None;
+                } else if self.page.is_some() {
+                    self.page = None;
                 } else {
                     return self.key_action(keybinds::Action::MarkRead);
                 }
@@ -1557,6 +1564,8 @@ impl App {
         }
         match self.keybinds.action(key, physical, modifiers) {
             Some(action) => self.key_action(action),
+            // No composer is visible behind a settings page.
+            None if self.page.is_some() => Task::none(),
             None => self.type_into_composer(key, modifiers, captured),
         }
     }
@@ -1674,7 +1683,7 @@ impl App {
             K::MaximizePane => self.panes.toggle_maximize(focus),
             K::ToggleMemberList => self.panes.toggle_members(focus),
             K::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
-            K::Settings => self.panes.open(Buffer::Settings),
+            K::Settings => self.page = Some(Buffer::Settings),
             K::MarkRead => {
                 if let Some((inst, channel)) = self.panes.focused_channel() {
                     return self.run_action(Target::Channel(inst, channel), Action::MarkRead);
@@ -2143,6 +2152,29 @@ impl App {
                 let value = toml::Value::String(name).to_string();
                 self.persist("general.theme", &value);
             }
+            settings::Message::Font(slot, choice) => {
+                if choice == settings::CUSTOM_FONT {
+                    // Show the name field; nothing is saved until Enter.
+                    match slot {
+                        settings::FontSlot::Ui => self.config.font.family.clear(),
+                        settings::FontSlot::Mono => self.config.font.mono_family.clear(),
+                    }
+                } else {
+                    self.persist(slot.key(), &toml::Value::String(choice).to_string());
+                }
+            }
+            settings::Message::FontText(slot, text) => match slot {
+                settings::FontSlot::Ui => self.config.font.family = text,
+                settings::FontSlot::Mono => self.config.font.mono_family = text,
+            },
+            settings::Message::SaveFont(slot) => {
+                let family = match slot {
+                    settings::FontSlot::Ui => &self.config.font.family,
+                    settings::FontSlot::Mono => &self.config.font.mono_family,
+                };
+                let value = toml::Value::String(family.trim().to_owned()).to_string();
+                self.persist(slot.key(), &value);
+            }
             settings::Message::FontSize(size) => {
                 self.config.font.size = size;
                 self.fonts = Fonts::from_config(&self.config.font);
@@ -2160,7 +2192,10 @@ impl App {
                 let (key, value) = settings::saved_value(&self.config, setting);
                 self.persist(key, &value);
             }
-            settings::Message::Close => self.panes.clear_where(|b| *b == Buffer::Settings),
+            settings::Message::Close => {
+                self.page = None;
+                self.panes.clear_where(|b| *b == Buffer::Settings);
+            }
             _ => {}
         }
     }
@@ -2296,6 +2331,68 @@ impl App {
         Subscription::batch(subscriptions)
     }
 
+    /// The top of a right-click menu: what it is about.
+    fn menu_header(&self, target: &Target) -> Option<context_menu::Header<'_, Message>> {
+        use crate::widget::{avatar, icon};
+        use hermes_client_core::proto::models::ChannelKind;
+
+        let fonts = &self.fonts;
+        let theme = &self.theme;
+        let store = self.core.store();
+        let glyph = |g: char| -> Element<'_, Message> {
+            icon::icon(g, 18.0).color(theme.text.secondary.0).into()
+        };
+        let (lead, title) = match target {
+            Target::Pane(_) => return None,
+            Target::Instance(inst) => (glyph(icon::SERVER), inst.clone()),
+            Target::Space(inst, space) => {
+                let name = store.instance(inst)?.spaces.get(space)?.space.name.clone();
+                (avatar::space_icon(&name, 22.0, fonts), name)
+            }
+            Target::Channel(inst, channel) => {
+                let s = store.instance(inst)?;
+                let c = s.channel(*channel)?;
+                let g = match c.kind {
+                    ChannelKind::Voice => icon::VOLUME,
+                    ChannelKind::Dm => icon::AT,
+                    ChannelKind::GroupDm => icon::USERS,
+                    ChannelKind::Category => icon::CHEVRON_DOWN,
+                    ChannelKind::Text => icon::HASH,
+                };
+                let title = hermes_client_core::view::channel_title(s, c);
+                (glyph(g), title.trim_start_matches('#').to_owned())
+            }
+            Target::Message(inst, channel, id) => {
+                let s = store.instance(inst)?;
+                let author = s.window(*channel)?.get(*id)?.author.id;
+                let name = s.display_name(s.space_of(*channel), author);
+                (
+                    avatar::view(&name, None, 22.0, fonts),
+                    format!("Message from {name}"),
+                )
+            }
+            Target::Member(inst, space, user) => {
+                let name = store.instance(inst)?.display_name(*space, *user);
+                (avatar::view(&name, None, 22.0, fonts), name)
+            }
+            Target::Role(inst, space, role) => {
+                let name = store
+                    .instance(inst)?
+                    .spaces
+                    .get(space)?
+                    .roles
+                    .iter()
+                    .find(|r| r.id == *role)?
+                    .name
+                    .clone();
+                (glyph(icon::SHIELD), name)
+            }
+            Target::Invite(_, _, code) => (glyph(icon::LINK), format!("Invite {code}")),
+            Target::Me(_) => (glyph(icon::ACCOUNT), "Set your status".to_owned()),
+        };
+        Some(context_menu::Header { lead, title })
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
         let fonts = &self.fonts;
         let theme = &self.theme;
@@ -2313,6 +2410,7 @@ impl App {
             self.drag.target(),
             self.update.as_ref(),
             &self.images,
+            self.menu.as_ref().map(|(target, _)| target),
         );
 
         let account_inst = self.account_instance();
@@ -2337,42 +2435,44 @@ impl App {
                 .style(|_| style::status_bar(theme, status.level)),
             );
         }
-        main =
-            main.push(self.panes.view(&panes::Context {
-                core: &self.core,
-                fonts,
-                theme,
-                config: &self.config,
-                themes: &self.themes,
+        let ctx = panes::Context {
+            core: &self.core,
+            fonts,
+            theme,
+            config: &self.config,
+            themes: &self.themes,
+            utc_offset: self.utc_offset,
+            images: &self.images,
+            composers: &self.composers,
+            settings_tab: self.settings_tab,
+            voice: settings::VoiceView {
+                devices: self.audio_devices.as_ref(),
+                level: self.input_level,
+                mic_test: self.mic_test,
+                ptt_draft: self.ptt_draft.as_deref(),
+            },
+            space_settings: &self.space_settings,
+            default_space_settings: &self.default_space_settings,
+            drag: &self.drag,
+            results: &self.results,
+            default_results: &self.default_results,
+            account: crate::buffer::settings_tabs::AccountView {
+                instances: self.core.instance_ids(),
+                selected: account_inst.clone(),
+                me: account_inst
+                    .as_ref()
+                    .and_then(|i| self.core.store().instance(i).and_then(|s| s.me.clone())),
+                sessions: &self.sessions,
                 utc_offset: self.utc_offset,
-                images: &self.images,
-                composers: &self.composers,
-                settings_tab: self.settings_tab,
-                voice: settings::VoiceView {
-                    devices: self.audio_devices.as_ref(),
-                    level: self.input_level,
-                    mic_test: self.mic_test,
-                    ptt_draft: self.ptt_draft.as_deref(),
-                },
-                space_settings: &self.space_settings,
-                default_space_settings: &self.default_space_settings,
-                drag: &self.drag,
-                results: &self.results,
-                default_results: &self.default_results,
-                account:
-                    crate::buffer::settings_tabs::AccountView {
-                        instances: self.core.instance_ids(),
-                        selected: account_inst.clone(),
-                        me:
-                            account_inst.as_ref().and_then(|i| {
-                                self.core.store().instance(i).and_then(|s| s.me.clone())
-                            }),
-                        sessions: &self.sessions,
-                        utc_offset: self.utc_offset,
-                    },
-            }));
+            },
+            menu: self.menu.as_ref().map(|(target, _)| target),
+        };
+        main = main.push(match &self.page {
+            Some(page) => panes::page_view(page, &ctx),
+            None => self.panes.view(&ctx),
+        });
 
-        let layout = if !self.sidebar_visible {
+        let layout = if !self.sidebar_visible || self.page.is_some() {
             row![main]
         } else if settings::Position::from_config(&self.config.sidebar.position)
             == settings::Position::Right
@@ -2409,6 +2509,8 @@ impl App {
                         context_menu::Item {
                             label: e.action.label().to_owned(),
                             message: Message::Menu(target.clone(), e.action),
+                            icon: e.action.icon(),
+                            icon_color: e.action.status().map(|st| style::my_presence(theme, st)),
                             danger: e.action.is_red(),
                             checked: e.checked,
                             selected,
@@ -2418,6 +2520,7 @@ impl App {
                 .collect();
             root = context_menu::overlay(
                 root,
+                self.menu_header(target),
                 items,
                 *at,
                 self.window_size,
@@ -2745,7 +2848,7 @@ mod tests {
         )));
         let _ = app.update(Message::CommandBar(command_bar::Message::Submit));
         assert!(app.command_bar.is_none());
-        assert_eq!(app.panes.focused().unwrap().buffer, Buffer::Settings);
+        assert_eq!(app.page, Some(Buffer::Settings));
 
         app.save_layout();
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();

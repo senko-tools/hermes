@@ -6,7 +6,7 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::SessionInfo;
 use hermes_client_core::proto::models::CurrentUser;
 use hermes_client_core::time;
-use iced::widget::{Space, button, checkbox, column, pick_list, row, slider, text_input};
+use iced::widget::{Space, button, column, pick_list, row, slider, text_input};
 use iced::{Alignment, Element, Fill};
 
 use super::settings::{Message, setting};
@@ -202,8 +202,11 @@ pub fn account<'a>(
 pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
     let b = &config.buffer;
     let check = |on: bool, text: &'static str, key: &'static str| {
-        checkbox(on)
+        iced::widget::toggler(on)
             .label(text)
+            .size(20)
+            .spacing(style::GAP_L)
+            .style(move |_, st| style::toggler(theme, st))
             .on_toggle(move |v| Message::Flag(key, v))
             .text_size(fonts.size)
             .font(fonts.ui)
@@ -271,8 +274,11 @@ pub fn notifications<'a>(
     let n = &config.notifications;
     let g = &config.general;
     let check = |on: bool, text: &'static str, key: &'static str| {
-        checkbox(on)
+        iced::widget::toggler(on)
             .label(text)
+            .size(20)
+            .spacing(style::GAP_L)
+            .style(move |_, st| style::toggler(theme, st))
             .on_toggle(move |v| Message::Flag(key, v))
             .text_size(fonts.size)
             .font(fonts.ui)

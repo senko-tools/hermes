@@ -114,6 +114,7 @@ impl App {
             utc_offset: self.utc_offset,
             images: &self.images,
             composer: None,
+            menu_message: None,
         };
         let Some((offset, measured)) =
             channel::jump_offset(&ctx, inst, *channel, &p.channel, target)

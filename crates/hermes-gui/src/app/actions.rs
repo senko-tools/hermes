@@ -83,6 +83,10 @@ impl App {
                 Task::none()
             }
             (Target::Space(inst, space), Action::DeleteSpace) => {
+                if matches!(&self.page, Some(Buffer::SpaceSettings { inst: i, space: s }) if *i == inst && *s == space)
+                {
+                    self.page = None;
+                }
                 self.panes.clear_where(|b| match b {
                     Buffer::SpaceSettings { inst: i, space: s } => *i == inst && *s == space,
                     _ => false,

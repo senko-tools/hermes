@@ -305,12 +305,12 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     for tab in Tab::available(ctx.s, ctx.space) {
         let selected = current == tab;
         let glyph = match tab {
-            Tab::Overview => i::SETTINGS,
+            Tab::Overview => i::INFO,
             Tab::Roles => i::SHIELD,
             Tab::Channels => i::HASH,
             Tab::Members => i::USERS,
             Tab::Invites => i::LINK,
-            Tab::Bans => i::CIRCLE_MINUS,
+            Tab::Bans => i::BAN,
             Tab::Audit => i::FILE,
         };
         nav = nav.push(
@@ -336,23 +336,6 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             .on_press(Message::Tab(tab)),
         );
     }
-    nav = nav.push(space::vertical()).push(
-        button(
-            row![icon(i::X, 16.0), label("Close settings", fonts)]
-                .spacing(style::GAP_L)
-                .align_y(Alignment::Center),
-        )
-        .padding([8, 12])
-        .width(Fill)
-        .style(move |_, s| style::ghost(theme, s, false))
-        .on_press(Message::Close),
-    );
-    let nav = container(nav)
-        .padding([16, 10])
-        .width(220)
-        .height(Fill)
-        .style(move |_| style::sidebar(theme));
-
     let content: Element<'a, Message> = match current {
         Tab::Overview => scrollable(container(overview(ctx)).padding(20).width(Fill))
             .style(move |_, st| style::scrollbar(theme, st))
@@ -365,7 +348,15 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         Tab::Bans => lists::bans(ctx),
         Tab::Audit => lists::audit(ctx),
     };
-    row![nav, content].into()
+    crate::buffer::page_frame(
+        nav.into(),
+        container(content)
+            .padding(iced::Padding::ZERO.top(28.0))
+            .into(),
+        Message::Close,
+        fonts,
+        theme,
+    )
 }
 
 fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {

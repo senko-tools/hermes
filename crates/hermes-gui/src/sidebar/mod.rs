@@ -42,15 +42,16 @@ pub fn view<'a>(
     drop_target: Option<&Item>,
     update: Option<&hermes_client_core::update::Update>,
     images: &Images,
+    menu: Option<&Target>,
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(2).padding([8, 8]);
     for row in rows {
         let (element, drag) = match row {
             Row::Channel { drag, .. } | Row::Category { drag, .. } => {
-                (row_view(row, join_on, fonts, theme), drag.as_ref())
+                (row_view(row, join_on, fonts, theme, menu), drag.as_ref())
             }
-            _ => (row_view(row, join_on, fonts, theme), None),
+            _ => (row_view(row, join_on, fonts, theme, menu), None),
         };
         list = list.push(draggable(element, drag, drop_target, theme));
     }
@@ -113,7 +114,7 @@ pub fn view<'a>(
     if let Some(panel) = voice_panel::view(core, ptt_down, fonts, theme) {
         content = content.push(panel);
     }
-    container(content.push(user_panel(core, fonts, theme, images)))
+    container(content.push(user_panel(core, fonts, theme, images, menu)))
         .width(f32::from(width))
         .height(Fill)
         .style(|_| style::sidebar(theme))
@@ -127,6 +128,7 @@ fn user_panel<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
     images: &Images,
+    menu: Option<&Target>,
 ) -> Element<'a, Message> {
     let first = core.instance_ids().first().cloned();
     let (name, status_text, picture) = first
@@ -156,11 +158,12 @@ fn user_panel<'a>(
         })
         .unwrap_or_else(|| ("Not signed in".to_owned(), String::new(), None));
     use hermes_client_core::proto::models::PresenceStatus as P;
-    let (dot_color, presence) = match core.presence() {
-        P::Online => (theme.text.success.0, "Online"),
-        P::Idle => (theme.text.warning.0, "Idle"),
-        P::Dnd => (theme.text.error.0, "Do not disturb"),
-        P::Invisible => (theme.text.tertiary.0, "Invisible"),
+    let dot_color = style::my_presence(theme, core.presence());
+    let presence = match core.presence() {
+        P::Online => "Online",
+        P::Idle => "Idle",
+        P::Dnd => "Do not disturb",
+        P::Invisible => "Invisible",
     };
     let subtitle = if status_text.is_empty() {
         presence.to_owned()
@@ -175,6 +178,7 @@ fn user_panel<'a>(
         })
         .unwrap_or(theme.sidebar.background.0);
     let me_target = Target::Me(first);
+    let open = menu == Some(&me_target);
     let me = mouse_area(
         button(
             row![
@@ -197,7 +201,13 @@ fn user_panel<'a>(
         )
         .padding([4, 6])
         .width(Fill)
-        .style(|_, s| style::sidebar_item(theme, s, false))
+        .style(move |_, s| {
+            if open {
+                style::menu_open(theme)
+            } else {
+                style::sidebar_item(theme, s, false)
+            }
+        })
         .on_press(Message::OpenMenu(me_target.clone())),
     )
     .on_right_press(Message::OpenMenu(me_target));
@@ -205,7 +215,7 @@ fn user_panel<'a>(
         row![
             me,
             tip_at(
-                icon_button(icon::AT_SIGN, false, theme)
+                icon_button(icon::AT, false, theme)
                     .on_press(Message::OpenResults(crate::buffer::results::Key::Mentions)),
                 "Mentions",
                 iced::widget::tooltip::Position::Top,
@@ -233,6 +243,7 @@ fn row_view<'a>(
     join_on: JoinOn,
     fonts: &Fonts,
     theme: &'a Theme,
+    menu: Option<&Target>,
 ) -> Element<'a, Message> {
     match row {
         Row::Instance {
@@ -266,6 +277,7 @@ fn row_view<'a>(
                 theme,
                 on_press,
                 Some(Target::Instance(inst.clone())),
+                menu,
             )
         }
         Row::Space {
@@ -290,7 +302,7 @@ fn row_view<'a>(
                         Space::new().into()
                     },
                     // No tooltip: it would cover the menu this opens.
-                    button(icon(icon::ELLIPSIS, 14.0))
+                    button(icon(icon::MORE, 14.0))
                         .padding([3, 4])
                         .style(move |_, s| style::ghost(theme, s, false))
                         .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
@@ -302,6 +314,7 @@ fn row_view<'a>(
                 theme,
                 Message::Toggle(Node::Space(inst.clone(), *id)),
                 Some(Target::Space(inst.clone(), *id)),
+                menu
             ),
         ]
         .into(),
@@ -331,6 +344,7 @@ fn row_view<'a>(
                 theme,
                 Message::Toggle(Node::Category(inst.clone(), *id)),
                 Some(Target::Channel(inst.clone(), *id)),
+                menu
             ),
         ]
         .into(),
@@ -346,7 +360,7 @@ fn row_view<'a>(
             ..
         } => {
             let glyph = if *kind == ChannelKind::Voice {
-                icon::VOLUME_2
+                icon::VOLUME
             } else {
                 icon::HASH
             };
@@ -379,7 +393,7 @@ fn row_view<'a>(
             .align_y(Alignment::Center);
             let indent = INDENT * if *nested { 3.0 } else { 2.0 };
             let row = if *kind == ChannelKind::Voice {
-                voice_item(content, indent, *selected, theme, inst, *id, join_on)
+                voice_item(content, indent, *selected, theme, inst, *id, join_on, menu)
             } else {
                 item(
                     content,
@@ -388,6 +402,7 @@ fn row_view<'a>(
                     theme,
                     Message::Select(inst.clone(), *id),
                     Some(Target::Channel(inst.clone(), *id)),
+                    menu,
                 )
             };
             with_unread_pill(row, unread && !*selected, theme)
@@ -431,7 +446,7 @@ fn row_view<'a>(
             .spacing(style::GAP)
             .align_y(Alignment::Center);
             if *deafened {
-                content = content.push(icon(icon::HEADPHONE_OFF, 14.0).color(theme.voice.muted.0));
+                content = content.push(icon(icon::HEADPHONES_OFF, 14.0).color(theme.voice.muted.0));
             } else if *muted {
                 content = content.push(icon(icon::MIC_OFF, 14.0).color(theme.voice.muted.0));
             }
@@ -471,6 +486,7 @@ fn row_view<'a>(
                 theme,
                 Message::Toggle(Node::Dms(inst.clone())),
                 None,
+                menu,
             );
             column![
                 Space::new().height(8),
@@ -537,6 +553,7 @@ fn row_view<'a>(
                 theme,
                 Message::Select(inst.clone(), *id),
                 Some(Target::Channel(inst.clone(), *id)),
+                menu,
             );
             with_unread_pill(row, unread && !*selected, theme)
         }
@@ -614,14 +631,22 @@ fn item<'a>(
     theme: &'a Theme,
     on_press: Message,
     target: Option<Target>,
+    menu: Option<&Target>,
 ) -> Element<'a, Message> {
+    let open = menu.is_some() && menu == target.as_ref();
     let button = button(row![
         Space::new().width(Length::Fixed(indent)),
         content.into()
     ])
     .padding(style::ROW_PAD)
     .width(Fill)
-    .style(move |_, s| style::sidebar_item(theme, s, selected))
+    .style(move |_, s| {
+        if open {
+            style::menu_open(theme)
+        } else {
+            style::sidebar_item(theme, s, selected)
+        }
+    })
     .on_press(on_press);
     match target {
         Some(target) => mouse_area(button)
@@ -631,6 +656,7 @@ fn item<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 /// A voice channel row: a click selects it (and opens its chat); joining takes a double-click
 /// unless `voice.join_on = "single_click"`.
 fn voice_item<'a>(
@@ -641,7 +667,9 @@ fn voice_item<'a>(
     inst: &InstanceId,
     channel: Id,
     join_on: JoinOn,
+    menu: Option<&Target>,
 ) -> Element<'a, Message> {
+    let open = menu == Some(&Target::Channel(inst.clone(), channel));
     // No `on_press`: the button only draws; the mouse area takes the clicks.
     let look = button(row![
         Space::new().width(Length::Fixed(indent)),
@@ -649,7 +677,13 @@ fn voice_item<'a>(
     ])
     .padding(style::ROW_PAD)
     .width(Fill)
-    .style(move |_, s| style::sidebar_item(theme, s, selected));
+    .style(move |_, s| {
+        if open {
+            style::menu_open(theme)
+        } else {
+            style::sidebar_item(theme, s, selected)
+        }
+    });
     let area = mouse_area(look)
         .on_right_press(Message::OpenMenu(Target::Channel(inst.clone(), channel)))
         .interaction(iced::mouse::Interaction::Pointer);

@@ -1,29 +1,44 @@
 //! A right-click menu drawn at a point over the whole window. A click outside closes it.
 
-use iced::widget::{Space, button, column, container, mouse_area, pin, row, rule, stack};
-use iced::{Element, Fill, Point, Size};
+use iced::widget::{Space, button, column, container, mouse_area, pin, row, rule, stack, text};
+use iced::{Alignment, Color, Element, Fill, Point, Size};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
 use crate::widget::icon::{self, icon};
 use crate::widget::label;
 
-pub const WIDTH: f32 = 220.0;
+pub const WIDTH: f32 = 236.0;
+/// Height of one entry: the 18 px icon box plus padding.
+const ROW: f32 = 18.0 + 2.0 * 8.0;
+const SEPARATOR: f32 = 9.0;
+const HEADER: f32 = 24.0 + 2.0 * 8.0 + SEPARATOR;
 
 pub struct Item<M> {
     pub label: String,
     pub message: M,
+    pub icon: char,
+    /// Overrides the icon's color (status dots).
+    pub icon_color: Option<Color>,
     pub danger: bool,
-    /// A check mark in front (the current choice).
+    /// A check mark at the end (the current choice).
     pub checked: bool,
     /// Chosen with the arrow keys.
     pub selected: bool,
 }
 
+/// What a menu is about, shown at its top: an icon (or an avatar) and a name.
+pub struct Header<'a, M> {
+    pub lead: Element<'a, M>,
+    pub title: String,
+}
+
 /// `base` with the menu over it at `at`, moved inside `window` if it would leave it. `None`
 /// items are separators.
+#[allow(clippy::too_many_arguments)]
 pub fn overlay<'a, M: Clone + 'a>(
     base: Element<'a, M>,
+    header: Option<Header<'a, M>>,
     items: Vec<Option<Item<M>>>,
     at: Point,
     window: Size,
@@ -31,38 +46,65 @@ pub fn overlay<'a, M: Clone + 'a>(
     theme: &'a Theme,
     on_close: M,
 ) -> Element<'a, M> {
-    let row_height = fonts.size * 1.3 + 14.0 + 2.0;
     let separators = items.iter().filter(|i| i.is_none()).count() as f32;
-    let height = (items.len() as f32 - separators) * row_height + separators * 9.0 + 8.0;
+    let height = (items.len() as f32 - separators) * ROW
+        + separators * SEPARATOR
+        + if header.is_some() { HEADER } else { 0.0 }
+        + 10.0;
     let x = at.x.min(window.width - WIDTH - 4.0).max(0.0);
     let y = at.y.min(window.height - height - 4.0).max(0.0);
+    let separator =
+        || container(rule::horizontal(1).style(move |_| style::rule(theme))).padding([4, 6]);
 
     let mut list = column![].spacing(0);
+    if let Some(header) = header {
+        list = list
+            .push(
+                row![
+                    container(header.lead).center_x(24).center_y(24),
+                    text(header.title)
+                        .font(fonts.bold())
+                        .size(fonts.size)
+                        .color(theme.text.primary.0)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(style::GAP)
+                .align_y(Alignment::Center)
+                .padding([8, 10]),
+            )
+            .push(separator());
+    }
     for item in items {
         let Some(item) = item else {
-            list = list.push(
-                container(rule::horizontal(1).style(move |_| style::rule(theme))).padding([4, 6]),
-            );
+            list = list.push(separator());
             continue;
         };
         let danger = item.danger;
         let selected = item.selected;
+        let icon_color = item.icon_color.unwrap_or(if danger {
+            theme.text.error.0
+        } else {
+            theme.text.tertiary.0
+        });
+        let check: Element<'a, M> = if item.checked {
+            icon(icon::CHECK, 16.0)
+                .color(theme.buttons.primary.background.0)
+                .into()
+        } else {
+            Space::new().into()
+        };
         list = list.push(
             button(
                 row![
-                    container(if item.checked {
-                        Element::from(icon(icon::CHECK, 14.0))
-                    } else {
-                        Element::from(Space::new())
-                    })
-                    .width(16),
-                    label(item.label, fonts),
+                    icon(item.icon, 18.0).color(icon_color),
+                    label(item.label, fonts).width(Fill),
+                    check,
                 ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
+                .spacing(style::GAP_L)
+                .align_y(Alignment::Center),
             )
             .width(Fill)
-            .padding([7, 10])
+            .padding([8, 10])
             .style(move |_, s| {
                 let mut st = style::sidebar_item(theme, s, selected);
                 if danger {

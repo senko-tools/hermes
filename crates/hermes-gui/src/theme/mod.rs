@@ -63,6 +63,7 @@ pub struct Theme {
     pub sidebar: Sidebar,
     pub pane: Pane,
     pub voice: Voice,
+    pub presence: Presence,
     pub roles: Roles,
 }
 
@@ -127,6 +128,16 @@ pub struct Pane {
 pub struct Voice {
     pub speaking_ring: Hex,
     pub muted: Hex,
+}
+
+/// Status dots: online, idle, do not disturb, offline or invisible.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Presence {
+    pub online: Hex,
+    pub idle: Hex,
+    pub dnd: Hex,
+    pub offline: Hex,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

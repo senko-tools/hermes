@@ -50,7 +50,10 @@ pub fn view<'a, M: 'a>(
         text(initial)
             .font(fonts.bold())
             .size((size * 0.45).round())
-            .color(INITIAL_TEXT),
+            .color(INITIAL_TEXT)
+            // A tight line box, so the letter is centered on its glyph, not on the font's
+            // ascender and descender space.
+            .line_height(1.0),
     )
     .center_x(size)
     .center_y(size)
@@ -106,7 +109,10 @@ pub fn space_icon<'a, M: 'a>(name: &str, size: f32, fonts: &Fonts) -> Element<'a
         text(initial)
             .font(fonts.bold())
             .size((size * 0.5).round())
-            .color(INITIAL_TEXT),
+            .color(INITIAL_TEXT)
+            // A tight line box, so the letter is centered on its glyph, not on the font's
+            // ascender and descender space.
+            .line_height(1.0),
     )
     .center_x(size)
     .center_y(size)

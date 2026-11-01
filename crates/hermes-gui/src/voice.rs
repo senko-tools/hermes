@@ -164,7 +164,7 @@ impl App {
             }
             VoiceMsg::OpenAudioSettings => {
                 self.settings_tab = settings::Tab::Voice;
-                self.panes.open(Buffer::Settings);
+                self.page = Some(Buffer::Settings);
                 return self.load_devices();
             }
             VoiceMsg::UserMenu(inst, user) => {

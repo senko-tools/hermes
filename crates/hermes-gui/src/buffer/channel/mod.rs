@@ -186,6 +186,8 @@ pub struct Context<'a> {
     pub utc_offset: i64,
     pub images: &'a message::Images,
     pub composer: Option<&'a input::Composer>,
+    /// The message whose right-click menu is open: it stays highlighted.
+    pub menu_message: Option<Id>,
 }
 
 pub fn view<'a>(
@@ -222,19 +224,17 @@ pub fn view<'a>(
             .unwrap_or_default();
         let accent = theme.buttons.primary.background.0;
         let start = column![
-            container(
-                crate::widget::icon::icon(crate::widget::icon::MESSAGE_SQUARE, 26.0).color(accent)
-            )
-            .center_x(56)
-            .center_y(56)
-            .style(move |_| container::Style {
-                background: Some(accent.scale_alpha(0.14).into()),
-                border: iced::Border {
-                    radius: 28.0.into(),
-                    ..iced::Border::default()
-                },
-                ..container::Style::default()
-            }),
+            container(crate::widget::icon::icon(crate::widget::icon::CHAT, 26.0).color(accent))
+                .center_x(56)
+                .center_y(56)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.14).into()),
+                    border: iced::Border {
+                        radius: 28.0.into(),
+                        ..iced::Border::default()
+                    },
+                    ..container::Style::default()
+                }),
             iced::widget::text(format!("Welcome to {title}"))
                 .font(fonts.bold())
                 .size(fonts.size + 9.0),
@@ -274,6 +274,12 @@ pub fn view<'a>(
     list = list.push(Space::new().height(visible.below));
 
     let messages = scrollable(list.width(Fill))
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(6)
+                .scroller_width(6)
+                .margin(2),
+        ))
         .style(move |_, st| style::scrollbar(theme, st))
         .id(state.scroll_id.clone())
         .anchor_bottom()

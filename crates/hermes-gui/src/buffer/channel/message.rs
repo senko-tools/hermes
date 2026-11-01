@@ -12,7 +12,7 @@ use iced::widget::text::Span;
 use iced::widget::{
     Space, button, column, container, image, mouse_area, rich_text, row, stack, text,
 };
-use iced::{Alignment, Background, Border, Element, Fill, Font, Length};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Length};
 
 use super::markup::{self, Block, Link, Piece};
 use super::rows::MessageRow;
@@ -193,17 +193,27 @@ pub fn view<'a>(
         .on_right_press(Message::Author(msg.author.id))
         .interaction(iced::mouse::Interaction::Pointer)
         .into()
-    } else if m.grouped && hovered {
-        container(small(time_text, fonts).color(theme.text.tertiary.0))
-            .padding([3, 0])
-            .into()
+    } else if m.grouped {
+        // Always laid out and only made visible on hover, so hovering never resizes the row.
+        container(
+            small(time_text, fonts)
+                .color(if hovered {
+                    theme.text.tertiary.0
+                } else {
+                    Color::TRANSPARENT
+                })
+                .wrapping(text::Wrapping::None),
+        )
+        .padding(iced::Padding::ZERO.top(2.0))
+        .into()
     } else {
         Space::new().into()
     };
     let line = row![container(gutter).width(Length::Fixed(GUTTER)), body];
 
     let highlight = m.mentions_me;
-    let jumped = state.highlight == Some(id);
+    // Jumped to, or its right-click menu is open.
+    let jumped = state.highlight == Some(id) || ctx.menu_message == Some(id);
     let content = container(line)
         .padding(super::row_padding(m.grouped))
         .width(Fill)
@@ -273,14 +283,14 @@ fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'
             );
         }
         bar = bar.push(tool(
-            crate::widget::icon::X,
+            crate::widget::icon::CLOSE,
             "Close",
             Message::Palette(None),
         ));
     } else {
         bar = bar
             .push(tool(
-                crate::widget::icon::SMILE_PLUS,
+                crate::widget::icon::REACT,
                 "Add reaction",
                 Message::Palette(Some(id)),
             ))
@@ -296,11 +306,7 @@ fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'
                 Message::StartEdit(id),
             ));
         }
-        bar = bar.push(tool(
-            crate::widget::icon::ELLIPSIS,
-            "More",
-            Message::More(id),
-        ));
+        bar = bar.push(tool(crate::widget::icon::MORE, "More", Message::More(id)));
     }
     container(bar)
         .padding(3)
@@ -454,32 +460,47 @@ fn attachment_view<'a>(
         };
         return content;
     }
+    let accent = theme.buttons.primary.background.0;
+    let glyph = if a.content_type.starts_with("image/") {
+        crate::widget::icon::IMAGE
+    } else {
+        crate::widget::icon::FILE
+    };
     container(
         row![
+            container(crate::widget::icon::icon(glyph, 22.0).color(accent))
+                .center_x(40)
+                .center_y(40)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.12).into()),
+                    border: Border {
+                        radius: style::RADIUS.into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                }),
             column![
-                label(a.filename.clone(), fonts).color(theme.text.link.0),
+                label(a.filename.clone(), fonts)
+                    .font(fonts.medium())
+                    .color(theme.text.link.0)
+                    .wrapping(text::Wrapping::None),
                 small(human_size(a.size), fonts).color(theme.text.tertiary.0),
             ]
-            .spacing(2)
-            .width(Length::Shrink),
-            Space::new().width(16),
-            button(small("Download", fonts))
-                .padding([3, 10])
-                .style(move |_, st| style::secondary(theme, st))
-                .on_press(Message::Download(a.clone())),
+            .spacing(3)
+            .width(Length::Fixed(220.0)),
+            crate::widget::tip(
+                crate::widget::icon_button(crate::widget::icon::DOWNLOAD, false, theme)
+                    .on_press(Message::Download(a.clone())),
+                "Download",
+                fonts,
+                theme,
+            ),
         ]
+        .spacing(style::GAP_L)
         .align_y(Alignment::Center),
     )
-    .padding(10)
-    .style(move |_| container::Style {
-        background: Some(theme.text.code_bg.0.into()),
-        border: Border {
-            color: theme.general.border.0,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..container::Style::default()
-    })
+    .padding([10, 12])
+    .style(move |_| style::panel(theme))
     .into()
 }
 

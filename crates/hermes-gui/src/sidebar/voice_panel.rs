@@ -79,7 +79,7 @@ pub fn view<'a>(
         theme.text.warning.0
     };
     let mut heading = row![
-        icon(icon::AUDIO_LINES, 14.0).color(state_color),
+        icon(icon::WAVEFORM, 14.0).color(state_color),
         small(
             if p.connected {
                 "Voice connected"
@@ -161,7 +161,7 @@ pub fn view<'a>(
         ),
         toggle(
             if p.deafened {
-                icon::HEADPHONE_OFF
+                icon::HEADPHONES_OFF
             } else {
                 icon::HEADPHONES
             },
@@ -177,7 +177,7 @@ pub fn view<'a>(
         ),
         tip_at(
             button(
-                container(icon(icon::PHONE_OFF, style::ICON))
+                container(icon(icon::HANG_UP, style::ICON))
                     .center_x(Fill)
                     .center_y(style::ICON_BUTTON),
             )

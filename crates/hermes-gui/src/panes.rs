@@ -170,7 +170,7 @@ impl Panes {
 
     pub fn view<'a>(&'a self, ctx: &Context<'a>) -> Element<'a, Message> {
         let total = self.state.len();
-        PaneGrid::new(&self.state, |id, pane, maximized| {
+        let grid = PaneGrid::new(&self.state, |id, pane, maximized| {
             let focused = id == self.focus;
             let theme = ctx.theme;
             let fonts = ctx.fonts;
@@ -217,9 +217,9 @@ impl Panes {
                 controls = controls.push(tip(
                     icon_button(
                         if maximized {
-                            icon::MINIMIZE_2
+                            icon::RESTORE
                         } else {
-                            icon::MAXIMIZE_2
+                            icon::MAXIMIZE
                         },
                         false,
                         theme,
@@ -233,7 +233,7 @@ impl Panes {
             // No tooltip: it would cover the menu this opens.
             controls = controls.push(
                 mouse_area(
-                    icon_button(icon::ELLIPSIS_VERTICAL, false, theme)
+                    icon_button(icon::MORE_VERTICAL, false, theme)
                         .on_press(Message::OpenMenu(Target::Pane(id))),
                 )
                 .on_right_press(Message::OpenMenu(Target::Pane(id))),
@@ -261,36 +261,48 @@ impl Panes {
                             .wrapping(text::Wrapping::None),
                     );
             }
-            let title_bar = pane_grid::TitleBar::new(heading.height(style::ICON_BUTTON).clip(true))
-                .controls(pane_grid::Controls::new(controls))
-                .always_show_controls()
-                .padding([9, 12])
-                .style(move |_| style::pane_header(theme));
-
             let split = total > 1;
-            pane_grid::Content::new(body(id, pane, ctx))
+            // Calm splits: the focused pane is marked by a gold line under its header; the
+            // others show their header buttons only while hovered.
+            let marked = split && focused;
+            let mut title_bar =
+                pane_grid::TitleBar::new(heading.height(style::ICON_BUTTON).clip(true))
+                    .controls(pane_grid::Controls::new(controls))
+                    .padding([7, 12])
+                    .style(move |_| {
+                        let mut st = style::pane_header(theme);
+                        if marked {
+                            st.shadow = iced::Shadow {
+                                color: theme.pane.focused_border.0,
+                                offset: iced::Vector::new(0.0, 2.0),
+                                blur_radius: 0.0,
+                            };
+                        }
+                        st
+                    });
+            if !split || focused {
+                title_bar = title_bar.always_show_controls();
+            }
+
+            pane_grid::Content::new(body(id, pane, focused || !split, ctx))
                 .title_bar(title_bar)
                 .style(move |_| container::Style {
                     background: Some(theme.general.background.0.into()),
-                    border: Border {
-                        color: if split && focused {
-                            theme.pane.focused_border.0.scale_alpha(0.7)
-                        } else if split {
-                            theme.general.border.0
-                        } else {
-                            iced::Color::TRANSPARENT
-                        },
-                        width: if split { 1.0 } else { 0.0 },
-                        radius: if split { style::RADIUS } else { 0.0 }.into(),
-                    },
                     ..container::Style::default()
                 })
         })
-        .spacing(6)
+        // A 1 px gap over the border-colored backing reads as a divider line.
+        .spacing(1)
         .on_click(Message::PaneClicked)
         .on_drag(Message::PaneDragged)
-        .on_resize(6, Message::PaneResized)
-        .into()
+        .on_resize(6, Message::PaneResized);
+        let divider = ctx.theme.general.border.0;
+        container(grid)
+            .style(move |_| container::Style {
+                background: Some(divider.into()),
+                ..container::Style::default()
+            })
+            .into()
     }
 }
 
@@ -315,6 +327,8 @@ pub struct Context<'a> {
         &'a std::collections::HashMap<crate::buffer::results::Key, crate::buffer::results::State>,
     pub default_results: &'a crate::buffer::results::State,
     pub account: crate::buffer::settings_tabs::AccountView<'a>,
+    /// What the open right-click menu is about, to keep it highlighted.
+    pub menu: Option<&'a Target>,
 }
 
 /// Actions from a pane header.
@@ -328,9 +342,9 @@ pub enum PaneAction {
 fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a, Message> {
     let theme = ctx.theme;
     let glyph = match text {
-        "Leave voice" => icon::PHONE_OFF,
-        "Chat" => icon::MESSAGE_SQUARE,
-        "Voice room" => icon::AUDIO_LINES,
+        "Leave voice" => icon::HANG_UP,
+        "Chat" => icon::CHAT,
+        "Voice room" => icon::WAVEFORM,
         _ => icon::PHONE,
     };
     let kind = match text {
@@ -360,11 +374,11 @@ fn title_icon(core: &Core, buffer: &Buffer) -> char {
     use hermes_client_core::proto::models::ChannelKind;
 
     match buffer {
-        Buffer::Empty => icon::FEATHER,
+        Buffer::Empty => icon::HOME,
         Buffer::Settings => icon::SETTINGS,
         Buffer::SpaceSettings { .. } => icon::SHIELD,
-        Buffer::VoiceRoom { .. } => icon::AUDIO_LINES,
-        Buffer::Results(Key::Mentions) => icon::AT_SIGN,
+        Buffer::VoiceRoom { .. } => icon::WAVEFORM,
+        Buffer::Results(Key::Mentions) => icon::AT,
         Buffer::Results(Key::Pins(..)) => icon::PIN,
         Buffer::Results(Key::Search(..)) => icon::SEARCH,
         Buffer::Channel { inst, channel } => {
@@ -373,8 +387,8 @@ fn title_icon(core: &Core, buffer: &Buffer) -> char {
                 .instance(inst)
                 .and_then(|s| s.channel(*channel).map(|c| c.kind));
             match kind {
-                Some(ChannelKind::Voice) => icon::VOLUME_2,
-                Some(ChannelKind::Dm) => icon::AT_SIGN,
+                Some(ChannelKind::Voice) => icon::VOLUME,
+                Some(ChannelKind::Dm) => icon::AT,
                 Some(ChannelKind::GroupDm) => icon::USERS,
                 _ => icon::HASH,
             }
@@ -475,7 +489,14 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
     }
 }
 
-fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'a, Message> {
+/// `active`: the focused pane, or the only one; only it shows its member list, so a split
+/// window has at most one.
+fn body<'a>(
+    id: pane_grid::Pane,
+    pane: &'a Pane,
+    active: bool,
+    ctx: &Context<'a>,
+) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     match &pane.buffer {
@@ -529,13 +550,13 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                         action(
                             icon::SEARCH,
                             "Find anything",
-                            "Channels, people, actions · Ctrl+K",
+                            "Channels, people · Ctrl+K",
                             Message::Shortcut(crate::keybinds::Action::CommandBar),
                         ),
                         action(
-                            icon::MESSAGE_SQUARE,
+                            icon::CHAT,
                             "Search messages",
-                            "In this space or everywhere · Ctrl+F",
+                            "All your chats · Ctrl+F",
                             Message::Shortcut(crate::keybinds::Action::Search),
                         ),
                     ]
@@ -544,13 +565,13 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                         action(
                             icon::LINK,
                             "Join with an invite",
-                            "Paste a link a friend sent you",
+                            "Paste a friend's link",
                             Message::OpenAddInstance,
                         ),
                         action(
                             icon::SETTINGS,
                             "Settings",
-                            "Theme, sounds, microphone · Ctrl+,",
+                            "Look and sound · Ctrl+,",
                             Message::OpenSettings,
                         ),
                     ]
@@ -563,16 +584,16 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                             action(
                                 icon::PLUS,
                                 "Create a space",
-                                "Your own place with channels and roles",
+                                "Channels and roles",
                                 Message::Menu(
                                     Target::Instance(inst),
                                     crate::sidebar::menu::Action::CreateSpace,
                                 ),
                             ),
                             action(
-                                icon::AT_SIGN,
+                                icon::AT,
                                 "Mentions",
-                                "Messages that mention you",
+                                "Messages about you",
                                 Message::OpenResults(crate::buffer::results::Key::Mentions),
                             ),
                         ]
@@ -589,8 +610,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     .push(Space::new().height(style::GAP))
                     .push(
                         small(
-                            "Right-click anything for its actions · double-click a voice \
-                             channel to join · drop files to upload",
+                            "Right-click for actions · double-click voice to join",
                             fonts,
                         )
                         .color(theme.text.tertiary.0)
@@ -599,44 +619,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
             }
             container(welcome.max_width(600)).center(Fill).into()
         }
-        Buffer::Settings => settings::view(
-            ctx.config,
-            ctx.themes,
-            ctx.settings_tab,
-            &ctx.voice,
-            &ctx.account,
-            fonts,
-            theme,
-        )
-        .map(Message::Settings),
-        Buffer::SpaceSettings { inst, space } => {
-            let store = ctx.core.store();
-            let Some(s) = store.instance(inst) else {
-                return container(label("This instance is not available.", fonts))
-                    .center(Fill)
-                    .into();
-            };
-            let state = ctx
-                .space_settings
-                .get(&(inst.clone(), *space))
-                .unwrap_or(ctx.default_space_settings);
-            let drop_target = ctx
-                .drag
-                .target()
-                .filter(|t| t.inst == *inst && t.space == *space)
-                .map(|t| (t.kind, t.id));
-            let (inst, space) = (inst.clone(), *space);
-            crate::buffer::space_settings::view(&crate::buffer::space_settings::Ctx {
-                s,
-                space,
-                state,
-                fonts,
-                theme,
-                utc_offset: ctx.utc_offset,
-                drop_target,
-            })
-            .map(move |m| Message::SpaceSettings(inst.clone(), space, m))
-        }
+        Buffer::Settings | Buffer::SpaceSettings { .. } => page_view(&pane.buffer, ctx),
         Buffer::VoiceRoom { inst, channel } => {
             crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
         }
@@ -656,6 +639,10 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     utc_offset: ctx.utc_offset,
                     images: ctx.images,
                     composer: ctx.composers.get(&(inst.clone(), *channel)),
+                    menu_message: match ctx.menu {
+                        Some(Target::Message(i, c, m)) if i == inst && c == channel => Some(*m),
+                        _ => None,
+                    },
                 },
                 inst,
                 *channel,
@@ -666,7 +653,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                 Some(banner) => column![banner, messages].into(),
                 None => messages,
             };
-            if pane.members {
+            if pane.members && active {
                 row![messages, member_list(ctx, inst, *channel)].into()
             } else {
                 messages
@@ -735,6 +722,54 @@ fn connection_banner<'a>(ctx: &Context<'a>, inst: &InstanceId) -> Option<Element
     )
 }
 
+/// Settings or a space's settings: shown over the whole window (and, for layouts saved before
+/// they moved there, inside a pane).
+pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let theme = ctx.theme;
+    match buffer {
+        Buffer::Settings => settings::view(
+            ctx.config,
+            ctx.themes,
+            ctx.settings_tab,
+            &ctx.voice,
+            &ctx.account,
+            fonts,
+            theme,
+        )
+        .map(Message::Settings),
+        Buffer::SpaceSettings { inst, space } => {
+            let store = ctx.core.store();
+            let Some(s) = store.instance(inst) else {
+                return container(label("This instance is not available.", fonts))
+                    .center(Fill)
+                    .into();
+            };
+            let state = ctx
+                .space_settings
+                .get(&(inst.clone(), *space))
+                .unwrap_or(ctx.default_space_settings);
+            let drop_target = ctx
+                .drag
+                .target()
+                .filter(|t| t.inst == *inst && t.space == *space)
+                .map(|t| (t.kind, t.id));
+            let (inst, space) = (inst.clone(), *space);
+            crate::buffer::space_settings::view(&crate::buffer::space_settings::Ctx {
+                s,
+                space,
+                state,
+                fonts,
+                theme,
+                utc_offset: ctx.utc_offset,
+                drop_target,
+            })
+            .map(move |m| Message::SpaceSettings(inst.clone(), space, m))
+        }
+        _ => Space::new().into(),
+    }
+}
+
 /// A card on the welcome page: an icon tile, a title and a hint.
 fn welcome_action<'a>(
     glyph: char,
@@ -769,6 +804,7 @@ fn welcome_action<'a>(
     )
     .padding(12)
     .width(286)
+    .height(68)
     .style(move |_, s| {
         let hovered = matches!(s, button::Status::Hovered | button::Status::Pressed);
         button::Style {
@@ -841,12 +877,7 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
             );
             for member in group.members {
                 let offline = member.status == Presence::Offline;
-                let dot = match member.status {
-                    Presence::Online => theme.text.success.0,
-                    Presence::Idle => theme.text.warning.0,
-                    Presence::Dnd => theme.text.error.0,
-                    _ => theme.text.tertiary.0,
-                };
+                let dot = style::presence(theme, member.status);
                 let name_color = member
                     .color
                     .map_or(theme.text.primary.0, style::rgb)
@@ -865,6 +896,7 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                     crate::widget::avatar::with_dot(face, 30.0, dot, theme.sidebar.background.0)
                 };
                 let target = Target::Member(inst.clone(), s.space_of(channel), member.user_id);
+                let open = ctx.menu == Some(&target);
                 list = list.push(
                     mouse_area(
                         button(
@@ -879,7 +911,13 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                         )
                         .padding([4, 8])
                         .width(Fill)
-                        .style(move |_, st| style::sidebar_item(theme, st, false))
+                        .style(move |_, st| {
+                            if open {
+                                style::menu_open(theme)
+                            } else {
+                                style::sidebar_item(theme, st, false)
+                            }
+                        })
                         .on_press(Message::OpenMenu(target.clone())),
                     )
                     .on_right_press(Message::OpenMenu(target)),

@@ -147,8 +147,8 @@ pub struct Font {
 impl Default for Font {
     fn default() -> Self {
         Font {
-            family: "Inter".into(),
-            mono_family: "JetBrains Mono".into(),
+            family: "JetBrainsMono Nerd Font".into(),
+            mono_family: "JetBrainsMono Nerd Font".into(),
             size: 13,
             ui_scale: 1.0,
         }

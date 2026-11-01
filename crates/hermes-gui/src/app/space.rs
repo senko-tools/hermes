@@ -68,24 +68,10 @@ impl App {
             .entry((inst.clone(), space))
             .or_default();
         state.tab = tab;
-        // Reuse a pane that already shows these settings.
-        let buffer = Buffer::SpaceSettings {
+        self.page = Some(Buffer::SpaceSettings {
             inst: inst.clone(),
             space,
-        };
-        if let Some(pane) = self
-            .panes
-            .state
-            .iter()
-            .find(|(_, p)| p.buffer == buffer)
-            .map(|(id, _)| *id)
-        {
-            self.panes.focus = pane;
-        } else {
-            self.panes.open(buffer);
-        }
-        self.core
-            .set_visible_channels(self.panes.visible_channels());
+        });
         self.load_space_tab(&inst, space, tab, false)
     }
 
@@ -178,6 +164,7 @@ impl App {
                 return self.load_space_tab(&inst, space, tab, false);
             }
             SsMsg::Close => {
+                self.page = None;
                 self.panes.clear_where(
                     |b| matches!(b, Buffer::SpaceSettings { inst: i, space: s } if *i == inst && *s == space),
                 );

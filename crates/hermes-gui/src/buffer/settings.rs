@@ -7,8 +7,8 @@ use std::fmt;
 use hermes_client_core::audio::AudioDevices;
 use hermes_client_core::config::ClientConfig;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable, slider,
-    space, text_input,
+    button, column, container, pick_list, progress_bar, row, rule, scrollable, slider, space,
+    text_input,
 };
 use iced::{Alignment, Element, Fill, Length};
 
@@ -25,6 +25,12 @@ pub const PTT_INPUT: &str = "settings-ptt-key";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Theme(String),
+    /// A family picked from the font list ([`CUSTOM_FONT`] shows the name field).
+    Font(FontSlot, String),
+    /// The custom family name field changed.
+    FontText(FontSlot, String),
+    /// Enter in the custom family name field: save it.
+    SaveFont(FontSlot),
     FontSize(u16),
     UiScale(f64),
     SidebarPosition(Position),
@@ -232,6 +238,67 @@ pub fn saved_value(config: &ClientConfig, setting: Setting) -> (&'static str, St
     }
 }
 
+/// Which font a setting is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontSlot {
+    /// `font.family`: all text.
+    Ui,
+    /// `font.mono_family`: code.
+    Mono,
+}
+
+impl FontSlot {
+    pub fn key(self) -> &'static str {
+        match self {
+            FontSlot::Ui => "font.family",
+            FontSlot::Mono => "font.mono_family",
+        }
+    }
+}
+
+/// The font list entry that lets you type the name of an installed font.
+pub const CUSTOM_FONT: &str = "Custom…";
+
+/// A font row: the bundled families plus [`CUSTOM_FONT`], and a name field for a custom one.
+fn font_picker<'a>(
+    slot: FontSlot,
+    family: &'a str,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let mut choices: Vec<String> = font::CHOICES.iter().map(|c| (*c).to_owned()).collect();
+    choices.push(CUSTOM_FONT.to_owned());
+    let custom = !font::CHOICES.contains(&family);
+    let selected = if custom {
+        CUSTOM_FONT.to_owned()
+    } else {
+        family.to_owned()
+    };
+    let picker = pick_list(choices, Some(selected), move |c| Message::Font(slot, c))
+        .padding(style::INPUT_PAD)
+        .style(move |_, st| style::pick_list(theme, st))
+        .menu_style(move |_| style::menu(theme))
+        .font(fonts.ui)
+        .text_size(fonts.size)
+        .width(240);
+    if !custom {
+        return picker.into();
+    }
+    column![
+        picker,
+        text_input("Installed font, e.g. Segoe UI", family)
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::input(theme, st))
+            .on_input(move |t| Message::FontText(slot, t))
+            .on_submit(Message::SaveFont(slot))
+            .font(fonts.ui)
+            .size(fonts.size)
+            .width(220),
+    ]
+    .spacing(style::GAP)
+    .into()
+}
+
 pub fn view<'a>(
     config: &'a ClientConfig,
     themes: &'a [String],
@@ -267,43 +334,23 @@ pub fn view<'a>(
         .on_press(Message::Tab(t))
     };
     use crate::widget::icon as i;
-    let nav = container(
-        column![
-            container(
-                iced::widget::text("USER SETTINGS")
-                    .font(fonts.bold())
-                    .size(fonts.small() - 0.5)
-                    .color(theme.text.tertiary.0)
-            )
-            .padding([4, 12]),
-            tab_button(i::USER_PLUS, "Account", Tab::Account),
-            tab_button(i::FEATHER, "Appearance", Tab::Appearance),
-            tab_button(i::MESSAGE_SQUARE, "Chat", Tab::Chat),
-            tab_button(i::MIC, "Voice & Audio", Tab::Voice),
-            tab_button(i::BELL, "Notifications", Tab::Notifications),
-            tab_button(i::LINK, "Keybinds", Tab::Keybinds),
-            tab_button(i::SERVER, "About", Tab::About),
-            space::vertical(),
-            button(
-                row![
-                    crate::widget::icon::icon(i::X, 16.0),
-                    label("Close settings", fonts)
-                ]
-                .spacing(style::GAP_L)
-                .align_y(Alignment::Center)
-            )
-            .padding([8, 12])
-            .width(Fill)
-            .style(move |_, s| style::ghost(theme, s, false))
-            .on_press(Message::Close),
-        ]
-        .spacing(2),
-    )
-    .padding([16, 10])
-    .width(220)
-    .height(Fill)
-    .style(move |_| style::sidebar(theme));
-
+    let nav = column![
+        container(
+            iced::widget::text("USER SETTINGS")
+                .font(fonts.bold())
+                .size(fonts.small() - 0.5)
+                .color(theme.text.tertiary.0)
+        )
+        .padding([4, 12]),
+        tab_button(i::ACCOUNT, "Account", Tab::Account),
+        tab_button(i::PALETTE, "Appearance", Tab::Appearance),
+        tab_button(i::CHAT, "Chat", Tab::Chat),
+        tab_button(i::MIC, "Voice & Audio", Tab::Voice),
+        tab_button(i::BELL, "Notifications", Tab::Notifications),
+        tab_button(i::KEYBOARD, "Keybinds", Tab::Keybinds),
+        tab_button(i::INFO, "About", Tab::About),
+    ]
+    .spacing(2);
     let content = match tab {
         Tab::Account => more::account(account, fonts, theme),
         Tab::Appearance => appearance(config, themes, fonts, theme),
@@ -313,13 +360,16 @@ pub fn view<'a>(
         Tab::Keybinds => more::keybinds(config, fonts, theme),
         Tab::About => more::about(fonts, theme),
     };
-    row![
-        nav,
-        scrollable(container(content).padding([28, 36]).width(Fill))
+    crate::buffer::page_frame(
+        nav.into(),
+        scrollable(container(content).padding([48, 0]).width(Fill))
             .style(move |_, st| style::scrollbar(theme, st))
-            .height(Fill),
-    ]
-    .into()
+            .height(Fill)
+            .into(),
+        Message::Close,
+        fonts,
+        theme,
+    )
 }
 
 fn appearance<'a>(
@@ -341,6 +391,20 @@ fn appearance<'a>(
                 .font(fonts.ui)
                 .text_size(fonts.size)
                 .width(220),
+            fonts,
+            theme,
+        ),
+        setting(
+            "Font",
+            "Used for all text. Pick Custom… to use any installed font (Enter saves).",
+            font_picker(FontSlot::Ui, &config.font.family, fonts, theme),
+            fonts,
+            theme,
+        ),
+        setting(
+            "Code font",
+            "Used for code blocks and inline code.",
+            font_picker(FontSlot::Mono, &config.font.mono_family, fonts, theme),
             fonts,
             theme,
         ),
@@ -434,8 +498,11 @@ fn voice_tab<'a>(
         list
     };
     let check = |on: bool, text: &'static str, f: fn(bool) -> Message| {
-        checkbox(on)
+        iced::widget::toggler(on)
             .label(text)
+            .size(20)
+            .spacing(style::GAP_L)
+            .style(move |_, st| style::toggler(theme, st))
             .on_toggle(f)
             .text_size(fonts.size)
             .font(fonts.ui)

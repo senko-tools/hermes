@@ -36,8 +36,8 @@ pub const INPUT_PAD: Padding = Padding {
     right: 10.0,
 };
 /// Side of an icon button, and the icon inside it.
-pub const ICON_BUTTON: f32 = 30.0;
-pub const ICON: f32 = 16.0;
+pub const ICON_BUTTON: f32 = 34.0;
+pub const ICON: f32 = 18.0;
 /// A sidebar or list row.
 pub const ROW_PAD: Padding = Padding {
     top: 5.0,
@@ -402,5 +402,84 @@ fn fade(color: Color) -> Color {
     Color {
         a: color.a * 0.5,
         ..color
+    }
+}
+
+/// The dot color of someone's status, as others see it.
+pub fn presence(theme: &Theme, status: hermes_client_core::proto::models::Status) -> Color {
+    use hermes_client_core::proto::models::Status;
+    match status {
+        Status::Online => theme.presence.online.0,
+        Status::Idle => theme.presence.idle.0,
+        Status::Dnd => theme.presence.dnd.0,
+        Status::Offline => theme.presence.offline.0,
+    }
+}
+
+/// The dot color of the status I chose (invisible looks offline).
+pub fn my_presence(
+    theme: &Theme,
+    status: hermes_client_core::proto::models::PresenceStatus,
+) -> Color {
+    use hermes_client_core::proto::models::PresenceStatus;
+    match status {
+        PresenceStatus::Online => theme.presence.online.0,
+        PresenceStatus::Idle => theme.presence.idle.0,
+        PresenceStatus::Dnd => theme.presence.dnd.0,
+        PresenceStatus::Invisible => theme.presence.offline.0,
+    }
+}
+
+/// A row whose right-click menu is open: highlighted and outlined in the accent color, so it is
+/// clear what the menu acts on.
+pub fn menu_open(theme: &Theme) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(theme.sidebar.selected.0)),
+        text_color: theme.text.primary.0,
+        border: Border {
+            color: theme.buttons.primary.background.0.scale_alpha(0.7),
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        ..button::Style::default()
+    }
+}
+
+/// An on/off switch: the accent color when on.
+pub fn toggler(
+    theme: &Theme,
+    status: iced::widget::toggler::Status,
+) -> iced::widget::toggler::Style {
+    use iced::widget::toggler::Status;
+    let (on, hovered) = match status {
+        Status::Active { is_toggled } => (is_toggled, false),
+        Status::Hovered { is_toggled } => (is_toggled, true),
+        Status::Disabled { is_toggled } => (is_toggled, false),
+    };
+    let track = if on {
+        theme.buttons.primary.background.0
+    } else if hovered {
+        mix(
+            theme.buttons.secondary.background.0,
+            theme.text.tertiary.0,
+            0.4,
+        )
+    } else {
+        theme.buttons.secondary.background.0
+    };
+    iced::widget::toggler::Style {
+        background: Background::Color(track),
+        background_border_width: 0.0,
+        background_border_color: Color::TRANSPARENT,
+        foreground: Background::Color(if on {
+            theme.buttons.primary.text.0
+        } else {
+            theme.text.secondary.0
+        }),
+        foreground_border_width: 0.0,
+        foreground_border_color: Color::TRANSPARENT,
+        text_color: Some(theme.text.primary.0),
+        border_radius: None,
+        padding_ratio: 0.18,
     }
 }

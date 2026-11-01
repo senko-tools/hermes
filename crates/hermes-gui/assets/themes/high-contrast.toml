@@ -47,5 +47,11 @@ focused_border = "#ffff00"
 speaking_ring = "#00ff7f"
 muted = "#ff5c5c"
 
+[presence]
+online = "#00ff7f"
+idle = "#ffd700"
+dnd = "#ff5c5c"
+offline = "#d0d0d0"
+
 [roles]
 default_color = "#ffffff"
