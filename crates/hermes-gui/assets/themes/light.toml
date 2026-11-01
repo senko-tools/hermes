@@ -1,51 +1,51 @@
-# Built-in light theme (PLAN.md section 15.5).
+# Built-in light theme (PLAN.md section 15.5). Warm paper with a deep gold accent.
 
 [general]
-background = "#ffffff"
-border = "#d4d7dc"
-horizontal_rule = "#e3e5e8"
-unread_indicator = "#060607"
-scrollbar = "#c4c9ce"
+background = "#fbf9f6"
+border = "#e3ddd5"
+horizontal_rule = "#ebe6df"
+unread_indicator = "#1f1c24"
+scrollbar = "#cfc8bf"
 
 [text]
-primary = "#2e3338"
-secondary = "#4f5660"
-tertiary = "#80848e"
-success = "#248046"
-error = "#d83c3e"
-warning = "#c27c0e"
-info = "#1d6ad8"
-link = "#006ce7"
-mention_bg = "#fdf3d6"
-code_bg = "#f2f3f5"
+primary = "#28242e"
+secondary = "#5c5560"
+tertiary = "#8f8790"
+success = "#2f8a4a"
+error = "#c8414b"
+warning = "#a86a0e"
+info = "#2f68c4"
+link = "#1f63c8"
+mention_bg = "#c47b1a24"
+code_bg = "#f1ece5"
 
 [buttons.primary]
-background = "#5865f2"
-background_hover = "#4752c4"
+background = "#b86f12"
+background_hover = "#9e5e0c"
 text = "#ffffff"
 
 [buttons.secondary]
-background = "#e3e5e8"
-background_hover = "#d4d7dc"
-text = "#2e3338"
+background = "#ebe5dd"
+background_hover = "#e0d9cf"
+text = "#28242e"
 
 [buttons.danger]
-background = "#d83c3e"
-background_hover = "#a12828"
+background = "#c8414b"
+background_hover = "#a9333c"
 text = "#ffffff"
 
 [sidebar]
-background = "#f2f3f5"
-selected = "#d7dade"
-hover = "#e3e5e8"
+background = "#f3efe9"
+selected = "#e4ddd3"
+hover = "#ebe6de"
 
 [pane]
-header_bg = "#f7f8f9"
-focused_border = "#5865f2"
+header_bg = "#fbf9f6"
+focused_border = "#b86f12"
 
 [voice]
-speaking_ring = "#248046"
-muted = "#d83c3e"
+speaking_ring = "#2f8a4a"
+muted = "#c8414b"
 
 [roles]
-default_color = "#2e3338"
+default_color = "#28242e"

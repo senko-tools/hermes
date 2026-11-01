@@ -1,52 +1,53 @@
 # Built-in dark theme (PLAN.md section 15.5). Copy this file to <config dir>/themes/<name>.toml
 # and set `general.theme = "<name>"` to make your own; keys you leave out use these values.
+# Warm charcoal with a gold accent; `buttons.primary.background` is the accent color.
 
 [general]
-background = "#1e1f22"
-border = "#2f3136"
-horizontal_rule = "#2b2d31"
-unread_indicator = "#f2f3f5"
-scrollbar = "#3f4147"
+background = "#1d1c22"
+border = "#2e2c36"
+horizontal_rule = "#2b2932"
+unread_indicator = "#f3eee7"
+scrollbar = "#3b3845"
 
 [text]
-primary = "#dbdee1"
-secondary = "#a4a8ae"
-tertiary = "#6d7178"
-success = "#3ba55d"
-error = "#ed4245"
-warning = "#faa61a"
-info = "#5b9bf8"
-link = "#4fa3ff"
-mention_bg = "#3d3726"
-code_bg = "#2b2d31"
+primary = "#ece7e0"
+secondary = "#aca5a1"
+tertiary = "#77717c"
+success = "#80c48c"
+error = "#e8737c"
+warning = "#e8b764"
+info = "#82aae8"
+link = "#86b8f0"
+mention_bg = "#e5a5502a"
+code_bg = "#26242e"
 
 [buttons.primary]
-background = "#5865f2"
-background_hover = "#4752c4"
-text = "#ffffff"
+background = "#e5a550"
+background_hover = "#f0b86b"
+text = "#1d1c22"
 
 [buttons.secondary]
-background = "#3a3c42"
-background_hover = "#474a51"
-text = "#dbdee1"
+background = "#2d2b35"
+background_hover = "#383541"
+text = "#ece7e0"
 
 [buttons.danger]
-background = "#da373c"
-background_hover = "#a12d2f"
+background = "#d65c66"
+background_hover = "#e3727b"
 text = "#ffffff"
 
 [sidebar]
-background = "#2b2d31"
-selected = "#404249"
-hover = "#35373c"
+background = "#17161c"
+selected = "#2b2833"
+hover = "#221f29"
 
 [pane]
-header_bg = "#26272b"
-focused_border = "#5865f2"
+header_bg = "#1d1c22"
+focused_border = "#e5a550"
 
 [voice]
-speaking_ring = "#23a55a"
-muted = "#ed4245"
+speaking_ring = "#80c48c"
+muted = "#e8737c"
 
 [roles]
-default_color = "#dbdee1"
+default_color = "#ece7e0"

@@ -294,9 +294,11 @@ pub fn banner<'a>(
         row![
             strong(format!("{caller} is calling{place}"), fonts).width(Fill),
             button(label("Join", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::primary(theme, s))
                 .on_press(Message::Voice(VoiceMsg::AnswerCall)),
             button(label("Dismiss", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Voice(VoiceMsg::DismissCall)),
         ]

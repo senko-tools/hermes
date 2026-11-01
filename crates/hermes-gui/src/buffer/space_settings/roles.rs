@@ -167,9 +167,10 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
     }
     if !everyone {
         let name = text_input("Role name", &draft.name)
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::input(theme, st))
             .font(fonts.ui)
-            .size(fonts.size)
-            .padding(8);
+            .size(fonts.size);
         let name = if editable {
             name.on_input(Message::RoleName)
                 .on_submit(Message::SaveRole)
@@ -204,9 +205,10 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             });
         }
         let hex = text_input("#RRGGBB or empty", &draft.color)
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::input(theme, st))
             .font(fonts.mono)
             .size(fonts.size)
-            .padding(6)
             .width(110);
         let hex = if editable {
             hex.on_input(Message::RoleColor)
@@ -296,16 +298,19 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
         buttons = buttons
             .push(
                 button(label("Move up", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::MoveRole(role.id, -1)),
             )
             .push(
                 button(label("Move down", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::MoveRole(role.id, 1)),
             )
             .push(
                 button(label("Delete role", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::danger(theme, s))
                     .on_press(Message::DeleteRole(role.id)),
             );
@@ -315,17 +320,20 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
         buttons = buttons
             .push(
                 button(label("Reset", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press_maybe(dirty.then_some(Message::ResetRole)),
             )
             .push(
                 button(label("Save changes", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::primary(theme, s))
                     .on_press_maybe((dirty && valid).then_some(Message::SaveRole)),
             );
     }
     col = col.push(buttons);
     scrollable(container(col).padding(20).width(Fill))
+        .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .width(Length::Fill)
         .into()

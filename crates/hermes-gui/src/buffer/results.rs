@@ -115,9 +115,11 @@ pub fn view<'a>(
             small(scope, fonts).color(theme.text.tertiary.0),
             Space::new().width(Fill),
             button(small("Refresh", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Refresh),
             button(small("Close", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Close),
         ]
@@ -128,12 +130,13 @@ pub fn view<'a>(
     if matches!(key, Key::Search(..)) {
         header = header.push(
             text_input("Search messages… (Enter)", &state.query)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .id(SEARCH_INPUT)
                 .on_input(Message::Query)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
+                .size(fonts.size),
         );
     }
     let header = container(header)
@@ -230,11 +233,18 @@ pub fn view<'a>(
                         },
                         fonts,
                     ))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press_maybe((!state.loading_more).then_some(Message::More)),
                 );
             }
         }
     }
-    column![header, scrollable(list.width(Fill)).height(Fill)].into()
+    column![
+        header,
+        scrollable(list.width(Fill))
+            .style(move |_, st| style::scrollbar(theme, st))
+            .height(Fill)
+    ]
+    .into()
 }

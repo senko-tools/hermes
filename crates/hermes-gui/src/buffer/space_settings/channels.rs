@@ -201,12 +201,15 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     if manage {
         let mut buttons = row![
             button(label("Edit…", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::EditChannel(id)),
             button(label("Move up", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::MoveChannel(id, -1)),
             button(label("Move down", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::MoveChannel(id, 1)),
         ]
@@ -214,6 +217,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
         if category {
             buttons = buttons.push(
                 button(label("+ Channel here", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::CreateChannel(Some(id))),
             );
@@ -227,6 +231,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
                 },
                 fonts,
             ))
+            .padding(style::BUTTON_PAD)
             .style(move |_, s| style::danger(theme, s))
             .on_press(Message::DeleteChannel(id)),
         );
@@ -281,15 +286,20 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     if !others.is_empty() {
         chips = chips.push(
             pick_list(others, picked, |r: RoleChoice| Message::OverrideRole(r.id))
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::pick_list(theme, st))
+                .menu_style(move |_| style::menu(theme))
                 .placeholder("Add a role…")
                 .font(fonts.ui)
                 .text_size(fonts.small()),
         );
     }
     col = col.push(
-        scrollable(chips).direction(scrollable::Direction::Horizontal(
-            scrollable::Scrollbar::new().width(4).scroller_width(4),
-        )),
+        scrollable(chips)
+            .style(move |_, st| style::scrollbar(theme, st))
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new().width(4).scroller_width(4),
+            )),
     );
 
     if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
@@ -299,6 +309,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
             row![
                 label(format!("Overrides for {role_name}"), fonts).width(Fill),
                 button(small("Remove override", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press_maybe(
                         (edit_overrides && ov.is_some()).then_some(Message::ClearOverride)
@@ -376,6 +387,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
         col = col.push(perms);
     }
     scrollable(container(col).padding(20).width(Fill))
+        .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()
 }

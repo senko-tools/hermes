@@ -246,9 +246,7 @@ pub fn parse_color(text: &str) -> Result<Option<u32>, ()> {
     u32::from_str_radix(&hex, 16).map(Some).map_err(|_| ())
 }
 
-pub fn rgb(color: u32) -> iced::Color {
-    iced::Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8)
-}
+pub use crate::theme::style::rgb;
 
 /// What the views need.
 pub struct Ctx<'a, 'b> {
@@ -288,37 +286,76 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             .into();
     };
     let current = ctx.state.tab;
-    let mut tabs = row![].spacing(4).align_y(Alignment::Center);
+    use crate::widget::icon::{self as i, icon};
+    let mut nav = column![
+        row![
+            crate::widget::avatar::space_icon(&space.space.name, 24.0, fonts),
+            iced::widget::text(space.space.name.to_uppercase())
+                .font(fonts.bold())
+                .size(fonts.small() - 0.5)
+                .color(theme.text.tertiary.0)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(style::GAP)
+        .align_y(Alignment::Center)
+        .padding([4, 10]),
+        Space::new().height(style::GAP_S),
+    ]
+    .spacing(2);
     for tab in Tab::available(ctx.s, ctx.space) {
-        tabs = tabs.push(
-            button(label(tab.title(), fonts))
-                .padding([4, 10])
-                .style(move |_, s| style::tab(theme, s, current == tab))
-                .on_press(Message::Tab(tab)),
+        let selected = current == tab;
+        let glyph = match tab {
+            Tab::Overview => i::SETTINGS,
+            Tab::Roles => i::SHIELD,
+            Tab::Channels => i::HASH,
+            Tab::Members => i::USERS,
+            Tab::Invites => i::LINK,
+            Tab::Bans => i::CIRCLE_MINUS,
+            Tab::Audit => i::FILE,
+        };
+        nav = nav.push(
+            button(
+                row![
+                    icon(glyph, 16.0).color(if selected {
+                        theme.buttons.primary.background.0
+                    } else {
+                        theme.text.tertiary.0
+                    }),
+                    label(tab.title(), fonts).color(if selected {
+                        theme.text.primary.0
+                    } else {
+                        theme.text.secondary.0
+                    }),
+                ]
+                .spacing(style::GAP_L)
+                .align_y(Alignment::Center),
+            )
+            .padding([8, 12])
+            .width(Fill)
+            .style(move |_, s| style::sidebar_item(theme, s, selected))
+            .on_press(Message::Tab(tab)),
         );
     }
-    let header = container(
-        column![
-            row![
-                heading(format!("{} settings", space.space.name), fonts),
-                space::horizontal(),
-                button(label("Close", fonts))
-                    .style(move |_, status| style::secondary(theme, status))
-                    .on_press(Message::Close),
-            ]
-            .align_y(Alignment::Center),
-            scrollable(tabs).direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(4).scroller_width(4)
-            )),
-        ]
-        .spacing(8),
-    )
-    .padding([8, 12])
-    .width(Fill)
-    .style(move |_| style::pane_header(theme));
+    nav = nav.push(space::vertical()).push(
+        button(
+            row![icon(i::X, 16.0), label("Close settings", fonts)]
+                .spacing(style::GAP_L)
+                .align_y(Alignment::Center),
+        )
+        .padding([8, 12])
+        .width(Fill)
+        .style(move |_, s| style::ghost(theme, s, false))
+        .on_press(Message::Close),
+    );
+    let nav = container(nav)
+        .padding([16, 10])
+        .width(220)
+        .height(Fill)
+        .style(move |_| style::sidebar(theme));
 
     let content: Element<'a, Message> = match current {
         Tab::Overview => scrollable(container(overview(ctx)).padding(20).width(Fill))
+            .style(move |_, st| style::scrollbar(theme, st))
             .height(Fill)
             .into(),
         Tab::Roles => roles::view(ctx),
@@ -328,7 +365,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         Tab::Bans => lists::bans(ctx),
         Tab::Audit => lists::audit(ctx),
     };
-    column![header, content].into()
+    row![nav, content].into()
 }
 
 fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
@@ -349,9 +386,10 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let dirty = ctx.state.name.is_some() || ctx.state.description.is_some();
     let input = |placeholder: &str, value: &str, f: fn(String) -> Message| {
         let input = text_input(placeholder, value)
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::input(theme, st))
             .font(fonts.ui)
-            .size(fonts.size)
-            .padding(8);
+            .size(fonts.size);
         if editable {
             input.on_input(f).on_submit(Message::SaveOverview)
         } else {
@@ -359,7 +397,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         }
     };
     let mut col = column![
-        strong("Overview", fonts),
+        heading("Overview", fonts),
         field(
             "Space name",
             "",
@@ -385,15 +423,18 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         let icon = if st.space.icon.is_some() {
             row![
                 button(label("Change icon…", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::PickIcon),
                 button(label("Remove icon", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::RemoveIcon),
             ]
         } else {
             row![
                 button(label("Upload icon…", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::PickIcon),
             ]
@@ -410,9 +451,11 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 row![
                     space::horizontal(),
                     button(label("Reset", fonts))
+                        .padding(style::BUTTON_PAD)
                         .style(move |_, s| style::secondary(theme, s))
                         .on_press_maybe(dirty.then_some(Message::ResetOverview)),
                     button(label("Save changes", fonts))
+                        .padding(style::BUTTON_PAD)
                         .style(move |_, s| style::primary(theme, s))
                         .on_press_maybe(dirty.then_some(Message::SaveOverview)),
                 ]
@@ -443,6 +486,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         ),
         row![
             button(label("Copy space ID", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::CopyId),
         ],
@@ -454,19 +498,23 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             "Invite people",
             "Creates a link that works for 7 days and copies it.",
             button(label("Copy invite link", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::primary(theme, s))
                 .on_press(Message::InvitePeople),
             fonts,
             theme,
         ));
     }
-    col = col.push(strong("Danger zone", fonts).color(theme.text.error.0));
+    col = col
+        .push(Space::new().height(style::GAP_XL))
+        .push(strong("Danger zone", fonts).color(theme.text.error.0));
     if ctx.is_owner() {
         col = col.push(field(
             "Delete space",
             "Deletes every channel and message for everyone. This cannot be undone. To keep the \
              space, give it to someone else from the Members tab first.",
             button(label("Delete space", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::danger(theme, s))
                 .on_press(Message::DeleteSpace),
             fonts,
@@ -477,6 +525,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             "Leave space",
             "You will need a new invite to come back.",
             button(label("Leave space", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::danger(theme, s))
                 .on_press(Message::LeaveSpace),
             fonts,
@@ -548,7 +597,9 @@ fn side_list<'a>(
             ]
             .align_y(Alignment::Center)
             .padding([0, 4]),
-            scrollable(list).height(Fill),
+            scrollable(list)
+                .style(move |_, st| style::scrollbar(theme, st))
+                .height(Fill),
         ]
         .spacing(6),
     )
@@ -583,6 +634,7 @@ fn placeholder<'a, T>(
             label(text, fonts).color(color),
             Space::new().height(8),
             button(small("Refresh", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Refresh),
         ]

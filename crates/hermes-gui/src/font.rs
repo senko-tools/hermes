@@ -12,14 +12,19 @@ pub const INTER: &str = "Inter";
 pub const JETBRAINS_MONO: &str = "JetBrains Mono";
 
 /// The bundled font files, loaded at startup.
-pub const BUNDLED: [&[u8]; 6] = [
+pub const BUNDLED: [&[u8]; 7] = [
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Italic.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
     include_bytes!("../assets/fonts/Inter-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    // The Lucide icons the UI uses (ISC license, subset; see `widget::icon`).
+    include_bytes!("../assets/fonts/Lucide.ttf"),
 ];
+
+/// The icon font's family name.
+pub const ICONS: Font = Font::with_name("lucide");
 
 pub const MIN_SIZE: u16 = 8;
 pub const MAX_SIZE: u16 = 32;

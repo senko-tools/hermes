@@ -268,12 +268,13 @@ impl AddInstance {
                 heading("Add an instance", fonts),
                 label("Paste an invite link or an address.", fonts),
                 text_input("hermes.example.com or https://…/invite/…", input)
+                    .padding(style::INPUT_PAD)
+                    .style(move |_, st| style::input(theme, st))
                     .id(ADDRESS_INPUT)
                     .on_input(Message::Address)
                     .on_submit(Message::SubmitAddress)
                     .font(fonts.ui)
-                    .size(fonts.size)
-                    .padding(8),
+                    .size(fonts.size),
                 buttons(
                     fonts,
                     theme,
@@ -363,6 +364,7 @@ impl Account {
         let tab = |name: &'a str, which: Tab, enabled: bool| {
             let selected = self.tab == which;
             button(label(name, fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::tab(theme, s, selected))
                 .on_press_maybe(enabled.then_some(Message::Tab(which)))
         };
@@ -376,20 +378,22 @@ impl Account {
             info,
             tabs,
             text_input("Username", &self.username)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .id(USERNAME_INPUT)
                 .on_input(Message::Username)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
+                .size(fonts.size),
             text_input("Password", &self.password)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .id(PASSWORD_INPUT)
                 .secure(true)
                 .on_input(Message::Password)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
+                .size(fonts.size),
         ]
         .spacing(12);
         if !self.can_register() {
@@ -428,6 +432,7 @@ fn buttons<'a>(
     if let Some(back) = back {
         row = row.push(
             button(label("Back", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(back),
         );
@@ -435,11 +440,13 @@ fn buttons<'a>(
     row.push(space::horizontal())
         .push(
             button(label("Cancel", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Cancel),
         )
         .push(
             button(label(action, fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::primary(theme, s))
                 .on_press_maybe(on_action),
         )

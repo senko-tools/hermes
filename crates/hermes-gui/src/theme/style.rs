@@ -1,11 +1,52 @@
 //! iced styles built from a Hermes [`Theme`]. Widgets without a function here use iced's own
 //! styles, which follow the palette from [`iced_theme`].
 
-use iced::widget::{button, container, rule};
-use iced::{Background, Border, Color};
+use iced::widget::{button, container, rule, scrollable, text_editor, text_input};
+use iced::{Background, Border, Color, Padding, Shadow, Vector};
 
 use super::{Button, Theme};
 use crate::app::Level;
+
+// Shared measurements, so rows, buttons and inputs line up across every screen.
+
+/// Gaps between elements.
+pub const GAP_XS: f32 = 4.0;
+pub const GAP_S: f32 = 6.0;
+pub const GAP: f32 = 8.0;
+pub const GAP_L: f32 = 12.0;
+pub const GAP_XL: f32 = 16.0;
+
+/// Corner radii.
+pub const RADIUS_S: f32 = 4.0;
+pub const RADIUS: f32 = 6.0;
+pub const RADIUS_L: f32 = 10.0;
+
+/// Padding of a text button: 32 px tall with the default 13 px text.
+pub const BUTTON_PAD: Padding = Padding {
+    top: 7.0,
+    bottom: 7.0,
+    left: 14.0,
+    right: 14.0,
+};
+/// Padding of a text input, matching the buttons' height.
+pub const INPUT_PAD: Padding = Padding {
+    top: 7.0,
+    bottom: 7.0,
+    left: 10.0,
+    right: 10.0,
+};
+/// Side of an icon button, and the icon inside it.
+pub const ICON_BUTTON: f32 = 30.0;
+pub const ICON: f32 = 16.0;
+/// A sidebar or list row.
+pub const ROW_PAD: Padding = Padding {
+    top: 5.0,
+    bottom: 5.0,
+    left: 8.0,
+    right: 8.0,
+};
+/// Height of the pane header and the sidebar's top bar.
+pub const HEADER: f32 = 48.0;
 
 /// The iced theme for `theme`: drives the default look of every widget.
 pub fn iced_theme(theme: &Theme) -> iced::Theme {
@@ -39,17 +80,232 @@ pub fn sidebar(theme: &Theme) -> container::Style {
     }
 }
 
+/// The pane header and the sidebar's top bar: a hairline below, drawn as a hard shadow so the
+/// other sides stay borderless.
 pub fn pane_header(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
         background: Some(theme.pane.header_bg.0.into()),
-        border: Border {
+        shadow: Shadow {
             color: theme.general.border.0,
-            width: 1.0,
-            radius: 0.0.into(),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 0.0,
         },
         ..container::Style::default()
     }
+}
+
+/// A bar at the bottom of the sidebar (voice panel, user panel).
+pub fn sidebar_footer(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(mix(theme.sidebar.background.0, Color::BLACK, 0.12).into()),
+        ..container::Style::default()
+    }
+}
+
+/// A floating panel: menus, tooltips, the message toolbar, autocomplete.
+pub fn popover(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(theme.sidebar.background.0.into()),
+        border: Border {
+            color: theme.general.border.0,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+            offset: Vector::new(0.0, 4.0),
+            blur_radius: 14.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A dialog card over the dimmed window.
+pub fn card(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(theme.general.background.0.into()),
+        border: Border {
+            color: theme.general.border.0,
+            width: 1.0,
+            radius: RADIUS_L.into(),
+        },
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
+            offset: Vector::new(0.0, 8.0),
+            blur_radius: 32.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A grouped block on a page (settings sections, welcome actions).
+pub fn panel(theme: &Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(theme.text.code_bg.0.into()),
+        border: Border {
+            color: theme.general.border.0,
+            width: 1.0,
+            radius: RADIUS_L.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The message composer: a rounded field holding the attach button and the editor.
+pub fn composer(theme: &Theme, focused: bool) -> container::Style {
+    container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(theme.text.code_bg.0.into()),
+        border: Border {
+            color: if focused {
+                theme.buttons.primary.background.0.scale_alpha(0.6)
+            } else {
+                theme.general.border.0
+            },
+            width: 1.0,
+            radius: RADIUS_L.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A text field.
+pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let accent = theme.buttons.primary.background.0;
+    let border = match status {
+        text_input::Status::Focused { .. } => accent,
+        text_input::Status::Hovered => mix(theme.general.border.0, theme.text.tertiary.0, 0.5),
+        _ => theme.general.border.0,
+    };
+    text_input::Style {
+        background: Background::Color(theme.text.code_bg.0),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+        icon: theme.text.tertiary.0,
+        placeholder: theme.text.tertiary.0,
+        value: theme.text.primary.0,
+        selection: accent.scale_alpha(0.35),
+    }
+}
+
+/// A drop-down, framed like [`input`].
+pub fn pick_list(
+    theme: &Theme,
+    status: iced::widget::pick_list::Status,
+) -> iced::widget::pick_list::Style {
+    use iced::widget::pick_list::Status;
+    let border = match status {
+        Status::Opened { .. } => theme.buttons.primary.background.0,
+        Status::Hovered => mix(theme.general.border.0, theme.text.tertiary.0, 0.5),
+        Status::Active => theme.general.border.0,
+    };
+    iced::widget::pick_list::Style {
+        text_color: theme.text.primary.0,
+        placeholder_color: theme.text.tertiary.0,
+        handle_color: theme.text.secondary.0,
+        background: Background::Color(theme.text.code_bg.0),
+        border: Border {
+            color: border,
+            width: 1.0,
+            radius: RADIUS.into(),
+        },
+    }
+}
+
+/// The list a drop-down opens.
+pub fn menu(theme: &Theme) -> iced::overlay::menu::Style {
+    let popover = popover(theme);
+    iced::overlay::menu::Style {
+        background: Background::Color(theme.sidebar.background.0),
+        border: popover.border,
+        text_color: theme.text.primary.0,
+        selected_text_color: theme.text.primary.0,
+        selected_background: Background::Color(theme.sidebar.selected.0),
+        shadow: popover.shadow,
+    }
+}
+
+/// The editor inside [`composer`]: no frame of its own.
+pub fn editor(theme: &Theme, _status: text_editor::Status) -> text_editor::Style {
+    text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: theme.text.tertiary.0,
+        value: theme.text.primary.0,
+        selection: theme.buttons.primary.background.0.scale_alpha(0.35),
+    }
+}
+
+/// A thin scrollbar without a rail that only darkens while used.
+pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
+    let mut style = scrollable::default(&iced_theme(theme), status);
+    let active = matches!(
+        status,
+        scrollable::Status::Hovered { .. } | scrollable::Status::Dragged { .. }
+    );
+    let scroller = if active {
+        mix(theme.general.scrollbar.0, theme.text.tertiary.0, 0.4)
+    } else {
+        theme.general.scrollbar.0
+    };
+    let rail = scrollable::Rail {
+        background: None,
+        border: Border::default(),
+        scroller: scrollable::Scroller {
+            background: scroller.into(),
+            border: Border {
+                radius: 4.0.into(),
+                ..Border::default()
+            },
+        },
+    };
+    style.vertical_rail = rail;
+    style.horizontal_rail = rail;
+    style
+}
+
+/// A borderless button that only shows its background on hover (header and toolbar
+/// actions). `active` keeps it highlighted, in the accent color.
+pub fn ghost(theme: &Theme, status: button::Status, active: bool) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: (hovered || active).then_some(Background::Color(theme.sidebar.hover.0)),
+        text_color: if active {
+            theme.buttons.primary.background.0
+        } else if hovered {
+            theme.text.primary.0
+        } else {
+            theme.text.secondary.0
+        },
+        border: Border {
+            radius: RADIUS.into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// `a` moved towards `b` by `t` (0–1).
+pub fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    }
+}
+
+/// A `0xRRGGBB` role color.
+pub fn rgb(color: u32) -> Color {
+    Color::from_rgb8((color >> 16) as u8, (color >> 8) as u8, color as u8)
 }
 
 /// A one-line message bar (warnings, errors).
@@ -114,7 +370,7 @@ pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> bu
         background: background.map(Background::Color),
         text_color: theme.text.primary.0,
         border: Border {
-            radius: 4.0.into(),
+            radius: RADIUS.into(),
             ..Border::default()
         },
         ..button::Style::default()
@@ -135,7 +391,7 @@ fn filled(colors: &Button, status: button::Status) -> button::Style {
             colors.text.0
         },
         border: Border {
-            radius: 4.0.into(),
+            radius: RADIUS.into(),
             ..Border::default()
         },
         ..button::Style::default()

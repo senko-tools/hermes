@@ -243,42 +243,66 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     use crate::buffer::settings_tabs as more;
 
-    let tab_button = |name: &'static str, t: Tab| {
-        button(label(name, fonts))
-            .padding([4, 10])
-            .style(move |_, s| style::tab(theme, s, tab == t))
-            .on_press(Message::Tab(t))
+    let tab_button = |glyph: char, name: &'static str, t: Tab| {
+        let selected = tab == t;
+        button(
+            row![
+                crate::widget::icon::icon(glyph, 16.0).color(if selected {
+                    theme.buttons.primary.background.0
+                } else {
+                    theme.text.tertiary.0
+                }),
+                label(name, fonts).color(if selected {
+                    theme.text.primary.0
+                } else {
+                    theme.text.secondary.0
+                }),
+            ]
+            .spacing(style::GAP_L)
+            .align_y(Alignment::Center),
+        )
+        .padding([8, 12])
+        .width(Fill)
+        .style(move |_, s| style::sidebar_item(theme, s, selected))
+        .on_press(Message::Tab(t))
     };
-    let header = container(
-        row![
-            heading("Settings", fonts),
-            space::horizontal().width(16),
-            scrollable(
-                row![
-                    tab_button("Account", Tab::Account),
-                    tab_button("Appearance", Tab::Appearance),
-                    tab_button("Chat", Tab::Chat),
-                    tab_button("Voice & Audio", Tab::Voice),
-                    tab_button("Notifications", Tab::Notifications),
-                    tab_button("Keybinds", Tab::Keybinds),
-                    tab_button("About", Tab::About),
-                ]
-                .spacing(4)
+    use crate::widget::icon as i;
+    let nav = container(
+        column![
+            container(
+                iced::widget::text("USER SETTINGS")
+                    .font(fonts.bold())
+                    .size(fonts.small() - 0.5)
+                    .color(theme.text.tertiary.0)
             )
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::new().width(4).scroller_width(4)
-            ))
-            .width(Fill),
-            button(label("Close", fonts))
-                .style(|_, status| style::secondary(theme, status))
-                .on_press(Message::Close),
+            .padding([4, 12]),
+            tab_button(i::USER_PLUS, "Account", Tab::Account),
+            tab_button(i::FEATHER, "Appearance", Tab::Appearance),
+            tab_button(i::MESSAGE_SQUARE, "Chat", Tab::Chat),
+            tab_button(i::MIC, "Voice & Audio", Tab::Voice),
+            tab_button(i::BELL, "Notifications", Tab::Notifications),
+            tab_button(i::LINK, "Keybinds", Tab::Keybinds),
+            tab_button(i::SERVER, "About", Tab::About),
+            space::vertical(),
+            button(
+                row![
+                    crate::widget::icon::icon(i::X, 16.0),
+                    label("Close settings", fonts)
+                ]
+                .spacing(style::GAP_L)
+                .align_y(Alignment::Center)
+            )
+            .padding([8, 12])
+            .width(Fill)
+            .style(move |_, s| style::ghost(theme, s, false))
+            .on_press(Message::Close),
         ]
-        .spacing(6)
-        .align_y(Alignment::Center),
+        .spacing(2),
     )
-    .padding([8, 12])
-    .width(Fill)
-    .style(|_| style::pane_header(theme));
+    .padding([16, 10])
+    .width(220)
+    .height(Fill)
+    .style(move |_| style::sidebar(theme));
 
     let content = match tab {
         Tab::Account => more::account(account, fonts, theme),
@@ -289,9 +313,11 @@ pub fn view<'a>(
         Tab::Keybinds => more::keybinds(config, fonts, theme),
         Tab::About => more::about(fonts, theme),
     };
-    column![
-        header,
-        scrollable(container(content).padding(20).width(Fill)).height(Fill),
+    row![
+        nav,
+        scrollable(container(content).padding([28, 36]).width(Fill))
+            .style(move |_, st| style::scrollbar(theme, st))
+            .height(Fill),
     ]
     .into()
 }
@@ -304,11 +330,14 @@ fn appearance<'a>(
 ) -> Element<'a, Message> {
     let current_theme = themes.iter().find(|t| **t == config.general.theme).cloned();
     column![
-        strong("Appearance", fonts),
+        heading("Appearance", fonts),
         setting(
             "Theme",
             "Built-in themes, plus any .toml file in the themes folder of the config directory.",
             pick_list(themes, current_theme, Message::Theme)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::pick_list(theme, st))
+                .menu_style(move |_| style::menu(theme))
                 .font(fonts.ui)
                 .text_size(fonts.size)
                 .width(220),
@@ -349,6 +378,9 @@ fn appearance<'a>(
                 Some(Position::from_config(&config.sidebar.position)),
                 Message::SidebarPosition
             )
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::pick_list(theme, st))
+            .menu_style(move |_| style::menu(theme))
             .font(fonts.ui)
             .text_size(fonts.size)
             .width(220),
@@ -427,7 +459,7 @@ fn voice_tab<'a>(
     let mic_test = voice.mic_test;
 
     let mut section = column![
-        strong("Devices", fonts),
+        heading("Devices", fonts),
         setting(
             "Microphone",
             "",
@@ -436,6 +468,9 @@ fn voice_tab<'a>(
                 Some(Device::from_config(&v.input_device)),
                 Message::InputDevice
             )
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::pick_list(theme, st))
+            .menu_style(move |_| style::menu(theme))
             .font(fonts.ui)
             .text_size(fonts.size)
             .width(picker_width),
@@ -450,6 +485,9 @@ fn voice_tab<'a>(
                 Some(Device::from_config(&v.output_device)),
                 Message::OutputDevice
             )
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::pick_list(theme, st))
+            .menu_style(move |_| style::menu(theme))
             .font(fonts.ui)
             .text_size(fonts.size)
             .width(picker_width),
@@ -459,6 +497,7 @@ fn voice_tab<'a>(
         row![
             space::horizontal(),
             button(small("Refresh devices", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::RefreshDevices),
         ],
@@ -487,6 +526,9 @@ fn voice_tab<'a>(
             "Input mode",
             "Voice activity sends while you talk; push-to-talk while a key is held.",
             pick_list(Mode::ALL, Some(mode), Message::Mode)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::pick_list(theme, st))
+                .menu_style(move |_| style::menu(theme))
                 .font(fonts.ui)
                 .text_size(fonts.size)
                 .width(picker_width),
@@ -503,6 +545,8 @@ fn voice_tab<'a>(
                 "Push-to-talk key",
                 ptt_hint(ptt_text),
                 text_input("e.g. Mouse4", ptt_text)
+                    .padding(style::INPUT_PAD)
+                    .style(move |_, st| style::input(theme, st))
                     .id(PTT_INPUT)
                     .on_input(Message::PttKey)
                     .on_submit(Message::SavePttKey)
@@ -607,6 +651,9 @@ fn voice_tab<'a>(
                 Some(JoinOn(crate::voice::JoinOn::from_config(&v.join_on))),
                 Message::JoinOn,
             )
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::pick_list(theme, st))
+            .menu_style(move |_| style::menu(theme))
             .font(fonts.ui)
             .text_size(fonts.size)
             .width(picker_width),
@@ -626,14 +673,17 @@ pub(crate) fn setting<'a>(
     column![
         rule::horizontal(1).style(move |_| style::rule(theme)),
         row![
-            column![label(name, fonts), small(hint.to_owned(), fonts)]
-                .spacing(2)
-                .width(Length::Fill),
+            column![
+                label(name, fonts).font(fonts.medium()),
+                small(hint.to_owned(), fonts).color(theme.text.tertiary.0)
+            ]
+            .spacing(3)
+            .width(Length::Fill),
             control.into(),
         ]
         .spacing(16)
         .align_y(Alignment::Center),
     ]
-    .spacing(10)
+    .spacing(14)
     .into()
 }

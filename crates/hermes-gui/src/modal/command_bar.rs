@@ -104,7 +104,7 @@ impl CommandBar {
     }
 
     pub fn view<'a>(&'a self, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-        let mut list = column![].spacing(1);
+        let mut list = column![].spacing(2).padding(iced::Padding::ZERO.right(12));
         for (n, entry) in self.shown().enumerate() {
             let selected = n == self.selected;
             list = list.push(
@@ -117,7 +117,7 @@ impl CommandBar {
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
-                .padding([5, 8])
+                .padding([7, 10])
                 .style(move |_, s| style::sidebar_item(theme, s, selected))
                 .on_press(Message::Run(n)),
             );
@@ -129,15 +129,25 @@ impl CommandBar {
         }
         column![
             text_input("Jump to a channel, a person or an action…", &self.input)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
+                .icon(iced::widget::text_input::Icon {
+                    font: crate::font::ICONS,
+                    code_point: crate::widget::icon::SEARCH,
+                    size: Some(16.into()),
+                    spacing: 8.0,
+                    side: iced::widget::text_input::Side::Left,
+                })
                 .id(INPUT)
                 .on_input(Message::Input)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
-            scrollable(list).height(360),
+                .size(fonts.size),
+            scrollable(list)
+                .style(move |_, st| style::scrollbar(theme, st))
+                .height(360),
         ]
-        .spacing(8)
+        .spacing(12)
         .into()
     }
 }

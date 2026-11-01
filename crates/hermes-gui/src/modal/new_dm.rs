@@ -46,12 +46,13 @@ impl NewDm {
                 fonts,
             ),
             text_input("alice, bob", &self.input)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .id(INPUT)
                 .on_input(Message::Input)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
+                .size(fonts.size),
         ]
         .spacing(12);
         if let Some(error) = &self.error {
@@ -62,12 +63,14 @@ impl NewDm {
                 row![
                     space::horizontal(),
                     button(label("Cancel", fonts))
+                        .padding(style::BUTTON_PAD)
                         .style(move |_, s| style::secondary(theme, s))
                         .on_press(Message::Cancel),
                     button(label(
                         if self.busy { "Please wait…" } else { "Start" },
                         fonts
                     ))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::primary(theme, s))
                     .on_press_maybe((!self.busy).then_some(Message::Submit)),
                 ]

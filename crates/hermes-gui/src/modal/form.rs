@@ -243,12 +243,13 @@ impl Form {
                     secure,
                 } => {
                     let mut input = text_input(placeholder, value)
+                        .padding(style::INPUT_PAD)
+                        .style(move |_, st| style::input(theme, st))
                         .secure(*secure)
                         .on_input(move |t| Message::Input(i, t))
                         .on_submit(Message::Submit)
                         .font(fonts.ui)
-                        .size(fonts.size)
-                        .padding(8);
+                        .size(fonts.size);
                     if first_text {
                         input = input.id(FIRST_INPUT);
                         first_text = false;
@@ -266,6 +267,9 @@ impl Form {
                     pick_list(options.as_slice(), Some(selected.clone()), move |o| {
                         Message::Choose(i, o)
                     })
+                    .padding(style::INPUT_PAD)
+                    .style(move |_, st| style::pick_list(theme, st))
+                    .menu_style(move |_| style::menu(theme))
                     .font(fonts.ui)
                     .text_size(fonts.size)
                     .width(Fill)
@@ -305,6 +309,7 @@ impl Form {
                 row![
                     space::horizontal(),
                     button(label("Cancel", fonts))
+                        .padding(style::BUTTON_PAD)
                         .style(move |_, s| style::secondary(theme, s))
                         .on_press(Message::Cancel),
                     button(label(

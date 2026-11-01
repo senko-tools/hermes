@@ -10,10 +10,11 @@ use iced::{Alignment, Element, Fill};
 
 use super::{Ctx, Message, placeholder};
 use crate::theme::style;
-use crate::widget::{label, small, strong};
+use crate::widget::{heading, label, small};
 
-fn page<'a>(content: Element<'a, Message>) -> Element<'a, Message> {
+fn page<'a>(content: Element<'a, Message>, theme: &'a crate::theme::Theme) -> Element<'a, Message> {
     scrollable(container(content).padding(20).width(Fill))
+        .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()
 }
@@ -25,7 +26,7 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let mut col = column![
         row![
             column![
-                strong("Invites", fonts),
+                heading("Invites", fonts),
                 small(
                     "Anyone with a link can join while it is valid. Revoke a link to stop it working.",
                     fonts
@@ -35,7 +36,8 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             .spacing(2)
             .width(Fill),
             button(label("Create invite…", fonts))
-                .style(move |_, s| style::primary(theme, s))
+                .padding(style::BUTTON_PAD)
+.style(move |_, s| style::primary(theme, s))
                 .on_press_maybe(ctx.can(Permissions::CREATE_INVITES).then_some(Message::CreateInvite)),
         ]
         .spacing(12)
@@ -51,7 +53,7 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             )
             .color(theme.text.tertiary.0),
         );
-        return page(col.into());
+        return page(col.into(), theme);
     }
     let list = ctx.state.invites.ready();
     if let Some(p) = placeholder(
@@ -61,7 +63,7 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         fonts,
         theme,
     ) {
-        return page(col.push(p).into());
+        return page(col.push(p).into(), theme);
     }
     let now = hermes_client_core::now_ms();
     for invite in list.into_iter().flatten() {
@@ -92,9 +94,11 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .spacing(2)
                 .width(Fill),
                 button(small("Copy link", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::CopyInvite(invite.code.clone())),
                 button(small("Revoke", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::danger(theme, s))
                     .on_press_maybe(
                         (manage || mine).then(|| Message::RevokeInvite(invite.code.clone()))
@@ -106,7 +110,7 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             theme,
         ));
     }
-    page(col.into())
+    page(col.into(), theme)
 }
 
 pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
@@ -114,7 +118,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let theme = ctx.theme;
     let mut col = column![
         column![
-            strong("Bans", fonts),
+            heading("Bans", fonts),
             small(
                 "Banned people cannot rejoin with an invite. Ban someone from the Members tab or \
                  by right-clicking them.",
@@ -134,7 +138,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         fonts,
         theme,
     ) {
-        return page(col.push(p).into());
+        return page(col.push(p).into(), theme);
     }
     for ban in list.into_iter().flatten() {
         let reason = ban
@@ -161,6 +165,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .spacing(2)
                 .width(Fill),
                 button(small("Unban", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(Message::Unban(ban.user.id)),
             ]
@@ -170,7 +175,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             theme,
         ));
     }
-    page(col.into())
+    page(col.into(), theme)
 }
 
 pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
@@ -178,8 +183,9 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let theme = ctx.theme;
     let mut col = column![
         row![
-            strong("Audit log", fonts).width(Fill),
+            heading("Audit log", fonts).width(Fill),
             button(small("Refresh", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Refresh),
         ]
@@ -195,7 +201,7 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         fonts,
         theme,
     ) {
-        return page(col.push(p).into());
+        return page(col.push(p).into(), theme);
     }
     for entry in list.into_iter().flatten() {
         let (text, details) = describe(ctx.s, ctx.space, entry);
@@ -223,11 +229,12 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     if ctx.state.audit_more {
         col = col.push(
             button(small("Load older entries", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::MoreAudit),
         );
     }
-    page(col.into())
+    page(col.into(), theme)
 }
 
 /// A readable line for an audit entry ("Alice kicked Bob") and its details.

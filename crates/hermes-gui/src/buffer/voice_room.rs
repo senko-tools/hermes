@@ -72,10 +72,12 @@ pub fn view<'a>(
 
     let action = if joined {
         button(small("Disconnect", fonts))
+            .padding(style::BUTTON_PAD)
             .style(move |_, s| style::danger(theme, s))
             .on_press(Message::Voice(VoiceMsg::Leave))
     } else {
         button(small("Join voice", fonts))
+            .padding(style::BUTTON_PAD)
             .style(move |_, s| style::primary(theme, s))
             .on_press(Message::Voice(VoiceMsg::Join(inst.clone(), channel)))
     };
@@ -99,7 +101,9 @@ pub fn view<'a>(
     }
     column![
         top,
-        scrollable(grid.wrap().vertical_spacing(12)).height(Fill)
+        scrollable(grid.wrap().vertical_spacing(12))
+            .style(move |_, st| style::scrollbar(theme, st))
+            .height(Fill)
     ]
     .spacing(16)
     .padding(16)

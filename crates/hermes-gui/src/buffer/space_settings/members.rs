@@ -83,13 +83,16 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let left = container(
         column![
             text_input("Search members", &ctx.state.member_query)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .on_input(Message::MemberQuery)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(6),
+                .size(fonts.size),
             small(format!("{total} member{}", super::plural(total)), fonts)
                 .color(theme.text.tertiary.0),
-            scrollable(list).height(Fill),
+            scrollable(list)
+                .style(move |_, st| style::scrollbar(theme, st))
+                .height(Fill),
         ]
         .spacing(6),
     )
@@ -143,6 +146,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     if !me {
         actions = actions.push(
             button(label("Message", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::primary(theme, s))
                 .on_press(Message::DmMember(user)),
         );
@@ -155,6 +159,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     if nick {
         actions = actions.push(
             button(label("Change nickname…", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::Nickname(user)),
         );
@@ -163,6 +168,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     if above && ctx.can(Permissions::KICK_MEMBERS) {
         actions = actions.push(
             button(label("Kick", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::danger(theme, s))
                 .on_press(Message::Kick(user)),
         );
@@ -170,6 +176,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     if above && ctx.can(Permissions::BAN_MEMBERS) {
         actions = actions.push(
             button(label("Ban…", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::danger(theme, s))
                 .on_press(Message::Ban(user)),
         );
@@ -228,6 +235,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
                     },
                     fonts,
                 ))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::ServerMute(user, !vs.server_mute)),
             );
@@ -242,6 +250,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
                     },
                     fonts,
                 ))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::ServerDeafen(user, !vs.server_deaf)),
             );
@@ -249,6 +258,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
         if ctx.can(Permissions::MOVE_MEMBERS) {
             voice = voice.push(
                 button(label("Disconnect", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::danger(theme, s))
                     .on_press(Message::Disconnect(user)),
             );
@@ -276,6 +286,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
                 .spacing(2)
                 .width(Fill),
                 button(label("Transfer…", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::danger(theme, s))
                     .on_press(Message::Transfer(user)),
             ]
@@ -286,6 +297,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
         ));
     }
     scrollable(container(col).padding(20).width(Fill))
+        .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()
 }

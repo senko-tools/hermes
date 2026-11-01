@@ -1264,3 +1264,23 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   `:delete-channel`, `:kick`, `:ban <user> [reason]`, `:unban`, `:role <user> +role|-role`,
   `:profile name|status <text>`, `:read`. The role editor and channel overrides stay GUI-only
   (section 16.3: the TUI's settings UI is minimal).
+
+## 2026-11-01: GUI look: own palette, Lucide icons, roomier layout
+
+- **Themes:** the built-in `dark` and `light` themes no longer use Discord's colors. Dark is a
+  warm charcoal, light a warm paper, and both use a gold accent (`buttons.primary`, which also
+  colors focus rings, selected tabs and the active header buttons). `high-contrast` is unchanged.
+  No theme keys were added; new looks derive from the existing keys.
+- **Icons:** PLAN.md section 15.1 asks for an icon font for UI chrome. The GUI bundles a subset
+  of Lucide (`assets/fonts/Lucide.ttf`, ISC license in `Lucide-ISC.txt`, from lucide-static
+  0.468.0), only the glyphs listed in `widget/icon.rs`. Text buttons such as "Pins", "Search",
+  "Members", "Mute" and "React" became icon buttons with tooltips.
+- **Spacing:** shared measurements in `theme/style.rs` (gaps, radii, 32 px controls, 48 px
+  headers, row padding) so rows, buttons and inputs line up; text inputs, drop-downs and
+  scrollbars use themed styles instead of iced's defaults.
+- **Layout changes:** avatars 40 px with more space between authors; the composer is one
+  rounded field with the attach button inside; day dividers say Today / Yesterday / weekday;
+  Settings and Space settings use a side navigation instead of a row of tabs (same tabs);
+  member list and user panel show avatars with presence dots; the empty pane is titled "Home".
+- **Why:** the developer found the GUI cramped, unaligned and too plain, and asked for its own
+  style (like Halloy) that still feels familiar to people coming from Discord.

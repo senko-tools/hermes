@@ -14,6 +14,7 @@ use iced::{Alignment, Border, Element, Fill, Length};
 use super::Context;
 use super::message::human_size;
 use crate::theme::style;
+use crate::widget::icon::{self, icon};
 use crate::widget::{label, small};
 
 /// Suggestions shown at most.
@@ -225,67 +226,88 @@ pub fn view<'a>(
     let theme = ctx.theme;
     // Every part has a fixed place (empty when unused), so the editor never moves in the tree
     // and keeps its focus when the popup or a bar appears.
-    let mut col = column![].padding([4, 12]);
+    let mut col = column![].padding(iced::Padding {
+        top: 2.0,
+        bottom: 14.0,
+        left: 16.0,
+        right: 16.0,
+    });
     let Some(composer) = composer else {
         return col.into();
     };
     if !can_send {
         return container(
-            small("You cannot send messages in this channel.", fonts).color(theme.text.tertiary.0),
+            row![
+                icon(icon::LOCK, 14.0).color(theme.text.tertiary.0),
+                small("You cannot send messages in this channel.", fonts)
+                    .color(theme.text.tertiary.0),
+            ]
+            .spacing(style::GAP)
+            .align_y(Alignment::Center),
         )
-        .padding([8, 12])
+        .padding([14, 20])
         .into();
     }
 
     let popup: Element<'a, Message> = if composer.suggestions.is_empty() {
         Space::new().into()
     } else {
-        let mut list = column![].spacing(1);
+        let mut list = column![].spacing(2);
         for (i, s) in composer.suggestions.iter().enumerate() {
             let selected = i == composer.selected;
             list = list.push(
                 button(label(s.label.clone(), fonts))
                     .width(Fill)
-                    .padding([3, 8])
+                    .padding(style::ROW_PAD)
                     .style(move |_, st| style::sidebar_item(theme, st, selected))
                     .on_press(Message::Accept(i)),
             );
         }
         column![
             container(list)
-                .padding(4)
+                .padding(6)
                 .width(Fill)
-                .style(move |_| container::Style {
-                    background: Some(theme.sidebar.background.0.into()),
-                    border: Border {
-                        color: theme.general.border.0,
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
-                    ..container::Style::default()
-                }),
-            Space::new().height(4)
+                .style(move |_| style::popover(theme)),
+            Space::new().height(6)
         ]
         .into()
     };
     col = col.push(popup);
 
     let mode = match (&composer.editing, &reply_name) {
-        (Some(_), _) => Some("Editing message".to_owned()),
-        (None, Some(name)) => Some(format!("Replying to {name}")),
+        (Some(_), _) => Some((icon::PENCIL, "Editing message".to_owned())),
+        (None, Some(name)) => Some((icon::REPLY, format!("Replying to {name}"))),
         _ => None,
     };
     let mode_bar: Element<'a, Message> = match mode {
         None => Space::new().into(),
-        Some(mode) => row![
-            small(mode, fonts).color(theme.text.secondary.0).width(Fill),
-            button(small("✕", fonts))
-                .padding([0, 6])
-                .style(move |_, st| style::sidebar_item(theme, st, false))
-                .on_press(Message::Cancel),
-        ]
-        .padding(iced::Padding::ZERO.bottom(4))
-        .align_y(Alignment::Center)
+        Some((glyph, mode)) => container(
+            row![
+                icon(glyph, 14.0).color(theme.buttons.primary.background.0),
+                small(mode, fonts).color(theme.text.secondary.0).width(Fill),
+                button(icon(icon::X, 14.0))
+                    .padding(3)
+                    .style(move |_, st| style::ghost(theme, st, false))
+                    .on_press(Message::Cancel),
+            ]
+            .spacing(style::GAP)
+            .align_y(Alignment::Center),
+        )
+        .padding([4, 12])
+        .style(move |_| container::Style {
+            background: Some(theme.sidebar.background.0.into()),
+            border: Border {
+                color: theme.general.border.0,
+                width: 1.0,
+                radius: iced::border::Radius {
+                    top_left: style::RADIUS_L,
+                    top_right: style::RADIUS_L,
+                    bottom_right: 0.0,
+                    bottom_left: 0.0,
+                },
+            },
+            ..container::Style::default()
+        })
         .into(),
     };
     col = col.push(mode_bar);
@@ -293,7 +315,7 @@ pub fn view<'a>(
     let uploads: Element<'a, Message> = if composer.uploads.is_empty() {
         Space::new().into()
     } else {
-        let mut chips = row![].spacing(6);
+        let mut chips = row![].spacing(style::GAP);
         for u in &composer.uploads {
             let (state, color) = match &u.state {
                 UploadState::Uploading => ("uploading…".to_owned(), theme.text.tertiary.0),
@@ -303,30 +325,23 @@ pub fn view<'a>(
             chips = chips.push(
                 container(
                     row![
+                        icon(icon::FILE, 14.0).color(theme.text.secondary.0),
                         small(u.name.clone(), fonts),
                         small(state, fonts).color(color),
-                        button(small("✕", fonts))
-                            .padding([0, 4])
-                            .style(move |_, st| style::sidebar_item(theme, st, false))
+                        button(icon(icon::X, 12.0))
+                            .padding(3)
+                            .style(move |_, st| style::ghost(theme, st, false))
                             .on_press(Message::RemoveUpload(u.local)),
                     ]
-                    .spacing(6)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
-                .padding([3, 8])
-                .style(move |_| container::Style {
-                    background: Some(theme.text.code_bg.0.into()),
-                    border: Border {
-                        color: theme.general.border.0,
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
-                    ..container::Style::default()
-                }),
+                .padding([4, 10])
+                .style(move |_| style::panel(theme)),
             );
         }
         container(chips.wrap())
-            .padding(iced::Padding::ZERO.bottom(4))
+            .padding(iced::Padding::ZERO.bottom(6))
             .into()
     };
     col = col.push(uploads);
@@ -340,22 +355,28 @@ pub fn view<'a>(
         .on_action(Message::Edit)
         .key_binding(move |kp| binding(kp, enter_sends, suggesting, empty))
         .font(fonts.ui)
-        .size(fonts.size)
-        .padding(8)
-        .max_height(fonts.size * 1.4 * 10.0 + 16.0)
-        .height(Length::Shrink);
-    col = col.push(
-        row![
-            button(label("+", fonts))
-                .padding([6, 10])
-                .style(move |_, st| style::secondary(theme, st))
-                .on_press(Message::PickFiles),
-            input,
-        ]
-        .spacing(6)
-        .align_y(Alignment::End),
+        .size(fonts.size + 1.0)
+        .padding([9, 4])
+        .max_height((fonts.size + 1.0) * 1.4 * 10.0 + 18.0)
+        .height(Length::Shrink)
+        .style(move |_, st| style::editor(theme, st));
+    let attach = crate::widget::tip_at(
+        crate::widget::icon_button(icon::PAPERCLIP, false, theme).on_press(Message::PickFiles),
+        "Attach files (or drop them here)",
+        iced::widget::tooltip::Position::Top,
+        fonts,
+        theme,
     );
-    col.push(Space::new().height(2)).into()
+    let field = container(
+        row![attach, input]
+            .spacing(style::GAP_XS)
+            .align_y(Alignment::Start),
+    )
+    .padding([4, 6])
+    .width(Fill)
+    .style(move |_| style::composer(theme, false));
+    col = col.push(field);
+    col.into()
 }
 
 /// Files to upload: paths that exist and are files.

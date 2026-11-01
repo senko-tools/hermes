@@ -1913,12 +1913,13 @@ impl App {
         let Some(dialog) = &mut self.add_instance else {
             return Task::none();
         };
-        let before = dialog.focus();
+        // Focus moves only when the dialog changes step: typing the first letter of a username
+        // must not jump to the password field.
+        let before = std::mem::discriminant(&dialog.step);
         match dialog.update(message, &self.core) {
             add_instance::Action::None => {
-                let after = dialog.focus();
-                if after != before {
-                    return focus_input(after);
+                if std::mem::discriminant(&dialog.step) != before {
+                    return focus_input(dialog.focus());
                 }
                 Task::none()
             }
@@ -2311,6 +2312,7 @@ impl App {
             self.ptt_down,
             self.drag.target(),
             self.update.as_ref(),
+            &self.images,
         );
 
         let account_inst = self.account_instance();
@@ -2324,6 +2326,7 @@ impl App {
                     row![
                         small(status.text.as_str(), fonts).width(Fill),
                         button(small("Dismiss", fonts))
+                            .padding(style::BUTTON_PAD)
                             .style(|_, s| style::secondary(theme, s))
                             .on_press(Message::DismissStatus),
                     ]

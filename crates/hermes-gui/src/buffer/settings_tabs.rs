@@ -14,7 +14,7 @@ use super::space_settings::Remote;
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Keybinds};
 use crate::theme::{Theme, style};
-use crate::widget::{label, small, strong};
+use crate::widget::{heading, label, small, strong};
 
 /// What the Account tab shows.
 pub struct AccountView<'a> {
@@ -30,7 +30,9 @@ pub fn account<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let mut col = column![strong("Account", fonts)].spacing(14).max_width(720);
+    let mut col = column![heading("Account", fonts)]
+        .spacing(14)
+        .max_width(720);
     if view.instances.is_empty() {
         return col
             .push(
@@ -51,6 +53,9 @@ pub fn account<'a>(
                 view.selected.clone(),
                 Message::AccountInstance,
             )
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::pick_list(theme, st))
+            .menu_style(move |_| style::menu(theme))
             .font(fonts.ui)
             .text_size(fonts.size)
             .width(260),
@@ -77,6 +82,7 @@ pub fn account<'a>(
                     .unwrap_or_default()
             ),
             button(label("Edit profile…", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::primary(theme, s))
                 .on_press(Message::EditProfile),
             fonts,
@@ -98,9 +104,11 @@ pub fn account<'a>(
                     },
                     fonts
                 ))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::PickAvatar),
                 button(label("Remove", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press_maybe(me.user.avatar.is_some().then_some(Message::RemoveAvatar)),
             ]
@@ -112,6 +120,7 @@ pub fn account<'a>(
             "Password",
             "Changing it signs out your other devices.",
             button(label("Change password…", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::ChangePassword),
             fonts,
@@ -132,9 +141,11 @@ pub fn account<'a>(
         row![
             strong("Signed-in devices", fonts).width(Fill),
             button(small("Refresh", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::LoadSessions),
             button(small("Sign out all others", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::danger(theme, s))
                 .on_press_maybe(
                     view.sessions
@@ -175,6 +186,7 @@ pub fn account<'a>(
                         .spacing(2)
                         .width(Fill),
                         button(small("Sign out", fonts))
+                            .padding(style::BUTTON_PAD)
                             .style(move |_, st| style::secondary(theme, st))
                             .on_press_maybe((!s.current).then_some(Message::RevokeSession(s.id))),
                     ]
@@ -197,7 +209,7 @@ pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> El
             .font(fonts.ui)
     };
     column![
-        strong("Chat", fonts),
+        heading("Chat", fonts),
         setting(
             "Messages",
             "",
@@ -235,6 +247,8 @@ pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> El
             "Time format",
             "strftime style: %H:%M is 18:05, %I:%M %p is 06:05 PM.",
             text_input("%H:%M", &b.timestamp_format)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .on_input(Message::TimestampFormat)
                 .on_submit(Message::SaveTimestampFormat)
                 .font(fonts.mono)
@@ -264,7 +278,7 @@ pub fn notifications<'a>(
             .font(fonts.ui)
     };
     column![
-        strong("Notifications", fonts),
+        heading("Notifications", fonts),
         setting(
             "Desktop notifications",
             "Which messages notify is set per space or channel: right-click it and pick \
@@ -323,7 +337,7 @@ pub fn keybinds<'a>(
     theme: &'a Theme,
 ) -> Element<'a, Message> {
     let mut list = column![
-        strong("Keybinds", fonts),
+        heading("Keybinds", fonts),
         small(
             "Change them in the [keys] section of config.toml (Settings changes apply at once). \
              Examples: \"Ctrl+K\", \"Alt+Shift+Down\", \"Ctrl+\\\\\".",
@@ -362,7 +376,7 @@ pub fn keybinds<'a>(
 
 pub fn about<'a>(fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
     column![
-        strong("About Hermes", fonts),
+        heading("About Hermes", fonts),
         label(format!("Version {}", env!("CARGO_PKG_VERSION")), fonts),
         small(
             "A self-hostable chat with spaces, text and voice channels, DMs and calls. Licensed \
@@ -372,12 +386,15 @@ pub fn about<'a>(fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
         .color(theme.text.tertiary.0),
         row![
             button(label("Copy debug info", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::CopyDebugInfo),
             button(label("Open the logs folder", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::OpenLogs),
             button(label("Project page", fonts))
+                .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::OpenProjectPage),
         ]

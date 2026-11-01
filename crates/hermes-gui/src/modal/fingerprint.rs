@@ -74,6 +74,7 @@ pub fn view<'a, M: Clone + 'a>(
             row![
                 space::horizontal(),
                 button(label("Cancel", fonts))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::secondary(theme, s))
                     .on_press(on_cancel),
                 button(label(trust_label, fonts))

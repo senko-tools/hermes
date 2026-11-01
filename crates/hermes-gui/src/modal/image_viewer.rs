@@ -44,9 +44,11 @@ pub fn view<'a, M: Clone + 'a>(
         small(human_size(viewer.attachment.size), fonts).color(Color::from_rgb(0.7, 0.7, 0.7)),
         space::horizontal(),
         button(small("Download", fonts))
+            .padding(style::BUTTON_PAD)
             .style(move |_, s| style::secondary(theme, s))
             .on_press(on_download),
         button(small("Close", fonts))
+            .padding(style::BUTTON_PAD)
             .style(move |_, s| style::secondary(theme, s))
             .on_press(on_close.clone()),
     ]

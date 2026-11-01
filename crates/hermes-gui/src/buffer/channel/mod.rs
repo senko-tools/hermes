@@ -220,10 +220,31 @@ pub fn view<'a>(
             .channel(channel)
             .map(|c| hermes_client_core::view::channel_title(s, c))
             .unwrap_or_default();
+        let accent = theme.buttons.primary.background.0;
+        let start = column![
+            container(
+                crate::widget::icon::icon(crate::widget::icon::MESSAGE_SQUARE, 26.0).color(accent)
+            )
+            .center_x(56)
+            .center_y(56)
+            .style(move |_| container::Style {
+                background: Some(accent.scale_alpha(0.14).into()),
+                border: iced::Border {
+                    radius: 28.0.into(),
+                    ..iced::Border::default()
+                },
+                ..container::Style::default()
+            }),
+            iced::widget::text(format!("Welcome to {title}"))
+                .font(fonts.bold())
+                .size(fonts.size + 9.0),
+            small("This is the start of the conversation. Say hello!", fonts)
+                .color(theme.text.secondary.0),
+        ]
+        .spacing(style::GAP_L)
+        .align_x(Alignment::Center);
         return column![
-            centered(
-                small(format!("This is the start of {title}."), fonts).color(theme.text.tertiary.0)
-            ),
+            centered(start),
             typing_line(ctx, s, channel),
             composer(ctx, s, channel),
         ]
@@ -253,6 +274,7 @@ pub fn view<'a>(
     list = list.push(Space::new().height(visible.below));
 
     let messages = scrollable(list.width(Fill))
+        .style(move |_, st| style::scrollbar(theme, st))
         .id(state.scroll_id.clone())
         .anchor_bottom()
         .on_scroll(Message::Scrolled)
@@ -263,10 +285,17 @@ pub fn view<'a>(
     if !state.at_bottom() || !window.reached_end {
         layers = layers.push(
             container(
-                button(small("Jump to present", fonts))
-                    .padding([4, 12])
-                    .style(move |_, st| style::primary(theme, st))
-                    .on_press(Message::JumpToPresent),
+                button(
+                    row![
+                        crate::widget::icon::icon(crate::widget::icon::ARROW_DOWN, 14.0),
+                        small("Jump to present", fonts).font(fonts.medium()),
+                    ]
+                    .spacing(style::GAP_S)
+                    .align_y(Alignment::Center),
+                )
+                .padding([7, 14])
+                .style(move |_, st| style::primary(theme, st))
+                .on_press(Message::JumpToPresent),
             )
             .align_right(Fill)
             .align_bottom(Fill)
@@ -287,10 +316,13 @@ fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a
         .channel(channel)
         .map(|c| hermes_client_core::view::channel_title(s, c))
         .unwrap_or_default();
-    let placeholder = if title.starts_with('#') {
-        format!("Message {title}")
-    } else {
+    let dm = s
+        .channel(channel)
+        .is_some_and(|c| c.kind == hermes_client_core::proto::models::ChannelKind::Dm);
+    let placeholder = if dm {
         format!("Message @{title}")
+    } else {
+        format!("Message {title}")
     };
     let can_send = hermes_client_core::view::can(
         s,
@@ -313,8 +345,8 @@ fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message
 fn estimate(r: &Row, window: &MessageWindow, width: f32, font_size: f32) -> f32 {
     match r {
         Row::Older => 32.0,
-        Row::Day { .. } => 30.0,
-        Row::NewMessages => 24.0,
+        Row::Day { .. } => 44.0,
+        Row::NewMessages => 40.0,
         Row::Message(m) => match window.get(m.id) {
             Some(msg) => list::estimate_message(
                 &msg.content,
@@ -383,23 +415,23 @@ fn row_view<'a>(
                 .padding(8)
                 .into()
         }
-        Row::Day { label: day, .. } => row![
-            rule_line(theme, theme.general.horizontal_rule.0),
-            small(day.clone(), fonts).color(theme.text.tertiary.0),
-            rule_line(theme, theme.general.horizontal_rule.0),
-        ]
-        .spacing(8)
-        .padding([6, 12])
-        .align_y(Alignment::Center)
-        .into(),
-        Row::NewMessages => row![
-            rule_line(theme, theme.text.error.0),
-            small("New messages", fonts).color(theme.text.error.0),
-        ]
-        .spacing(8)
-        .padding([2, 12])
-        .align_y(Alignment::Center)
-        .into(),
+        Row::Day { day, .. } => {
+            let today = time::day(now_ms(), ctx.utc_offset);
+            divider(
+                small(day_label(*day, today), fonts)
+                    .font(fonts.bold())
+                    .color(theme.text.tertiary.0),
+                theme.general.horizontal_rule.0,
+                theme,
+            )
+        }
+        Row::NewMessages => divider(
+            small("New messages", fonts)
+                .font(fonts.bold())
+                .color(theme.text.error.0),
+            theme.text.error.0.scale_alpha(0.6),
+            theme,
+        ),
         Row::Message(m) => match window.get(m.id) {
             Some(msg) => message::view(ctx, s, inst, m, msg, state),
             None => Space::new().into(),
@@ -470,11 +502,81 @@ fn row_view<'a>(
 
 pub(super) fn row_padding(grouped: bool) -> iced::Padding {
     iced::Padding {
-        top: if grouped { 1.0 } else { 8.0 },
-        bottom: 1.0,
+        top: if grouped { 2.0 } else { 14.0 },
+        bottom: 2.0,
         left: 16.0,
         right: 16.0,
     }
+}
+
+/// A day divider's text: `Today`, `Yesterday`, the weekday within the last week, else the
+/// date (`October 31, 2026`). `day` and `today` count days since 1970-01-01.
+pub fn day_label(day: i64, today: i64) -> String {
+    const WEEKDAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    match today - day {
+        0 => "Today".to_owned(),
+        1 => "Yesterday".to_owned(),
+        // 1970-01-01 was a Thursday.
+        2..=6 => WEEKDAYS[(day + 4).rem_euclid(7) as usize].to_owned(),
+        _ => {
+            let date = time::format(day * 86_400_000, "%Y %m %d", 0);
+            let mut parts = date.split(' ').map(|p| p.parse::<usize>().unwrap_or(1));
+            let (y, m, d) = (
+                parts.next().unwrap_or(1970),
+                parts.next().unwrap_or(1),
+                parts.next().unwrap_or(1),
+            );
+            format!("{} {d}, {y}", MONTHS[(m - 1).min(11)])
+        }
+    }
+}
+
+/// A centered label on a hairline (day dividers, the new messages marker).
+fn divider<'a>(
+    content: impl Into<Element<'a, Message>>,
+    color: iced::Color,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    row![
+        rule_line(theme, color),
+        container(content)
+            .padding([2, 10])
+            .style(move |_| container::Style {
+                border: iced::Border {
+                    color,
+                    width: 1.0,
+                    radius: 10.0.into(),
+                },
+                background: Some(theme.general.background.0.into()),
+                ..container::Style::default()
+            }),
+        rule_line(theme, color),
+    ]
+    .padding([10, 16])
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn rule_line<'a>(_theme: &'a Theme, color: iced::Color) -> Element<'a, Message> {
@@ -498,13 +600,21 @@ pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
         .find_map(|r| r.color)
 }
 
-pub(super) fn rgb(c: u32) -> iced::Color {
-    iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_labels() {
+        // Day 20_757 is 2026-10-31, a Saturday.
+        let today = 20_757;
+        assert_eq!(day_label(today, today), "Today");
+        assert_eq!(day_label(today - 1, today), "Yesterday");
+        assert_eq!(day_label(today - 2, today), "Thursday");
+        assert_eq!(day_label(today - 6, today), "Sunday");
+        assert_eq!(day_label(today - 7, today), "October 24, 2026");
+        assert_eq!(day_label(0, today), "January 1, 1970");
+    }
 
     #[test]
     fn typing_texts() {

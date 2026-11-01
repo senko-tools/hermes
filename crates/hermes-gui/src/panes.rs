@@ -5,7 +5,7 @@ use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Status as Presence;
 use hermes_client_core::{Core, InstanceId, view};
 use iced::widget::pane_grid::{self, Axis, PaneGrid};
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Border, Element, Fill, Length};
 
 use crate::buffer::channel::{self, ChannelView};
@@ -16,9 +16,10 @@ use crate::pane::{self, Pane};
 use crate::sidebar::menu::Target;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
-use crate::widget::{heading, label, small};
+use crate::widget::icon::{self, icon};
+use crate::widget::{icon_button, label, small, tip};
 
-const MEMBER_LIST_WIDTH: f32 = 200.0;
+const MEMBER_LIST_WIDTH: f32 = 232.0;
 
 pub struct Panes {
     pub state: pane_grid::State<Pane>,
@@ -172,74 +173,120 @@ impl Panes {
         PaneGrid::new(&self.state, |id, pane, maximized| {
             let focused = id == self.focus;
             let theme = ctx.theme;
+            let fonts = ctx.fonts;
             let (title, topic) = title(ctx.core, &pane.buffer);
-            let mut controls = row![].spacing(4).align_y(Alignment::Center);
+            let glyph = title_icon(ctx.core, &pane.buffer);
+            let title = match glyph {
+                icon::HASH => title.trim_start_matches('#').to_owned(),
+                _ => title,
+            };
+            let mut controls = row![].spacing(2).align_y(Alignment::Center);
             for (text, message) in voice_controls(ctx.core, &pane.buffer) {
-                controls = controls.push(header_button(text, ctx).on_press(message));
+                controls = controls.push(voice_button(text, ctx).on_press(message));
             }
             if let Buffer::Channel { inst, channel } = &pane.buffer {
-                controls = controls.push(header_button("Pins", ctx).on_press(
-                    Message::OpenResults(crate::buffer::results::Key::Pins(inst.clone(), *channel)),
+                controls = controls.push(Space::new().width(style::GAP_S));
+                controls = controls.push(tip(
+                    icon_button(icon::PIN, false, theme).on_press(Message::OpenResults(
+                        crate::buffer::results::Key::Pins(inst.clone(), *channel),
+                    )),
+                    "Pinned messages",
+                    fonts,
+                    theme,
                 ));
-                controls = controls.push(
-                    header_button("Search", ctx)
+                controls = controls.push(tip(
+                    icon_button(icon::SEARCH, false, theme)
                         .on_press(Message::SearchFrom(inst.clone(), *channel)),
-                );
-                controls = controls.push(
-                    header_button(
-                        if pane.members {
-                            "Hide members"
-                        } else {
-                            "Members"
-                        },
-                        ctx,
-                    )
-                    .on_press(Message::PaneMenu(id, PaneAction::ToggleMembers)),
-                );
+                    "Search (Ctrl+F)",
+                    fonts,
+                    theme,
+                ));
+                controls = controls.push(tip(
+                    icon_button(icon::USERS, pane.members, theme)
+                        .on_press(Message::PaneMenu(id, PaneAction::ToggleMembers)),
+                    if pane.members {
+                        "Hide members (Ctrl+U)"
+                    } else {
+                        "Show members (Ctrl+U)"
+                    },
+                    fonts,
+                    theme,
+                ));
             }
             if total > 1 {
-                controls = controls.push(
-                    header_button(if maximized { "Restore" } else { "Maximize" }, ctx)
-                        .on_press(Message::PaneMenu(id, PaneAction::Maximize)),
-                );
+                controls = controls.push(tip(
+                    icon_button(
+                        if maximized {
+                            icon::MINIMIZE_2
+                        } else {
+                            icon::MAXIMIZE_2
+                        },
+                        false,
+                        theme,
+                    )
+                    .on_press(Message::PaneMenu(id, PaneAction::Maximize)),
+                    if maximized { "Restore" } else { "Maximize" },
+                    fonts,
+                    theme,
+                ));
             }
-            controls = controls.push(crate::widget::tip(
-                mouse_area(header_button("⋮", ctx).on_press(Message::OpenMenu(Target::Pane(id))))
-                    .on_right_press(Message::OpenMenu(Target::Pane(id))),
-                "Pane actions: split, maximize, close",
-                ctx.fonts,
-                theme,
-            ));
-            let title_bar = pane_grid::TitleBar::new(
-                row![
-                    label(title, ctx.fonts).font(ctx.fonts.bold()),
-                    small(topic, ctx.fonts).color(theme.text.secondary.0),
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
-            )
-            .controls(pane_grid::Controls::new(controls))
-            .always_show_controls()
-            .padding([6, 10])
-            .style(move |_| style::pane_header(theme));
+            // No tooltip: it would cover the menu this opens.
+            controls = controls.push(
+                mouse_area(
+                    icon_button(icon::ELLIPSIS_VERTICAL, false, theme)
+                        .on_press(Message::OpenMenu(Target::Pane(id))),
+                )
+                .on_right_press(Message::OpenMenu(Target::Pane(id))),
+            );
+            let mut heading = row![
+                icon(glyph, 18.0).color(theme.text.tertiary.0),
+                text(title)
+                    .font(fonts.bold())
+                    .size(fonts.size + 2.0)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(style::GAP)
+            .align_y(Alignment::Center);
+            if !topic.is_empty() {
+                heading = heading
+                    .push(container(Space::new().width(1).height(18)).style(move |_| {
+                        container::Style {
+                            background: Some(theme.general.border.0.into()),
+                            ..container::Style::default()
+                        }
+                    }))
+                    .push(
+                        small(topic, fonts)
+                            .color(theme.text.secondary.0)
+                            .wrapping(text::Wrapping::None),
+                    );
+            }
+            let title_bar = pane_grid::TitleBar::new(heading.height(style::ICON_BUTTON).clip(true))
+                .controls(pane_grid::Controls::new(controls))
+                .always_show_controls()
+                .padding([9, 12])
+                .style(move |_| style::pane_header(theme));
 
+            let split = total > 1;
             pane_grid::Content::new(body(id, pane, ctx))
                 .title_bar(title_bar)
                 .style(move |_| container::Style {
                     background: Some(theme.general.background.0.into()),
                     border: Border {
-                        color: if focused && total > 1 {
-                            theme.pane.focused_border.0
-                        } else {
+                        color: if split && focused {
+                            theme.pane.focused_border.0.scale_alpha(0.7)
+                        } else if split {
                             theme.general.border.0
+                        } else {
+                            iced::Color::TRANSPARENT
                         },
-                        width: 1.0,
-                        radius: 0.0.into(),
+                        width: if split { 1.0 } else { 0.0 },
+                        radius: if split { style::RADIUS } else { 0.0 }.into(),
                     },
                     ..container::Style::default()
                 })
         })
-        .spacing(4)
+        .spacing(6)
         .on_click(Message::PaneClicked)
         .on_drag(Message::PaneDragged)
         .on_resize(6, Message::PaneResized)
@@ -277,11 +324,62 @@ pub enum PaneAction {
     Maximize,
 }
 
-fn header_button<'a>(text: &'a str, ctx: &Context<'a>) -> button::Button<'a, Message> {
+/// A voice action in a pane header: joining stands out in the accent color, leaving in red.
+fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a, Message> {
     let theme = ctx.theme;
-    button(small(text, ctx.fonts))
-        .padding([2, 8])
-        .style(move |_, s| style::sidebar_item(theme, s, false))
+    let glyph = match text {
+        "Leave voice" => icon::PHONE_OFF,
+        "Chat" => icon::MESSAGE_SQUARE,
+        "Voice room" => icon::AUDIO_LINES,
+        _ => icon::PHONE,
+    };
+    let kind = match text {
+        "Join voice" | "Start call" => 1,
+        "Leave voice" => 2,
+        _ => 0,
+    };
+    button(
+        row![
+            icon(glyph, 14.0),
+            small(text, ctx.fonts).font(ctx.fonts.medium())
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center),
+    )
+    .padding([7, 12])
+    .style(move |_, s| match kind {
+        1 => style::primary(theme, s),
+        2 => style::danger(theme, s),
+        _ => style::ghost(theme, s, false),
+    })
+}
+
+/// The icon in front of a pane's title.
+fn title_icon(core: &Core, buffer: &Buffer) -> char {
+    use crate::buffer::results::Key;
+    use hermes_client_core::proto::models::ChannelKind;
+
+    match buffer {
+        Buffer::Empty => icon::FEATHER,
+        Buffer::Settings => icon::SETTINGS,
+        Buffer::SpaceSettings { .. } => icon::SHIELD,
+        Buffer::VoiceRoom { .. } => icon::AUDIO_LINES,
+        Buffer::Results(Key::Mentions) => icon::AT_SIGN,
+        Buffer::Results(Key::Pins(..)) => icon::PIN,
+        Buffer::Results(Key::Search(..)) => icon::SEARCH,
+        Buffer::Channel { inst, channel } => {
+            let kind = core
+                .store()
+                .instance(inst)
+                .and_then(|s| s.channel(*channel).map(|c| c.kind));
+            match kind {
+                Some(ChannelKind::Voice) => icon::VOLUME_2,
+                Some(ChannelKind::Dm) => icon::AT_SIGN,
+                Some(ChannelKind::GroupDm) => icon::USERS,
+                _ => icon::HASH,
+            }
+        }
+    }
 }
 
 /// The voice buttons of a pane header: join / start call / leave and the voice room for voice
@@ -340,7 +438,7 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
 /// The header title and topic of a buffer.
 pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
     match buffer {
-        Buffer::Empty => ("Hermes".into(), String::new()),
+        Buffer::Empty => ("Home".into(), String::new()),
         Buffer::Settings => ("Settings".into(), String::new()),
         Buffer::Results(key) => crate::buffer::results::title(core, key),
         Buffer::SpaceSettings { inst, space } => {
@@ -382,7 +480,26 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
     let theme = ctx.theme;
     match &pane.buffer {
         Buffer::Empty => {
-            let mut welcome = column![heading("Welcome to Hermes", fonts)].spacing(12);
+            let accent = theme.buttons.primary.background.0;
+            let badge = container(icon(icon::FEATHER, 30.0).color(accent))
+                .center_x(64)
+                .center_y(64)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.14).into()),
+                    border: Border {
+                        radius: 32.0.into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                });
+            let mut welcome = column![
+                badge,
+                text("Welcome to Hermes")
+                    .font(fonts.bold())
+                    .size(fonts.size + 11.0),
+            ]
+            .spacing(style::GAP_XL)
+            .align_x(Alignment::Center);
             if ctx.core.instance_ids().is_empty() {
                 welcome = welcome
                     .push(
@@ -393,81 +510,94 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                         .color(theme.text.secondary.0),
                     )
                     .push(
-                        button(label("Add an instance", fonts))
-                            .style(move |_, s| style::primary(theme, s))
-                            .on_press(Message::OpenAddInstance),
+                        button(
+                            row![icon(icon::PLUS, 14.0), label("Add an instance", fonts)]
+                                .spacing(style::GAP)
+                                .align_y(Alignment::Center),
+                        )
+                        .padding(style::BUTTON_PAD)
+                        .style(move |_, s| style::primary(theme, s))
+                        .on_press(Message::OpenAddInstance),
                     );
             } else {
                 let first = ctx.core.instance_ids().first().cloned();
-                let action = |title: &'static str, hint: &'static str, message: Message| {
-                    button(
-                        column![
-                            label(title, fonts).font(fonts.bold()),
-                            small(hint, fonts).color(theme.text.tertiary.0),
-                        ]
-                        .spacing(2),
-                    )
-                    .padding([8, 12])
-                    .width(260)
-                    .style(move |_, s| style::secondary(theme, s))
-                    .on_press(message)
+                let action = |glyph: char, title: &'static str, hint: &'static str, message| {
+                    welcome_action(glyph, title, hint, message, fonts, theme)
                 };
                 let mut grid = column![
                     row![
                         action(
+                            icon::SEARCH,
                             "Find anything",
                             "Channels, people, actions · Ctrl+K",
                             Message::Shortcut(crate::keybinds::Action::CommandBar),
                         ),
                         action(
+                            icon::MESSAGE_SQUARE,
                             "Search messages",
                             "In this space or everywhere · Ctrl+F",
                             Message::Shortcut(crate::keybinds::Action::Search),
                         ),
                     ]
-                    .spacing(10),
+                    .spacing(style::GAP_L),
                     row![
                         action(
+                            icon::LINK,
                             "Join with an invite",
                             "Paste a link a friend sent you",
                             Message::OpenAddInstance,
                         ),
                         action(
+                            icon::SETTINGS,
                             "Settings",
                             "Theme, sounds, microphone · Ctrl+,",
                             Message::OpenSettings,
                         ),
                     ]
-                    .spacing(10),
+                    .spacing(style::GAP_L),
                 ]
-                .spacing(10);
+                .spacing(style::GAP_L);
                 if let Some(inst) = first {
-                    grid = grid.push(row![action(
-                        "Create a space",
-                        "Your own place with channels and roles",
-                        Message::Menu(
-                            Target::Instance(inst),
-                            crate::sidebar::menu::Action::CreateSpace
-                        ),
-                    ),]);
+                    grid = grid.push(
+                        row![
+                            action(
+                                icon::PLUS,
+                                "Create a space",
+                                "Your own place with channels and roles",
+                                Message::Menu(
+                                    Target::Instance(inst),
+                                    crate::sidebar::menu::Action::CreateSpace,
+                                ),
+                            ),
+                            action(
+                                icon::AT_SIGN,
+                                "Mentions",
+                                "Messages that mention you",
+                                Message::OpenResults(crate::buffer::results::Key::Mentions),
+                            ),
+                        ]
+                        .spacing(style::GAP_L),
+                    );
                 }
                 welcome = welcome
                     .push(
-                        label("Pick a channel in the sidebar, or start here:", fonts)
+                        label("Pick a channel in the sidebar, or start here.", fonts)
                             .color(theme.text.secondary.0),
                     )
+                    .push(Space::new().height(style::GAP))
                     .push(grid)
+                    .push(Space::new().height(style::GAP))
                     .push(
                         small(
-                            "Tips: right-click channels, spaces, messages and people for their \
-                             actions · double-click a voice channel to join · drag channels to \
-                             reorder them · drop files on a channel to upload",
+                            "Right-click anything for its actions · double-click a voice \
+                             channel to join · drop files to upload",
                             fonts,
                         )
-                        .color(theme.text.tertiary.0),
+                        .color(theme.text.tertiary.0)
+                        .align_x(Alignment::Center),
                     );
             }
-            container(welcome.max_width(560)).center(Fill).into()
+            container(welcome.max_width(600)).center(Fill).into()
         }
         Buffer::Settings => settings::view(
             ctx.config,
@@ -605,12 +735,74 @@ fn connection_banner<'a>(ctx: &Context<'a>, inst: &InstanceId) -> Option<Element
     )
 }
 
+/// A card on the welcome page: an icon tile, a title and a hint.
+fn welcome_action<'a>(
+    glyph: char,
+    title: &'static str,
+    hint: &'static str,
+    message: Message,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let accent = theme.buttons.primary.background.0;
+    button(
+        row![
+            container(icon(glyph, 18.0).color(accent))
+                .center_x(38)
+                .center_y(38)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.12).into()),
+                    border: Border {
+                        radius: style::RADIUS.into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                }),
+            column![
+                label(title, fonts).font(fonts.bold()),
+                small(hint, fonts).color(theme.text.tertiary.0),
+            ]
+            .spacing(3),
+        ]
+        .spacing(style::GAP_L)
+        .align_y(Alignment::Center),
+    )
+    .padding(12)
+    .width(286)
+    .style(move |_, s| {
+        let hovered = matches!(s, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(
+                if hovered {
+                    theme.sidebar.hover.0
+                } else {
+                    theme.text.code_bg.0
+                }
+                .into(),
+            ),
+            text_color: theme.text.primary.0,
+            border: Border {
+                color: if hovered {
+                    accent.scale_alpha(0.5)
+                } else {
+                    theme.general.border.0
+                },
+                width: 1.0,
+                radius: style::RADIUS_L.into(),
+            },
+            ..button::Style::default()
+        }
+    })
+    .on_press(message)
+    .into()
+}
+
 /// The members of the channel's space by hoisted role, or a DM's recipients.
 fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     let store = ctx.core.store();
-    let mut list = column![].spacing(2).padding(8);
+    let mut list = column![].spacing(2).padding([12, 8]);
     if let Some(s) = store.instance(inst) {
         let groups = match s.space_of(channel) {
             Some(space) => view::member_groups(s, space),
@@ -635,34 +827,57 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
         };
         for group in groups {
             list = list.push(
-                small(
-                    format!("{} — {}", group.title.to_uppercase(), group.members.len()),
-                    fonts,
+                container(
+                    text(format!(
+                        "{} — {}",
+                        group.title.to_uppercase(),
+                        group.members.len()
+                    ))
+                    .font(fonts.bold())
+                    .size(fonts.small() - 0.5)
+                    .color(theme.text.tertiary.0),
                 )
-                .color(theme.text.tertiary.0),
+                .padding([6, 8]),
             );
             for member in group.members {
+                let offline = member.status == Presence::Offline;
                 let dot = match member.status {
                     Presence::Online => theme.text.success.0,
                     Presence::Idle => theme.text.warning.0,
                     Presence::Dnd => theme.text.error.0,
                     _ => theme.text.tertiary.0,
                 };
-                let name_color = member.color.map_or(theme.text.primary.0, |c| {
-                    iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
-                });
+                let name_color = member
+                    .color
+                    .map_or(theme.text.primary.0, style::rgb)
+                    .scale_alpha(if offline { 0.5 } else { 1.0 });
+                let picture = s
+                    .user(member.user_id)
+                    .and_then(|u| u.avatar.as_ref())
+                    .and_then(|a| match ctx.images.get(&(inst.clone(), a.id)) {
+                        Some(channel::message::Img::Ready(handle)) => Some(handle.clone()),
+                        _ => None,
+                    });
+                let face = crate::widget::avatar::view(&member.name, picture.as_ref(), 30.0, fonts);
+                let face = if offline {
+                    face
+                } else {
+                    crate::widget::avatar::with_dot(face, 30.0, dot, theme.sidebar.background.0)
+                };
                 let target = Target::Member(inst.clone(), s.space_of(channel), member.user_id);
                 list = list.push(
                     mouse_area(
                         button(
                             row![
-                                small("●", fonts).color(dot),
-                                label(member.name, fonts).color(name_color),
+                                face,
+                                label(member.name, fonts)
+                                    .color(name_color)
+                                    .wrapping(text::Wrapping::None),
                             ]
-                            .spacing(6)
+                            .spacing(style::GAP_L)
                             .align_y(Alignment::Center),
                         )
-                        .padding([2, 4])
+                        .padding([4, 8])
                         .width(Fill)
                         .style(move |_, st| style::sidebar_item(theme, st, false))
                         .on_press(Message::OpenMenu(target.clone())),
@@ -670,14 +885,18 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                     .on_right_press(Message::OpenMenu(target)),
                 );
             }
-            list = list.push(Space::new().height(6));
+            list = list.push(Space::new().height(style::GAP_L));
         }
     }
-    container(scrollable(list).height(Fill))
-        .width(Length::Fixed(MEMBER_LIST_WIDTH))
-        .height(Fill)
-        .style(move |_| style::sidebar(theme))
-        .into()
+    container(
+        scrollable(list)
+            .height(Fill)
+            .style(move |_, st| style::scrollbar(theme, st)),
+    )
+    .width(Length::Fixed(MEMBER_LIST_WIDTH))
+    .height(Fill)
+    .style(move |_| style::sidebar(theme))
+    .into()
 }
 
 #[cfg(test)]

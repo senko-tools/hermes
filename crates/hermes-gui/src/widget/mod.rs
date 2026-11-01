@@ -1,11 +1,14 @@
 //! Small view helpers. Every text goes through these so `[font]` changes apply live.
 
+pub mod avatar;
 pub mod context_menu;
 pub mod cursor;
+pub mod icon;
 
-use iced::widget::{Text, text};
+use iced::widget::{Button, Text, button, text};
 
 use crate::font::Fonts;
+use crate::theme::style;
 
 pub fn label<'a>(content: impl text::IntoFragment<'a>, fonts: &Fonts) -> Text<'a> {
     text(content).font(fonts.ui).size(fonts.size)
@@ -30,21 +33,46 @@ pub fn tip<'a, M: 'a>(
     fonts: &Fonts,
     theme: &'a crate::theme::Theme,
 ) -> iced::Element<'a, M> {
+    tip_at(
+        content,
+        text,
+        iced::widget::tooltip::Position::Bottom,
+        fonts,
+        theme,
+    )
+}
+
+/// [`tip`] on a chosen side.
+pub fn tip_at<'a, M: 'a>(
+    content: impl Into<iced::Element<'a, M>>,
+    text: &'a str,
+    position: iced::widget::tooltip::Position,
+    fonts: &Fonts,
+    theme: &'a crate::theme::Theme,
+) -> iced::Element<'a, M> {
     iced::widget::tooltip(
         content,
         iced::widget::container(small(text, fonts).color(theme.text.primary.0))
-            .padding([3, 8])
-            .style(move |_| iced::widget::container::Style {
-                background: Some(theme.sidebar.background.0.into()),
-                border: iced::Border {
-                    color: theme.general.border.0,
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..iced::widget::container::Style::default()
-            }),
-        iced::widget::tooltip::Position::Bottom,
+            .padding([5, 10])
+            .style(move |_| style::popover(theme)),
+        position,
     )
-    .gap(4)
+    .gap(6)
     .into()
+}
+
+/// A square button holding one icon; it shows its background on hover, or always (in the
+/// accent color) when `active`.
+pub fn icon_button<'a, M: Clone + 'a>(
+    glyph: char,
+    active: bool,
+    theme: &'a crate::theme::Theme,
+) -> Button<'a, M> {
+    button(
+        iced::widget::container(icon::icon(glyph, style::ICON))
+            .center_x(style::ICON_BUTTON)
+            .center_y(style::ICON_BUTTON),
+    )
+    .padding(0)
+    .style(move |_, status| style::ghost(theme, status, active))
 }
