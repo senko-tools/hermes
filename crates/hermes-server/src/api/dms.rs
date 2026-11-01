@@ -1,5 +1,9 @@
 //! `/dms`: 1:1 DMs and group DMs (PLAN.md sections 8.2 and 10), plus renaming and leaving group
 //! DMs through `/channels/{id}`. Messages in DMs use the normal message endpoints.
+//!
+//! A recipient can close a 1:1 DM (`DELETE /dms/{id}`, docs/DECISIONS.md 2026-11-02): it is no
+//! longer listed for them, and reopens when a message or a call arrives or they message the
+//! other person again.
 
 use std::sync::Arc;
 
@@ -21,11 +25,11 @@ use crate::gateway::bus::Audience;
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
-/// The caller's DMs and group DMs, most recently active first.
+/// The caller's DMs and group DMs (not the closed ones), most recently active first.
 pub async fn list(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<Json<Vec<Channel>>> {
     let cache = state.cache();
     let mut dms: Vec<Channel> = cache
-        .dm_ids(auth.user_id)
+        .open_dm_ids(auth.user_id)
         .filter_map(|id| cache.dm_channel(id))
         .collect();
     dms.sort_by_key(|c| std::cmp::Reverse((c.last_message_id, c.id)));
@@ -74,7 +78,7 @@ pub async fn create(
     }
 
     let _writes = state.writes.lock().await;
-    {
+    let existing = {
         let cache = state.cache();
         for &other in &others {
             if !cache.users.contains_key(&other) {
@@ -85,15 +89,22 @@ pub async fn create(
             }
             check_policy(&state, &cache, auth.user_id, other)?;
         }
-        if let [other] = others[..] {
-            let existing = cache.dm_ids(auth.user_id).find(|id| {
+        match others[..] {
+            [other] => cache.dm_ids(auth.user_id).find(|id| {
                 let c = &cache.channels[id];
                 c.channel.kind == ChannelKind::Dm && c.recipient_ids.binary_search(&other).is_ok()
-            });
-            if let Some(dm) = existing.and_then(|id| cache.dm_channel(id)) {
-                return Ok(Json(dm));
-            }
+            }),
+            _ => None,
         }
+    };
+    if let Some(id) = existing {
+        // Messaging someone again reopens a DM the caller closed.
+        reopen_for(&state, id, &[auth.user_id]).await?;
+        return state
+            .cache()
+            .dm_channel(id)
+            .map(Json)
+            .ok_or_else(|| Error::not_found("channel"));
     }
 
     let group = others.len() > 1;
@@ -136,6 +147,98 @@ pub async fn create(
         Audience::Users(recipients),
     );
     Ok(Json(dm))
+}
+
+/// Closes a 1:1 DM for the caller: it disappears from their list (`dm_delete` to their sessions)
+/// until it reopens. Group DMs are left instead (`DELETE /channels/{id}`). Closing twice is not an
+/// error.
+pub async fn close(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(channel_id): Path<Id>,
+) -> ApiResult<StatusCode> {
+    let _writes = state.writes.lock().await;
+    {
+        let cache = state.cache();
+        let access = perms::channel(&cache, channel_id, auth.user_id)?;
+        match access.channel.kind {
+            ChannelKind::Dm => {}
+            ChannelKind::GroupDm => {
+                return Err(Error::new(
+                    ErrorCode::BadRequest,
+                    "Group DMs are left, not closed",
+                ));
+            }
+            _ => return Err(Error::not_found("channel")),
+        }
+        if cache.channels[&channel_id]
+            .closed
+            .binary_search(&auth.user_id)
+            .is_ok()
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
+    let mut conn = state.db.write.acquire().await?;
+    db::dms::set_closed(&mut conn, channel_id, auth.user_id, true).await?;
+    drop(conn);
+    if let Some(c) = state.cache_mut().channels.get_mut(&channel_id)
+        && let Err(at) = c.closed.binary_search(&auth.user_id)
+    {
+        c.closed.insert(at, auth.user_id);
+    }
+    state.publish(
+        ServerEvent::DmDelete { id: channel_id },
+        Audience::User(auth.user_id),
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reopens a DM for every recipient who closed it (a message or a call arrived), sending them
+/// `dm_create` first so their clients know the channel before its events. The caller holds no
+/// cache lock.
+pub async fn reopen(state: &AppState, channel_id: Id) -> ApiResult<()> {
+    let closed = state
+        .cache()
+        .channels
+        .get(&channel_id)
+        .map(|c| c.closed.clone())
+        .unwrap_or_default();
+    reopen_for(state, channel_id, &closed).await
+}
+
+/// Reopens a DM for those of `users` who closed it.
+async fn reopen_for(state: &AppState, channel_id: Id, users: &[Id]) -> ApiResult<()> {
+    let users: Vec<Id> = {
+        let cache = state.cache();
+        let Some(c) = cache.channels.get(&channel_id) else {
+            return Ok(());
+        };
+        users
+            .iter()
+            .copied()
+            .filter(|u| c.closed.binary_search(u).is_ok())
+            .collect()
+    };
+    if users.is_empty() {
+        return Ok(());
+    }
+    let mut tx = state.db.write.begin().await?;
+    for &user_id in &users {
+        db::dms::set_closed(&mut tx, channel_id, user_id, false).await?;
+    }
+    tx.commit().await?;
+    let dm = {
+        let mut cache = state.cache_mut();
+        if let Some(c) = cache.channels.get_mut(&channel_id) {
+            c.closed.retain(|u| !users.contains(u));
+        }
+        cache.dm_channel(channel_id)
+    };
+    if let Some(dm) = dm {
+        state.publish(ServerEvent::DmCreate(dm), Audience::Users(users));
+    }
+    Ok(())
 }
 
 /// A group DM the caller is a recipient of. `NOT_FOUND` if they are not; `BAD_REQUEST` for a

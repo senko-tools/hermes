@@ -1388,3 +1388,13 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   when something there is unread, and opening a channel (also from a notification or a call)
   switches to its tab. The `<instance>/dms` collapse key is gone.
 - **Why:** the developer's review of 1.0.0.
+
+## 2026-11-02: Closing 1:1 DMs
+
+- **What:** `DELETE /dms/{id}` (an addition to PLAN.md section 10) closes a 1:1 DM for the
+  caller; `dm_recipients.closed` (migration 0004) remembers it. A closed DM is left out of
+  `GET /dms` and `ready`; a new message or a call ring reopens it for everyone who closed it
+  (`dm_create` before the event), and so does `POST /dms` to the same person for the caller.
+  Group DMs are still left, not closed. The GUI has "Close conversation" in a DM's menu and an
+  X on hover; the TUI has `:close`.
+- **Why:** there was no way to remove a 1:1 DM from the list.

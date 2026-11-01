@@ -36,6 +36,25 @@ pub async fn remove_recipient(
     Ok(())
 }
 
+/// Closes (or reopens) a DM for one recipient.
+pub async fn set_closed(
+    conn: &mut SqliteConnection,
+    channel_id: Id,
+    user_id: Id,
+    closed: bool,
+) -> Result<(), sqlx::Error> {
+    let (channel_id, user_id) = (channel_id.to_i64(), user_id.to_i64());
+    sqlx::query!(
+        "UPDATE dm_recipients SET closed = ? WHERE channel_id = ? AND user_id = ?",
+        closed,
+        channel_id,
+        user_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Sets the group DM owner.
 pub async fn set_owner(
     conn: &mut SqliteConnection,

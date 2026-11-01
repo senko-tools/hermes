@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT channel_id, user_id FROM dm_recipients",
+  "query": "SELECT channel_id, user_id, closed FROM dm_recipients",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "user_id"
           }
         }
+      },
+      {
+        "name": "closed",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "dm_recipients",
+            "name": "closed"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
+      false,
       false
     ]
   },
-  "hash": "6e96bd48fbc5ee9325b2027c1f012337d3de80fc4fbc7a22285d865a74872056"
+  "hash": "f1fe2be29525b45fd36592dec87e9bd3fa2e57e7654a2b4ccade15099fef64e2"
 }

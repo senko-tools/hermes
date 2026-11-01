@@ -51,6 +51,8 @@ pub enum Command {
     Topic(String),
     /// `:delete-channel`: delete the open channel (asks first).
     DeleteChannel,
+    /// `:close`: close the open 1:1 DM (it comes back with the next message).
+    CloseDm,
     Kick(String),
     /// `:ban <user> [reason]`.
     Ban(String, String),
@@ -93,7 +95,7 @@ pub const HELP: &str = ":join <channel>  :dm <user>  :voice [channel]  :leave  :
 :offline  :online  :retry  :messages  :quit  \
 :search <words> (:search! everywhere)  :mentions  :pins  :read  :menu  \
 :notify all|mentions|none|default|mute|unmute [space]  \
-:create text|voice|category <name>  :space <name>  :rename <name>  :topic [text]  :delete-channel  \
+:create text|voice|category <name>  :space <name>  :rename <name>  :topic [text]  :delete-channel  :close  \
 :kick <user>  :ban <user> [reason]  :unban <user>  :role <user> +role|-role  \
 :profile name|status <text>";
 
@@ -199,6 +201,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "rename" => Command::Rename(need(":rename <name>")?),
         "topic" => Command::Topic(arg.to_owned()),
         "delete-channel" => Command::DeleteChannel,
+        "close" => Command::CloseDm,
         "kick" => Command::Kick(need(":kick <user>")?.trim_start_matches('@').to_owned()),
         "ban" => {
             let rest = need(":ban <user> [reason]")?;

@@ -133,6 +133,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/attachments/{id}/thumb", get(attachments::thumb))
         .route("/attachments/{id}/{filename}", get(attachments::download))
         .route("/dms", get(dms::list).post(dms::create))
+        .route("/dms/{id}", delete(dms::close))
         .route(
             "/dms/{id}/recipients/{uid}",
             put(dms::add_recipient).delete(dms::remove_recipient),

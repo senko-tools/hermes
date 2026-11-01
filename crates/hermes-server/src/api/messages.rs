@@ -169,7 +169,7 @@ pub async fn send(
     }
     fields.finish()?;
 
-    let (resolved, slowmode) = {
+    let (resolved, slowmode, kind) = {
         let cache = state.cache();
         let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
         if !attachment_ids.is_empty() {
@@ -179,7 +179,7 @@ pub async fn send(
             messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, &req.content);
         let slowmode = Some(t.slowmode_secs)
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
-        (resolved, slowmode)
+        (resolved, slowmode, t.kind)
     };
     if let Some(reply_id) = req.reply_to_id
         && db::messages::get(&state.db.read, channel_id, reply_id)
@@ -235,6 +235,9 @@ pub async fn send(
     if let Some(cached) = state.cache_mut().channels.get_mut(&channel_id) {
         let last = &mut cached.channel.last_message_id;
         *last = (*last).max(Some(row.id));
+    }
+    if kind == ChannelKind::Dm {
+        super::dms::reopen(&state, channel_id).await?;
     }
 
     let mut message = one_to_wire(&state, row, auth.user_id).await?;

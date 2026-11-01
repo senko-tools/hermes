@@ -335,3 +335,85 @@ async fn leaving_group_dms() {
     let gid = gid.parse().unwrap();
     assert!(!server.state.cache().channels.contains_key(&gid));
 }
+
+#[tokio::test]
+async fn closing_and_reopening_a_dm() {
+    let server = start("dm-close", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (bob, bob_id) = server.member(&owner, &space_id, "bob").await;
+    let dm = server
+        .post("/dms", Some(&owner), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .ok();
+    let dm_id = dm["id"].as_str().unwrap().to_owned();
+    let (mut aws, _) = server.identify(&alice).await;
+
+    // Strangers and spaces cannot be closed; group DMs are left instead.
+    server
+        .delete(&format!("/dms/{dm_id}"), Some(&bob))
+        .await
+        .err(404, "NOT_FOUND");
+    let group = server
+        .post(
+            "/dms",
+            Some(&owner),
+            json!({ "recipient_ids": [alice_id, bob_id] }),
+        )
+        .await
+        .ok();
+    assert_eq!(aws.recv_op("dm_create").await["d"]["id"], group["id"]);
+    server
+        .delete(
+            &format!("/dms/{}", group["id"].as_str().unwrap()),
+            Some(&alice),
+        )
+        .await
+        .err(400, "BAD_REQUEST");
+
+    // Closing hides it from Alice only, everywhere she lists DMs.
+    server
+        .delete(&format!("/dms/{dm_id}"), Some(&alice))
+        .await
+        .ok();
+    let closed = aws.next_event().await;
+    assert_eq!(closed["op"], "dm_delete");
+    assert_eq!(closed["d"]["id"], dm_id);
+    server
+        .delete(&format!("/dms/{dm_id}"), Some(&alice))
+        .await
+        .ok();
+    let listed = |list: &Value| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(!listed(&server.get("/dms", Some(&alice)).await.ok()).contains(&dm_id));
+    let (_ws, ready) = server.identify(&alice).await;
+    assert!(!listed(&ready["dms"]).contains(&dm_id));
+    assert!(listed(&server.get("/dms", Some(&owner)).await.ok()).contains(&dm_id));
+
+    // A new message reopens it: dm_create arrives before the message.
+    send_message(&server, &owner, &dm_id, "still there?").await;
+    let reopened = aws.next_event().await;
+    assert_eq!(reopened["op"], "dm_create");
+    assert_eq!(reopened["d"]["id"], dm_id);
+    assert_eq!(aws.next_event().await["op"], "message_create");
+    assert!(listed(&server.get("/dms", Some(&alice)).await.ok()).contains(&dm_id));
+
+    // Messaging the other person again reopens it for the caller.
+    server
+        .delete(&format!("/dms/{dm_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(aws.next_event().await["op"], "dm_delete");
+    let again = server
+        .post("/dms", Some(&alice), json!({ "recipient_ids": [owner_id] }))
+        .await
+        .ok();
+    assert_eq!(again["id"], dm_id);
+    assert_eq!(aws.next_event().await["op"], "dm_create");
+    assert!(listed(&server.get("/dms", Some(&alice)).await.ok()).contains(&dm_id));
+}

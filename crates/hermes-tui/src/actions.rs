@@ -188,6 +188,12 @@ impl App {
                         .instance(&inst)
                         .is_some_and(|s| view::can(s, channel, Permissions::MANAGE_CHANNELS))
                 };
+                if kind == ChannelKind::Dm {
+                    out.push(item(
+                        "Close conversation",
+                        within(MenuItem::Run(Command::CloseDm)),
+                    ));
+                }
                 if manage && !kind.is_private() {
                     out.push(item(
                         "Rename…",
@@ -572,6 +578,23 @@ impl App {
                 self.popup = Some(Popup::Confirm {
                     text: format!("Delete #{name} and all its messages for everyone? (y/n)"),
                     action: ConfirmAction::DeleteChannel { inst, channel },
+                });
+            }
+            Command::CloseDm => {
+                let (inst, channel, _) = self.here()?;
+                let dm = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.channel(channel))
+                    .is_some_and(|c| c.kind == ChannelKind::Dm);
+                if !dm {
+                    self.error(":close works in a 1:1 DM (leave group DMs from their menu)".into());
+                    return None;
+                }
+                self.current = None;
+                self.rest(&inst, "conversation closed", move |r| async move {
+                    r.close_dm(channel).await
                 });
             }
             Command::Kick(name) => {

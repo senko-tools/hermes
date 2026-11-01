@@ -173,6 +173,8 @@ pub struct ChannelState {
     pub channel: Channel,
     /// DM and group DM recipients, sorted.
     pub recipient_ids: Vec<Id>,
+    /// Recipients who closed the DM, sorted: it is not listed for them until it reopens.
+    pub closed: Vec<Id>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -279,6 +281,7 @@ impl Cache {
             let state = ChannelState {
                 channel,
                 recipient_ids: Vec::new(),
+                closed: Vec::new(),
             };
             cache.channels.insert(state.channel.id, state);
         }
@@ -287,14 +290,18 @@ impl Cache {
                 state.channel.overrides.push(o);
             }
         }
-        for (channel_id, user_id) in s.dm_recipients {
-            if let Some(state) = cache.channels.get_mut(&channel_id) {
-                state.recipient_ids.push(user_id);
+        for r in s.dm_recipients {
+            if let Some(state) = cache.channels.get_mut(&r.channel_id) {
+                state.recipient_ids.push(r.user_id);
+                if r.closed {
+                    state.closed.push(r.user_id);
+                }
             }
         }
         for state in cache.channels.values_mut() {
             state.channel.overrides.sort_by_key(|o| o.role_id);
             state.recipient_ids.sort();
+            state.closed.sort();
         }
 
         cache
@@ -318,6 +325,7 @@ impl Cache {
             ChannelState {
                 channel,
                 recipient_ids,
+                closed: Vec::new(),
             },
         );
     }
@@ -475,6 +483,12 @@ impl Cache {
                 c.channel.kind.is_private() && c.recipient_ids.binary_search(&user_id).is_ok()
             })
             .map(|c| c.channel.id)
+    }
+
+    /// The DMs `user_id` lists: [`Cache::dm_ids`] without the ones they closed.
+    pub fn open_dm_ids(&self, user_id: Id) -> impl Iterator<Item = Id> + '_ {
+        self.dm_ids(user_id)
+            .filter(move |id| self.channels[id].closed.binary_search(&user_id).is_err())
     }
 
     /// Whether two users are members of at least one common space.

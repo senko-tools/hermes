@@ -40,9 +40,9 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
         .filter_map(|id| cache.space_snapshot(id, user_id))
         .collect();
 
-    // Most recently active first.
+    // Most recently active first; closed ones are left out.
     let mut dms: Vec<Channel> = cache
-        .dm_ids(user_id)
+        .open_dm_ids(user_id)
         .filter_map(|id| cache.dm_channel(id))
         .collect();
     dms.sort_by_key(|c| std::cmp::Reverse((c.last_message_id, c.id)));

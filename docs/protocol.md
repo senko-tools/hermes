@@ -62,6 +62,12 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 | `GET /admin/users` `?after&limit` | `[User + {disabled, instance_admin}]` | instance admins only |
 | `PATCH /admin/users/{id}` `{disabled?, instance_admin?}` | 204 | instance admins only; disabling signs the user out everywhere; admins cannot disable or demote themselves |
 
+### DM endpoints
+
+| Request | Response | Notes |
+|---|---|---|
+| `DELETE /dms/{id}` | 204 | closes a 1:1 DM for you: `dm_delete {id}` to your sessions, and it leaves `GET /dms` and `ready`; a message or call ring in it, or `POST /dms` to the same person, reopens it with `dm_create` first; group DMs answer `BAD_REQUEST` (leave them with `DELETE /channels/{id}`) (an addition to PLAN.md section 10) |
+
 ### Voice endpoints
 
 | Request | Response | Notes |

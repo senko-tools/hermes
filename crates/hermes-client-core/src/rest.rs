@@ -676,6 +676,12 @@ impl Rest {
         self.call(Method::POST, "/dms", Some(&req)).await
     }
 
+    /// Closes a 1:1 DM for me: it leaves my list until a message or call reopens it.
+    pub async fn close_dm(&self, dm: Id) -> Result<()> {
+        self.empty::<()>(Method::DELETE, &format!("/dms/{dm}"), None)
+            .await
+    }
+
     pub async fn add_recipient(&self, dm: Id, user: Id) -> Result<()> {
         self.empty::<()>(Method::PUT, &format!("/dms/{dm}/recipients/{user}"), None)
             .await

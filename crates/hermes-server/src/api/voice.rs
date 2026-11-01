@@ -277,6 +277,7 @@ pub async fn ring(
             None => recipients.clone(),
         }
     };
+    super::dms::reopen(&state, channel_id).await?;
     state.voice.ring(&state, channel_id, auth.user_id, &targets);
     Ok(StatusCode::NO_CONTENT)
 }

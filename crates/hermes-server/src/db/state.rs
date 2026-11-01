@@ -41,8 +41,7 @@ pub struct Snapshot {
     /// `overrides` and `recipients` are empty; they come in `overrides` and `dm_recipients`.
     pub channels: Vec<Channel>,
     pub overrides: Vec<(Id, Override)>,
-    /// `(channel_id, user_id)`.
-    pub dm_recipients: Vec<(Id, Id)>,
+    pub dm_recipients: Vec<DmRecipientRow>,
 }
 
 pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
@@ -235,12 +234,25 @@ async fn overrides(pool: &SqlitePool) -> Result<Vec<(Id, Override)>, sqlx::Error
         .collect())
 }
 
-async fn dm_recipients(pool: &SqlitePool) -> Result<Vec<(Id, Id)>, sqlx::Error> {
-    let rows = sqlx::query!("SELECT channel_id, user_id FROM dm_recipients")
+/// A row of `dm_recipients`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmRecipientRow {
+    pub channel_id: Id,
+    pub user_id: Id,
+    /// They closed the DM (it is not listed for them until it reopens).
+    pub closed: bool,
+}
+
+async fn dm_recipients(pool: &SqlitePool) -> Result<Vec<DmRecipientRow>, sqlx::Error> {
+    let rows = sqlx::query!("SELECT channel_id, user_id, closed FROM dm_recipients")
         .fetch_all(pool)
         .await?;
     Ok(rows
         .into_iter()
-        .map(|r| (Id::from_i64(r.channel_id), Id::from_i64(r.user_id)))
+        .map(|r| DmRecipientRow {
+            channel_id: Id::from_i64(r.channel_id),
+            user_id: Id::from_i64(r.user_id),
+            closed: r.closed != 0,
+        })
         .collect())
 }

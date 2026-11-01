@@ -566,7 +566,7 @@ fn row_view<'a>(
             } else {
                 avatar::view(name, None, SLOT, fonts)
             };
-            item(
+            let row = item(
                 row![
                     slot(face),
                     name_text(name, state, false, fonts, theme),
@@ -580,6 +580,24 @@ fn row_view<'a>(
                 Message::Select(inst.clone(), *id),
                 Some(Target::Channel(inst.clone(), *id)),
                 menu,
+            );
+            if *group {
+                return row;
+            }
+            // An X on hover closes a 1:1 DM (group DMs are left from their menu, confirmed).
+            let close = button(icon(icon::CLOSE, 14.0))
+                .padding(2)
+                .style(move |_, s| style::ghost(theme, s, false))
+                .on_press(Message::Menu(
+                    Target::Channel(inst.clone(), *id),
+                    menu::Action::CloseDm,
+                ));
+            iced::widget::hover(
+                row,
+                container(close)
+                    .align_right(Fill)
+                    .center_y(style::ROW_H)
+                    .padding([0.0, style::GAP_XS]),
             )
         }
     }
