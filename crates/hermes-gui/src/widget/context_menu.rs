@@ -8,11 +8,21 @@ use crate::theme::{Theme, style};
 use crate::widget::icon::{self, icon};
 use crate::widget::label;
 
-pub const WIDTH: f32 = 236.0;
-/// Height of one entry: the 18 px icon box plus padding.
-const ROW: f32 = 18.0 + 2.0 * 8.0;
+/// Narrowest and widest a menu gets; in between it fits its longest entry on one line.
+pub const MIN_WIDTH: f32 = 220.0;
+pub const MAX_WIDTH: f32 = 340.0;
+/// Height of one entry.
+const ROW: f32 = style::ROW_H;
 const SEPARATOR: f32 = 9.0;
 const HEADER: f32 = 24.0 + 2.0 * 8.0 + SEPARATOR;
+
+/// A width that fits the longest of `labels` on one line (estimated from the text size).
+fn width_for<'s>(labels: impl Iterator<Item = &'s str>, fonts: &Fonts) -> f32 {
+    let longest = labels.map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+    // Icon, gaps, check mark and paddings around the label.
+    let chrome = 18.0 + 16.0 + 2.0 * style::GAP + 2.0 * style::GAP_S + 2.0 * style::GAP_XS;
+    (longest * fonts.size * 0.62 + chrome).clamp(MIN_WIDTH, MAX_WIDTH)
+}
 
 pub struct Item<M> {
     pub label: String,
@@ -51,7 +61,15 @@ pub fn overlay<'a, M: Clone + 'a>(
         + separators * SEPARATOR
         + if header.is_some() { HEADER } else { 0.0 }
         + 10.0;
-    let x = at.x.min(window.width - WIDTH - 4.0).max(0.0);
+    let width = width_for(
+        items
+            .iter()
+            .flatten()
+            .map(|i| i.label.as_str())
+            .chain(header.as_ref().map(|h| h.title.as_str())),
+        fonts,
+    );
+    let x = at.x.min(window.width - width - 4.0).max(0.0);
     let y = at.y.min(window.height - height - 4.0).max(0.0);
     let separator = || {
         container(rule::horizontal(1).style(move |_| style::rule(theme)))
@@ -95,16 +113,22 @@ pub fn overlay<'a, M: Clone + 'a>(
         };
         list = list.push(
             button(
-                row![
-                    icon(item.icon, 18.0).color(icon_color),
-                    label(item.label, fonts).width(Fill),
-                    check,
-                ]
-                .spacing(style::GAP)
-                .align_y(Alignment::Center),
+                container(
+                    row![
+                        icon(item.icon, 18.0).color(icon_color),
+                        label(item.label, fonts)
+                            .wrapping(text::Wrapping::None)
+                            .width(Fill),
+                        check,
+                    ]
+                    .spacing(style::GAP)
+                    .align_y(Alignment::Center),
+                )
+                .center_y(Fill),
             )
             .width(Fill)
-            .padding([style::GAP_S, style::GAP_S])
+            .height(ROW)
+            .padding([0.0, style::GAP_S])
             .style(move |_, s| {
                 let mut st = style::sidebar_item(theme, s, selected);
                 if danger {
@@ -117,7 +141,7 @@ pub fn overlay<'a, M: Clone + 'a>(
     }
     let menu = container(list)
         .padding(style::GAP_XS)
-        .width(WIDTH)
+        .width(width)
         .style(move |_| style::popover(theme));
     let catcher = mouse_area(container("").width(Fill).height(Fill))
         .on_press(on_close.clone())

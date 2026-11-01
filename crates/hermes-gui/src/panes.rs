@@ -239,11 +239,8 @@ impl Panes {
                 .on_right_press(Message::OpenMenu(Target::Pane(id))),
             );
             let mut heading = row![
-                icon(glyph, 18.0).color(theme.text.tertiary.0),
-                text(title)
-                    .font(fonts.bold())
-                    .size(fonts.title())
-                    .wrapping(text::Wrapping::None),
+                icon(glyph, style::ICON).color(theme.icons.default.0),
+                crate::widget::title(title, fonts).wrapping(text::Wrapping::None),
             ]
             .spacing(style::GAP_S)
             .align_y(Alignment::Center);
@@ -827,6 +824,9 @@ fn welcome_action<'a>(
 }
 
 /// The members of the channel's space by hoisted role, or a DM's recipients.
+/// Avatar size in the member list.
+const MEMBER_AVATAR: f32 = 28.0;
+
 fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
@@ -882,27 +882,41 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                         Some(channel::message::Img::Ready(handle)) => Some(handle.clone()),
                         _ => None,
                     });
-                let face = crate::widget::avatar::view(&member.name, picture.as_ref(), 30.0, fonts);
+                let face = crate::widget::avatar::view(
+                    &member.name,
+                    picture.as_ref(),
+                    MEMBER_AVATAR,
+                    fonts,
+                );
                 let face = if offline {
                     face
                 } else {
-                    crate::widget::avatar::with_dot(face, 30.0, dot, theme.surface.sidebar.0)
+                    crate::widget::avatar::with_dot(
+                        face,
+                        MEMBER_AVATAR,
+                        dot,
+                        theme.surface.sidebar.0,
+                    )
                 };
                 let target = Target::Member(inst.clone(), s.space_of(channel), member.user_id);
                 let open = ctx.menu == Some(&target);
                 list = list.push(
                     mouse_area(
                         button(
-                            row![
-                                face,
-                                label(member.name, fonts)
-                                    .color(name_color)
-                                    .wrapping(text::Wrapping::None),
-                            ]
-                            .spacing(style::GAP)
-                            .align_y(Alignment::Center),
+                            container(
+                                row![
+                                    face,
+                                    label(member.name, fonts)
+                                        .color(name_color)
+                                        .wrapping(text::Wrapping::None),
+                                ]
+                                .spacing(style::GAP)
+                                .align_y(Alignment::Center),
+                            )
+                            .center_y(Fill),
                         )
-                        .padding([style::GAP_XS, style::GAP_S])
+                        .height(style::ROW_H + style::GAP_XS)
+                        .padding([0.0, style::GAP_S])
                         .width(Fill)
                         .style(move |_, st| {
                             if open {

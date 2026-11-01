@@ -217,7 +217,7 @@ pub fn view<'a>(
                 iced::Border {
                     color: theme.pane.focused_border.0,
                     width: 1.0,
-                    radius: 4.0.into(),
+                    radius: style::radius_small(theme).into(),
                 }
             } else {
                 iced::Border::default()
@@ -235,6 +235,17 @@ pub fn view<'a>(
         });
 
     let mut layers = stack![content];
+    if highlight {
+        // A bar on the left edge, like the mention state of a sidebar row.
+        let bar = theme.channel.mention_border.0;
+        let width = f32::from(theme.shape.indicator_width).max(2.0);
+        layers = layers.push(
+            container(Space::new().width(width).height(Fill)).style(move |_| container::Style {
+                background: Some(bar.into()),
+                ..container::Style::default()
+            }),
+        );
+    }
     if hovered {
         layers = layers.push(
             container(toolbar(
