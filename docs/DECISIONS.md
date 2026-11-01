@@ -1082,3 +1082,26 @@ error-prone (a binary copied with WinSCP lost its executable bit and the service
 - **Private repository:** the server cannot download from GitHub, so the script uses the release
   files in its own folder automatically. Every release now ships `install.sh` (release.yml), so
   "download the release, copy the folder, run `sh install.sh`" works.
+
+## 2026-11-01: Release workflow (Phase 7, item 1) details
+
+Approved by the developer as a plan before implementation.
+
+- **Artifacts:** `hermes-server-{x86_64,aarch64}-unknown-linux-musl.tar.gz`,
+  `hermes-server-x86_64-pc-windows-msvc.zip`, `Hermes-<version>-portable.zip` (`hermes.exe` +
+  `hermes-tui.exe`), `hermes-tui-<version>-x86_64-pc-windows-msvc.zip`,
+  `hermes-tui-<version>-x86_64-unknown-linux-gnu.tar.gz`, `install.sh`, `hermes.service`,
+  `SHA256SUMS`, and the image `ghcr.io/senko-tools/hermes-server:<version>` (amd64 + arm64;
+  `:latest` only for releases without a `-`). Server archive names stay unversioned (install.sh
+  and the egg use them).
+- **Left out:** the Windows installer comes with the installer item (Phase 7 item 2); macOS
+  builds are skipped for now (10x runner minutes on a private repository; Windows first, Linux a
+  bonus, as the developer asked).
+- **aarch64** is cross-compiled with `cargo-zigbuild` (arm runners are not free for private
+  repositories). Windows binaries link the C runtime statically. The Linux TUI is built on
+  `ubuntu-22.04` (older glibc) and needs the system's `libasound2`.
+- **Docker:** `deploy/docker/Dockerfile.release` copies the musl binaries built by the workflow
+  (per `TARGETARCH`), so nothing is compiled under QEMU; `deploy/docker/Dockerfile` still builds
+  from source for self-builders.
+- **Dry run:** anything but a tag only uploads workflow artifacts (no release, no image push). It
+  runs when `release.yml` or `Dockerfile.release` changes on `dev`, or by hand.
