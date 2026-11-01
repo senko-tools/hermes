@@ -155,6 +155,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
@@ -201,10 +202,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Only the release files (the Docker job uploads a build record artifact too).
       - uses: actions/download-artifact@v7
         with:
+          pattern: server-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: tui-linux
+          path: dist
       - name: Add the install files and checksums
         working-directory: dist
         run: |
