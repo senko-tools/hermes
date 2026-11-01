@@ -160,11 +160,20 @@ pub fn view<'a>(
 
     // Gutter: avatar on the first message of a group, the time on hover for the others.
     let gutter: Element<'a, Message> = if !m.grouped && ctx.config.buffer.show_avatars {
-        mouse_area(avatar(&s.display_name(space, msg.author.id), fonts))
-            .on_press(Message::Author(msg.author.id))
-            .on_right_press(Message::Author(msg.author.id))
-            .interaction(iced::mouse::Interaction::Pointer)
-            .into()
+        // The user's current picture (the message keeps the one from when it was sent).
+        let picture = s
+            .user(msg.author.id)
+            .map_or(msg.author.avatar.as_ref(), |u| u.avatar.as_ref())
+            .and_then(|a| ctx.images.get(&(inst.clone(), a.id)));
+        mouse_area(avatar(
+            &s.display_name(space, msg.author.id),
+            picture,
+            fonts,
+        ))
+        .on_press(Message::Author(msg.author.id))
+        .on_right_press(Message::Author(msg.author.id))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into()
     } else if m.grouped && hovered {
         container(small(time_text, fonts).color(theme.text.tertiary.0))
             .padding([3, 0])
@@ -259,7 +268,20 @@ fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'
         .into()
 }
 
-fn avatar<'a>(name: &str, fonts: &crate::font::Fonts) -> Element<'a, Message> {
+/// The author's picture if it is loaded, else their initial on a colored circle.
+fn avatar<'a>(
+    name: &str,
+    picture: Option<&Img>,
+    fonts: &crate::font::Fonts,
+) -> Element<'a, Message> {
+    if let Some(Img::Ready(handle)) = picture {
+        return image(handle.clone())
+            .width(32)
+            .height(32)
+            .content_fit(iced::ContentFit::Cover)
+            .border_radius(16.0)
+            .into();
+    }
     let initial: String = name
         .chars()
         .find(|c| c.is_alphanumeric())

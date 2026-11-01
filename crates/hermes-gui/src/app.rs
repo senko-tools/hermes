@@ -1136,8 +1136,24 @@ impl App {
 
     /// Starts loading the thumbnails of a message's images that are not loaded yet.
     fn load_thumbnails(&mut self, inst: &InstanceId, channel: Id, message: Id) -> Task<Message> {
+        let avatar = if self.config.buffer.show_avatars {
+            self.core
+                .store()
+                .instance(inst)
+                .and_then(|s| {
+                    let author = s.window(channel)?.get(message)?.author.id;
+                    s.user(author)?.avatar.clone()
+                })
+                .map(|a| a.id)
+                .filter(|id| !self.images.contains_key(&(inst.clone(), *id)))
+        } else {
+            None
+        };
         if !self.config.buffer.image_previews {
-            return Task::none();
+            return match avatar {
+                Some(id) => self.load_images(inst, vec![id]),
+                None => Task::none(),
+            };
         }
         let wanted: Vec<Id> = {
             let store = self.core.store();
@@ -1153,8 +1169,14 @@ impl App {
                 .filter(|a| channel::message::is_image(a))
                 .map(|a| a.id)
                 .filter(|id| !self.images.contains_key(&(inst.clone(), *id)))
+                .chain(avatar)
                 .collect()
         };
+        self.load_images(inst, wanted)
+    }
+
+    /// Loads the thumbnails of these attachments into `images`.
+    fn load_images(&mut self, inst: &InstanceId, wanted: Vec<Id>) -> Task<Message> {
         let mut tasks = Vec::new();
         for id in wanted {
             self.images.insert((inst.clone(), id), Img::Loading);
