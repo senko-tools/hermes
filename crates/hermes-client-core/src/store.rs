@@ -893,6 +893,10 @@ impl InstanceStore {
                     .insert(setting.target_id, setting);
                 vec![C::NotificationSettings]
             }
+            ServerEvent::NotificationSettingsDelete { target_id } => {
+                self.notification_settings.remove(&target_id);
+                vec![C::NotificationSettings]
+            }
         }
     }
 

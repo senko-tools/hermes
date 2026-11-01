@@ -1,6 +1,7 @@
 //! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
 //! mapping of errors to HTTP responses.
 
+mod admin;
 mod attachments;
 mod audit;
 mod auth;
@@ -13,6 +14,7 @@ mod messages;
 pub mod pages;
 mod perms;
 mod roles;
+mod search;
 mod spaces;
 mod users;
 mod validate;
@@ -61,8 +63,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/sessions", get(auth::list_sessions))
         .route("/auth/sessions/{id}", delete(auth::delete_session))
-        .route("/users/@me", get(users::me))
+        .route("/users/@me", get(users::me).patch(users::update_me))
         .route("/users/@me/password", post(users::change_password))
+        .route("/users/@me/mentions", get(users::mentions))
+        .route(
+            "/users/@me/notification-settings/{target_id}",
+            put(users::put_notification_setting).delete(users::delete_notification_setting),
+        )
+        .route("/users/{id}", get(users::get))
+        .route("/search", get(search::search))
+        .route("/admin/users", get(admin::list_users))
+        .route("/admin/users/{id}", patch(admin::update_user))
         .route("/spaces", post(spaces::create))
         .route("/spaces/{id}", patch(spaces::update).delete(spaces::delete))
         .route("/spaces/{id}/transfer", post(spaces::transfer))

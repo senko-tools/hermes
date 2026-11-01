@@ -49,6 +49,19 @@ Errors always look like:
 Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on visible ones answer
 `MISSING_PERMISSION`.
 
+### User, search and admin endpoints
+
+| Request | Response | Notes |
+|---|---|---|
+| `PATCH /users/@me` `{display_name?, avatar_id?, status_text?}` | `CurrentUser` | `null` clears a field; `display_name` 1–32, `status_text` ≤ 128 chars; `avatar_id` must be an image you uploaded; sends `user_update` to everyone sharing a space or DM |
+| `GET /users/{id}` | `User` + `{mutual_space_ids}` | yourself, or someone you share a space or DM with; else `NOT_FOUND` |
+| `GET /users/@me/mentions` `?before&limit` | `[Message]`, newest first | messages in channels you can read that mention you, one of your roles, `@everyone` or `@here`; your own are left out (an addition to PLAN.md section 10) |
+| `PUT /users/@me/notification-settings/{target_id}` `{level, muted_until?}` | 204 | a space you are in or a channel you can see; `muted_until`: `null`, `-1` (forever) or Unix ms; sends `notification_settings_update` |
+| `DELETE /users/@me/notification-settings/{target_id}` | 204 | back to the default; sends `notification_settings_delete {target_id}` (an addition to PLAN.md section 10) |
+| `GET /search` `?q&space_id?&channel_id?&author_id?&before?&limit?` | `{messages, total}`, newest first | every word must match as a prefix; only channels with `VIEW_CHANNEL` + `READ_HISTORY` (DMs you are in); deleted messages never match; an empty `q` is `VALIDATION_FAILED` |
+| `GET /admin/users` `?after&limit` | `[User + {disabled, instance_admin}]` | instance admins only |
+| `PATCH /admin/users/{id}` `{disabled?, instance_admin?}` | 204 | instance admins only; disabling signs the user out everywhere; admins cannot disable or demote themselves |
+
 ### Voice endpoints
 
 | Request | Response | Notes |
@@ -112,7 +125,7 @@ and group DM calls you are a recipient of.
 `role_update`, `role_delete {id, space_id}`, `member_add` / `member_update`,
 `member_remove {space_id, user_id}`, `user_update`, `presence_update`, `voice_state_update`,
 `call_ring {channel_id, caller_id}`, `call_ring_stop {channel_id}`, `dm_create`, `dm_update`,
-`dm_delete {id}`, `notification_settings_update`.
+`dm_delete {id}`, `notification_settings_update`, `notification_settings_delete {target_id}`.
 
 `voice_state_update` carries a full `VoiceState`
 `{user_id, channel_id, self_mute, self_deaf, server_mute, server_deaf, joined_at}`, or

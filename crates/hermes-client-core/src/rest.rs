@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hermes_proto::api::{
-    AckRequest, AuthResponse, BanRequest, CallRingRequest, ChangePasswordRequest, ChannelPosition,
-    CreateChannelRequest, CreateDmRequest, CreateInviteRequest, CreateRoleRequest,
-    CreateSpaceRequest, EditMessageRequest, HistoryQuery, InstanceResponse, LoginRequest,
-    OverrideRequest, RegisterRequest, RolePosition, SendMessageRequest, SessionInfo,
-    TransferSpaceRequest, UpdateChannelRequest, UpdateMemberRequest, UpdateRoleRequest,
-    UpdateSpaceRequest, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
-    VoiceStatePatchRequest,
+    AckRequest, AdminUser, AdminUserPatch, AuthResponse, BanRequest, CallRingRequest,
+    ChangePasswordRequest, ChannelPosition, CreateChannelRequest, CreateDmRequest,
+    CreateInviteRequest, CreateRoleRequest, CreateSpaceRequest, EditMessageRequest, HistoryQuery,
+    InstanceResponse, LoginRequest, NotificationSettingRequest, OverrideRequest, RegisterRequest,
+    RolePosition, SearchQuery, SearchResponse, SendMessageRequest, SessionInfo,
+    TransferSpaceRequest, UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
+    UpdateRoleRequest, UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse,
+    VoiceSelfStateRequest, VoiceStatePatchRequest,
 };
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
@@ -227,6 +228,73 @@ impl Rest {
 
     pub async fn me(&self) -> Result<CurrentUser> {
         self.get("/users/@me").await
+    }
+
+    pub async fn update_me(&self, req: &UpdateMeRequest) -> Result<CurrentUser> {
+        self.call(Method::PATCH, "/users/@me", Some(req)).await
+    }
+
+    pub async fn user(&self, id: Id) -> Result<UserProfile> {
+        self.get(&format!("/users/{id}")).await
+    }
+
+    /// Messages mentioning me, newest first.
+    pub async fn mentions(&self, before: Option<Id>, limit: u32) -> Result<Vec<Message>> {
+        let before = before.map_or_else(String::new, |id| format!("&before={id}"));
+        self.get(&format!("/users/@me/mentions?limit={limit}{before}"))
+            .await
+    }
+
+    pub async fn set_notification_setting(
+        &self,
+        target: Id,
+        req: &NotificationSettingRequest,
+    ) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/users/@me/notification-settings/{target}"),
+            Some(req),
+        )
+        .await
+    }
+
+    pub async fn delete_notification_setting(&self, target: Id) -> Result<()> {
+        self.empty::<()>(
+            Method::DELETE,
+            &format!("/users/@me/notification-settings/{target}"),
+            None,
+        )
+        .await
+    }
+
+    /// Full-text search, newest first.
+    pub async fn search(&self, query: &SearchQuery) -> Result<SearchResponse> {
+        let mut params = vec![format!("q={}", encode(&query.q))];
+        for (name, value) in [
+            ("space_id", query.space_id),
+            ("channel_id", query.channel_id),
+            ("author_id", query.author_id),
+            ("before", query.before),
+        ] {
+            if let Some(id) = value {
+                params.push(format!("{name}={id}"));
+            }
+        }
+        if let Some(limit) = query.limit {
+            params.push(format!("limit={limit}"));
+        }
+        self.get(&format!("/search?{}", params.join("&"))).await
+    }
+
+    pub async fn admin_users(&self, after: Option<Id>, limit: u32) -> Result<Vec<AdminUser>> {
+        let after = after.map_or_else(String::new, |id| format!("&after={id}"));
+        self.get(&format!("/admin/users?limit={limit}{after}"))
+            .await
+    }
+
+    pub async fn admin_update_user(&self, user: Id, req: &AdminUserPatch) -> Result<()> {
+        self.empty(Method::PATCH, &format!("/admin/users/{user}"), Some(req))
+            .await
     }
 
     pub async fn change_password(&self, req: &ChangePasswordRequest) -> Result<()> {

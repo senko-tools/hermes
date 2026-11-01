@@ -576,3 +576,98 @@ pub async fn set_read(
     .await?;
     Ok(())
 }
+
+/// Full-text matches of `fts` (an FTS5 query) in `channels`, newest first, not deleted.
+pub async fn search(
+    e: impl SqliteExecutor<'_>,
+    fts: &str,
+    channels: &[Id],
+    author: Option<Id>,
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<MessageRow>, sqlx::Error> {
+    let channels = id_list(channels);
+    let author = author.map(Id::to_i64);
+    let before = before.map_or(i64::MAX, Id::to_i64);
+    let limit = i64::from(limit);
+    rows(
+        sqlx::query_as!(
+            Raw,
+            r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
+                      m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind
+               FROM messages_fts f JOIN messages m ON m.id = f.rowid
+               WHERE messages_fts MATCH ?1 AND m.deleted = 0
+                 AND m.channel_id IN (SELECT value FROM json_each(?2))
+                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4
+               ORDER BY m.id DESC LIMIT ?5"#,
+            fts,
+            channels,
+            author,
+            before,
+            limit
+        )
+        .fetch_all(e)
+        .await?,
+    )
+}
+
+/// How many messages [`search`] could return without the page limit.
+pub async fn search_count(
+    e: impl SqliteExecutor<'_>,
+    fts: &str,
+    channels: &[Id],
+    author: Option<Id>,
+) -> Result<i64, sqlx::Error> {
+    let channels = id_list(channels);
+    let author = author.map(Id::to_i64);
+    sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "n!: i64"
+           FROM messages_fts f JOIN messages m ON m.id = f.rowid
+           WHERE messages_fts MATCH ?1 AND m.deleted = 0
+             AND m.channel_id IN (SELECT value FROM json_each(?2))
+             AND (?3 IS NULL OR m.author_id = ?3)"#,
+        fts,
+        channels,
+        author
+    )
+    .fetch_one(e)
+    .await
+}
+
+/// Messages in `channels` that mention `user` (directly, through one of `roles`, or with
+/// `@everyone` / `@here`), newest first; the user's own messages are left out.
+pub async fn mentioning(
+    e: impl SqliteExecutor<'_>,
+    user: Id,
+    roles: &[Id],
+    channels: &[Id],
+    before: Option<Id>,
+    limit: u32,
+) -> Result<Vec<MessageRow>, sqlx::Error> {
+    let (user, roles, channels) = (user.to_i64(), id_list(roles), id_list(channels));
+    let before = before.map_or(i64::MAX, Id::to_i64);
+    let limit = i64::from(limit);
+    rows(
+        sqlx::query_as!(
+            Raw,
+            r#"SELECT m.id, m.channel_id, m.author_id, m.content, m.reply_to_id, m.edited_at,
+                      m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind
+               FROM messages m
+               WHERE m.deleted = 0 AND m.author_id != ?1 AND m.id < ?4
+                 AND m.channel_id IN (SELECT value FROM json_each(?3))
+                 AND EXISTS (
+                   SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND (
+                     (mm.kind = 'user' AND mm.target_id = ?1)
+                     OR (mm.kind = 'role' AND mm.target_id IN (SELECT value FROM json_each(?2)))
+                     OR mm.kind IN ('everyone', 'here')))
+               ORDER BY m.id DESC LIMIT ?5"#,
+            user,
+            roles,
+            channels,
+            before,
+            limit
+        )
+        .fetch_all(e)
+        .await?,
+    )
+}
