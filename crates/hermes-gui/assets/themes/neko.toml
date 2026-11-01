@@ -61,10 +61,10 @@ default_color = "#f2ecee"
 # Background levels, darkest to lightest.
 [surface]
 deep = "#141112"              # --neko-bg-deep
-footer = "#2d2629"            # --neko-bg-raised
+footer = "#251f21"            # --neko-bg-surface
 main = "#1a1617"              # --neko-bg-main
 sidebar = "#251f21"           # --neko-bg-surface
-raised = "#2d2629"            # --neko-bg-raised
+raised = "#2d2629"            # --neko-bg-surface
 overlay = "#362d30"           # --neko-bg-soft
 hover = "#362d30"             # --neko-hover
 

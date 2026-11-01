@@ -334,11 +334,7 @@ impl Theme {
         let mut d = self.clone();
         d.surface = Surface {
             deep: Hex(style::mix(self.sidebar.background.0, Color::BLACK, 0.12)),
-            footer: Hex(style::mix(
-                self.sidebar.background.0,
-                self.text.code_bg.0,
-                0.4,
-            )),
+            footer: self.sidebar.background,
             main: self.general.background,
             sidebar: self.sidebar.background,
             raised: self.text.code_bg,
