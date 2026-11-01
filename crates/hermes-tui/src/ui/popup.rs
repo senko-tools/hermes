@@ -271,7 +271,9 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Menus and mouse:", bold())));
             lines.push(Line::from(
-                "a (or a right-click) shows what you can do with the selected channel, space,                  message or person. Click a channel to open it; the wheel scrolls. / searches                  (:search! everywhere); in results, Enter jumps to the message.",
+                "a (or a right-click) shows what you can do with the selected channel, space, \
+                 message or person. Click a channel to open it; the wheel scrolls. / searches \
+                 (:search! everywhere); in results, Enter jumps to the message.",
             ));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Voice:", bold())));

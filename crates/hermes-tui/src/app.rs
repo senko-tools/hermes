@@ -524,6 +524,9 @@ impl App {
     fn move_selection(&mut self, delta: isize) {
         let count = self.entry_count();
         if count == 0 {
+            if delta < 0 {
+                self.load_older();
+            }
             return;
         }
         let current = self.msg_sel.unwrap_or(count) as isize;
@@ -749,6 +752,13 @@ impl App {
                     } else {
                         Action::MoveUp
                     });
+                } else if in_members {
+                    // Clamped to the list length when the member list is drawn.
+                    self.member_sel = if down {
+                        self.member_sel + 3
+                    } else {
+                        self.member_sel.saturating_sub(3)
+                    };
                 } else {
                     self.move_selection(if down { 3 } else { -3 });
                 }
@@ -1054,6 +1064,7 @@ impl App {
         match event.code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
+                self.reply_to = None;
                 if self.editing.take().is_some() {
                     self.input.clear();
                 }
