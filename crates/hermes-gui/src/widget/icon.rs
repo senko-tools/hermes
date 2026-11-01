@@ -2,7 +2,8 @@
 //! same whatever `font.family` is. Code points are the `md-*` entries of Nerd Fonts'
 //! `glyphnames.json`.
 
-use iced::widget::{Text, text};
+use iced::widget::{container, text};
+use iced::{Color, Element, Length, Padding};
 
 pub const HASH: char = '\u{f0423}'; // md-pound
 pub const VOLUME: char = '\u{f057e}'; // md-volume_high
@@ -35,6 +36,7 @@ pub const PHONE: char = '\u{f03f2}'; // md-phone
 pub const BELL: char = '\u{f009c}'; // md-bell_outline
 pub const BELL_OFF: char = '\u{f0a91}'; // md-bell_off_outline
 pub const ARROW_DOWN: char = '\u{f0045}'; // md-arrow_down
+pub const ARROW_LEFT: char = '\u{f004d}'; // md-arrow_left
 pub const CHECK: char = '\u{f012c}'; // md-check
 pub const ACCOUNT: char = '\u{f0009}'; // md-account_circle
 pub const LOCK: char = '\u{f033e}'; // md-lock
@@ -59,14 +61,78 @@ pub const HOME: char = '\u{f06a1}'; // md-home_outline
 pub const FOLDER: char = '\u{f024b}'; // md-folder
 pub const FOLDER_PLUS: char = '\u{f0b9d}'; // md-folder_plus_outline
 
-/// `glyph` at `size` logical pixels, centered in a square box so icons line up with each other.
-pub fn icon<'a>(glyph: char, size: f32) -> Text<'a> {
-    text(glyph.to_string())
-        .font(crate::font::ICONS)
-        .size(size)
-        .line_height(iced::widget::text::LineHeight::Absolute(size.into()))
-        .width(size)
-        .height(size)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Center)
+/// Where each glyph's ink is centered, in em from the pen position. The Nerd Font draws these
+/// glyphs from the left edge of a box wider than their advance, so centering by the advance puts
+/// them off center. Measured from the bundled font; others default to the advance's middle.
+fn ink_center_x(glyph: char) -> f32 {
+    match glyph {
+        CHEVRON_RIGHT => 0.311,
+        MORE | LOCK | FILE | ARROW_DOWN | ARROW_LEFT => 0.333,
+        SEARCH | CHECK => 0.364,
+        VOLUME | MIC_OFF | HEADPHONES | REPLY | PENCIL | SPLIT_RIGHT | SPLIT_DOWN | PHONE
+        | BELL | IMAGE | SERVER | SHIELD | PALETTE | LOG_OUT => 0.375,
+        LINK => 0.386,
+        COPY => 0.396,
+        HEADPHONES_OFF | SETTINGS => 0.406,
+        HASH => 0.412,
+        AT | USERS | REACT | CHAT | ACCOUNT | WAVEFORM | FEATHER | BAN | DOT | KEYBOARD | INFO
+        | HOME | FOLDER | FOLDER_PLUS => 0.416,
+        BELL_OFF => 0.438,
+        ADD_USER => 0.459,
+        HANG_UP => 0.5,
+        _ => 0.3,
+    }
+}
+
+/// Every glyph's ink is centered 0.36 em above the baseline, which a box centered on the line
+/// height puts this much (in em) too high.
+const INK_RAISE: f32 = 0.083;
+
+/// An icon: `glyph` at `size` logical pixels, its ink centered in a `size` square box so icons
+/// line up with each other and sit in the middle of their buttons.
+pub struct Icon {
+    glyph: char,
+    size: f32,
+    color: Option<Color>,
+}
+
+impl Icon {
+    pub fn color(mut self, color: impl Into<Color>) -> Self {
+        self.color = Some(color.into());
+        self
+    }
+}
+
+pub fn icon(glyph: char, size: f32) -> Icon {
+    Icon {
+        glyph,
+        size,
+        color: None,
+    }
+}
+
+impl<'a, M: 'a> From<Icon> for Element<'a, M> {
+    fn from(icon: Icon) -> Self {
+        let size = icon.size;
+        let glyph = text(icon.glyph.to_string())
+            .font(crate::font::ICONS)
+            .size(size)
+            .line_height(iced::widget::text::LineHeight::Absolute(size.into()))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Left)
+            .align_y(iced::alignment::Vertical::Center)
+            .color_maybe(icon.color);
+        // The left padding moves the ink's center to the box's center; the top padding shrinks
+        // the box the text is centered in, which moves it down by half that.
+        container(glyph)
+            .padding(Padding {
+                left: ((0.5 - ink_center_x(icon.glyph)) * size).max(0.0),
+                top: 2.0 * INK_RAISE * size,
+                ..Padding::ZERO
+            })
+            .width(size)
+            .height(size)
+            .into()
+    }
 }

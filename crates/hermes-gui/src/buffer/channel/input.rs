@@ -350,6 +350,10 @@ pub fn view<'a>(
     let enter_sends = ctx.config.buffer.enter_sends;
     let suggesting = !composer.suggestions.is_empty();
     let empty = composer.content.is_empty() || composer.is_empty();
+    // A one-line editor is exactly as tall as the attach button (`ICON_BUTTON`), so the first
+    // line and the button share a center.
+    let line = fonts.size * 1.3;
+    let pad_y = ((style::ICON_BUTTON - line) / 2.0).max(4.0);
     let input = editor(&composer.content)
         .id(composer.editor_id.clone())
         .placeholder(placeholder)
@@ -357,13 +361,10 @@ pub fn view<'a>(
         .key_binding(move |kp| binding(kp, enter_sends, suggesting, empty))
         .font(fonts.ui)
         .size(fonts.size)
-        // A one-line editor is exactly as tall as the attach button (`ICON_BUTTON`), so the first line
-        // and the button share a center.
-        .padding([
-            ((style::ICON_BUTTON - fonts.size * 1.3) / 2.0).max(4.0),
-            4.0,
-        ])
-        .max_height(fonts.size * 1.3 * 10.0 + style::ICON_BUTTON)
+        .padding([pad_y, 4.0])
+        // Ten lines and the padding, nothing more: extra height would sit empty under the text
+        // while the first lines already scroll away.
+        .max_height(line * 10.0 + 2.0 * pad_y)
         .height(Length::Shrink)
         .style(move |_, st| style::editor(theme, st));
     let attach = crate::widget::tip_at(

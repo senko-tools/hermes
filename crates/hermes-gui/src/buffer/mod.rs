@@ -41,79 +41,89 @@ impl Buffer {
     }
 }
 
-/// A settings page over the whole window: the navigation on a sidebar-colored left part, the
-/// content on the right, and a round close button (Esc also closes) in the top right corner.
+/// A settings page over the whole window: a header bar like the main window's (the brand over
+/// the navigation, a "Return to …" button over the content; Esc also returns), the navigation on
+/// a sidebar-colored left part and the content on the right.
 pub fn page_frame<'a, M: Clone + 'a>(
     nav: iced::Element<'a, M>,
     content: iced::Element<'a, M>,
     on_close: M,
+    return_to: &str,
     fonts: &crate::font::Fonts,
     theme: &'a crate::theme::Theme,
 ) -> iced::Element<'a, M> {
     use iced::widget::{button, column, container, row};
-    use iced::{Alignment, Border, Fill, FillPortion};
+    use iced::{Alignment, Fill, FillPortion};
 
     use crate::theme::style;
+    use crate::widget::icon::{self, icon};
 
-    let close = column![
-        button(
-            container(crate::widget::icon::icon(crate::widget::icon::CLOSE, 20.0))
-                .center_x(38)
-                .center_y(38),
-        )
-        .padding(0)
-        .style(move |_, status| {
-            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-            button::Style {
-                background: hovered.then_some(theme.surface.hover.0.into()),
-                text_color: if hovered {
-                    theme.text.primary.0
-                } else {
-                    theme.text.secondary.0
-                },
-                border: Border {
-                    color: theme.text.tertiary.0,
-                    width: 2.0,
-                    radius: 19.0.into(),
-                },
-                ..button::Style::default()
-            }
-        })
-        .on_press(on_close),
-        crate::widget::caption("ESC", fonts)
-            .font(fonts.bold())
-            .color(theme.text.tertiary.0),
-    ]
-    .spacing(style::GAP_S)
-    .align_x(Alignment::Center);
-    row![
+    let brand = container(
+        row![
+            icon(icon::FEATHER, style::ICON).color(theme.accent.base.0),
+            crate::widget::title("Hermes", fonts),
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center),
+    )
+    .padding([0.0, style::GAP_L])
+    .height(style::HEADER)
+    .width(Fill)
+    .align_y(Alignment::Center)
+    .style(move |_| style::pane_header(theme));
+    let back = button(
+        row![
+            icon(icon::ARROW_LEFT, style::ICON),
+            crate::widget::label(format!("Return to {return_to}"), fonts)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center),
+    )
+    .padding(style::BUTTON_PAD)
+    .style(move |_, status| style::ghost(theme, status, false))
+    .on_press(on_close);
+    let header = container(
+        row![
+            back,
+            crate::widget::caption("Esc", fonts).color(theme.text.tertiary.0),
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center),
+    )
+    .padding([0.0, style::GAP])
+    .height(style::HEADER)
+    .width(Fill)
+    .align_y(Alignment::Center)
+    .style(move |_| style::pane_header(theme));
+    let left = column![
+        brand,
         container(container(nav).width(232).height(Fill))
+            .height(Fill)
+            .width(Fill)
+            .align_right(Fill)
+            .padding([style::GAP_L, style::GAP]),
+    ];
+    row![
+        container(left)
             .width(FillPortion(2))
             .height(Fill)
-            .align_right(Fill)
-            .padding(iced::Padding {
-                top: 48.0,
-                bottom: 16.0,
-                left: 12.0,
-                right: 12.0,
-            })
             .style(move |_| style::sidebar(theme)),
-        container(
-            row![
-                container(content).max_width(760).width(Fill).height(Fill),
-                container(close).padding(iced::Padding::ZERO.top(48.0)),
-            ]
-            .spacing(style::GAP_L),
-        )
+        column![
+            header,
+            container(container(content).max_width(760).width(Fill).height(Fill))
+                .width(Fill)
+                .height(Fill)
+                .padding(iced::Padding {
+                    top: 0.0,
+                    bottom: 0.0,
+                    left: 40.0,
+                    right: style::GAP_XL,
+                })
+                .style(move |_| style::app(theme)),
+        ]
         .width(FillPortion(5))
-        .height(Fill)
-        .padding(iced::Padding {
-            top: 0.0,
-            bottom: 0.0,
-            left: 40.0,
-            right: 24.0,
-        })
-        .style(move |_| style::app(theme)),
+        .height(Fill),
     ]
     .into()
 }

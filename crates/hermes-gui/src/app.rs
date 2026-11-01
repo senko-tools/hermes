@@ -2555,6 +2555,7 @@ impl App {
                 .style(|_| style::status_bar(theme, status.level)),
             );
         }
+        let return_to = self.panes.focused_title(&self.core);
         let ctx = panes::Context {
             core: &self.core,
             fonts,
@@ -2588,6 +2589,7 @@ impl App {
             menu: self.menu.as_ref().map(|(target, _)| target),
             resizing: self.resize.map(|r| r.edge),
             ui_scale_draft: self.ui_scale_draft,
+            return_to,
         };
         main = main.push(match &self.page {
             Some(page) => panes::page_view(page, &ctx),

@@ -72,7 +72,7 @@ pub fn overlay<'a, M: Clone + 'a>(
     let x = at.x.min(window.width - width - 4.0).max(0.0);
     let y = at.y.min(window.height - height - 4.0).max(0.0);
     let separator = || {
-        container(rule::horizontal(1).style(move |_| style::rule(theme)))
+        container(rule::horizontal(1).style(move |_| style::menu_separator(theme)))
             .padding([style::GAP_XS, style::GAP_S])
     };
 
@@ -130,7 +130,7 @@ pub fn overlay<'a, M: Clone + 'a>(
             .height(ROW)
             .padding([0.0, style::GAP_S])
             .style(move |_, s| {
-                let mut st = style::sidebar_item(theme, s, selected);
+                let mut st = style::menu_item(theme, s, selected);
                 if danger {
                     st.text_color = theme.text.error.0;
                 }

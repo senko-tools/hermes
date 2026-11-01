@@ -61,7 +61,8 @@ default_color = "#28242e"
 
 # Background levels, darkest to lightest.
 [surface]
-deep = "#d6d2cd"        # behind the voice and user panels
+deep = "#d6d2cd"        # dimmed window behind dialogs
+footer = "#f2eee7"      # voice and user panels at the bottom of the sidebar
 main = "#fbf9f6"        # chat and page content
 sidebar = "#f3efe9"     # sidebar, member list, settings navigation
 raised = "#f1ece5"      # inputs, composer, cards, code
@@ -91,11 +92,12 @@ mention_border = "#1f1c24"
 mention_bg = "#00000000"
 mention_hover = "#ebe6de"
 connected_border = "#2f8a4a"   # the voice channel or call you are in
-connected_bg = "#e4ddd3"
-connected_hover = "#e4ddd3"
+connected_bg = "#2f8a4a1f"
+connected_hover = "#2f8a4a33"
 
 # Corner radii and the width of the row state bar, in pixels.
 [shape]
-radius = 6
+radius = 6                    # buttons, inputs, menus
+row_radius = 6                # rows in lists
 radius_large = 10
 indicator_width = 3

@@ -492,7 +492,7 @@ fn row_view<'a>(
                     body = body.push(line);
                 }
                 container(body)
-                    .padding(row_padding(p.grouped))
+                    .padding(row_padding(p.grouped, p.ends_group))
                     .width(Fill)
                     .into()
             }
@@ -501,10 +501,12 @@ fn row_view<'a>(
     }
 }
 
-pub(super) fn row_padding(grouped: bool) -> iced::Padding {
+/// The padding of a message row: a group gets the same room above its first message as below
+/// its last, so an outline around a message (jumped to, right-clicked) is evenly spaced.
+pub(super) fn row_padding(grouped: bool, ends_group: bool) -> iced::Padding {
     iced::Padding {
-        top: if grouped { 2.0 } else { 14.0 },
-        bottom: 2.0,
+        top: if grouped { 2.0 } else { 8.0 },
+        bottom: if ends_group { 8.0 } else { 2.0 },
         left: 16.0,
         right: 16.0,
     }

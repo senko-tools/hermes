@@ -1,5 +1,6 @@
 //! The tray icon (PLAN.md section 15.7): show/hide, mute, deafen, quit, and a badge dot while
-//! something needs attention. The icon is drawn in code, so there is no image file to ship.
+//! something needs attention. The icon is drawn in code from the feather of the header (a mask
+//! rendered from the bundled Nerd Font's `md-feather`, `assets/icons/feather-mask.png`).
 
 use std::sync::{Mutex, OnceLock};
 
@@ -9,7 +10,10 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, Predefin
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub const ICON_SIZE: u32 = 32;
-const ACCENT: [u8; 3] = [0x58, 0x65, 0xf2];
+/// The dark theme's sidebar and accent: a gold feather on a charcoal square.
+const BACKGROUND: [u8; 3] = [0x17, 0x16, 0x1c];
+const ACCENT: [u8; 3] = [0xe5, 0xa5, 0x50];
+const FEATHER_MASK: &[u8] = include_bytes!("../../assets/icons/feather-mask.png");
 const BADGE: [u8; 3] = [0xed, 0x42, 0x45];
 
 /// What the tray asks the app to do.
@@ -144,11 +148,23 @@ fn tray_icon(badge: bool) -> Result<tray_icon::Icon, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The app icon as RGBA pixels: a rounded square in the accent color with a white "H", and a
-/// red dot in the top right corner when `badge`.
+/// The feather's coverage (0–255) at `size`, scaled down from the bundled mask.
+fn feather(size: u32) -> image::GrayImage {
+    let mask = image::load_from_memory(FEATHER_MASK)
+        .expect("the bundled feather mask is a PNG")
+        .to_luma_alpha8();
+    let alpha = image::GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        image::Luma([mask.get_pixel(x, y)[1]])
+    });
+    image::imageops::resize(&alpha, size, size, image::imageops::FilterType::Lanczos3)
+}
+
+/// The app icon as RGBA pixels: a charcoal rounded square with the gold feather, and a red dot
+/// in the top right corner when `badge`.
 pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
     let s = size as f32;
     let radius = s * 0.22;
+    let feather = feather(size);
     let mut out = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
         for x in 0..size {
@@ -156,14 +172,13 @@ pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
             let inside = rounded_square(fx, fy, s, radius);
             let mut px = [0u8; 4];
             if inside {
-                px = [ACCENT[0], ACCENT[1], ACCENT[2], 255];
-                // The "H": two bars and a crossbar.
-                let (u, v) = (fx / s, fy / s);
-                let bar = (0.28..0.40).contains(&u) || (0.60..0.72).contains(&u);
-                let cross = (0.28..0.72).contains(&u) && (0.45..0.56).contains(&v);
-                if (bar && (0.25..0.75).contains(&v)) || cross {
-                    px = [255, 255, 255, 255];
-                }
+                let t = f32::from(feather.get_pixel(x, y)[0]) / 255.0;
+                let blend = |i: usize| {
+                    (f32::from(BACKGROUND[i])
+                        + (f32::from(ACCENT[i]) - f32::from(BACKGROUND[i])) * t)
+                        .round() as u8
+                };
+                px = [blend(0), blend(1), blend(2), 255];
             }
             if badge {
                 let (cx, cy, r) = (s * 0.78, s * 0.22, s * 0.2);
@@ -199,10 +214,14 @@ mod tests {
         let badged = icon_rgba(32, true);
         assert_eq!(plain.len(), 32 * 32 * 4);
         assert_ne!(plain, badged);
-        // Corners are transparent, the middle is not.
+        // Corners are transparent, the middle is not, and the feather is gold.
         assert_eq!(plain[3], 0);
         let mid = ((16 * 32 + 16) * 4) as usize;
         assert_eq!(plain[mid + 3], 255);
+        assert!(
+            plain.chunks(4).any(|px| px[0] > 0xc0 && px[2] < 0x90),
+            "no feather pixels"
+        );
         // The badge is red in the top right.
         let dot = ((7 * 32 + 25) * 4) as usize;
         assert_eq!(&badged[dot..dot + 3], &BADGE);

@@ -51,6 +51,21 @@ impl Panes {
     }
 
     /// The channel in the focused pane.
+    /// The name of what the focused pane shows, for "Return to …".
+    pub fn focused_title(&self, core: &Core) -> String {
+        match self.focused().map(|p| &p.buffer) {
+            Some(buffer @ Buffer::Channel { .. }) => {
+                let (name, _) = title(core, buffer);
+                match title_icon(core, buffer) {
+                    icon::HASH if !name.starts_with('#') => format!("#{name}"),
+                    _ => name,
+                }
+            }
+            Some(buffer) => title(core, buffer).0,
+            None => "Home".into(),
+        }
+    }
+
     pub fn focused_channel(&self) -> Option<(InstanceId, Id)> {
         match &self.focused()?.buffer {
             Buffer::Channel { inst, channel } => Some((inst.clone(), *channel)),
@@ -330,6 +345,8 @@ pub struct Context<'a> {
     pub resizing: Option<crate::resize::Edge>,
     /// The UI scale slider's value while dragged.
     pub ui_scale_draft: Option<f64>,
+    /// What closing a settings page goes back to ("#general", "Home").
+    pub return_to: String,
 }
 
 /// Actions from a pane header.
@@ -722,6 +739,7 @@ pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message>
             ctx.themes,
             ctx.settings_tab,
             ctx.ui_scale_draft,
+            &ctx.return_to,
             &ctx.voice,
             &ctx.account,
             fonts,
@@ -753,6 +771,7 @@ pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message>
                 theme,
                 utc_offset: ctx.utc_offset,
                 drop_target,
+                return_to: &ctx.return_to,
             })
             .map(move |m| Message::SpaceSettings(inst.clone(), space, m))
         }

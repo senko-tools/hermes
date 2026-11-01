@@ -259,6 +259,8 @@ pub struct Ctx<'a, 'b> {
     pub utc_offset: i64,
     /// The row a drag is over, for the drop marker.
     pub drop_target: Option<(crate::drag::Kind, Id)>,
+    /// What closing the page goes back to.
+    pub return_to: &'b str,
 }
 
 impl Ctx<'_, '_> {
@@ -342,9 +344,10 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     crate::buffer::page_frame(
         nav.into(),
         container(content)
-            .padding(iced::Padding::ZERO.top(style::HEADER))
+            .padding(iced::Padding::ZERO.top(style::GAP_XL))
             .into(),
         Message::Close,
+        ctx.return_to,
         fonts,
         theme,
     )

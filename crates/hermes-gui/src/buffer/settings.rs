@@ -309,6 +309,7 @@ pub fn view<'a>(
     themes: &'a [(String, Result<Theme, String>)],
     tab: Tab,
     ui_scale_draft: Option<f64>,
+    return_to: &str,
     voice: &VoiceView<'a>,
     account: &crate::buffer::settings_tabs::AccountView<'a>,
     fonts: &Fonts,
@@ -347,7 +348,7 @@ pub fn view<'a>(
                 // Room on the right for the scrollbar, which is drawn over the content.
                 .padding(
                     iced::Padding::ZERO
-                        .top(style::HEADER)
+                        .top(style::GAP_XL)
                         .bottom(style::HEADER)
                         .right(style::GAP_L),
                 )
@@ -357,6 +358,7 @@ pub fn view<'a>(
         .height(Fill)
         .into(),
         Message::Close,
+        return_to,
         fonts,
         theme,
     )

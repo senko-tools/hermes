@@ -210,7 +210,7 @@ pub fn view<'a>(
     // Jumped to, or its right-click menu is open.
     let jumped = state.highlight == Some(id) || ctx.menu_message == Some(id);
     let content = container(line)
-        .padding(super::row_padding(m.grouped))
+        .padding(super::row_padding(m.grouped, m.ends_group))
         .width(Fill)
         .style(move |_| container::Style {
             border: if jumped {

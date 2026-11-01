@@ -624,7 +624,7 @@ fn with_state_bar<'a>(
     let bar = container(Space::new().width(width).height(Fill)).style(move |_| container::Style {
         background: Some(color.into()),
         border: Border {
-            radius: if theme.shape.radius > 0 {
+            radius: if theme.shape.row_radius > 0 {
                 (width / 2.0).into()
             } else {
                 0.0.into()
@@ -654,7 +654,7 @@ fn draggable<'a>(
                 border: Border {
                     color: theme.pane.focused_border.0,
                     width: 1.0,
-                    radius: style::radius(theme).into(),
+                    radius: style::row_radius(theme).into(),
                 },
                 ..container::Style::default()
             })

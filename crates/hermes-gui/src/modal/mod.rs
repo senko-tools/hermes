@@ -9,7 +9,7 @@ pub mod image_viewer;
 pub mod new_dm;
 
 use iced::widget::{center, container, mouse_area, opaque, stack};
-use iced::{Color, Element, Fill};
+use iced::{Element, Fill};
 
 use crate::theme::{Theme, style};
 
@@ -27,14 +27,8 @@ pub fn overlay<'a, M: Clone + 'a>(
     let backdrop = center(opaque(card))
         .width(Fill)
         .height(Fill)
-        .style(|_| container::Style {
-            background: Some(
-                Color {
-                    a: 0.6,
-                    ..Color::BLACK
-                }
-                .into(),
-            ),
+        .style(move |_| container::Style {
+            background: Some(theme.surface.deep.0.scale_alpha(0.75).into()),
             ..container::Style::default()
         });
     let backdrop = match on_blur {

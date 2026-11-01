@@ -63,6 +63,11 @@ pub fn radius(theme: &Theme) -> f32 {
     f32::from(theme.shape.radius)
 }
 
+/// Corner radius of rows in lists (`shape.row_radius`), which sit right against each other.
+pub fn row_radius(theme: &Theme) -> f32 {
+    f32::from(theme.shape.row_radius)
+}
+
 /// Corner radius of cards, dialogs and the composer (`shape.radius_large`).
 pub fn radius_large(theme: &Theme) -> f32 {
     f32::from(theme.shape.radius_large)
@@ -124,7 +129,7 @@ pub fn pane_header(theme: &Theme) -> container::Style {
 pub fn sidebar_footer(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.surface.deep.0.into()),
+        background: Some(theme.surface.footer.0.into()),
         ..container::Style::default()
     }
 }
@@ -396,6 +401,30 @@ pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> bu
     )
 }
 
+/// An entry of a right-click menu: its hover stands out from the menu's own background
+/// (`sidebar.selected` tinted with the accent; `surface.hover` is often the menu color itself).
+pub fn menu_item(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let hover = mix(theme.sidebar.selected.0, theme.accent.base.0, 0.18);
+    button::Style {
+        background: (hovered || selected).then_some(Background::Color(hover)),
+        text_color: theme.text.primary.0,
+        border: Border {
+            radius: row_radius(theme).into(),
+            ..Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+/// A line between groups of menu entries.
+pub fn menu_separator(theme: &Theme) -> rule::Style {
+    rule::Style {
+        color: theme.general.border.0,
+        ..rule(theme)
+    }
+}
+
 /// What a sidebar row is marking, as a bar on its left edge and its background (`[channel]` in
 /// the theme). When several apply, the later one wins, as in the Neko theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -453,7 +482,7 @@ pub fn sidebar_row(theme: &Theme, status: button::Status, state: RowState) -> bu
         background: (background.a > 0.0).then_some(Background::Color(background)),
         text_color: theme.text.primary.0,
         border: Border {
-            radius: radius(theme).into(),
+            radius: row_radius(theme).into(),
             ..Border::default()
         },
         ..button::Style::default()
@@ -522,7 +551,7 @@ pub fn menu_open(theme: &Theme) -> button::Style {
         border: Border {
             color: theme.accent.base.0.scale_alpha(0.7),
             width: 1.0,
-            radius: radius(theme).into(),
+            radius: row_radius(theme).into(),
         },
         ..button::Style::default()
     }

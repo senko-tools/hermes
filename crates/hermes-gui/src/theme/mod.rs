@@ -161,8 +161,10 @@ pub struct Roles {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Surface {
-    /// Behind the sidebar footer (voice and user panels).
+    /// The darkest level: the dimmed window behind dialogs.
     pub deep: Hex,
+    /// The bottom of the sidebar (voice and user panels).
+    pub footer: Hex,
     /// Chat and page content.
     pub main: Hex,
     /// Sidebar, member list, settings navigation.
@@ -222,8 +224,10 @@ pub struct Channel {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Shape {
-    /// Buttons, inputs, rows.
+    /// Things that stand on their own: buttons, inputs, menus, tooltips.
     pub radius: u8,
+    /// Rows in lists (sidebar, menus, settings navigation), which sit right against each other.
+    pub row_radius: u8,
     /// Cards, dialogs, the composer.
     pub radius_large: u8,
     pub indicator_width: u8,
@@ -290,6 +294,7 @@ impl Theme {
         }
         fill!(
             surface.deep,
+            surface.footer,
             surface.main,
             surface.sidebar,
             surface.raised,
@@ -315,6 +320,7 @@ impl Theme {
             channel.connected_bg,
             channel.connected_hover,
             shape.radius,
+            shape.row_radius,
             shape.radius_large,
             shape.indicator_width,
         );
@@ -328,6 +334,11 @@ impl Theme {
         let mut d = self.clone();
         d.surface = Surface {
             deep: Hex(style::mix(self.sidebar.background.0, Color::BLACK, 0.12)),
+            footer: Hex(style::mix(
+                self.sidebar.background.0,
+                self.text.code_bg.0,
+                0.4,
+            )),
             main: self.general.background,
             sidebar: self.sidebar.background,
             raised: self.text.code_bg,
@@ -356,11 +367,12 @@ impl Theme {
             mention_bg: none,
             mention_hover: self.sidebar.hover,
             connected_border: self.voice.speaking_ring,
-            connected_bg: self.sidebar.selected,
-            connected_hover: self.sidebar.selected,
+            connected_bg: Hex(self.voice.speaking_ring.0.scale_alpha(0.12)),
+            connected_hover: Hex(self.voice.speaking_ring.0.scale_alpha(0.2)),
         };
         d.shape = Shape {
             radius: 6,
+            row_radius: 6,
             radius_large: 10,
             indicator_width: 3,
         };
@@ -375,6 +387,7 @@ impl Theme {
             }
         };
         clamp(&mut self.shape.radius, Shape::MAX_RADIUS, "radius");
+        clamp(&mut self.shape.row_radius, Shape::MAX_RADIUS, "row_radius");
         clamp(
             &mut self.shape.radius_large,
             Shape::MAX_RADIUS_LARGE,
@@ -584,6 +597,7 @@ mod tests {
         let c = &theme.channel;
         [
             s.deep,
+            s.footer,
             s.main,
             s.sidebar,
             s.raised,
@@ -615,7 +629,7 @@ mod tests {
             theme.shape.radius,
             theme.shape.radius_large,
             theme.shape.indicator_width,
-            0,
+            theme.shape.row_radius,
         ]))
         .collect()
     }

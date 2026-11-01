@@ -1344,3 +1344,16 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   "Sidebar width" slider became a Reset button.
 - **Why:** the developer found settings messy (switches not in one column, controls of
   different widths) and the UI scale slider unusable, and asked for a draggable sidebar.
+
+## 2026-11-01: GUI: settings header, footer colour, row radius, feather icon
+
+- **Theme keys:** `surface.footer` (the voice and user panels; was `surface.deep`, too dark),
+  `shape.row_radius` (rows in lists; `shape.radius` is now for things that stand alone, so
+  the neko theme rounds buttons, inputs and menus a little while its rows stay square).
+  `surface.deep` now dims the window behind dialogs. Old files derive both new keys.
+- **Settings pages** have a header like the main window instead of the round close button:
+  the brand over the navigation and "Return to <what the focused pane shows>" (Esc) over the
+  content.
+- **App icon:** a gold feather (the header's `md-feather`) on a charcoal square instead of the
+  blue "H", for the window, tray and installer.
+- **Why:** the developer's review of the previous round.

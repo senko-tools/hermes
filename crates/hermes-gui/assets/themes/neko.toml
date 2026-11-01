@@ -61,6 +61,7 @@ default_color = "#f2ecee"
 # Background levels, darkest to lightest.
 [surface]
 deep = "#141112"              # --neko-bg-deep
+footer = "#2d2629"            # --neko-bg-raised
 main = "#1a1617"              # --neko-bg-main
 sidebar = "#251f21"           # --neko-bg-surface
 raised = "#2d2629"            # --neko-bg-raised
@@ -89,11 +90,13 @@ unread_hover = "#f2ecee1a"
 mention_border = "#eec1c8"
 mention_bg = "#eec1c826"
 mention_hover = "#eec1c840"
-connected_border = "#a3818a"
-connected_bg = "#a3818a26"
-connected_hover = "#a3818a40"
+# Green like the voice-connected text, so it differs from the selected pink.
+connected_border = "#6aa694"
+connected_bg = "#6aa69426"
+connected_hover = "#6aa69440"
 
 [shape]
-radius = 0                    # --neko-indicator-rounding
-radius_large = 0
+radius = 4                    # buttons, inputs, menus: a little rounding
+row_radius = 0                # --neko-indicator-rounding: rows stay square
+radius_large = 6
 indicator_width = 2           # --neko-indicator-size
