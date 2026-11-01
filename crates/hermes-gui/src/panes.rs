@@ -6,21 +6,20 @@ use hermes_client_core::proto::models::Status as Presence;
 use hermes_client_core::{Core, InstanceId, view};
 use iced::widget::pane_grid::{self, Axis, PaneGrid};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
-use iced::{Alignment, Border, Element, Fill, Length};
+use iced::{Alignment, Border, Element, Fill};
 
 use crate::buffer::channel::{self, ChannelView};
 use crate::buffer::{Buffer, settings};
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::pane::{self, Pane};
+use crate::resize::{Edge, Side};
 use crate::sidebar::menu::Target;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
 use crate::widget::icon::{self, icon};
 use crate::widget::{ButtonKind, text_button};
 use crate::widget::{caption, icon_button, label, tip};
-
-const MEMBER_LIST_WIDTH: f32 = 232.0;
 
 pub struct Panes {
     pub state: pane_grid::State<Pane>,
@@ -330,6 +329,8 @@ pub struct Context<'a> {
     pub account: crate::buffer::settings_tabs::AccountView<'a>,
     /// What the open right-click menu is about, to keep it highlighted.
     pub menu: Option<&'a Target>,
+    /// The panel being resized, to mark its edge.
+    pub resizing: Option<crate::resize::Edge>,
 }
 
 /// Actions from a pane header.
@@ -915,15 +916,21 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
             list = list.push(Space::new().height(style::GAP));
         }
     }
-    container(
-        scrollable(list)
-            .height(Fill)
-            .style(move |_, st| style::scrollbar(theme, st)),
+    let width = Edge::Members.clamp(ctx.config.sidebar.member_list_width);
+    crate::resize::with_handle(
+        container(
+            scrollable(list)
+                .height(Fill)
+                .style(move |_, st| style::scrollbar(theme, st)),
+        )
+        .width(f32::from(width))
+        .height(Fill)
+        .style(move |_| style::sidebar(theme)),
+        Edge::Members,
+        Side::Left,
+        ctx.resizing == Some(Edge::Members),
+        theme,
     )
-    .width(Length::Fixed(MEMBER_LIST_WIDTH))
-    .height(Fill)
-    .style(move |_| style::sidebar(theme))
-    .into()
 }
 
 #[cfg(test)]

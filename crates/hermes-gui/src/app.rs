@@ -31,6 +31,7 @@ use crate::message::Message;
 use crate::modal::image_viewer::{self, Viewer};
 use crate::modal::{self, add_instance, command_bar, confirm, form, new_dm};
 use crate::panes::{self, PaneAction, Panes};
+use crate::resize::{Edge, Resize, Side};
 use crate::sidebar::collapsed::Collapsed;
 use crate::sidebar::menu::{self, Action, Target};
 use crate::sidebar::tree::{self, Row};
@@ -99,6 +100,8 @@ pub struct App {
     /// The entry chosen with the arrow keys in the open menu.
     pub menu_index: Option<usize>,
     pub(crate) cursor: Cursor,
+    /// The sidebar or member list being resized.
+    pub(crate) resize: Option<crate::resize::Resize>,
     window_size: Size,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
@@ -180,6 +183,7 @@ impl App {
             page: None,
             menu_index: None,
             cursor: Cursor::default(),
+            resize: None,
             window_size: Size::new(1200.0, 800.0),
             confirm: None,
             new_dm: None,
@@ -505,6 +509,34 @@ impl App {
             Message::MouseReleased => return self.on_mouse_released(),
             Message::DragHover(item) => self.drag.hover(item),
             Message::DragLeave(item) => self.drag.leave(&item),
+            Message::ResizeStart(edge) => {
+                let side = match edge {
+                    Edge::Sidebar
+                        if settings::Position::from_config(&self.config.sidebar.position)
+                            == settings::Position::Right =>
+                    {
+                        Side::Left
+                    }
+                    Edge::Sidebar => Side::Right,
+                    Edge::Members => Side::Left,
+                };
+                self.resize = Some(Resize::new(
+                    edge,
+                    self.cursor.get().x,
+                    self.panel_width(edge),
+                    side,
+                ));
+            }
+            Message::ResizeMove(at) => {
+                if let Some(drag) = self.resize {
+                    self.set_panel_width(drag.edge, drag.width_at(at.x));
+                }
+            }
+            Message::ResizeReset(edge) => {
+                self.resize = None;
+                self.set_panel_width(edge, edge.default_width());
+                self.save_panel_width(edge);
+            }
             Message::Nothing => {}
             Message::Shortcut(action) => return self.key_action(action),
             Message::UpdateChecked(result) => match result {
@@ -2184,7 +2216,12 @@ impl App {
                 self.config.font.ui_scale = (scale * 100.0).round() / 100.0;
                 self.fonts = Fonts::from_config(&self.config.font);
             }
-            settings::Message::SidebarWidth(width) => self.config.sidebar.width = width,
+            settings::Message::ResetWidths => {
+                for edge in [Edge::Sidebar, Edge::Members] {
+                    self.set_panel_width(edge, edge.default_width());
+                    self.save_panel_width(edge);
+                }
+            }
             settings::Message::SidebarPosition(position) => {
                 let value = toml::Value::String(position.as_config().to_owned()).to_string();
                 self.persist("sidebar.position", &value);
@@ -2199,6 +2236,27 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The current width of a resizable panel.
+    pub(crate) fn panel_width(&self, edge: Edge) -> u16 {
+        edge.clamp(match edge {
+            Edge::Sidebar => self.config.sidebar.width,
+            Edge::Members => self.config.sidebar.member_list_width,
+        })
+    }
+
+    /// Shows a panel at `width` (not saved yet).
+    fn set_panel_width(&mut self, edge: Edge, width: u16) {
+        match edge {
+            Edge::Sidebar => self.config.sidebar.width = width,
+            Edge::Members => self.config.sidebar.member_list_width = width,
+        }
+    }
+
+    pub(crate) fn save_panel_width(&mut self, edge: Edge) {
+        let width = self.panel_width(edge);
+        self.persist(edge.key(), &width.to_string());
     }
 
     /// Writes one setting to `config.toml` and applies the result.
@@ -2403,10 +2461,7 @@ impl App {
             &rows,
             fonts,
             theme,
-            self.config
-                .sidebar
-                .width
-                .clamp(settings::MIN_SIDEBAR_WIDTH, settings::MAX_SIDEBAR_WIDTH),
+            self.panel_width(Edge::Sidebar),
             self.ptt_down,
             self.drag.target(),
             self.update.as_ref(),
@@ -2465,17 +2520,25 @@ impl App {
                 utc_offset: self.utc_offset,
             },
             menu: self.menu.as_ref().map(|(target, _)| target),
+            resizing: self.resize.map(|r| r.edge),
         };
         main = main.push(match &self.page {
             Some(page) => panes::page_view(page, &ctx),
             None => self.panes.view(&ctx),
         });
 
+        let right = settings::Position::from_config(&self.config.sidebar.position)
+            == settings::Position::Right;
+        let sidebar = crate::resize::with_handle(
+            sidebar,
+            Edge::Sidebar,
+            if right { Side::Left } else { Side::Right },
+            self.resize.is_some_and(|r| r.edge == Edge::Sidebar),
+            theme,
+        );
         let layout = if !self.sidebar_visible || self.page.is_some() {
             row![main]
-        } else if settings::Position::from_config(&self.config.sidebar.position)
-            == settings::Position::Right
-        {
+        } else if right {
             row![main, sidebar]
         } else {
             row![sidebar, main]
@@ -2589,6 +2652,13 @@ impl App {
                 theme,
                 Some(Message::CancelConfirm),
             );
+        }
+        if self.resize.is_some() {
+            // While resizing, the whole window follows the pointer.
+            root = iced::widget::mouse_area(root)
+                .on_move(Message::ResizeMove)
+                .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                .into();
         }
         cursor::tracker(&self.cursor, root).into()
     }
@@ -2716,10 +2786,20 @@ mod tests {
         let _ = app.update(Message::Settings(settings::Message::SidebarPosition(
             settings::Position::Right,
         )));
-        let _ = app.update(Message::Settings(settings::Message::SidebarWidth(300)));
-        let _ = app.update(Message::Settings(settings::Message::Save(
-            Setting::SidebarWidth,
-        )));
+        // Dragging the sidebar edge resizes it and saves the width on release.
+        app.cursor.set(iced::Point::new(240.0, 100.0));
+        let _ = app.update(Message::ResizeStart(Edge::Sidebar));
+        let _ = app.update(Message::ResizeMove(iced::Point::new(180.0, 300.0)));
+        // The sidebar is on the right now, so moving left makes it wider.
+        assert_eq!(app.panel_width(Edge::Sidebar), 300);
+        assert_eq!(app.core.config().sidebar.width, 240);
+        let _ = app.update(Message::MouseReleased);
+        assert!(app.resize.is_none());
+        let _ = app.update(Message::ResizeStart(Edge::Members));
+        let _ = app.update(Message::ResizeMove(iced::Point::new(-5000.0, 0.0)));
+        assert_eq!(app.panel_width(Edge::Members), 360);
+        let _ = app.update(Message::MouseReleased);
+        let _ = app.update(Message::ResizeReset(Edge::Members));
 
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.contains("# my settings"), "{text}");
@@ -2729,6 +2809,7 @@ mod tests {
         assert_eq!(saved.font.ui_scale, 1.25);
         assert_eq!(saved.sidebar.position, "right");
         assert_eq!(saved.sidebar.width, 300);
+        assert_eq!(saved.sidebar.member_list_width, 232);
         assert!(app.status.is_none(), "{:?}", app.status);
         let _ = std::fs::remove_dir_all(&dir);
     }

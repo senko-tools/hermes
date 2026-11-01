@@ -17,8 +17,6 @@ use crate::theme::{Theme, style};
 use crate::widget::{ButtonKind, text_button};
 use crate::widget::{caption, heading, label, strong};
 
-pub const MIN_SIDEBAR_WIDTH: u16 = 160;
-pub const MAX_SIDEBAR_WIDTH: u16 = 480;
 /// The level meter and the voice activity slider share this range (dBFS).
 pub const METER_MIN: f32 = -70.0;
 pub const PTT_INPUT: &str = "settings-ptt-key";
@@ -35,7 +33,8 @@ pub enum Message {
     FontSize(u16),
     UiScale(f64),
     SidebarPosition(Position),
-    SidebarWidth(u16),
+    /// Back to the default sidebar and member list widths.
+    ResetWidths,
     /// A slider was released: save what it changed.
     Save(Setting),
     Close,
@@ -85,7 +84,6 @@ pub enum Message {
 pub enum Setting {
     FontSize,
     UiScale,
-    SidebarWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -235,7 +233,6 @@ pub fn saved_value(config: &ClientConfig, setting: Setting) -> (&'static str, St
     match setting {
         Setting::FontSize => ("font.size", config.font.size.to_string()),
         Setting::UiScale => ("font.ui_scale", format!("{:.2}", config.font.ui_scale)),
-        Setting::SidebarWidth => ("sidebar.width", config.sidebar.width.to_string()),
     }
 }
 
@@ -450,19 +447,14 @@ fn appearance<'a>(
             theme,
         ),
         setting(
-            "Sidebar width",
-            &format!("{} px", config.sidebar.width),
-            slider(
-                MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH,
-                config
-                    .sidebar
-                    .width
-                    .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-                Message::SidebarWidth
-            )
-            .step(10u16)
-            .on_release(Message::Save(Setting::SidebarWidth))
-            .width(220),
+            "Panel widths",
+            &format!(
+                "Sidebar {} px, member list {} px. Drag their inner edge to resize, \
+                 double-click it to reset.",
+                config.sidebar.width, config.sidebar.member_list_width
+            ),
+            text_button("Reset", ButtonKind::Secondary, fonts, theme)
+                .on_press(Message::ResetWidths),
             fonts,
             theme,
         ),

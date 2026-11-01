@@ -161,6 +161,8 @@ pub struct Sidebar {
     pub position: String,
     pub width: u16,
     pub show_voice_users: bool,
+    /// Width of the member list (desktop client).
+    pub member_list_width: u16,
 }
 
 impl Default for Sidebar {
@@ -169,6 +171,7 @@ impl Default for Sidebar {
             position: "left".into(),
             width: 240,
             show_voice_users: true,
+            member_list_width: 232,
         }
     }
 }

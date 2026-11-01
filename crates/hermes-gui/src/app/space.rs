@@ -626,6 +626,12 @@ impl App {
 
     /// The mouse button went up: drop a dragged role or channel.
     pub(super) fn on_mouse_released(&mut self) -> Task<Message> {
+        if let Some(resize) = self.resize.take() {
+            if self.panel_width(resize.edge) != resize.start_width {
+                self.save_panel_width(resize.edge);
+            }
+            return Task::none();
+        }
         let Some((picked, target)) = self.drag.release() else {
             return Task::none();
         };

@@ -90,6 +90,12 @@ pub enum Message {
     /// The pointer entered a draggable sidebar row (or left it).
     DragHover(Option<crate::drag::Item>),
     DragLeave(crate::drag::Item),
+    /// The edge of the sidebar or member list was pressed: start resizing it.
+    ResizeStart(crate::resize::Edge),
+    /// The pointer moved while resizing (window coordinates).
+    ResizeMove(iced::Point),
+    /// The edge was double-clicked: back to the default width.
+    ResizeReset(crate::resize::Edge),
     /// An invite was made from the form: copy the link and refresh the list.
     InviteCreated(InstanceId, Id, String),
     OpenResults(crate::buffer::results::Key),
