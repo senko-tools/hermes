@@ -80,10 +80,10 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             };
             spans.push(Span::styled(
                 format!(
-                    " {}:type {}:reply {}:react{voice} {}:help {}:quit",
+                    " {}:type {}:actions {}:search{voice} {}:help {}:quit",
                     k(Action::Insert),
-                    k(Action::Reply),
-                    k(Action::React),
+                    k(Action::Menu),
+                    k(Action::Search),
                     k(Action::Help),
                     k(Action::Quit)
                 ),
