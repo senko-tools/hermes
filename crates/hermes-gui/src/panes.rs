@@ -530,6 +530,10 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                 &pane.channel,
             )
             .map(move |m| Message::Channel(id, m));
+            let messages: Element<'a, Message> = match connection_banner(ctx, inst) {
+                Some(banner) => column![banner, messages].into(),
+                None => messages,
+            };
             if pane.members {
                 row![messages, member_list(ctx, inst, *channel)].into()
             } else {
@@ -537,6 +541,66 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
             }
         }
     }
+}
+
+/// A line above the messages while the instance is not connected, saying what that means.
+fn connection_banner<'a>(ctx: &Context<'a>, inst: &InstanceId) -> Option<Element<'a, Message>> {
+    use hermes_client_core::gateway::ConnStatus;
+
+    let theme = ctx.theme;
+    let fonts = ctx.fonts;
+    let (text, action): (String, Option<(&'static str, Message)>) = match ctx.core.status(inst) {
+        ConnStatus::Connected => return None,
+        ConnStatus::Connecting => ("Connecting…".into(), None),
+        ConnStatus::Reconnecting { attempt } => (
+            format!(
+                "Connection lost, reconnecting (attempt {attempt})… Messages you send now are                  sent when it is back."
+            ),
+            None,
+        ),
+        ConnStatus::Failed { reason } => (
+            format!("Cannot connect: {reason}"),
+            Some((
+                "Try again",
+                Message::Menu(
+                    Target::Instance(inst.clone()),
+                    crate::sidebar::menu::Action::Reconnect,
+                ),
+            )),
+        ),
+        ConnStatus::LoggedOut => (
+            "You are signed out of this server.".into(),
+            Some(("Sign in", Message::SignIn(inst.clone()))),
+        ),
+        ConnStatus::Offline => (
+            "You went offline for this server.".into(),
+            Some((
+                "Go online",
+                Message::Menu(
+                    Target::Instance(inst.clone()),
+                    crate::sidebar::menu::Action::GoOnline,
+                ),
+            )),
+        ),
+    };
+    let mut line = row![small(text, fonts).width(Fill)]
+        .spacing(8)
+        .align_y(Alignment::Center);
+    if let Some((label_text, message)) = action {
+        line = line.push(
+            button(small(label_text, fonts))
+                .padding([2, 8])
+                .style(move |_, s| style::secondary(theme, s))
+                .on_press(message),
+        );
+    }
+    Some(
+        container(line)
+            .padding([4, 10])
+            .width(Fill)
+            .style(move |_| style::status_bar(theme, crate::app::Level::Warning))
+            .into(),
+    )
 }
 
 /// The members of the channel's space by hoisted role, or a DM's recipients.
