@@ -5,7 +5,18 @@ voice channels, private messages (1:1 and group) and voice calls. Written entire
 single-binary server, an [iced](https://github.com/iced-rs/iced) desktop client and a
 [ratatui](https://github.com/ratatui/ratatui) terminal client.
 
-> **Status:** early development (Phase 0). Nothing is usable yet.
+> **Status:** 1.0. Text chat, DMs and group DMs, voice channels and calls, roles and permissions,
+> search, and self-hosting with Docker, a Linux install script or a game server panel.
+
+## Getting started
+
+- **Use it:** download `Hermes-Setup-<version>.exe` (or the portable zip) from the
+  [releases](https://github.com/senko-tools/hermes/releases), open an invite link from a friend
+  or paste a server address. Windows SmartScreen warns about the unsigned installer: choose
+  *More info → Run anyway*. The terminal client `hermes-tui` comes with it.
+- **Host it:** [`docs/self-hosting.md`](docs/self-hosting.md) walks through it step by step.
+- **New to the app?** Right-click almost anything (channels, spaces, messages, people) for its
+  actions, press `Ctrl+K` to jump anywhere, and `Ctrl+F` to search.
 
 The full specification and build plan is [`PLAN.md`](PLAN.md). Deviations from it are logged in
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
@@ -20,7 +31,7 @@ The full specification and build plan is [`PLAN.md`](PLAN.md). Deviations from i
 | [`hermes-client-core`](crates/hermes-client-core) | Connection, REST and gateway client, state store, voice transport | GPL-3.0-or-later |
 | [`hermes-gui`](crates/hermes-gui) | iced desktop client | GPL-3.0-or-later |
 | [`hermes-tui`](crates/hermes-tui) | ratatui terminal client | GPL-3.0-or-later |
-| [`hermes-voicebot`](crates/hermes-voicebot) | Dev tool: headless voice client for testing | GPL-3.0-or-later |
+| [`hermes-voicebot`](crates/hermes-voicebot) | Dev tools: headless voice client, `hermes-loadtest` | GPL-3.0-or-later |
 
 Phase 0 experiments live in [`spikes/`](spikes) (standalone binaries, not used by the real crates).
 
