@@ -1618,7 +1618,7 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** a friend group can run their community without anyone touching the server CLI.
 
 ### Phase 7: Packaging and self-hosting polish (1–2 weeks)
-- [ ] Release workflow: all artifacts from [18.1](#181-release-artifacts-built-by-githubworkflowsreleaseyml-on-git-tag-vxyz).
+- [x] Release workflow: all artifacts from [18.1](#181-release-artifacts-built-by-githubworkflowsreleaseyml-on-git-tag-vxyz).
 - [ ] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
 - [ ] `install.sh` + systemd unit; Pterodactyl egg tested on a real panel; reverse proxy docs.
 - [ ] `docs/self-hosting.md` written for non-experts (with screenshots).
