@@ -266,7 +266,7 @@ fn row_view<'a>(
                 "#"
             };
             let name = label(name.clone(), fonts);
-            let name = if badge.unread || *selected {
+            let name = if *selected || (badge.unread && !*muted) {
                 name.font(fonts.bold()).color(theme.text.primary.0)
             } else if *muted {
                 name.color(theme.text.tertiary.0)
@@ -357,10 +357,15 @@ fn row_view<'a>(
             );
             row![
                 header,
-                button(label("+", fonts).color(theme.text.secondary.0))
-                    .padding([2, 8])
-                    .style(|_, s| style::sidebar_item(theme, s, false))
-                    .on_press(Message::NewDm(inst.clone())),
+                crate::widget::tip(
+                    button(label("+", fonts).color(theme.text.secondary.0))
+                        .padding([2, 8])
+                        .style(|_, s| style::sidebar_item(theme, s, false))
+                        .on_press(Message::NewDm(inst.clone())),
+                    "New direct message or group",
+                    fonts,
+                    theme,
+                ),
             ]
             .align_y(Alignment::Center)
             .into()

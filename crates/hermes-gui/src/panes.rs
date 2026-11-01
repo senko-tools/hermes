@@ -459,7 +459,9 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     .push(grid)
                     .push(
                         small(
-                            "Tips: right-click channels, spaces, messages and people for their                              actions · double-click a voice channel to join · drag channels to                              reorder them · drop files on a channel to upload",
+                            "Tips: right-click channels, spaces, messages and people for their \
+                             actions · double-click a voice channel to join · drag channels to \
+                             reorder them · drop files on a channel to upload",
                             fonts,
                         )
                         .color(theme.text.tertiary.0),
