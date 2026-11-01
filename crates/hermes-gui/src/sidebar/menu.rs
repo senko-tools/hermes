@@ -5,7 +5,7 @@
 use hermes_client_core::InstanceId;
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::{ChannelKind, NotificationLevel};
+use hermes_client_core::proto::models::{ChannelKind, NotificationLevel, PresenceStatus};
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::view;
@@ -29,6 +29,8 @@ pub enum Target {
     Role(InstanceId, Id, Id),
     /// An invite in the space settings: instance, space, code.
     Invite(InstanceId, Id, String),
+    /// My own entry in the user panel (`None`: no instance yet).
+    Me(Option<InstanceId>),
 }
 
 impl Target {
@@ -40,8 +42,9 @@ impl Target {
             | Target::Message(inst, ..)
             | Target::Member(inst, ..)
             | Target::Role(inst, ..)
-            | Target::Invite(inst, ..) => Some(inst),
-            Target::Pane(_) => None,
+            | Target::Invite(inst, ..)
+            | Target::Me(Some(inst)) => Some(inst),
+            Target::Pane(_) | Target::Me(None) => None,
         }
     }
 }
@@ -109,6 +112,13 @@ pub enum Action {
     Kick,
     Ban,
     TransferOwnership,
+    // Me
+    SetOnline,
+    SetIdle,
+    SetDnd,
+    SetInvisible,
+    OpenSettings,
+    ShowMentions,
     // Role / invite
     EditRole,
     DeleteRole,
@@ -173,6 +183,12 @@ impl Action {
             Action::Kick => "Kick",
             Action::Ban => "Ban…",
             Action::TransferOwnership => "Transfer ownership",
+            Action::SetOnline => "Online",
+            Action::SetIdle => "Idle",
+            Action::SetDnd => "Do not disturb (no notifications)",
+            Action::SetInvisible => "Invisible (appear offline)",
+            Action::OpenSettings => "Settings",
+            Action::ShowMentions => "Mentions",
             Action::EditRole => "Edit role",
             Action::DeleteRole => "Delete role",
             Action::CopyInviteLink => "Copy invite link",
@@ -227,7 +243,18 @@ fn push(out: &mut Entries, actions: impl IntoIterator<Item = Action>) {
 }
 
 /// The entries for `target`; `status` is the instance's connection status and `s` its store.
+#[cfg(test)]
 pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) -> Entries {
+    entries_with(target, status, s, None)
+}
+
+/// [`entries`], with my presence for the user panel's menu.
+pub fn entries_with(
+    target: &Target,
+    status: &ConnStatus,
+    s: Option<&InstanceStore>,
+    presence: Option<PresenceStatus>,
+) -> Entries {
     let mut out = Entries::new();
     match target {
         Target::Instance(_) => {
@@ -422,6 +449,25 @@ pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) 
             }
         }
         Target::Invite(..) => push(&mut out, [Action::CopyInviteLink, Action::RevokeInvite]),
+        Target::Me(inst) => {
+            let current = presence.unwrap_or(PresenceStatus::Online);
+            for (action, status) in [
+                (Action::SetOnline, PresenceStatus::Online),
+                (Action::SetIdle, PresenceStatus::Idle),
+                (Action::SetDnd, PresenceStatus::Dnd),
+                (Action::SetInvisible, PresenceStatus::Invisible),
+            ] {
+                out.push(Some(Entry {
+                    action,
+                    checked: current == status,
+                }));
+            }
+            out.push(None);
+            if inst.is_some() {
+                push(&mut out, [Action::EditProfile, Action::CopyUsername]);
+            }
+            push(&mut out, [Action::ShowMentions, Action::OpenSettings]);
+        }
     }
     // No separator first, last or twice.
     let mut clean = Entries::new();

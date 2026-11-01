@@ -21,6 +21,36 @@ impl App {
     pub(super) fn run_more_action(&mut self, target: Target, action: Action) -> Task<Message> {
         match (target, action) {
             (Target::Instance(inst), Action::CreateSpace) => self.open_form_create_space(inst),
+            (
+                Target::Me(_),
+                a @ (Action::SetOnline | Action::SetIdle | Action::SetDnd | Action::SetInvisible),
+            ) => {
+                use hermes_client_core::proto::models::PresenceStatus as P;
+                let status = match a {
+                    Action::SetIdle => P::Idle,
+                    Action::SetDnd => P::Dnd,
+                    Action::SetInvisible => P::Invisible,
+                    _ => P::Online,
+                };
+                self.core.set_presence(status);
+                Task::none()
+            }
+            (Target::Me(Some(inst)), Action::EditProfile) => self.open_form_profile(inst),
+            (Target::Me(Some(inst)), Action::CopyUsername) => {
+                let name = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.me.as_ref().map(|m| m.user.username.clone()));
+                match name {
+                    Some(name) => self.update(Message::Copy(name, "Username")),
+                    None => Task::none(),
+                }
+            }
+            (Target::Me(_), Action::OpenSettings) => self.update(Message::OpenSettings),
+            (Target::Me(_), Action::ShowMentions) => {
+                self.update(Message::OpenResults(Key::Mentions))
+            }
             (Target::Instance(inst), Action::EditProfile) => self.open_form_profile(inst),
 
             (Target::Space(inst, space), Action::SpaceSettings) => {

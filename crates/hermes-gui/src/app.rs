@@ -498,6 +498,7 @@ impl App {
             Message::DragHover(item) => self.drag.hover(item),
             Message::DragLeave(item) => self.drag.leave(&item),
             Message::Nothing => {}
+            Message::Shortcut(action) => return self.key_action(action),
             Message::UpdateChecked(result) => match result {
                 Ok(update) => self.update = update,
                 Err(err) => tracing::info!("update check failed: {err}"),
@@ -1547,10 +1548,11 @@ impl App {
             .inst()
             .map_or(ConnStatus::Connected, |inst| self.core.status(inst));
         let store = self.core.store();
-        menu::entries(
+        menu::entries_with(
             target,
             &status,
             target.inst().and_then(|i| store.instance(i)),
+            Some(self.core.presence()),
         )
         .into_iter()
         .flatten()
@@ -2327,10 +2329,11 @@ impl App {
                 .map_or(ConnStatus::Connected, |inst| self.core.status(inst));
             let entries = {
                 let store = self.core.store();
-                menu::entries(
+                menu::entries_with(
                     target,
                     &status,
                     target.inst().and_then(|i| store.instance(i)),
+                    Some(self.core.presence()),
                 )
             };
             let mut index = 0;

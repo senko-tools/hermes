@@ -203,10 +203,13 @@ impl Panes {
                         .on_press(Message::PaneMenu(id, PaneAction::Maximize)),
                 );
             }
-            controls = controls.push(
+            controls = controls.push(crate::widget::tip(
                 mouse_area(header_button("⋮", ctx).on_press(Message::OpenMenu(Target::Pane(id))))
                     .on_right_press(Message::OpenMenu(Target::Pane(id))),
-            );
+                "Pane actions: split, maximize, close",
+                ctx.fonts,
+                theme,
+            ));
             let title_bar = pane_grid::TitleBar::new(
                 row![
                     label(title, ctx.fonts).font(ctx.fonts.bold()),
@@ -395,12 +398,74 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                             .on_press(Message::OpenAddInstance),
                     );
             } else {
-                welcome = welcome.push(
-                    label("Open a channel from the sidebar, or press Ctrl+K.", fonts)
-                        .color(theme.text.secondary.0),
-                );
+                let first = ctx.core.instance_ids().first().cloned();
+                let action = |title: &'static str, hint: &'static str, message: Message| {
+                    button(
+                        column![
+                            label(title, fonts).font(fonts.bold()),
+                            small(hint, fonts).color(theme.text.tertiary.0),
+                        ]
+                        .spacing(2),
+                    )
+                    .padding([8, 12])
+                    .width(260)
+                    .style(move |_, s| style::secondary(theme, s))
+                    .on_press(message)
+                };
+                let mut grid = column![
+                    row![
+                        action(
+                            "Find anything",
+                            "Channels, people, actions · Ctrl+K",
+                            Message::Shortcut(crate::keybinds::Action::CommandBar),
+                        ),
+                        action(
+                            "Search messages",
+                            "In this space or everywhere · Ctrl+F",
+                            Message::Shortcut(crate::keybinds::Action::Search),
+                        ),
+                    ]
+                    .spacing(10),
+                    row![
+                        action(
+                            "Join with an invite",
+                            "Paste a link a friend sent you",
+                            Message::OpenAddInstance,
+                        ),
+                        action(
+                            "Settings",
+                            "Theme, sounds, microphone · Ctrl+,",
+                            Message::OpenSettings,
+                        ),
+                    ]
+                    .spacing(10),
+                ]
+                .spacing(10);
+                if let Some(inst) = first {
+                    grid = grid.push(row![action(
+                        "Create a space",
+                        "Your own place with channels and roles",
+                        Message::Menu(
+                            Target::Instance(inst),
+                            crate::sidebar::menu::Action::CreateSpace
+                        ),
+                    ),]);
+                }
+                welcome = welcome
+                    .push(
+                        label("Pick a channel in the sidebar, or start here:", fonts)
+                            .color(theme.text.secondary.0),
+                    )
+                    .push(grid)
+                    .push(
+                        small(
+                            "Tips: right-click channels, spaces, messages and people for their                              actions · double-click a voice channel to join · drag channels to                              reorder them · drop files on a channel to upload",
+                            fonts,
+                        )
+                        .color(theme.text.tertiary.0),
+                    );
             }
-            container(welcome).center(Fill).into()
+            container(welcome.max_width(560)).center(Fill).into()
         }
         Buffer::Settings => settings::view(
             ctx.config,

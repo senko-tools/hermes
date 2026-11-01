@@ -56,25 +56,80 @@ pub fn view<'a>(
             .on_press(Message::OpenAddInstance),
     );
 
-    let user = core
-        .instance_ids()
-        .first()
-        .and_then(|id| core.config().instance(id).map(|i| i.username.clone()))
-        .unwrap_or_else(|| "Not signed in".to_owned());
+    // Me: name, presence and status text; a click opens the status menu.
+    let first = core.instance_ids().first().cloned();
+    let (name, status_text) = first
+        .as_ref()
+        .and_then(|inst| {
+            let store = core.store();
+            let me = store.instance(inst)?.me.as_ref()?.user.clone();
+            Some((
+                me.name().to_owned(),
+                me.status_text.clone().unwrap_or_default(),
+            ))
+        })
+        .or_else(|| {
+            first.as_ref().and_then(|id| {
+                core.config()
+                    .instance(id)
+                    .map(|i| (i.username.clone(), String::new()))
+            })
+        })
+        .unwrap_or_else(|| ("Not signed in".to_owned(), String::new()));
+    use hermes_client_core::proto::models::PresenceStatus as P;
+    let (dot, dot_color, presence) = match core.presence() {
+        P::Online => ("●", theme.text.success.0, "Online"),
+        P::Idle => ("●", theme.text.warning.0, "Idle"),
+        P::Dnd => ("●", theme.text.error.0, "Do not disturb"),
+        P::Invisible => ("○", theme.text.tertiary.0, "Invisible"),
+    };
+    let subtitle = if status_text.is_empty() {
+        presence.to_owned()
+    } else {
+        status_text
+    };
+    let me_target = Target::Me(first);
+    let me = mouse_area(
+        button(
+            row![
+                label(dot, fonts).color(dot_color),
+                column![
+                    strong(name, fonts),
+                    small(subtitle, fonts)
+                        .color(theme.text.tertiary.0)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(0),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .padding([2, 4])
+        .width(Fill)
+        .style(|_, s| style::sidebar_item(theme, s, false))
+        .on_press(Message::OpenMenu(me_target.clone())),
+    )
+    .on_right_press(Message::OpenMenu(me_target));
     let user_panel = container(
         row![
-            strong(user, fonts).width(Fill),
-            button(small("Mentions", fonts))
-                .style(|_, status| style::secondary(theme, status))
-                .on_press(Message::OpenResults(crate::buffer::results::Key::Mentions)),
+            me,
+            crate::widget::tip(
+                button(small("@", fonts))
+                    .padding([4, 8])
+                    .style(|_, status| style::secondary(theme, status))
+                    .on_press(Message::OpenResults(crate::buffer::results::Key::Mentions)),
+                "Mentions: messages that mention you",
+                fonts,
+                theme,
+            ),
             button(small("Settings", fonts))
                 .style(|_, status| style::secondary(theme, status))
                 .on_press(Message::OpenSettings),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(Alignment::Center),
     )
-    .padding(8)
+    .padding(6)
     .style(|_| style::pane_header(theme));
 
     let mut content = column![
@@ -153,10 +208,15 @@ fn row_view<'a>(
                 arrow(*collapsed, fonts, theme),
                 label(name.clone(), fonts).font(fonts.medium()).width(Fill),
                 badge_view(*badge, fonts, theme),
-                button(small("⋮", fonts).color(theme.text.tertiary.0))
-                    .padding([0, 6])
-                    .style(move |_, s| style::sidebar_item(theme, s, false))
-                    .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
+                crate::widget::tip(
+                    button(small("⋮", fonts).color(theme.text.tertiary.0))
+                        .padding([0, 6])
+                        .style(move |_, s| style::sidebar_item(theme, s, false))
+                        .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
+                    "Space menu: settings, invite, channels",
+                    fonts,
+                    theme,
+                ),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
