@@ -1059,3 +1059,26 @@ Approved by the developer as a plan before implementation.
   status line says when the caller stops.
 - **`Core::join_or_call`** (client-core) is the shared "join" of both UIs: an empty DM room starts
   a call, anything else joins.
+
+## 2026-11-01: `install.sh` does the whole setup
+
+Requested by the developer (ahead of the Phase 7 item), after the manual steps of 18.8 proved
+error-prone (a binary copied with WinSCP lost its executable bit and the service crash-looped).
+
+- **One script for everything:** besides the binary, unit, user and folders it now writes the
+  config (`public_host`, `name`, `port`, `data_dir`, `bind = "::"` when the host has public IPv6),
+  gets a Let's Encrypt certificate for a domain with certbot (reusing an existing one; `--nginx` or
+  `--apache` when that server holds port 80, else `--standalone`; falls back to self-signed with a
+  warning), installs the certbot deploy hook and the nightly backup (both embedded in the script,
+  so `deploy/letsencrypt/hermes.sh` and `deploy/cron/hermes-backup` were removed), opens the port
+  in ufw when ufw is active, runs `check-config` as `hermes`, (re)starts the server, waits for
+  "Hermes is ready" and prints the owner invite link on the first start.
+- **Questions** (domain or IP, server name, Let's Encrypt email) only on a first install in a
+  terminal; `--domain`, `--name`, `--email`, `--port`, `--self-signed`, `--yes`, `--no-start`.
+  An existing config is kept unless `--reconfigure`; an existing Let's Encrypt setup is refreshed
+  on every run. Re-running repairs permissions (`chown -R hermes` on the data dir, binary 755).
+- **Newest release by default, pre-releases included** (GitHub API), instead of
+  `releases/latest`, which skips them. Missing tools are installed with apt when available.
+- **Private repository:** the server cannot download from GitHub, so the script uses the release
+  files in its own folder automatically. Every release now ships `install.sh` (release.yml), so
+  "download the release, copy the folder, run `sh install.sh`" works.

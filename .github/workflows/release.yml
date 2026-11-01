@@ -2,8 +2,8 @@ name: release
 
 # Builds the server release files on a `v*` tag and publishes them as a GitHub release
 # (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.1). For now only the parts of
-# PLAN.md section 18.1 that deploy/install.sh needs: the x86_64 musl server, hermes.service and
-# SHA256SUMS. The other artifacts come with the Phase 7 release workflow.
+# PLAN.md section 18.1 that deploy/install.sh needs: the x86_64 musl server, hermes.service,
+# install.sh itself and SHA256SUMS. The other artifacts come with the Phase 7 release workflow.
 on:
   push:
     tags: ["v*"]
@@ -43,7 +43,7 @@ jobs:
           bin="target/$TARGET/release/hermes-server"
           file "$bin" | grep -Eq "static(ally|-pie) linked"
           tar -czf "dist/hermes-server-$TARGET.tar.gz" -C "$(dirname "$bin")" hermes-server
-          cp deploy/systemd/hermes.service dist/
+          cp deploy/systemd/hermes.service deploy/install.sh dist/
       - name: Checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
