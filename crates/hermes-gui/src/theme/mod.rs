@@ -14,13 +14,14 @@ pub const DEFAULT: &str = "dark";
 pub const THEMES_DIR: &str = "themes";
 
 /// Built-in themes: name and TOML text.
-pub const BUILTIN: [(&str, &str); 3] = [
+pub const BUILTIN: [(&str, &str); 4] = [
     ("dark", include_str!("../../assets/themes/dark.toml")),
     ("light", include_str!("../../assets/themes/light.toml")),
     (
         "high-contrast",
         include_str!("../../assets/themes/high-contrast.toml"),
     ),
+    ("neko", include_str!("../../assets/themes/neko.toml")),
 ];
 
 /// A color written as `#rrggbb` or `#rrggbbaa`.
@@ -552,11 +553,12 @@ mod tests {
 
     #[test]
     fn old_theme_files_derive_the_new_sections_from_their_own_keys() {
-        for (name, text) in BUILTIN {
+        // The themes from before these sections write out exactly what derivation gives.
+        for (name, text) in BUILTIN.iter().filter(|(name, _)| *name != "neko") {
             let loaded = Theme::parse(name, &old_format(text)).unwrap();
             assert!(loaded.warnings.is_empty(), "{name}: {:?}", loaded.warnings);
             let (old, new) = (loaded.theme, Theme::builtin(name).unwrap());
-            // The built-ins write out what derivation gives, rounded to 8 bits.
+            // Compared as 8-bit values: the files round what derivation computes.
             assert_eq!(
                 format!("{:?}", rgba8(&old)),
                 format!("{:?}", rgba8(&new)),
@@ -671,7 +673,7 @@ mod tests {
 
         assert_eq!(
             available(Some(&dir)),
-            ["dark", "light", "high-contrast", "broken"]
+            ["dark", "light", "high-contrast", "neko", "broken"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
