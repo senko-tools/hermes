@@ -4,9 +4,11 @@ name: release
 # on a `v*` tag (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.6):
 #   - hermes-server for x86_64 and aarch64 Linux (static musl) and x86_64 Windows
 #   - the Docker image ghcr.io/senko-tools/hermes-server (amd64 + arm64)
-#   - Hermes-<version>-portable.zip (GUI + TUI for Windows) and hermes-tui for Windows and Linux
-#   - install.sh, hermes.service and SHA256SUMS
-# The Windows installer comes with the Phase 7 installer item; macOS builds are left out for now.
+#   - Hermes-Setup-<version>.exe (NSIS installer with hermes:// links, built by cargo-packager from
+#     crates/hermes-gui/Packager.toml), Hermes-<version>-portable.zip (GUI + TUI for Windows) and
+#     hermes-tui for Windows and Linux
+#   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
+# macOS builds are left out for now.
 #
 # Anything but a tag is a dry run: everything is built and uploaded as workflow artifacts, but no
 # release is created and no image is pushed. A dry run starts when this workflow or the release
@@ -104,6 +106,13 @@ jobs:
           key: windows-release
       - name: Build
         run: cargo build --release --locked -p hermes-server -p hermes-gui -p hermes-tui
+      - name: cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Installer
+        run: |
+          # The version in Cargo.toml is the workspace's; the installer file is named after the tag.
+          (cd crates/hermes-gui && cargo packager --release -c Packager.toml -f nsis)
+          mv dist/*-setup.exe "dist/Hermes-Setup-$VERSION.exe"
       - name: Package
         run: |
           mkdir -p dist stage/server stage/portable stage/tui
@@ -219,7 +228,7 @@ jobs:
       - name: Add the install files and checksums
         working-directory: dist
         run: |
-          cp ../deploy/systemd/hermes.service ../deploy/install.sh .
+          cp ../deploy/systemd/hermes.service ../deploy/install.sh ../deploy/pterodactyl/egg-hermes.json .
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
       - name: Upload (dry run)

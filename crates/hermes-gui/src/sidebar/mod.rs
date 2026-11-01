@@ -26,6 +26,7 @@ use crate::widget::{label, small, strong};
 
 const INDENT: f32 = 12.0;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     core: &Core,
     rows: &[Row],
@@ -34,6 +35,7 @@ pub fn view<'a>(
     width: u16,
     ptt_down: bool,
     drop_target: Option<&Item>,
+    update: Option<&hermes_client_core::update::Update>,
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(1).padding([0, 4]);
@@ -82,6 +84,18 @@ pub fn view<'a>(
     .height(Fill);
     if let Some(panel) = voice_panel::view(core, ptt_down, fonts, theme) {
         content = content.push(panel);
+    }
+    if let Some(update) = update {
+        content = content.push(
+            button(
+                small(format!("Hermes {} is available", update.version), fonts)
+                    .color(theme.text.link.0),
+            )
+            .width(Fill)
+            .padding([6, 10])
+            .style(|_, s| style::sidebar_item(theme, s, false))
+            .on_press(Message::OpenUpdate),
+        );
     }
     container(content.push(user_panel))
         .width(f32::from(width))

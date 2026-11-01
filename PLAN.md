@@ -1619,7 +1619,7 @@ Goal: remove the biggest unknowns before writing real code.
 
 ### Phase 7: Packaging and self-hosting polish (1–2 weeks)
 - [x] Release workflow: all artifacts from [18.1](#181-release-artifacts-built-by-githubworkflowsreleaseyml-on-git-tag-vxyz).
-- [ ] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
+- [x] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
 - [ ] `install.sh` + systemd unit; Pterodactyl egg tested on a real panel; reverse proxy docs.
 - [ ] `docs/self-hosting.md` written for non-experts (with screenshots).
 - [x] Admin CLI complete (`backup`, `user …`, `invite create`).
@@ -1630,7 +1630,7 @@ Goal: remove the biggest unknowns before writing real code.
 - [ ] Load test (see [Testing](#19-testing-strategy)) and fix bottlenecks.
 - [ ] Security review pass over the checklist in [Security](#13-security-model); fuzz the datagram parser and gateway decoder (`cargo fuzz`).
 - [ ] Accessibility basics: full keyboard navigation in the GUI, high-contrast theme, scalable UI.
-- [ ] Update check, crash log file, "copy debug info" in About.
+- [x] Update check, crash log file, "copy debug info" in About.
 - [ ] Bug bash with friends for a week; fix.
 
 **v1.0 is done when all of these are true:**

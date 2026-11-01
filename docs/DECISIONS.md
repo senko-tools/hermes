@@ -1192,3 +1192,43 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   (`users::refresh`): it copies `disabled` / `instance_admin` and closes gateway connections whose
   session no longer exists. REST requests check the session in the database on every request,
   so they stop at once.
+
+## 2026-11-01: Windows installer, egg, self-hosting guide (Phase 7)
+
+- **Installer:** cargo-packager 0.11.8 (a dev tool, installed in the release job) builds an NSIS
+  installer from `crates/hermes-gui/Packager.toml`: per-user install (no admin prompt) to
+  `%LOCALAPPDATA%\Programs\Hermes`, Start menu and desktop shortcuts, uninstaller, `hermes://`
+  registered in `HKCU\Software\Classes\hermes` (`"…\hermes.exe" "%1"`), and `hermes-tui.exe`
+  installed next to the GUI. The release names it `Hermes-Setup-<version>.exe`. Its version is
+  written in `Packager.toml` (cargo-packager needs it there with `-c`); a test keeps it equal to
+  the crate version. Not code-signed (SmartScreen: "More info → Run anyway", as section 21 says).
+- **App icon:** the rounded "H" the tray already draws (`desktop::tray::icon_rgba`), rendered
+  to `assets/icons/` by an ignored test so the installer, shortcuts and window share it.
+- **Egg:** `deploy/pterodactyl/egg-hermes.json` as in section 18.5, plus a fixed
+  `HERMES__STORAGE__DATA_DIR=./data` and `HERMES__LOG__FORMAT=pretty`, arm64 detection, and
+  `hermes-server version` printed after install. It ships with each release. It still has to be
+  tried on a real panel (the checklist item stays open until then).
+- **`docs/self-hosting.md`** is written for non-experts (install script, Docker, panel, Caddy and
+  nginx, invites, admin commands, backups, troubleshooting). Screenshots are not in it yet: they
+  need the real apps on a desktop (the checklist item stays open until then).
+
+## 2026-11-01: Phase 8 tooling: load test, fuzzing, update check, crash logs
+
+- **`hermes-loadtest`** (in `hermes-voicebot`): N chat bots in one text channel at a steady rate,
+  M voice bots playing tones in one voice channel, an observer measuring send → arrive latency;
+  the first bot creates an invite for the others. Local run (debug server on the developer's
+  Windows desktop, 50 chat bots at 6 messages/min + 20 voice bots): 300/300 messages delivered,
+  p50 8 ms, p99 13 ms, max 19 ms; server working set ≈ 120 MB. The 1 vCPU VPS run of section 19
+  is still to do.
+- **Fuzzing:** `crates/hermes-proto/tests/fuzz.rs` throws 20 000 random and mutated inputs at the
+  datagram parser, the gateway decoder and the markup parser on every test run (seeded, so
+  failures reproduce). `fuzz/` is a separate cargo-fuzz crate (own workspace, `libfuzzer-sys`, a
+  dependency only there) for long coverage-guided runs with nightly.
+- **Update check** (`client-core::update`): GitHub releases API, newest non-draft release newer
+  than the running version (pre-releases only for pre-release users); the GUI shows "Hermes X is
+  available" above the user panel (click opens the release page). Off with
+  `general.check_for_updates = false`. While the repository is private the API answers 404 and
+  nothing is shown.
+- **Crash logs** (`client-core::crash`): a panic writes `logs/crash-<unix ms>.log` (version, OS,
+  message, location, backtrace) in the config folder; GUI and TUI. Settings → About has "Copy
+  debug info" and "Open the logs folder".

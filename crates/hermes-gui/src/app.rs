@@ -130,6 +130,8 @@ pub struct App {
     /// The instance shown in Settings → Account.
     pub account_inst: Option<InstanceId>,
     pub sessions: space_settings::Remote<Vec<hermes_client_core::proto::api::SessionInfo>>,
+    /// A newer release, if the update check found one.
+    pub update: Option<hermes_client_core::update::Update>,
 }
 
 impl App {
@@ -193,6 +195,7 @@ impl App {
             default_results: crate::buffer::results::State::default(),
             account_inst: None,
             sessions: space_settings::Remote::Idle,
+            update: None,
         };
         app.reload_theme();
         if let Some(warning) = key_warnings.into_iter().next() {
@@ -212,6 +215,17 @@ impl App {
                 .visible_channels()
                 .into_iter()
                 .map(|(inst, channel)| self.load_channel(inst, channel)),
+        )
+    }
+
+    /// Asks GitHub for a newer release (`general.check_for_updates`).
+    pub fn check_for_update(&self) -> Task<Message> {
+        if !self.config.general.check_for_updates {
+            return Task::none();
+        }
+        Task::perform(
+            hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
+            Message::UpdateChecked,
         )
     }
 
@@ -478,6 +492,17 @@ impl App {
             Message::DragHover(item) => self.drag.hover(item),
             Message::DragLeave(item) => self.drag.leave(&item),
             Message::Nothing => {}
+            Message::UpdateChecked(result) => match result {
+                Ok(update) => self.update = update,
+                Err(err) => tracing::info!("update check failed: {err}"),
+            },
+            Message::OpenUpdate => {
+                if let Some(update) = &self.update
+                    && let Err(err) = crate::open::url(&update.url)
+                {
+                    self.error(format!("could not open the browser: {err}"));
+                }
+            }
             Message::OpenResults(key) => return self.open_results(key),
             Message::Results(key, message) => return self.on_results(key, message),
             Message::SearchFrom(inst, channel) => return self.search_from(inst, channel),
@@ -2139,6 +2164,7 @@ impl App {
                 .clamp(settings::MIN_SIDEBAR_WIDTH, settings::MAX_SIDEBAR_WIDTH),
             self.ptt_down,
             self.drag.target(),
+            self.update.as_ref(),
         );
 
         let account_inst = self.account_instance();

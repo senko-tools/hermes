@@ -207,4 +207,31 @@ mod tests {
         let dot = ((7 * 32 + 25) * 4) as usize;
         assert_eq!(&badged[dot..dot + 3], &BADGE);
     }
+
+    #[test]
+    fn the_installer_version_is_the_crate_version() {
+        let config = include_str!("../../Packager.toml");
+        let line = format!("version = \"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            config.lines().any(|l| l == line),
+            "set {line} in crates/hermes-gui/Packager.toml"
+        );
+    }
+
+    /// Writes `assets/icons/icon-<size>.png`, from which `assets/icons/hermes.ico` (installer,
+    /// shortcuts) is made: `magick icon-16.png … icon-256.png hermes.ico`. Run by hand with
+    /// `cargo test -p hermes-gui write_icon_files -- --ignored` after changing the icon.
+    #[test]
+    #[ignore]
+    fn write_icon_files() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        std::fs::create_dir_all(&dir).unwrap();
+        for size in [16, 24, 32, 48, 64, 128, 256, 512] {
+            let rgba = icon_rgba(size, false);
+            image::RgbaImage::from_raw(size, size, rgba)
+                .unwrap()
+                .save(dir.join(format!("icon-{size}.png")))
+                .unwrap();
+        }
+    }
 }

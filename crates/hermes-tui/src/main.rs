@@ -83,8 +83,12 @@ fn main() -> ExitCode {
         if let Some(link) = cli.link {
             app.run(commands::Command::AddInstance(link));
         }
-        // `ratatui::init` also restores the terminal when a panic happens.
+        // `ratatui::init` also restores the terminal when a panic happens; the crash log hook
+        // runs that first.
         let mut terminal = ratatui::init();
+        if let Some(paths) = app.core.paths() {
+            hermes_client_core::crash::install(paths.dir.join("logs"), "hermes-tui");
+        }
         let _ = execute!(
             std::io::stdout(),
             EnableMouseCapture,

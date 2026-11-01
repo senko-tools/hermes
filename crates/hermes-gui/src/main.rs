@@ -132,7 +132,11 @@ fn main() -> ExitCode {
                 None => Task::none(),
             };
             let restored = app.open_restored();
-            (app, Task::batch([app::load_fonts().chain(open), restored]))
+            let update = app.check_for_update();
+            (
+                app,
+                Task::batch([app::load_fonts().chain(open), restored, update]),
+            )
         },
         App::update,
         App::view,
@@ -179,6 +183,7 @@ fn fail(message: &str) -> ExitCode {
 /// Logs go to `<config dir>/logs/hermes.log` (`HERMES_LOG` sets the filter).
 fn init_logging(paths: &ConfigPaths) {
     let dir = paths.dir.join("logs");
+    hermes_client_core::crash::install(dir.clone(), "hermes");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }

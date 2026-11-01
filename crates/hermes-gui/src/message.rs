@@ -96,6 +96,8 @@ pub enum Message {
     Results(crate::buffer::results::Key, crate::buffer::results::Message),
     /// Search in the space of a channel (the whole instance for a DM).
     SearchFrom(InstanceId, Id),
+    UpdateChecked(Result<Option<hermes_client_core::update::Update>, String>),
+    OpenUpdate,
     /// Nothing to do (a request whose result the gateway delivers).
     Nothing,
     /// An icon file was picked for a space.
