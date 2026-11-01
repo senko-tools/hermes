@@ -9,7 +9,8 @@ use iced::{Alignment, Element};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 pub const INPUT: &str = "new-dm-input";
 
@@ -54,17 +55,15 @@ impl NewDm {
                 .font(fonts.ui)
                 .size(fonts.size),
         ]
-        .spacing(12);
+        .spacing(style::GAP);
         if let Some(error) = &self.error {
-            content = content.push(small(error.as_str(), fonts).color(theme.text.error.0));
+            content = content.push(caption(error.as_str(), fonts).color(theme.text.error.0));
         }
         content
             .push(
                 row![
                     space::horizontal(),
-                    button(label("Cancel", fonts))
-                        .padding(style::BUTTON_PAD)
-                        .style(move |_, s| style::secondary(theme, s))
+                    text_button("Cancel", ButtonKind::Secondary, fonts, theme)
                         .on_press(Message::Cancel),
                     button(label(
                         if self.busy { "Please wait…" } else { "Start" },
@@ -74,7 +73,7 @@ impl NewDm {
                     .style(move |_, s| style::primary(theme, s))
                     .on_press_maybe((!self.busy).then_some(Message::Submit)),
                 ]
-                .spacing(8)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
             )
             .into()

@@ -77,14 +77,26 @@ impl Fonts {
         }
     }
 
-    /// Smaller text: timestamps, hints.
-    pub fn small(&self) -> f32 {
+    // The type scale: every text in the app uses one of these sizes (see `widget`).
+
+    /// Captions: timestamps, hints, section titles, badges.
+    pub fn caption(&self) -> f32 {
         (self.size - 2.0).max(f32::from(MIN_SIZE))
     }
 
-    /// Headings.
-    pub fn large(&self) -> f32 {
+    /// Titles: the pane header, the space name, the sidebar brand.
+    pub fn title(&self) -> f32 {
+        self.size + 2.0
+    }
+
+    /// Page headings.
+    pub fn heading(&self) -> f32 {
         self.size + 5.0
+    }
+
+    /// Welcome and empty screens.
+    pub fn display(&self) -> f32 {
+        self.size + 11.0
     }
 }
 
@@ -116,6 +128,15 @@ mod tests {
         assert_eq!(fonts.mono.family, Family::Name(NERD_FONT));
         assert_eq!(fonts.size, 13.0);
         assert_eq!(fonts.scale, 1.0);
+        assert_eq!(
+            [
+                fonts.caption(),
+                fonts.title(),
+                fonts.heading(),
+                fonts.display()
+            ],
+            [11.0, 15.0, 18.0, 24.0]
+        );
 
         let fonts = Fonts::from_config(&config::Font {
             family: "  ".into(),
@@ -127,6 +148,12 @@ mod tests {
         assert_eq!(fonts.mono.family, Family::Name("Consolas"));
         assert_eq!(fonts.size, f32::from(MAX_SIZE));
         assert_eq!(fonts.scale, MIN_SCALE as f32);
+
+        let tiny = Fonts::from_config(&config::Font {
+            size: 8,
+            ..config::Font::default()
+        });
+        assert_eq!(tiny.caption(), f32::from(MIN_SIZE));
     }
 
     #[test]

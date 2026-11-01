@@ -14,7 +14,8 @@ use iced::{Alignment, Element, Fill, Length};
 
 use crate::font::{self, Fonts};
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label, strong};
 
 pub const MIN_SIDEBAR_WIDTH: u16 = 160;
 pub const MAX_SIDEBAR_WIDTH: u16 = 480;
@@ -295,7 +296,7 @@ fn font_picker<'a>(
             .size(fonts.size)
             .width(220),
     ]
-    .spacing(style::GAP)
+    .spacing(style::GAP_S)
     .into()
 }
 
@@ -314,7 +315,7 @@ pub fn view<'a>(
         let selected = tab == t;
         button(
             row![
-                crate::widget::icon::icon(glyph, 16.0).color(if selected {
+                crate::widget::icon::icon(glyph, style::ROW_ICON).color(if selected {
                     theme.buttons.primary.background.0
                 } else {
                     theme.text.tertiary.0
@@ -325,10 +326,10 @@ pub fn view<'a>(
                     theme.text.secondary.0
                 }),
             ]
-            .spacing(style::GAP_L)
+            .spacing(style::GAP)
             .align_y(Alignment::Center),
         )
-        .padding([8, 12])
+        .padding([style::GAP_S, style::GAP])
         .width(Fill)
         .style(move |_, s| style::sidebar_item(theme, s, selected))
         .on_press(Message::Tab(t))
@@ -336,12 +337,9 @@ pub fn view<'a>(
     use crate::widget::icon as i;
     let nav = column![
         container(
-            iced::widget::text("USER SETTINGS")
-                .font(fonts.bold())
-                .size(fonts.small() - 0.5)
-                .color(theme.text.tertiary.0)
+            crate::widget::section_title("User settings", fonts).color(theme.text.tertiary.0)
         )
-        .padding([4, 12]),
+        .padding([style::GAP_XS, style::GAP]),
         tab_button(i::ACCOUNT, "Account", Tab::Account),
         tab_button(i::PALETTE, "Appearance", Tab::Appearance),
         tab_button(i::CHAT, "Chat", Tab::Chat),
@@ -469,7 +467,7 @@ fn appearance<'a>(
             theme,
         ),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720)
     .into()
 }
@@ -500,8 +498,8 @@ fn voice_tab<'a>(
     let check = |on: bool, text: &'static str, f: fn(bool) -> Message| {
         iced::widget::toggler(on)
             .label(text)
-            .size(20)
-            .spacing(style::GAP_L)
+            .size(style::TOGGLER)
+            .spacing(style::GAP)
             .style(move |_, st| style::toggler(theme, st))
             .on_toggle(f)
             .text_size(fonts.size)
@@ -563,9 +561,7 @@ fn voice_tab<'a>(
         ),
         row![
             space::horizontal(),
-            button(small("Refresh devices", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Refresh devices", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::RefreshDevices),
         ],
         setting(
@@ -603,7 +599,7 @@ fn voice_tab<'a>(
             theme,
         ),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720);
     if mode == Mode::PushToTalk {
         let ptt_text = voice.ptt_draft.unwrap_or(v.ptt_key.as_str());
@@ -650,7 +646,7 @@ fn voice_tab<'a>(
                 )
                 .on_release(Message::SaveVoice),
             ]
-            .spacing(6)
+            .spacing(style::GAP_S)
             .width(picker_width),
             fonts,
             theme,
@@ -688,7 +684,7 @@ fn voice_tab<'a>(
                 ),
                 check(v.auto_gain, "Automatic gain", Message::AutoGain),
             ]
-            .spacing(6),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ))
@@ -705,7 +701,7 @@ fn voice_tab<'a>(
                     .step(0.05)
                     .on_release(Message::SaveVoice),
             ]
-            .spacing(6)
+            .spacing(style::GAP_S)
             .width(picker_width),
             fonts,
             theme,
@@ -742,15 +738,15 @@ pub(crate) fn setting<'a>(
         row![
             column![
                 label(name, fonts).font(fonts.medium()),
-                small(hint.to_owned(), fonts).color(theme.text.tertiary.0)
+                caption(hint.to_owned(), fonts).color(theme.text.tertiary.0)
             ]
             .spacing(3)
             .width(Length::Fill),
             control.into(),
         ]
-        .spacing(16)
+        .spacing(style::GAP_L)
         .align_y(Alignment::Center),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .into()
 }

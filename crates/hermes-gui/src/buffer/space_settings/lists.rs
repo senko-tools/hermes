@@ -5,15 +5,16 @@ use hermes_client_core::proto::models::{AuditAction, AuditEntry};
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::time;
-use iced::widget::{Space, button, column, container, row, scrollable};
+use iced::widget::{Space, column, container, row, scrollable};
 use iced::{Alignment, Element, Fill};
 
 use super::{Ctx, Message, placeholder};
 use crate::theme::style;
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 fn page<'a>(content: Element<'a, Message>, theme: &'a crate::theme::Theme) -> Element<'a, Message> {
-    scrollable(container(content).padding(20).width(Fill))
+    scrollable(container(content).padding(style::GAP_XL).width(Fill))
         .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()
@@ -27,7 +28,7 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         row![
             column![
                 heading("Invites", fonts),
-                small(
+                caption(
                     "Anyone with a link can join while it is valid. Revoke a link to stop it working.",
                     fonts
                 )
@@ -35,19 +36,17 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             ]
             .spacing(2)
             .width(Fill),
-            button(label("Create invite…", fonts))
-                .padding(style::BUTTON_PAD)
-.style(move |_, s| style::primary(theme, s))
+            text_button("Create invite…", ButtonKind::Primary, fonts, theme)
                 .on_press_maybe(ctx.can(Permissions::CREATE_INVITES).then_some(Message::CreateInvite)),
         ]
-        .spacing(12)
+        .spacing(style::GAP)
         .align_y(Alignment::Center)
     ]
-    .spacing(10)
+    .spacing(style::GAP_S)
     .max_width(820);
     if !manage {
         col = col.push(
-            small(
+            caption(
                 "Seeing everyone's invites needs the Manage invites permission.",
                 fonts,
             )
@@ -88,23 +87,18 @@ pub fn invites<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             row![
                 column![
                     label(invite.code.clone(), fonts).font(fonts.mono),
-                    small(format!("{uses} · {expires} · by {creator}"), fonts)
+                    caption(format!("{uses} · {expires} · by {creator}"), fonts)
                         .color(theme.text.tertiary.0),
                 ]
                 .spacing(2)
                 .width(Fill),
-                button(small("Copy link", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Copy link", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::CopyInvite(invite.code.clone())),
-                button(small("Revoke", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::danger(theme, s))
-                    .on_press_maybe(
-                        (manage || mine).then(|| Message::RevokeInvite(invite.code.clone()))
-                    ),
+                text_button("Revoke", ButtonKind::Danger, fonts, theme).on_press_maybe(
+                    (manage || mine).then(|| Message::RevokeInvite(invite.code.clone()))
+                ),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center)
             .into(),
             theme,
@@ -119,7 +113,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let mut col = column![
         column![
             heading("Bans", fonts),
-            small(
+            caption(
                 "Banned people cannot rejoin with an invite. Ban someone from the Members tab or \
                  by right-clicking them.",
                 fonts
@@ -128,7 +122,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         ]
         .spacing(2)
     ]
-    .spacing(10)
+    .spacing(style::GAP_S)
     .max_width(820);
     let list = ctx.state.bans.ready();
     if let Some(p) = placeholder(
@@ -153,7 +147,7 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                         format!("{} (@{})", ban.user.name(), ban.user.username),
                         fonts
                     ),
-                    small(
+                    caption(
                         format!(
                             "{reason} · {}",
                             time::format(ban.created_at, "%Y-%m-%d", ctx.utc_offset)
@@ -164,12 +158,10 @@ pub fn bans<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 ]
                 .spacing(2)
                 .width(Fill),
-                button(small("Unban", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Unban", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::Unban(ban.user.id)),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center)
             .into(),
             theme,
@@ -184,14 +176,11 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let mut col = column![
         row![
             heading("Audit log", fonts).width(Fill),
-            button(small("Refresh", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::Refresh),
+            text_button("Refresh", ButtonKind::Secondary, fonts, theme).on_press(Message::Refresh),
         ]
         .align_y(Alignment::Center)
     ]
-    .spacing(6)
+    .spacing(style::GAP_S)
     .max_width(820);
     let list = ctx.state.audit.ready();
     if let Some(p) = placeholder(
@@ -207,7 +196,7 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         let (text, details) = describe(ctx.s, ctx.space, entry);
         let mut line = column![
             row![
-                small(
+                caption(
                     time::format(entry.created_at, "%Y-%m-%d %H:%M", ctx.utc_offset),
                     fonts
                 )
@@ -215,22 +204,20 @@ pub fn audit<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .width(120),
                 label(text, fonts),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
         ]
         .spacing(2);
         if !details.is_empty() {
             line = line.push(row![
                 Space::new().width(128),
-                small(details, fonts).color(theme.text.tertiary.0)
+                caption(details, fonts).color(theme.text.tertiary.0)
             ]);
         }
         col = col.push(super::field_block(line.into(), theme));
     }
     if ctx.state.audit_more {
         col = col.push(
-            button(small("Load older entries", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Load older entries", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::MoreAudit),
         );
     }

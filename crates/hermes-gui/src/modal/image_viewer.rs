@@ -3,15 +3,14 @@
 
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::models::Attachment;
-use iced::widget::{
-    button, center, column, container, image, mouse_area, opaque, row, space, stack,
-};
+use iced::widget::{center, column, container, image, mouse_area, opaque, row, space, stack};
 use iced::{Alignment, Color, ContentFit, Element, Fill};
 
 use crate::buffer::channel::message::{Img, human_size};
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label};
 
 #[derive(Debug, Clone)]
 pub struct Viewer {
@@ -41,27 +40,21 @@ pub fn view<'a, M: Clone + 'a>(
     };
     let bar = row![
         label(viewer.attachment.filename.clone(), fonts).color(Color::WHITE),
-        small(human_size(viewer.attachment.size), fonts).color(Color::from_rgb(0.7, 0.7, 0.7)),
+        caption(human_size(viewer.attachment.size), fonts).color(Color::from_rgb(0.7, 0.7, 0.7)),
         space::horizontal(),
-        button(small("Download", fonts))
-            .padding(style::BUTTON_PAD)
-            .style(move |_, s| style::secondary(theme, s))
-            .on_press(on_download),
-        button(small("Close", fonts))
-            .padding(style::BUTTON_PAD)
-            .style(move |_, s| style::secondary(theme, s))
-            .on_press(on_close.clone()),
+        text_button("Download", ButtonKind::Secondary, fonts, theme).on_press(on_download),
+        text_button("Close", ButtonKind::Secondary, fonts, theme).on_press(on_close.clone()),
     ]
-    .spacing(12)
+    .spacing(style::GAP)
     .align_y(Alignment::Center);
     let overlay = container(
         column![
             mouse_area(container(picture).width(Fill).height(Fill)).on_press(on_close),
             bar
         ]
-        .spacing(12),
+        .spacing(style::GAP),
     )
-    .padding(24)
+    .padding(style::GAP_XL)
     .width(Fill)
     .height(Fill)
     .style(|_| container::Style {

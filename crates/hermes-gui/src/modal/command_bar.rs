@@ -10,7 +10,7 @@ use iced::{Alignment, Element, Fill};
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Action};
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{caption, label};
 
 pub const INPUT: &str = "command-bar-input";
 const MAX_SHOWN: usize = 50;
@@ -111,20 +111,21 @@ impl CommandBar {
                 button(
                     row![
                         label(entry.label.as_str(), fonts).width(Fill),
-                        small(entry.detail.as_str(), fonts).color(theme.text.tertiary.0),
+                        caption(entry.detail.as_str(), fonts).color(theme.text.tertiary.0),
                     ]
-                    .spacing(8)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
-                .padding([7, 10])
+                .padding([style::GAP_S, style::GAP_S])
                 .style(move |_, s| style::sidebar_item(theme, s, selected))
                 .on_press(Message::Run(n)),
             );
         }
         if self.shown.is_empty() {
             list = list.push(
-                container(small("Nothing matches", fonts).color(theme.text.tertiary.0)).padding(8),
+                container(caption("Nothing matches", fonts).color(theme.text.tertiary.0))
+                    .padding(style::GAP_S),
             );
         }
         column![
@@ -147,7 +148,7 @@ impl CommandBar {
                 .style(move |_, st| style::scrollbar(theme, st))
                 .height(360),
         ]
-        .spacing(12)
+        .spacing(style::GAP)
         .into()
     }
 }

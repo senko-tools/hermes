@@ -17,7 +17,7 @@ use hermes_client_core::store::{Changed, HistoryAnchor};
 use hermes_client_core::{Core, CoreEvent, InstanceId, time};
 use iced::keyboard::{self, Modifiers};
 use iced::widget::pane_grid::Axis;
-use iced::widget::{button, column, container, operation, row};
+use iced::widget::{column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
 use crate::buffer::channel::input::{self, Composer, Upload, UploadState};
@@ -38,9 +38,10 @@ use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
 use crate::voice::{self as voice_ui, VoiceMsg};
+use crate::widget::caption;
 use crate::widget::context_menu;
 use crate::widget::cursor::{self, Cursor};
-use crate::widget::small;
+use crate::widget::{ButtonKind, text_button};
 
 /// A line shown above the main area until dismissed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2422,16 +2423,14 @@ impl App {
             main = main.push(
                 container(
                     row![
-                        small(status.text.as_str(), fonts).width(Fill),
-                        button(small("Dismiss", fonts))
-                            .padding(style::BUTTON_PAD)
-                            .style(|_, s| style::secondary(theme, s))
+                        caption(status.text.as_str(), fonts).width(Fill),
+                        text_button("Dismiss", ButtonKind::Secondary, fonts, theme)
                             .on_press(Message::DismissStatus),
                     ]
-                    .spacing(8)
+                    .spacing(style::GAP_S)
                     .align_y(iced::Alignment::Center),
                 )
-                .padding([4, 8])
+                .padding([style::GAP_XS, style::GAP_S])
                 .style(|_| style::status_bar(theme, status.level)),
             );
         }

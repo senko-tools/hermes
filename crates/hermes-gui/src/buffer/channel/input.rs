@@ -15,7 +15,7 @@ use super::Context;
 use super::message::human_size;
 use crate::theme::style;
 use crate::widget::icon::{self, icon};
-use crate::widget::{label, small};
+use crate::widget::{caption, label};
 
 /// Suggestions shown at most.
 pub const MAX_SUGGESTIONS: usize = 8;
@@ -239,13 +239,13 @@ pub fn view<'a>(
         return container(
             row![
                 icon(icon::LOCK, 14.0).color(theme.text.tertiary.0),
-                small("You cannot send messages in this channel.", fonts)
+                caption("You cannot send messages in this channel.", fonts)
                     .color(theme.text.tertiary.0),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         )
-        .padding([14, 20])
+        .padding([style::GAP, style::GAP_XL])
         .into();
     }
 
@@ -265,7 +265,7 @@ pub fn view<'a>(
         }
         column![
             container(list)
-                .padding(6)
+                .padding(style::GAP_S)
                 .width(Fill)
                 .style(move |_| style::popover(theme)),
             Space::new().height(6)
@@ -293,28 +293,28 @@ pub fn view<'a>(
         Some((glyph, mode)) => column![
             row![
                 icon(glyph, 16.0).color(theme.buttons.primary.background.0),
-                small(mode, fonts)
+                caption(mode, fonts)
                     .font(fonts.medium())
                     .color(theme.text.secondary.0)
                     .width(Fill),
                 button(icon(icon::CLOSE, 16.0))
-                    .padding(4)
+                    .padding(style::GAP_XS)
                     .style(move |_, st| style::ghost(theme, st, false))
                     .on_press(Message::Cancel),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center)
-            .padding([2, 8]),
+            .padding([2.0, style::GAP_S]),
             hairline(),
         ]
-        .spacing(4)
+        .spacing(style::GAP_XS)
         .into(),
     };
 
     let uploads: Element<'a, Message> = if composer.uploads.is_empty() {
         Space::new().into()
     } else {
-        let mut chips = row![].spacing(style::GAP);
+        let mut chips = row![].spacing(style::GAP_S);
         for u in &composer.uploads {
             let (state, color) = match &u.state {
                 UploadState::Uploading => ("uploading…".to_owned(), theme.text.tertiary.0),
@@ -325,8 +325,8 @@ pub fn view<'a>(
                 container(
                     row![
                         icon(icon::FILE, 14.0).color(theme.text.secondary.0),
-                        small(u.name.clone(), fonts),
-                        small(state, fonts).color(color),
+                        caption(u.name.clone(), fonts),
+                        caption(state, fonts).color(color),
                         button(icon(icon::CLOSE, 12.0))
                             .padding(3)
                             .style(move |_, st| style::ghost(theme, st, false))
@@ -335,13 +335,16 @@ pub fn view<'a>(
                     .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
-                .padding([4, 10])
+                .padding([style::GAP_XS, style::GAP_S])
                 .style(move |_| style::panel(theme)),
             );
         }
-        column![container(chips.wrap()).padding([4, 6]), hairline(),]
-            .spacing(4)
-            .into()
+        column![
+            container(chips.wrap()).padding([style::GAP_XS, style::GAP_S]),
+            hairline(),
+        ]
+        .spacing(style::GAP_XS)
+        .into()
     };
 
     let enter_sends = ctx.config.buffer.enter_sends;
@@ -353,14 +356,14 @@ pub fn view<'a>(
         .on_action(Message::Edit)
         .key_binding(move |kp| binding(kp, enter_sends, suggesting, empty))
         .font(fonts.ui)
-        .size(fonts.size + 1.0)
-        // A one-line editor is exactly as tall as the attach button (34 px), so the first line
+        .size(fonts.size)
+        // A one-line editor is exactly as tall as the attach button (`ICON_BUTTON`), so the first line
         // and the button share a center.
         .padding([
-            ((style::ICON_BUTTON - (fonts.size + 1.0) * 1.3) / 2.0).max(4.0),
+            ((style::ICON_BUTTON - fonts.size * 1.3) / 2.0).max(4.0),
             4.0,
         ])
-        .max_height((fonts.size + 1.0) * 1.3 * 10.0 + style::ICON_BUTTON)
+        .max_height(fonts.size * 1.3 * 10.0 + style::ICON_BUTTON)
         .height(Length::Shrink)
         .style(move |_, st| style::editor(theme, st));
     let attach = crate::widget::tip_at(
@@ -380,7 +383,7 @@ pub fn view<'a>(
         ]
         .spacing(0),
     )
-    .padding(4)
+    .padding(style::GAP_XS)
     .width(Fill)
     .style(move |_| style::composer(theme, false));
     col = col.push(field);

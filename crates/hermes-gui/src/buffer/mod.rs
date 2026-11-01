@@ -79,7 +79,7 @@ pub fn page_frame<'a, M: Clone + 'a>(
             }
         })
         .on_press(on_close),
-        crate::widget::small("ESC", fonts)
+        crate::widget::caption("ESC", fonts)
             .font(fonts.bold())
             .color(theme.text.tertiary.0),
     ]
@@ -102,7 +102,7 @@ pub fn page_frame<'a, M: Clone + 'a>(
                 container(content).max_width(760).width(Fill).height(Fill),
                 container(close).padding(iced::Padding::ZERO.top(48.0)),
             ]
-            .spacing(style::GAP_XL),
+            .spacing(style::GAP_L),
         )
         .width(FillPortion(5))
         .height(Fill)

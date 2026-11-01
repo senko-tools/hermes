@@ -17,7 +17,8 @@ use crate::sidebar::menu::Target;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
 use crate::widget::icon::{self, icon};
-use crate::widget::{icon_button, label, small, tip};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, icon_button, label, tip};
 
 const MEMBER_LIST_WIDTH: f32 = 232.0;
 
@@ -242,10 +243,10 @@ impl Panes {
                 icon(glyph, 18.0).color(theme.text.tertiary.0),
                 text(title)
                     .font(fonts.bold())
-                    .size(fonts.size + 2.0)
+                    .size(fonts.title())
                     .wrapping(text::Wrapping::None),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center);
             if !topic.is_empty() {
                 heading = heading
@@ -256,7 +257,7 @@ impl Panes {
                         }
                     }))
                     .push(
-                        small(topic, fonts)
+                        caption(topic, fonts)
                             .color(theme.text.secondary.0)
                             .wrapping(text::Wrapping::None),
                     );
@@ -268,7 +269,7 @@ impl Panes {
             let mut title_bar =
                 pane_grid::TitleBar::new(heading.height(style::ICON_BUTTON).clip(true))
                     .controls(pane_grid::Controls::new(controls))
-                    .padding([7, 12])
+                    .padding([style::GAP_S, style::GAP])
                     .style(move |_| {
                         let mut st = style::pane_header(theme);
                         if marked {
@@ -353,14 +354,11 @@ fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a,
         _ => 0,
     };
     button(
-        row![
-            icon(glyph, 14.0),
-            small(text, ctx.fonts).font(ctx.fonts.medium())
-        ]
-        .spacing(style::GAP_S)
-        .align_y(Alignment::Center),
+        row![icon(glyph, 14.0), label(text, ctx.fonts)]
+            .spacing(style::GAP_S)
+            .align_y(Alignment::Center),
     )
-    .padding([7, 12])
+    .padding(style::BUTTON_PAD)
     .style(move |_, s| match kind {
         1 => style::primary(theme, s),
         2 => style::danger(theme, s),
@@ -513,14 +511,9 @@ fn body<'a>(
                     },
                     ..container::Style::default()
                 });
-            let mut welcome = column![
-                badge,
-                text("Welcome to Hermes")
-                    .font(fonts.bold())
-                    .size(fonts.size + 11.0),
-            ]
-            .spacing(style::GAP_XL)
-            .align_x(Alignment::Center);
+            let mut welcome = column![badge, crate::widget::display("Welcome to Hermes", fonts),]
+                .spacing(style::GAP_L)
+                .align_x(Alignment::Center);
             if ctx.core.instance_ids().is_empty() {
                 welcome = welcome
                     .push(
@@ -533,7 +526,7 @@ fn body<'a>(
                     .push(
                         button(
                             row![icon(icon::PLUS, 14.0), label("Add an instance", fonts)]
-                                .spacing(style::GAP)
+                                .spacing(style::GAP_S)
                                 .align_y(Alignment::Center),
                         )
                         .padding(style::BUTTON_PAD)
@@ -560,7 +553,7 @@ fn body<'a>(
                             Message::Shortcut(crate::keybinds::Action::Search),
                         ),
                     ]
-                    .spacing(style::GAP_L),
+                    .spacing(style::GAP),
                     row![
                         action(
                             icon::LINK,
@@ -575,9 +568,9 @@ fn body<'a>(
                             Message::OpenSettings,
                         ),
                     ]
-                    .spacing(style::GAP_L),
+                    .spacing(style::GAP),
                 ]
-                .spacing(style::GAP_L);
+                .spacing(style::GAP);
                 if let Some(inst) = first {
                     grid = grid.push(
                         row![
@@ -597,7 +590,7 @@ fn body<'a>(
                                 Message::OpenResults(crate::buffer::results::Key::Mentions),
                             ),
                         ]
-                        .spacing(style::GAP_L),
+                        .spacing(style::GAP),
                     );
                 }
                 welcome = welcome
@@ -605,11 +598,11 @@ fn body<'a>(
                         label("Pick a channel in the sidebar, or start here.", fonts)
                             .color(theme.text.secondary.0),
                     )
-                    .push(Space::new().height(style::GAP))
+                    .push(Space::new().height(style::GAP_S))
                     .push(grid)
-                    .push(Space::new().height(style::GAP))
+                    .push(Space::new().height(style::GAP_S))
                     .push(
-                        small(
+                        caption(
                             "Right-click for actions · double-click voice to join",
                             fonts,
                         )
@@ -702,20 +695,16 @@ fn connection_banner<'a>(ctx: &Context<'a>, inst: &InstanceId) -> Option<Element
             )),
         ),
     };
-    let mut line = row![small(text, fonts).width(Fill)]
-        .spacing(8)
+    let mut line = row![caption(text, fonts).width(Fill)]
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center);
     if let Some((label_text, message)) = action {
-        line = line.push(
-            button(small(label_text, fonts))
-                .padding([2, 8])
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(message),
-        );
+        line = line
+            .push(text_button(label_text, ButtonKind::Secondary, fonts, theme).on_press(message));
     }
     Some(
         container(line)
-            .padding([4, 10])
+            .padding([style::GAP_XS, style::GAP_S])
             .width(Fill)
             .style(move |_| style::status_bar(theme, crate::app::Level::Warning))
             .into(),
@@ -795,14 +784,14 @@ fn welcome_action<'a>(
                 }),
             column![
                 label(title, fonts).font(fonts.bold()),
-                small(hint, fonts).color(theme.text.tertiary.0),
+                caption(hint, fonts).color(theme.text.tertiary.0),
             ]
             .spacing(3),
         ]
-        .spacing(style::GAP_L)
+        .spacing(style::GAP)
         .align_y(Alignment::Center),
     )
-    .padding(12)
+    .padding(style::GAP)
     .width(286)
     .height(68)
     .style(move |_, s| {
@@ -838,7 +827,7 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     let store = ctx.core.store();
-    let mut list = column![].spacing(2).padding([12, 8]);
+    let mut list = column![].spacing(2).padding([style::GAP, style::GAP_S]);
     if let Some(s) = store.instance(inst) {
         let groups = match s.space_of(channel) {
             Some(space) => view::member_groups(s, space),
@@ -870,10 +859,10 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                         group.members.len()
                     ))
                     .font(fonts.bold())
-                    .size(fonts.small() - 0.5)
+                    .size(fonts.caption())
                     .color(theme.text.tertiary.0),
                 )
-                .padding([6, 8]),
+                .padding([style::GAP_S, style::GAP_S]),
             );
             for member in group.members {
                 let offline = member.status == Presence::Offline;
@@ -906,10 +895,10 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                                     .color(name_color)
                                     .wrapping(text::Wrapping::None),
                             ]
-                            .spacing(style::GAP_L)
+                            .spacing(style::GAP)
                             .align_y(Alignment::Center),
                         )
-                        .padding([4, 8])
+                        .padding([style::GAP_XS, style::GAP_S])
                         .width(Fill)
                         .style(move |_, st| {
                             if open {
@@ -923,7 +912,7 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                     .on_right_press(Message::OpenMenu(target)),
                 );
             }
-            list = list.push(Space::new().height(style::GAP_L));
+            list = list.push(Space::new().height(style::GAP));
         }
     }
     container(

@@ -12,7 +12,8 @@ use iced::{Alignment, Element, Fill};
 
 use super::{Ctx, Message, rgb};
 use crate::theme::style;
-use crate::widget::{label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label, strong};
 
 /// At most this many rows are built; the search narrows bigger spaces.
 const MAX_ROWS: usize = 300;
@@ -61,11 +62,11 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             button(
                 column![
                     label(name, fonts).color(name_color),
-                    small(format!("@{}", m.user.username), fonts).color(theme.text.tertiary.0),
+                    caption(format!("@{}", m.user.username), fonts).color(theme.text.tertiary.0),
                 ]
                 .spacing(0),
             )
-            .padding([4, 8])
+            .padding([style::GAP_XS, style::GAP_S])
             .width(Fill)
             .style(move |_, s| style::sidebar_item(theme, s, selected))
             .on_press(Message::SelectMember(m.user.id)),
@@ -73,7 +74,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     }
     if total > MAX_ROWS {
         list = list.push(
-            small(
+            caption(
                 format!("…and {} more. Search to narrow.", total - MAX_ROWS),
                 fonts,
             )
@@ -88,15 +89,15 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .on_input(Message::MemberQuery)
                 .font(fonts.ui)
                 .size(fonts.size),
-            small(format!("{total} member{}", super::plural(total)), fonts)
+            caption(format!("{total} member{}", super::plural(total)), fonts)
                 .color(theme.text.tertiary.0),
             scrollable(list)
                 .style(move |_, st| style::scrollbar(theme, st))
                 .height(Fill),
         ]
-        .spacing(6),
+        .spacing(style::GAP_S),
     )
-    .padding(8)
+    .padding(style::GAP_S)
     .width(260)
     .height(Fill)
     .style(move |_| style::sidebar(theme));
@@ -107,7 +108,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             None => container(
                 label("Pick a member to see what you can do.", fonts).color(theme.text.secondary.0),
             )
-            .padding(20)
+            .padding(style::GAP_XL)
             .into(),
         };
     row![left, detail].height(Fill).into()
@@ -122,10 +123,10 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     let above = view::outranks(ctx.s, ctx.space, user);
     let owner = st.space.owner_id == user;
 
-    let mut col = column![].spacing(14).max_width(720);
+    let mut col = column![].spacing(style::GAP).max_width(720);
     let mut title = column![
         strong(ctx.s.display_name(Some(ctx.space), user), fonts),
-        small(
+        caption(
             format!(
                 "@{} · joined {}{}",
                 m.user.username,
@@ -138,16 +139,14 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     ]
     .spacing(2);
     if let Some(status) = m.user.status_text.as_deref().filter(|t| !t.is_empty()) {
-        title = title.push(small(status.to_owned(), fonts).color(theme.text.secondary.0));
+        title = title.push(caption(status.to_owned(), fonts).color(theme.text.secondary.0));
     }
     col = col.push(title);
 
-    let mut actions = row![].spacing(8).align_y(Alignment::Center);
+    let mut actions = row![].spacing(style::GAP_S).align_y(Alignment::Center);
     if !me {
         actions = actions.push(
-            button(label("Message", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::primary(theme, s))
+            text_button("Message", ButtonKind::Primary, fonts, theme)
                 .on_press(Message::DmMember(user)),
         );
     }
@@ -158,33 +157,25 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     };
     if nick {
         actions = actions.push(
-            button(label("Change nickname…", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Change nickname…", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::Nickname(user)),
         );
     }
     actions = actions.push(Space::new().width(Fill));
     if above && ctx.can(Permissions::KICK_MEMBERS) {
         actions = actions.push(
-            button(label("Kick", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::danger(theme, s))
-                .on_press(Message::Kick(user)),
+            text_button("Kick", ButtonKind::Danger, fonts, theme).on_press(Message::Kick(user)),
         );
     }
     if above && ctx.can(Permissions::BAN_MEMBERS) {
         actions = actions.push(
-            button(label("Ban…", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::danger(theme, s))
-                .on_press(Message::Ban(user)),
+            text_button("Ban…", ButtonKind::Danger, fonts, theme).on_press(Message::Ban(user)),
         );
     }
     col = col.push(actions);
 
     // Roles.
-    let mut roles = column![strong("Roles", fonts)].spacing(6);
+    let mut roles = column![strong("Roles", fonts)].spacing(style::GAP_S);
     let mut any = false;
     for role in st.roles.iter().filter(|r| !r.is_everyone()) {
         any = true;
@@ -203,7 +194,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
     }
     if !any {
         roles = roles.push(
-            small(
+            caption(
                 "This space has no roles yet. Create them in the Roles tab.",
                 fonts,
             )
@@ -224,7 +215,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
             .channel(vs.channel_id)
             .and_then(|c| c.name.clone())
             .unwrap_or_default();
-        let mut voice = row![].spacing(8).align_y(Alignment::Center);
+        let mut voice = row![].spacing(style::GAP_S).align_y(Alignment::Center);
         if ctx.can(Permissions::MUTE_MEMBERS) {
             voice = voice.push(
                 button(label(
@@ -257,15 +248,13 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
         }
         if ctx.can(Permissions::MOVE_MEMBERS) {
             voice = voice.push(
-                button(label("Disconnect", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::danger(theme, s))
+                text_button("Disconnect", ButtonKind::Danger, fonts, theme)
                     .on_press(Message::Disconnect(user)),
             );
         }
         col = col.push(super::field_block(
             column![strong(format!("In voice: {channel}"), fonts), voice]
-                .spacing(8)
+                .spacing(style::GAP_S)
                 .into(),
             theme,
         ));
@@ -276,7 +265,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
             row![
                 column![
                     label("Transfer ownership", fonts),
-                    small(
+                    caption(
                         "Makes them the owner of the space. You keep your roles but can no longer \
                          delete the space.",
                         fonts
@@ -285,18 +274,16 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, m: &Member) -> Element<'a, Message> {
                 ]
                 .spacing(2)
                 .width(Fill),
-                button(label("Transfer…", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::danger(theme, s))
+                text_button("Transfer…", ButtonKind::Danger, fonts, theme)
                     .on_press(Message::Transfer(user)),
             ]
-            .spacing(12)
+            .spacing(style::GAP)
             .align_y(Alignment::Center)
             .into(),
             theme,
         ));
     }
-    scrollable(container(col).padding(20).width(Fill))
+    scrollable(container(col).padding(style::GAP_XL).width(Fill))
         .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()

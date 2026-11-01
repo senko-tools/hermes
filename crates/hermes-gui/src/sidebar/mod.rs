@@ -24,12 +24,12 @@ use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::{JoinOn, VoiceMsg};
 use crate::widget::icon::{self, icon};
-use crate::widget::{avatar, icon_button, label, small, strong, tip, tip_at};
+use crate::widget::{avatar, caption, icon_button, label, strong, tip, tip_at};
 
 /// Indent per tree level.
 const INDENT: f32 = 10.0;
 /// Width of the chevron / channel icon column, so names line up across row kinds.
-const LEAD: f32 = 16.0;
+const LEAD: f32 = style::ROW_ICON;
 
 #[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
@@ -45,7 +45,7 @@ pub fn view<'a>(
     menu: Option<&Target>,
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
-    let mut list = column![].spacing(2).padding([8, 8]);
+    let mut list = column![].spacing(2).padding([style::GAP_S, style::GAP_S]);
     for row in rows {
         let (element, drag) = match row {
             Row::Channel { drag, .. } | Row::Category { drag, .. } => {
@@ -55,14 +55,14 @@ pub fn view<'a>(
         };
         list = list.push(draggable(element, drag, drop_target, theme));
     }
-    list = list.push(Space::new().height(style::GAP));
+    list = list.push(Space::new().height(style::GAP_S));
     list = list.push(
         button(
             row![
                 icon(icon::PLUS, 14.0),
-                small("Add an instance", fonts).width(Fill)
+                caption("Add an instance", fonts).width(Fill)
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         )
         .padding(style::ROW_PAD)
@@ -74,12 +74,12 @@ pub fn view<'a>(
     let header = container(
         row![
             icon(icon::FEATHER, 18.0).color(theme.buttons.primary.background.0),
-            text("Hermes").font(fonts.bold()).size(fonts.size + 3.0),
+            crate::widget::title("Hermes", fonts),
         ]
-        .spacing(style::GAP)
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center),
     )
-    .padding([0, 16])
+    .padding([0.0, style::GAP_L])
     .height(style::HEADER)
     .width(Fill)
     .align_y(Alignment::Center)
@@ -98,9 +98,9 @@ pub fn view<'a>(
                 button(
                     row![
                         icon(icon::ARROW_DOWN, 14.0),
-                        small(format!("Hermes {} is available", update.version), fonts),
+                        caption(format!("Hermes {} is available", update.version), fonts),
                     ]
-                    .spacing(style::GAP)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
@@ -108,7 +108,7 @@ pub fn view<'a>(
                 .style(move |_, s| style::ghost(theme, s, true))
                 .on_press(Message::OpenUpdate),
             )
-            .padding([4, 8]),
+            .padding([style::GAP_XS, style::GAP_S]),
         );
     }
     if let Some(panel) = voice_panel::view(core, ptt_down, fonts, theme) {
@@ -190,16 +190,16 @@ fn user_panel<'a>(
                 ),
                 column![
                     strong(name, fonts).wrapping(text::Wrapping::None),
-                    small(subtitle, fonts)
+                    caption(subtitle, fonts)
                         .color(theme.text.tertiary.0)
                         .wrapping(text::Wrapping::None),
                 ]
                 .spacing(1),
             ]
-            .spacing(10)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         )
-        .padding([4, 6])
+        .padding([style::GAP_XS, style::GAP_S])
         .width(Fill)
         .style(move |_, s| {
             if open {
@@ -233,7 +233,7 @@ fn user_panel<'a>(
         .spacing(2)
         .align_y(Alignment::Center),
     )
-    .padding([8, 8])
+    .padding([style::GAP_S, style::GAP_S])
     .style(move |_| style::sidebar_footer(theme))
     .into()
 }
@@ -259,11 +259,11 @@ fn row_view<'a>(
                     .wrapping(text::Wrapping::None)
                     .width(Fill),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center);
             let logged_out = *status == ConnStatus::LoggedOut;
             if logged_out {
-                content = content.push(small("Sign in", fonts).color(theme.text.link.0));
+                content = content.push(caption("Sign in", fonts).color(theme.text.link.0));
             }
             let on_press = if logged_out {
                 Message::SignIn(inst.clone())
@@ -293,7 +293,7 @@ fn row_view<'a>(
                     avatar::space_icon(name, 22.0, fonts),
                     text(name.clone())
                         .font(fonts.bold())
-                        .size(fonts.size + 1.0)
+                        .size(fonts.title())
                         .wrapping(text::Wrapping::None)
                         .width(Fill),
                     if *collapsed {
@@ -303,11 +303,11 @@ fn row_view<'a>(
                     },
                     // No tooltip: it would cover the menu this opens.
                     button(icon(icon::MORE, 14.0))
-                        .padding([3, 4])
+                        .padding([3.0, style::GAP_XS])
                         .style(move |_, s| style::ghost(theme, s, false))
                         .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
                 ]
-                .spacing(style::GAP)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
                 INDENT,
                 false,
@@ -389,7 +389,7 @@ fn row_view<'a>(
                 name.width(Fill),
                 mention_count(badge.mentions, fonts, theme),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center);
             let indent = INDENT * if *nested { 3.0 } else { 2.0 };
             let row = if *kind == ChannelKind::Voice {
@@ -434,7 +434,7 @@ fn row_view<'a>(
                 });
             let mut content = row![
                 face,
-                small(name.clone(), fonts)
+                caption(name.clone(), fonts)
                     .color(if *speaking {
                         theme.text.primary.0
                     } else {
@@ -443,7 +443,7 @@ fn row_view<'a>(
                     .wrapping(text::Wrapping::None)
                     .width(Fill),
             ]
-            .spacing(style::GAP)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center);
             if *deafened {
                 content = content.push(icon(icon::HEADPHONES_OFF, 14.0).color(theme.voice.muted.0));
@@ -453,7 +453,7 @@ fn row_view<'a>(
             let row = container(content).padding(iced::Padding {
                 top: 1.0,
                 bottom: 1.0,
-                left: 8.0 + INDENT * 2.0 + LEAD + style::GAP,
+                left: 8.0 + INDENT * 2.0 + LEAD + style::GAP_S,
                 right: 8.0,
             });
             if *me {
@@ -494,7 +494,7 @@ fn row_view<'a>(
                     header,
                     tip(
                         button(icon(icon::PLUS, 14.0))
-                            .padding([3, 4])
+                            .padding([3.0, style::GAP_XS])
                             .style(|_, s| style::ghost(theme, s, false))
                             .on_press(Message::NewDm(inst.clone())),
                         "New direct message or group",
@@ -546,7 +546,7 @@ fn row_view<'a>(
                     label_text.width(Fill),
                     mention_count(badge.mentions, fonts, theme),
                 ]
-                .spacing(style::GAP)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
                 INDENT * 2.0,
                 *selected,
@@ -562,11 +562,8 @@ fn row_view<'a>(
 
 /// A small uppercase heading (categories, direct messages).
 fn section_title<'a>(name: &str, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-    text(name.to_uppercase())
-        .font(fonts.bold())
-        .size(fonts.small() - 0.5)
+    crate::widget::section_title(name, fonts)
         .color(theme.text.tertiary.0)
-        .wrapping(text::Wrapping::None)
         .width(Fill)
         .into()
 }
@@ -745,10 +742,10 @@ fn mention_count<'a>(count: u32, fonts: &Fonts, theme: &'a Theme) -> Element<'a,
             count.to_string()
         })
         .font(fonts.bold())
-        .size(fonts.small() - 1.0)
+        .size(fonts.caption())
         .color(text_color),
     )
-    .padding([1, 6])
+    .padding([1.0, style::GAP_S])
     .style(move |_| container::Style {
         background: Some(theme.buttons.danger.background.0.into()),
         border: Border {

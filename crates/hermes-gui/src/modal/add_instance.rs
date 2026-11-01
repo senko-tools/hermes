@@ -14,7 +14,8 @@ use iced::{Alignment, Element, Fill, Task};
 use crate::font::Fonts;
 use crate::modal::fingerprint;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label, strong};
 
 pub const ADDRESS_INPUT: &str = "add-instance-address";
 pub const USERNAME_INPUT: &str = "add-instance-username";
@@ -287,7 +288,7 @@ impl AddInstance {
                     (!self.busy).then_some(Message::SubmitAddress),
                 ),
             ]
-            .spacing(12)
+            .spacing(style::GAP)
             .into(),
             Step::Fingerprint { probe, .. } => fingerprint::view(
                 probe.host.display(),
@@ -303,7 +304,7 @@ impl AddInstance {
             ),
             Step::Account(account) => account.view(self.busy, fonts, theme),
         };
-        let mut content = column![body].spacing(12);
+        let mut content = column![body].spacing(style::GAP);
         if let Some(error) = &self.error {
             content = content.push(label(error.as_str(), fonts).color(theme.text.error.0));
         }
@@ -336,11 +337,11 @@ impl Account {
     }
 
     fn view<'a>(&'a self, busy: bool, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-        let mut info = column![heading(self.name.as_str(), fonts)].spacing(4);
+        let mut info = column![heading(self.name.as_str(), fonts)].spacing(style::GAP_XS);
         if !self.description.is_empty() {
             info = info.push(label(self.description.as_str(), fonts).color(theme.text.secondary.0));
         }
-        info = info.push(small(self.host.display(), fonts).color(theme.text.tertiary.0));
+        info = info.push(caption(self.host.display(), fonts).color(theme.text.tertiary.0));
         if let Some(space) = self.preview.as_ref().and_then(|p| p.space.as_ref()) {
             let members = if space.member_count == 1 {
                 "1 member".to_owned()
@@ -350,14 +351,14 @@ impl Account {
             info = info.push(
                 container(
                     row![
-                        small("You're invited to", fonts),
+                        caption("You're invited to", fonts),
                         strong(space.name.as_str(), fonts),
-                        small(members, fonts).color(theme.text.secondary.0),
+                        caption(members, fonts).color(theme.text.secondary.0),
                     ]
-                    .spacing(6)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
-                .padding([6, 0]),
+                .padding([style::GAP_S, 0.0]),
             );
         }
 
@@ -372,7 +373,7 @@ impl Account {
             tab("Sign in", Tab::SignIn, true),
             tab("Create account", Tab::Register, self.can_register()),
         ]
-        .spacing(6);
+        .spacing(style::GAP_S);
 
         let mut form = column![
             info,
@@ -395,10 +396,10 @@ impl Account {
                 .font(fonts.ui)
                 .size(fonts.size),
         ]
-        .spacing(12);
+        .spacing(style::GAP);
         if !self.can_register() {
             form = form.push(
-                small(
+                caption(
                     "This instance only accepts new accounts with an invite link.",
                     fonts,
                 )
@@ -428,28 +429,16 @@ fn buttons<'a>(
     action: &'a str,
     on_action: Option<Message>,
 ) -> Element<'a, Message> {
-    let mut row = row![].spacing(8).align_y(Alignment::Center).width(Fill);
+    let mut row = row![]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center)
+        .width(Fill);
     if let Some(back) = back {
-        row = row.push(
-            button(label("Back", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(back),
-        );
+        row = row.push(text_button("Back", ButtonKind::Secondary, fonts, theme).on_press(back));
     }
     row.push(space::horizontal())
-        .push(
-            button(label("Cancel", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::Cancel),
-        )
-        .push(
-            button(label(action, fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::primary(theme, s))
-                .on_press_maybe(on_action),
-        )
+        .push(text_button("Cancel", ButtonKind::Secondary, fonts, theme).on_press(Message::Cancel))
+        .push(text_button(action, ButtonKind::Primary, fonts, theme).on_press_maybe(on_action))
         .into()
 }
 

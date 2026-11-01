@@ -9,42 +9,49 @@ use crate::app::Level;
 
 // Shared measurements, so rows, buttons and inputs line up across every screen.
 
-/// Gaps between elements.
+/// Gaps and paddings, on a 4 px grid. Literal values are only for 1–3 px optical tweaks.
 pub const GAP_XS: f32 = 4.0;
-pub const GAP_S: f32 = 6.0;
-pub const GAP: f32 = 8.0;
-pub const GAP_L: f32 = 12.0;
-pub const GAP_XL: f32 = 16.0;
+pub const GAP_S: f32 = 8.0;
+pub const GAP: f32 = 12.0;
+pub const GAP_L: f32 = 16.0;
+pub const GAP_XL: f32 = 24.0;
 
 /// Corner radii.
 pub const RADIUS_S: f32 = 4.0;
 pub const RADIUS: f32 = 6.0;
 pub const RADIUS_L: f32 = 10.0;
 
-/// Padding of a text button: 32 px tall with the default 13 px text.
+/// Height of every text button, text input and drop-down.
+pub const CONTROL_H: f32 = 32.0;
+/// Padding of a button whose content is a row (icon and text): `CONTROL_H` tall with the
+/// default 13 px text. Plain text buttons use `widget::text_button`, which is centered exactly.
 pub const BUTTON_PAD: Padding = Padding {
-    top: 7.0,
-    bottom: 7.0,
+    top: 7.5,
+    bottom: 7.5,
     left: 14.0,
     right: 14.0,
 };
 /// Padding of a text input, matching the buttons' height.
 pub const INPUT_PAD: Padding = Padding {
-    top: 7.0,
-    bottom: 7.0,
+    top: 7.5,
+    bottom: 7.5,
     left: 10.0,
     right: 10.0,
 };
 /// Side of an icon button, and the icon inside it.
-pub const ICON_BUTTON: f32 = 34.0;
+pub const ICON_BUTTON: f32 = 32.0;
 pub const ICON: f32 = 18.0;
-/// A sidebar or list row.
+/// Icons inside rows (sidebar, menus, settings nav).
+pub const ROW_ICON: f32 = 16.0;
+/// Padding of a sidebar, list or menu row: `CONTROL_H` tall with one line of text.
 pub const ROW_PAD: Padding = Padding {
-    top: 5.0,
-    bottom: 5.0,
+    top: 7.5,
+    bottom: 7.5,
     left: 8.0,
     right: 8.0,
 };
+/// Height of an on/off switch.
+pub const TOGGLER: f32 = 20.0;
 /// Height of the pane header and the sidebar's top bar.
 pub const HEADER: f32 = 48.0;
 

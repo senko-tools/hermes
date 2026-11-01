@@ -14,7 +14,8 @@ use iced::{Alignment, Border, Element, Fill, Length};
 use super::{Ctx, Message, color_hex, parse_color, rgb, side_list};
 use crate::drag::Kind;
 use crate::theme::style;
-use crate::widget::{label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label, strong};
 
 /// Preset colors offered next to the hex field.
 const SWATCHES: [u32; 12] = [
@@ -66,11 +67,11 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .count()
         };
         let manageable = view::can_manage_role(ctx.s, ctx.space, role.id);
-        let dot = small("●", fonts).color(role.color.map_or(theme.text.tertiary.0, rgb));
+        let dot = caption("●", fonts).color(role.color.map_or(theme.text.tertiary.0, rgb));
         let handle = if manageable && !role.is_everyone() {
-            small("⠿", fonts).color(theme.text.tertiary.0)
+            caption("⠿", fonts).color(theme.text.tertiary.0)
         } else {
-            small(" ", fonts)
+            caption(" ", fonts)
         };
         let is_selected = selected == Some(role.id);
         let targeted = ctx.drop_target == Some((Kind::Role, role.id));
@@ -79,12 +80,12 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 handle,
                 dot,
                 label(role.name.clone(), fonts).width(Fill),
-                small(count.to_string(), fonts).color(theme.text.tertiary.0),
+                caption(count.to_string(), fonts).color(theme.text.tertiary.0),
             ]
-            .spacing(6)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         )
-        .padding([4, 8])
+        .padding([style::GAP_XS, style::GAP_S])
         .width(Fill)
         .style(move |_, s| {
             let mut st = style::sidebar_item(theme, s, is_selected || targeted);
@@ -107,9 +108,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         rows.push(area.into());
     }
     let create: Element<'a, Message> = if can_manage {
-        button(small("+ Create role", fonts))
-            .padding([2, 6])
-            .style(move |_, s| style::secondary(theme, s))
+        text_button("+ Create role", ButtonKind::Secondary, fonts, theme)
             .on_press(Message::CreateRole)
             .into()
     } else {
@@ -122,7 +121,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         _ => container(
             column![
                 label("Pick a role to edit it.", fonts).color(theme.text.secondary.0),
-                small(
+                caption(
                     "Roles give members permissions. A member has every permission of each of \
                      their roles, plus @everyone's. Higher roles in the list can manage lower ones; \
                      drag a role (or use Move up / down) to change the order.",
@@ -130,10 +129,10 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 )
                 .color(theme.text.tertiary.0),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .max_width(520),
         )
-        .padding(20)
+        .padding(style::GAP_XL)
         .into(),
     };
     row![list, editor].height(Fill).into()
@@ -149,7 +148,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
     // You cannot grant what you do not have (the owner and administrators have everything).
     let mine = ctx.s.permissions(ctx.space, None);
 
-    let mut col = column![].spacing(14).max_width(720);
+    let mut col = column![].spacing(style::GAP).max_width(720);
     let title = if everyone {
         "@everyone: what every member can do".to_owned()
     } else {
@@ -158,7 +157,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
     col = col.push(strong(title, fonts));
     if !editable {
         col = col.push(
-            small(
+            caption(
                 "You can only edit roles below your own highest role, with Manage roles.",
                 fonts,
             )
@@ -180,7 +179,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
         col = col.push(super::field("Name", "", name, fonts, theme));
 
         let parsed = parse_color(&draft.color);
-        let mut swatches = row![].spacing(4);
+        let mut swatches = row![].spacing(style::GAP_XS);
         for color in SWATCHES {
             let chosen = parsed == Ok(Some(color));
             let swatch = button(Space::new().width(18).height(18))
@@ -215,7 +214,7 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
         } else {
             hex
         };
-        let preview = small("●", fonts).color(match parsed {
+        let preview = caption("●", fonts).color(match parsed {
             Ok(Some(c)) => rgb(c),
             _ => theme.text.tertiary.0,
         });
@@ -228,9 +227,11 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             },
             column![
                 swatches,
-                row![preview, hex].spacing(8).align_y(Alignment::Center)
+                row![preview, hex]
+                    .spacing(style::GAP_S)
+                    .align_y(Alignment::Center)
             ]
-            .spacing(8),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ));
@@ -256,14 +257,14 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
                     Message::RoleMentionable
                 ),
             ]
-            .spacing(6),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ));
     }
 
     for group in PermissionGroup::ALL {
-        let mut list = column![strong(group.title(), fonts)].spacing(8);
+        let mut list = column![strong(group.title(), fonts)].spacing(style::GAP_S);
         for info in CATALOG.iter().filter(|i| i.group == group) {
             let on = draft.permissions.contains(info.flag);
             let grantable = editable && (on || mine.contains(info.flag));
@@ -278,12 +279,11 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
             list = list.push(
                 column![
                     c,
-                    container(small(info.description, fonts).color(theme.text.tertiary.0)).padding(
-                        iced::Padding {
+                    container(caption(info.description, fonts).color(theme.text.tertiary.0))
+                        .padding(iced::Padding {
                             left: 26.0,
                             ..iced::Padding::ZERO
-                        }
-                    ),
+                        }),
                 ]
                 .spacing(2),
             );
@@ -293,25 +293,19 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
 
     let dirty = draft_dirty(role, draft);
     let valid = !draft.name.trim().is_empty() && parse_color(&draft.color).is_ok();
-    let mut buttons = row![].spacing(8).align_y(Alignment::Center);
+    let mut buttons = row![].spacing(style::GAP_S).align_y(Alignment::Center);
     if editable && !everyone {
         buttons = buttons
             .push(
-                button(label("Move up", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Move up", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::MoveRole(role.id, -1)),
             )
             .push(
-                button(label("Move down", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Move down", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::MoveRole(role.id, 1)),
             )
             .push(
-                button(label("Delete role", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::danger(theme, s))
+                text_button("Delete role", ButtonKind::Danger, fonts, theme)
                     .on_press(Message::DeleteRole(role.id)),
             );
     }
@@ -319,20 +313,16 @@ fn editor<'a>(ctx: &Ctx<'a, '_>, draft: &'a super::RoleDraft) -> Element<'a, Mes
     if editable {
         buttons = buttons
             .push(
-                button(label("Reset", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Reset", ButtonKind::Secondary, fonts, theme)
                     .on_press_maybe(dirty.then_some(Message::ResetRole)),
             )
             .push(
-                button(label("Save changes", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::primary(theme, s))
+                text_button("Save changes", ButtonKind::Primary, fonts, theme)
                     .on_press_maybe((dirty && valid).then_some(Message::SaveRole)),
             );
     }
     col = col.push(buttons);
-    scrollable(container(col).padding(20).width(Fill))
+    scrollable(container(col).padding(style::GAP_XL).width(Fill))
         .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .width(Length::Fill)

@@ -22,7 +22,8 @@ use self::list::Heights;
 use self::rows::{Row, RowKey};
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label};
 
 /// Within this many pixels of the bottom counts as "at the bottom" (live, marks read).
 pub const AT_BOTTOM: f32 = 4.0;
@@ -200,13 +201,13 @@ pub fn view<'a>(
     let theme = ctx.theme;
     let store = ctx.core.store();
     let Some(s) = store.instance(inst) else {
-        return centered(small("Not connected to this instance.", fonts));
+        return centered(caption("Not connected to this instance.", fonts));
     };
     let Some(window) = s.window(channel) else {
-        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+        return centered(caption("Loading…", fonts).color(theme.text.tertiary.0));
     };
     if !window.loaded {
-        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+        return centered(caption("Loading…", fonts).color(theme.text.tertiary.0));
     }
     let rows = rows::build(
         s,
@@ -235,13 +236,11 @@ pub fn view<'a>(
                     },
                     ..container::Style::default()
                 }),
-            iced::widget::text(format!("Welcome to {title}"))
-                .font(fonts.bold())
-                .size(fonts.size + 9.0),
-            small("This is the start of the conversation. Say hello!", fonts)
+            crate::widget::display(format!("Welcome to {title}"), fonts),
+            caption("This is the start of the conversation. Say hello!", fonts)
                 .color(theme.text.secondary.0),
         ]
-        .spacing(style::GAP_L)
+        .spacing(style::GAP)
         .align_x(Alignment::Center);
         return column![
             centered(start),
@@ -294,18 +293,18 @@ pub fn view<'a>(
                 button(
                     row![
                         crate::widget::icon::icon(crate::widget::icon::ARROW_DOWN, 14.0),
-                        small("Jump to present", fonts).font(fonts.medium()),
+                        label("Jump to present", fonts),
                     ]
                     .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
-                .padding([7, 14])
+                .padding(style::BUTTON_PAD)
                 .style(move |_, st| style::primary(theme, st))
                 .on_press(Message::JumpToPresent),
             )
             .align_right(Fill)
             .align_bottom(Fill)
-            .padding(12),
+            .padding(style::GAP),
         );
     }
 
@@ -397,10 +396,10 @@ fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element
         Vec::new()
     };
     container(
-        small(typing_text(&names).unwrap_or_default(), fonts).color(ctx.theme.text.secondary.0),
+        caption(typing_text(&names).unwrap_or_default(), fonts).color(ctx.theme.text.secondary.0),
     )
-    .padding([2, 12])
-    .height(Length::Fixed(fonts.small() * 1.4 + 4.0))
+    .padding([2.0, style::GAP])
+    .height(Length::Fixed(fonts.caption() * 1.4 + 4.0))
     .into()
 }
 
@@ -416,15 +415,15 @@ fn row_view<'a>(
     let theme = ctx.theme;
     match r {
         Row::Older => {
-            container(small("Loading older messages…", fonts).color(theme.text.tertiary.0))
+            container(caption("Loading older messages…", fonts).color(theme.text.tertiary.0))
                 .center_x(Fill)
-                .padding(8)
+                .padding(style::GAP_S)
                 .into()
         }
         Row::Day { day, .. } => {
             let today = time::day(now_ms(), ctx.utc_offset);
             divider(
-                small(day_label(*day, today), fonts)
+                caption(day_label(*day, today), fonts)
                     .font(fonts.bold())
                     .color(theme.text.tertiary.0),
                 theme.general.horizontal_rule.0,
@@ -432,7 +431,7 @@ fn row_view<'a>(
             )
         }
         Row::NewMessages => divider(
-            small("New messages", fonts)
+            caption("New messages", fonts)
                 .font(fonts.bold())
                 .color(theme.text.error.0),
             theme.text.error.0.scale_alpha(0.6),
@@ -458,7 +457,7 @@ fn row_view<'a>(
                     body = column![
                         row![
                             label(me, fonts).font(fonts.bold()),
-                            small(
+                            caption(
                                 time::format(
                                     pm.created_at,
                                     &ctx.config.buffer.timestamp_format,
@@ -468,29 +467,25 @@ fn row_view<'a>(
                             )
                             .color(theme.text.tertiary.0),
                         ]
-                        .spacing(8)
+                        .spacing(style::GAP_S)
                         .align_y(Alignment::Center),
                         body
                     ]
                     .spacing(2);
                 }
                 if let Some(note) = note {
-                    let mut line = row![small(note, fonts).color(color)]
-                        .spacing(8)
+                    let mut line = row![caption(note, fonts).color(color)]
+                        .spacing(style::GAP_S)
                         .align_y(Alignment::Center);
                     if let PendingState::Failed(reason) = &pm.state {
                         line = line
-                            .push(small(reason.clone(), fonts).color(theme.text.tertiary.0))
+                            .push(caption(reason.clone(), fonts).color(theme.text.tertiary.0))
                             .push(
-                                button(small("Retry", fonts))
-                                    .padding([1, 8])
-                                    .style(move |_, st| style::secondary(theme, st))
+                                text_button("Retry", ButtonKind::Secondary, fonts, theme)
                                     .on_press(Message::Retry(p.local_id)),
                             )
                             .push(
-                                button(small("Delete", fonts))
-                                    .padding([1, 8])
-                                    .style(move |_, st| style::danger(theme, st))
+                                text_button("Delete", ButtonKind::Danger, fonts, theme)
                                     .on_press(Message::Discard(p.local_id)),
                             );
                     }
@@ -568,7 +563,7 @@ fn divider<'a>(
     row![
         rule_line(theme, color),
         container(content)
-            .padding([2, 10])
+            .padding([2.0, style::GAP_S])
             .style(move |_| container::Style {
                 border: iced::Border {
                     color,
@@ -580,7 +575,7 @@ fn divider<'a>(
             }),
         rule_line(theme, color),
     ]
-    .padding([10, 16])
+    .padding([style::GAP_S, style::GAP_L])
     .align_y(Alignment::Center)
     .into()
 }

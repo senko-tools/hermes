@@ -3,14 +3,15 @@
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::{Core, InstanceId};
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
+use iced::widget::{Space, column, container, mouse_area, row, scrollable, text};
 use iced::{Alignment, Border, Color, Element, Fill, Length};
 
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
-use crate::widget::{label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label};
 
 const AVATAR: f32 = 64.0;
 const CARD_WIDTH: f32 = 120.0;
@@ -71,14 +72,10 @@ pub fn view<'a>(
     let people = participants(core, inst, channel);
 
     let action = if joined {
-        button(small("Disconnect", fonts))
-            .padding(style::BUTTON_PAD)
-            .style(move |_, s| style::danger(theme, s))
+        text_button("Disconnect", ButtonKind::Danger, fonts, theme)
             .on_press(Message::Voice(VoiceMsg::Leave))
     } else {
-        button(small("Join voice", fonts))
-            .padding(style::BUTTON_PAD)
-            .style(move |_, s| style::primary(theme, s))
+        text_button("Join voice", ButtonKind::Primary, fonts, theme)
             .on_press(Message::Voice(VoiceMsg::Join(inst.clone(), channel)))
     };
     let summary = match people.len() {
@@ -92,10 +89,10 @@ pub fn view<'a>(
             .width(Fill),
         action,
     ]
-    .spacing(8)
+    .spacing(style::GAP_S)
     .align_y(Alignment::Center);
 
-    let mut grid = row![].spacing(12);
+    let mut grid = row![].spacing(style::GAP);
     for p in people {
         grid = grid.push(card(inst, p, fonts, theme));
     }
@@ -105,8 +102,8 @@ pub fn view<'a>(
             .style(move |_, st| style::scrollbar(theme, st))
             .height(Fill)
     ]
-    .spacing(16)
-    .padding(16)
+    .spacing(style::GAP_L)
+    .padding(style::GAP_L)
     .into()
 }
 
@@ -127,7 +124,7 @@ fn card<'a>(
         .next()
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
-    let avatar = container(text(initial).font(fonts.bold()).size(fonts.large()))
+    let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
         .center(Length::Fixed(AVATAR))
         .style(move |_| container::Style {
             text_color: Some(theme.text.primary.0),
@@ -152,15 +149,15 @@ fn card<'a>(
         .spacing(2)
         .align_x(Alignment::Center);
     if !state.is_empty() {
-        info = info.push(small(state, fonts).color(theme.voice.muted.0));
+        info = info.push(caption(state, fonts).color(theme.voice.muted.0));
     }
     if let Some(volume) = p.volume.filter(|v| (*v - 1.0).abs() > 0.001) {
         info = info.push(
-            small(format!("volume {:.0} %", volume * 100.0), fonts).color(theme.text.tertiary.0),
+            caption(format!("volume {:.0} %", volume * 100.0), fonts).color(theme.text.tertiary.0),
         );
     }
     let content = column![avatar, info, Space::new().height(4)]
-        .spacing(6)
+        .spacing(style::GAP_S)
         .align_x(Alignment::Center)
         .width(Length::Fixed(CARD_WIDTH));
     let area = mouse_area(content);

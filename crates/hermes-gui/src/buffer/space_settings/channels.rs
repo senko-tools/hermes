@@ -14,7 +14,8 @@ use iced::{Alignment, Element, Fill};
 use super::{Ctx, Message, side_list};
 use crate::drag::Kind;
 use crate::theme::style;
-use crate::widget::{label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label, strong};
 
 /// One permission in an override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +73,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     for c in view::channel_tree(ctx.s, ctx.space) {
         let is_selected = selected == Some(c.id);
         let content: Element<'a, Message> = if c.kind == ChannelKind::Category {
-            small(c.name.to_uppercase(), fonts)
+            caption(c.name.to_uppercase(), fonts)
                 .color(theme.text.tertiary.0)
                 .into()
         } else {
@@ -88,22 +89,22 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 .color(theme.text.tertiary.0),
                 label(c.name.clone(), fonts),
             ]
-            .spacing(6)
+            .spacing(style::GAP_S)
             .into()
         };
         let targeted = ctx.drop_target == Some((Kind::Channel, c.id));
         let indent = if c.depth > 0 { 14.0 } else { 0.0 };
         let handle = if manage {
-            small("⠿", fonts).color(theme.text.tertiary.0)
+            caption("⠿", fonts).color(theme.text.tertiary.0)
         } else {
-            small("", fonts)
+            caption("", fonts)
         };
         let b = button(
             row![Space::new().width(indent), handle, content]
-                .spacing(6)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
         )
-        .padding([4, 8])
+        .padding([style::GAP_XS, style::GAP_S])
         .width(Fill)
         .style(move |_, s| {
             let mut st = style::sidebar_item(theme, s, is_selected || targeted);
@@ -127,16 +128,12 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     }
     let actions: Element<'a, Message> = if manage {
         row![
-            button(small("+ Channel", fonts))
-                .padding([2, 6])
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("+ Channel", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::CreateChannel(None)),
-            button(small("+ Category", fonts))
-                .padding([2, 6])
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("+ Category", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::CreateCategory),
         ]
-        .spacing(4)
+        .spacing(style::GAP_XS)
         .into()
     } else {
         Space::new().into()
@@ -148,7 +145,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         _ => container(
             column![
                 label("Pick a channel to edit it.", fonts).color(theme.text.secondary.0),
-                small(
+                caption(
                     if manage {
                         "Drag channels to reorder them, or onto a category to move them into it. \
                          Each channel can change what a role may do in it."
@@ -159,10 +156,10 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                 )
                 .color(theme.text.tertiary.0),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .max_width(520),
         )
-        .padding(20)
+        .padding(style::GAP_XL)
         .into(),
     };
     row![list, detail].height(Fill).into()
@@ -178,7 +175,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     let category = channel.kind == ChannelKind::Category;
     let name = channel.name.clone().unwrap_or_default();
 
-    let mut col = column![].spacing(14).max_width(720);
+    let mut col = column![].spacing(style::GAP).max_width(720);
     let kind = match channel.kind {
         ChannelKind::Category => "Category",
         ChannelKind::Voice => "Voice channel",
@@ -187,7 +184,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     col = col.push(
         column![
             strong(name, fonts),
-            small(
+            caption(
                 match channel.topic.as_deref() {
                     Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
                     _ => kind.to_owned(),
@@ -200,25 +197,17 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     );
     if manage {
         let mut buttons = row![
-            button(label("Edit…", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Edit…", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::EditChannel(id)),
-            button(label("Move up", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Move up", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::MoveChannel(id, -1)),
-            button(label("Move down", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Move down", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::MoveChannel(id, 1)),
         ]
-        .spacing(8);
+        .spacing(style::GAP_S);
         if category {
             buttons = buttons.push(
-                button(label("+ Channel here", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("+ Channel here", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::CreateChannel(Some(id))),
             );
         }
@@ -241,7 +230,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
     col = col.push(super::field_block(
         column![
             strong("Permissions", fonts),
-            small(
+            caption(
                 if category {
                     "What each role may do in this category. Channels inside it keep their own \
                      settings."
@@ -253,20 +242,20 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
             )
             .color(theme.text.tertiary.0),
         ]
-        .spacing(4)
+        .spacing(style::GAP_XS)
         .into(),
         theme,
     ));
 
     // Roles with an override first, then a picker for the others.
     let with: Vec<Id> = channel.overrides.iter().map(|o| o.role_id).collect();
-    let mut chips = row![].spacing(4).align_y(Alignment::Center);
+    let mut chips = row![].spacing(style::GAP_XS).align_y(Alignment::Center);
     let current = ctx.state.override_role;
     for role in st.roles.iter().filter(|r| with.contains(&r.id)) {
         let chosen = current == Some(role.id);
         chips = chips.push(
-            button(small(role.name.clone(), fonts))
-                .padding([3, 8])
+            button(label(role.name.clone(), fonts))
+                .padding([3.0, style::GAP_S])
                 .style(move |_, s| style::tab(theme, s, chosen))
                 .on_press(Message::OverrideRole(role.id)),
         );
@@ -291,7 +280,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
                 .menu_style(move |_| style::menu(theme))
                 .placeholder("Add a role…")
                 .font(fonts.ui)
-                .text_size(fonts.small()),
+                .text_size(fonts.caption()),
         );
     }
     col = col.push(
@@ -308,16 +297,13 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
         let mut perms = column![
             row![
                 label(format!("Overrides for {role_name}"), fonts).width(Fill),
-                button(small("Remove override", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
-                    .on_press_maybe(
-                        (edit_overrides && ov.is_some()).then_some(Message::ClearOverride)
-                    ),
+                text_button("Remove override", ButtonKind::Secondary, fonts, theme).on_press_maybe(
+                    (edit_overrides && ov.is_some()).then_some(Message::ClearOverride)
+                ),
             ]
             .align_y(Alignment::Center)
         ]
-        .spacing(10);
+        .spacing(style::GAP_S);
         for group in PermissionGroup::ALL {
             let entries: Vec<_> = CATALOG
                 .iter()
@@ -334,15 +320,15 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
             if entries.is_empty() {
                 continue;
             }
-            perms =
-                perms.push(small(group.title().to_uppercase(), fonts).color(theme.text.tertiary.0));
+            perms = perms
+                .push(caption(group.title().to_uppercase(), fonts).color(theme.text.tertiary.0));
             for info in entries {
                 let state = Tri::of(ov, info.flag);
                 let flag = info.flag;
                 let toggle = |t: Tri, text: &'static str| {
                     let on = state == t;
-                    let b = button(small(text, fonts))
-                        .padding([2, 8])
+                    let b = button(label(text, fonts))
+                        .padding([2.0, style::GAP_S])
                         .style(move |_, s| match (on, t) {
                             (true, Tri::Deny) => style::danger(theme, s),
                             (true, Tri::Allow) => style::primary(theme, s),
@@ -359,7 +345,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
                     row![
                         column![
                             label(info.name, fonts),
-                            small(info.description, fonts).color(theme.text.tertiary.0),
+                            caption(info.description, fonts).color(theme.text.tertiary.0),
                         ]
                         .spacing(2)
                         .width(Fill),
@@ -370,14 +356,14 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
                         ]
                         .spacing(2),
                     ]
-                    .spacing(12)
+                    .spacing(style::GAP)
                     .align_y(Alignment::Center),
                 );
             }
         }
         if !edit_overrides {
             perms = perms.push(
-                small(
+                caption(
                     "Changing these needs both Manage channels and Manage roles.",
                     fonts,
                 )
@@ -386,7 +372,7 @@ fn detail<'a>(ctx: &Ctx<'a, '_>, id: Id) -> Element<'a, Message> {
         }
         col = col.push(perms);
     }
-    scrollable(container(col).padding(20).width(Fill))
+    scrollable(container(col).padding(style::GAP_XL).width(Fill))
         .style(move |_, st| style::scrollbar(theme, st))
         .height(Fill)
         .into()

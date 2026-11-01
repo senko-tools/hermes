@@ -18,7 +18,7 @@ use super::markup::{self, Block, Link, Piece};
 use super::rows::MessageRow;
 use super::{ChannelView, Context, Message};
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{caption, label};
 
 /// Quick reactions offered by the toolbar.
 pub const QUICK_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "😮", "😢", "🎉", "👀", "🔥"];
@@ -95,15 +95,15 @@ pub fn view<'a>(
         body = body.push(
             mouse_area(
                 row![
-                    small("↪", fonts).color(theme.text.tertiary.0),
-                    small(reply.author.clone(), fonts)
+                    caption("↪", fonts).color(theme.text.tertiary.0),
+                    caption(reply.author.clone(), fonts)
                         .font(fonts.bold())
                         .color(theme.text.secondary.0),
-                    small(excerpt, fonts)
+                    caption(excerpt, fonts)
                         .color(theme.text.tertiary.0)
                         .wrapping(text::Wrapping::None),
                 ]
-                .spacing(6),
+                .spacing(style::GAP_S),
             )
             .on_press(Message::JumpTo(reply.id))
             .interaction(iced::mouse::Interaction::Pointer),
@@ -122,18 +122,13 @@ pub fn view<'a>(
         let author = msg.author.id;
         body = body.push(
             row![
-                mouse_area(
-                    text(name)
-                        .font(fonts.bold())
-                        .size(fonts.size + 1.0)
-                        .color(color)
-                )
-                .on_press(Message::Author(author))
-                .on_right_press(Message::Author(author))
-                .interaction(iced::mouse::Interaction::Pointer),
-                small(time_text.clone(), fonts).color(theme.text.tertiary.0),
+                mouse_area(text(name).font(fonts.bold()).size(fonts.size).color(color))
+                    .on_press(Message::Author(author))
+                    .on_right_press(Message::Author(author))
+                    .interaction(iced::mouse::Interaction::Pointer),
+                caption(time_text.clone(), fonts).color(theme.text.tertiary.0),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         );
     }
@@ -146,7 +141,7 @@ pub fn view<'a>(
         body = body.push(block_view(ctx, block, id, m.system, revealed, edited));
     }
     if msg.content.is_empty() && msg.edited_at.is_some() {
-        body = body.push(small("(edited)", fonts).color(theme.text.tertiary.0));
+        body = body.push(caption("(edited)", fonts).color(theme.text.tertiary.0));
     }
     for a in &msg.attachments {
         body = body.push(attachment_view(ctx, inst, a));
@@ -159,7 +154,7 @@ pub fn view<'a>(
                 button(
                     row![
                         label(r.emoji.clone(), fonts),
-                        small(r.count.to_string(), fonts).font(fonts.bold()),
+                        caption(r.count.to_string(), fonts).font(fonts.bold()),
                     ]
                     .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
@@ -196,7 +191,7 @@ pub fn view<'a>(
     } else if m.grouped {
         // Always laid out and only made visible on hover, so hovering never resizes the row.
         container(
-            small(time_text, fonts)
+            caption(time_text, fonts)
                 .color(if hovered {
                     theme.text.tertiary.0
                 } else {
@@ -249,7 +244,7 @@ pub fn view<'a>(
                 s.me_id() == Some(msg.author.id) && !m.system,
             ))
             .align_right(Fill)
-            .padding([0, 12]),
+            .padding([0.0, style::GAP]),
         );
     }
     // Right-click anywhere on the message opens its menu (the author has their own).
@@ -334,7 +329,7 @@ fn block_view<'a>(
                 spans.push(
                     iced::widget::span(" (edited)")
                         .font(fonts.ui)
-                        .size(fonts.small())
+                        .size(fonts.caption())
                         .color(theme.text.tertiary.0),
                 );
             }
@@ -345,8 +340,8 @@ fn block_view<'a>(
         }
         Block::Code { code, .. } => {
             let mut content = column![
-                container(text(code).font(fonts.mono).size(fonts.small()))
-                    .padding(8)
+                container(text(code).font(fonts.mono).size(fonts.caption()))
+                    .padding(style::GAP_S)
                     .width(Fill)
                     .style(move |_| container::Style {
                         background: Some(theme.text.code_bg.0.into()),
@@ -359,7 +354,7 @@ fn block_view<'a>(
                     })
             ];
             if edited {
-                content = content.push(small("(edited)", fonts).color(theme.text.tertiary.0));
+                content = content.push(caption("(edited)", fonts).color(theme.text.tertiary.0));
             }
             content.into()
         }
@@ -377,7 +372,7 @@ fn block_view<'a>(
                     .size(fonts.size)
                     .on_link_click(move |link| Message::Link(id, link)),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .height(Length::Shrink)
             .into()
         }
@@ -435,6 +430,7 @@ fn piece_span<'a>(
         span = span.background(bg);
     }
     if p.code {
+        // Monospace looks a size larger than the text around it.
         span = span.size(fonts.size - 1.0);
     }
     span
@@ -484,7 +480,7 @@ fn attachment_view<'a>(
                     .font(fonts.medium())
                     .color(theme.text.link.0)
                     .wrapping(text::Wrapping::None),
-                small(human_size(a.size), fonts).color(theme.text.tertiary.0),
+                caption(human_size(a.size), fonts).color(theme.text.tertiary.0),
             ]
             .spacing(3)
             .width(Length::Fixed(220.0)),
@@ -496,17 +492,17 @@ fn attachment_view<'a>(
                 theme,
             ),
         ]
-        .spacing(style::GAP_L)
+        .spacing(style::GAP)
         .align_y(Alignment::Center),
     )
-    .padding([10, 12])
+    .padding([style::GAP_S, style::GAP])
     .style(move |_| style::panel(theme))
     .into()
 }
 
 fn placeholder<'a>(text: &'a str, w: f32, h: f32, ctx: &Context<'a>) -> Element<'a, Message> {
     let theme = ctx.theme;
-    container(small(text, ctx.fonts).color(theme.text.tertiary.0))
+    container(caption(text, ctx.fonts).color(theme.text.tertiary.0))
         .center_x(w)
         .center_y(h)
         .style(move |_| container::Style {

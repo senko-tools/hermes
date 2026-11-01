@@ -9,7 +9,8 @@ use iced::{Alignment, Element, Fill};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 /// The first text field gets the focus when the dialog opens.
 pub const FIRST_INPUT: &str = "form-first-input";
@@ -228,7 +229,7 @@ impl Form {
     }
 
     pub fn view<'a>(&'a self, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-        let mut content = column![heading(self.title.as_str(), fonts)].spacing(12);
+        let mut content = column![heading(self.title.as_str(), fonts)].spacing(style::GAP);
         if !self.text.is_empty() {
             content = content.push(label(self.text.as_str(), fonts).color(theme.text.secondary.0));
         }
@@ -290,27 +291,25 @@ impl Form {
                         .into(),
                 ),
             };
-            let mut block = column![].spacing(4);
+            let mut block = column![].spacing(style::GAP_XS);
             if !name.is_empty() {
-                block = block.push(small(name, fonts).color(theme.text.secondary.0));
+                block = block.push(caption(name, fonts).color(theme.text.secondary.0));
             }
             block = block.push(control);
             if !hint.is_empty() {
-                block = block.push(small(hint, fonts).color(theme.text.tertiary.0));
+                block = block.push(caption(hint, fonts).color(theme.text.tertiary.0));
             }
             content = content.push(block);
         }
         if let Some(error) = &self.error {
-            content = content.push(small(error.as_str(), fonts).color(theme.text.error.0));
+            content = content.push(caption(error.as_str(), fonts).color(theme.text.error.0));
         }
         let danger = self.danger;
         content
             .push(
                 row![
                     space::horizontal(),
-                    button(label("Cancel", fonts))
-                        .padding(style::BUTTON_PAD)
-                        .style(move |_, s| style::secondary(theme, s))
+                    text_button("Cancel", ButtonKind::Secondary, fonts, theme)
                         .on_press(Message::Cancel),
                     button(label(
                         if self.busy {
@@ -327,7 +326,7 @@ impl Form {
                     })
                     .on_press_maybe((!self.busy).then_some(Message::Submit)),
                 ]
-                .spacing(8)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
             )
             .width(400)

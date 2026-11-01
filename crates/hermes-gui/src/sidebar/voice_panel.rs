@@ -11,7 +11,7 @@ use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
 use crate::widget::icon::{self, icon};
-use crate::widget::{small, tip_at};
+use crate::widget::{caption, tip_at};
 
 /// The panel's text, computed without widgets so it can be tested.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,7 +80,7 @@ pub fn view<'a>(
     };
     let mut heading = row![
         icon(icon::WAVEFORM, 14.0).color(state_color),
-        small(
+        caption(
             if p.connected {
                 "Voice connected"
             } else {
@@ -96,12 +96,12 @@ pub fn view<'a>(
     .align_y(Alignment::Center);
     if let Some(held) = p.ptt {
         heading = heading.push(
-            container(small("PTT", fonts).font(fonts.bold()).color(if held {
+            container(caption("PTT", fonts).font(fonts.bold()).color(if held {
                 theme.buttons.primary.text.0
             } else {
                 theme.text.tertiary.0
             }))
-            .padding([0, 6])
+            .padding([0.0, style::GAP_S])
             .style(move |_| iced::widget::container::Style {
                 background: held.then(|| theme.voice.speaking_ring.0.into()),
                 border: iced::Border {
@@ -116,16 +116,16 @@ pub fn view<'a>(
     let place = button(
         column![
             heading,
-            small(p.place, fonts)
+            caption(p.place, fonts)
                 .color(theme.text.secondary.0)
                 .wrapping(iced::widget::text::Wrapping::None),
-            small(p.quality, fonts)
+            caption(p.quality, fonts)
                 .color(theme.text.tertiary.0)
                 .wrapping(iced::widget::text::Wrapping::None),
         ]
         .spacing(2),
     )
-    .padding([4, 6])
+    .padding([style::GAP_XS, style::GAP_S])
     .width(Fill)
     .style(move |_, s| style::sidebar_item(theme, s, false))
     .on_press(Message::Select(inst, channel));
@@ -193,8 +193,8 @@ pub fn view<'a>(
     ]
     .spacing(style::GAP_S);
     Some(
-        container(column![place, buttons].spacing(style::GAP))
-            .padding([10, 8])
+        container(column![place, buttons].spacing(style::GAP_S))
+            .padding([style::GAP_S, style::GAP_S])
             .width(Fill)
             .style(move |_| style::sidebar_footer(theme))
             .into(),

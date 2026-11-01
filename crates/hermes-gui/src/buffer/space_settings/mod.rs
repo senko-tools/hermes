@@ -18,7 +18,8 @@ use iced::{Alignment, Element, Fill, Length};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label, strong};
 
 pub use channels::Tri;
 pub use roles::reorder_roles;
@@ -290,15 +291,11 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
     let mut nav = column![
         row![
             crate::widget::avatar::space_icon(&space.space.name, 24.0, fonts),
-            iced::widget::text(space.space.name.to_uppercase())
-                .font(fonts.bold())
-                .size(fonts.small() - 0.5)
-                .color(theme.text.tertiary.0)
-                .wrapping(iced::widget::text::Wrapping::None),
+            crate::widget::section_title(&space.space.name, fonts).color(theme.text.tertiary.0),
         ]
-        .spacing(style::GAP)
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center)
-        .padding([4, 10]),
+        .padding([style::GAP_XS, style::GAP_S]),
         Space::new().height(style::GAP_S),
     ]
     .spacing(2);
@@ -316,7 +313,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         nav = nav.push(
             button(
                 row![
-                    icon(glyph, 16.0).color(if selected {
+                    icon(glyph, style::ROW_ICON).color(if selected {
                         theme.buttons.primary.background.0
                     } else {
                         theme.text.tertiary.0
@@ -327,17 +324,17 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
                         theme.text.secondary.0
                     }),
                 ]
-                .spacing(style::GAP_L)
+                .spacing(style::GAP)
                 .align_y(Alignment::Center),
             )
-            .padding([8, 12])
+            .padding([style::GAP_S, style::GAP])
             .width(Fill)
             .style(move |_, s| style::sidebar_item(theme, s, selected))
             .on_press(Message::Tab(tab)),
         );
     }
     let content: Element<'a, Message> = match current {
-        Tab::Overview => scrollable(container(overview(ctx)).padding(20).width(Fill))
+        Tab::Overview => scrollable(container(overview(ctx)).padding(style::GAP_XL).width(Fill))
             .style(move |_, st| style::scrollbar(theme, st))
             .height(Fill)
             .into(),
@@ -408,25 +405,19 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             theme,
         ),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720);
     if editable {
         let icon = if st.space.icon.is_some() {
             row![
-                button(label("Change icon…", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Change icon…", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::PickIcon),
-                button(label("Remove icon", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Remove icon", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::RemoveIcon),
             ]
         } else {
             row![
-                button(label("Upload icon…", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Upload icon…", ButtonKind::Secondary, fonts, theme)
                     .on_press(Message::PickIcon),
             ]
         };
@@ -434,27 +425,23 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             .push(field(
                 "Icon",
                 "A square PNG or JPEG works best.",
-                icon.spacing(8),
+                icon.spacing(style::GAP_S),
                 fonts,
                 theme,
             ))
             .push(
                 row![
                     space::horizontal(),
-                    button(label("Reset", fonts))
-                        .padding(style::BUTTON_PAD)
-                        .style(move |_, s| style::secondary(theme, s))
+                    text_button("Reset", ButtonKind::Secondary, fonts, theme)
                         .on_press_maybe(dirty.then_some(Message::ResetOverview)),
-                    button(label("Save changes", fonts))
-                        .padding(style::BUTTON_PAD)
-                        .style(move |_, s| style::primary(theme, s))
+                    text_button("Save changes", ButtonKind::Primary, fonts, theme)
                         .on_press_maybe(dirty.then_some(Message::SaveOverview)),
                 ]
-                .spacing(8),
+                .spacing(style::GAP_S),
             );
     } else {
         col = col.push(
-            small(
+            caption(
                 "You need the Manage space permission to change these.",
                 fonts,
             )
@@ -476,9 +463,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             plural(channels)
         ),
         row![
-            button(label("Copy space ID", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Copy space ID", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::CopyId),
         ],
         fonts,
@@ -488,25 +473,21 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         col = col.push(field(
             "Invite people",
             "Creates a link that works for 7 days and copies it.",
-            button(label("Copy invite link", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::primary(theme, s))
+            text_button("Copy invite link", ButtonKind::Primary, fonts, theme)
                 .on_press(Message::InvitePeople),
             fonts,
             theme,
         ));
     }
     col = col
-        .push(Space::new().height(style::GAP_XL))
+        .push(Space::new().height(style::GAP_L))
         .push(strong("Danger zone", fonts).color(theme.text.error.0));
     if ctx.is_owner() {
         col = col.push(field(
             "Delete space",
             "Deletes every channel and message for everyone. This cannot be undone. To keep the \
              space, give it to someone else from the Members tab first.",
-            button(label("Delete space", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::danger(theme, s))
+            text_button("Delete space", ButtonKind::Danger, fonts, theme)
                 .on_press(Message::DeleteSpace),
             fonts,
             theme,
@@ -515,9 +496,7 @@ fn overview<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         col = col.push(field(
             "Leave space",
             "You will need a new invite to come back.",
-            button(label("Leave space", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::danger(theme, s))
+            text_button("Leave space", ButtonKind::Danger, fonts, theme)
                 .on_press(Message::LeaveSpace),
             fonts,
             theme,
@@ -543,16 +522,16 @@ fn field<'a>(
         row![
             column![
                 label(name.to_owned(), fonts),
-                small(hint.to_owned(), fonts).color(theme.text.tertiary.0)
+                caption(hint.to_owned(), fonts).color(theme.text.tertiary.0)
             ]
             .spacing(2)
             .width(Length::FillPortion(2)),
             container(control.into()).width(Length::FillPortion(3)),
         ]
-        .spacing(16)
+        .spacing(style::GAP_L)
         .align_y(Alignment::Center),
     ]
-    .spacing(10)
+    .spacing(style::GAP_S)
     .into()
 }
 
@@ -562,7 +541,7 @@ fn field_block<'a>(content: Element<'a, Message>, theme: &'a Theme) -> Element<'
         rule::horizontal(1).style(move |_| style::rule(theme)),
         content
     ]
-    .spacing(10)
+    .spacing(style::GAP_S)
     .into()
 }
 
@@ -581,20 +560,20 @@ fn side_list<'a>(
     container(
         column![
             row![
-                small(title.to_uppercase(), fonts)
+                caption(title.to_uppercase(), fonts)
                     .color(theme.text.tertiary.0)
                     .width(Fill),
                 actions
             ]
             .align_y(Alignment::Center)
-            .padding([0, 4]),
+            .padding([0.0, style::GAP_XS]),
             scrollable(list)
                 .style(move |_, st| style::scrollbar(theme, st))
                 .height(Fill),
         ]
-        .spacing(6),
+        .spacing(style::GAP_S),
     )
-    .padding(8)
+    .padding(style::GAP_S)
     .width(240)
     .height(Fill)
     .style(move |_| style::sidebar(theme))
@@ -624,10 +603,7 @@ fn placeholder<'a, T>(
         column![
             label(text, fonts).color(color),
             Space::new().height(8),
-            button(small("Refresh", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::Refresh),
+            text_button("Refresh", ButtonKind::Secondary, fonts, theme).on_press(Message::Refresh),
         ]
         .into(),
     )

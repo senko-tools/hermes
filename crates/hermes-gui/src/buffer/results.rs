@@ -11,7 +11,8 @@ use iced::{Alignment, Element, Fill};
 use super::space_settings::Remote;
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 pub const SEARCH_INPUT: &str = "search-input";
 pub const PAGE: u32 = 25;
@@ -112,21 +113,15 @@ pub fn view<'a>(
     let mut header = column![
         row![
             heading(heading_text, fonts),
-            small(scope, fonts).color(theme.text.tertiary.0),
+            caption(scope, fonts).color(theme.text.tertiary.0),
             Space::new().width(Fill),
-            button(small("Refresh", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::Refresh),
-            button(small("Close", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::Close),
+            text_button("Refresh", ButtonKind::Secondary, fonts, theme).on_press(Message::Refresh),
+            text_button("Close", ButtonKind::Secondary, fonts, theme).on_press(Message::Close),
         ]
-        .spacing(10)
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center)
     ]
-    .spacing(8);
+    .spacing(style::GAP_S);
     if matches!(key, Key::Search(..)) {
         header = header.push(
             text_input("Search messages… (Enter)", &state.query)
@@ -140,11 +135,11 @@ pub fn view<'a>(
         );
     }
     let header = container(header)
-        .padding([8, 12])
+        .padding([style::GAP_S, style::GAP])
         .width(Fill)
         .style(move |_| style::pane_header(theme));
 
-    let mut list = column![].spacing(6).padding(12);
+    let mut list = column![].spacing(style::GAP_S).padding(style::GAP);
     match &state.items {
         Remote::Idle => {
             let hint = if matches!(key, Key::Search(..)) {
@@ -173,7 +168,7 @@ pub fn view<'a>(
         Remote::Ready(items) => {
             if let (Key::Search(..), Some(total)) = (key, state.total) {
                 list = list.push(
-                    small(
+                    caption(
                         format!("{total} result{}", if total == 1 { "" } else { "s" }),
                         fonts,
                     )
@@ -207,17 +202,17 @@ pub fn view<'a>(
                         column![
                             row![
                                 label(s.display_name(space, m.author.id), fonts).font(fonts.bold()),
-                                small(when, fonts).color(theme.text.tertiary.0),
+                                caption(when, fonts).color(theme.text.tertiary.0),
                                 Space::new().width(Fill),
-                                small(place, fonts).color(theme.text.secondary.0),
+                                caption(place, fonts).color(theme.text.secondary.0),
                             ]
-                            .spacing(8)
+                            .spacing(style::GAP_S)
                             .align_y(Alignment::Center),
                             label(text, fonts),
                         ]
                         .spacing(2),
                     )
-                    .padding([6, 10])
+                    .padding([style::GAP_S, style::GAP_S])
                     .width(Fill)
                     .style(move |_, st| style::sidebar_item(theme, st, false))
                     .on_press(Message::Open(inst.clone(), m.channel_id, m.id)),
@@ -225,7 +220,7 @@ pub fn view<'a>(
             }
             if state.has_more() {
                 list = list.push(
-                    button(small(
+                    button(label(
                         if state.loading_more {
                             "Loading…"
                         } else {

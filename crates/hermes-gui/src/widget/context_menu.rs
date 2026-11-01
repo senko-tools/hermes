@@ -53,8 +53,10 @@ pub fn overlay<'a, M: Clone + 'a>(
         + 10.0;
     let x = at.x.min(window.width - WIDTH - 4.0).max(0.0);
     let y = at.y.min(window.height - height - 4.0).max(0.0);
-    let separator =
-        || container(rule::horizontal(1).style(move |_| style::rule(theme))).padding([4, 6]);
+    let separator = || {
+        container(rule::horizontal(1).style(move |_| style::rule(theme)))
+            .padding([style::GAP_XS, style::GAP_S])
+    };
 
     let mut list = column![].spacing(0);
     if let Some(header) = header {
@@ -68,9 +70,9 @@ pub fn overlay<'a, M: Clone + 'a>(
                         .color(theme.text.primary.0)
                         .wrapping(text::Wrapping::None),
                 ]
-                .spacing(style::GAP)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center)
-                .padding([8, 10]),
+                .padding([style::GAP_S, style::GAP_S]),
             )
             .push(separator());
     }
@@ -100,11 +102,11 @@ pub fn overlay<'a, M: Clone + 'a>(
                     label(item.label, fonts).width(Fill),
                     check,
                 ]
-                .spacing(style::GAP_L)
+                .spacing(style::GAP)
                 .align_y(Alignment::Center),
             )
             .width(Fill)
-            .padding([8, 10])
+            .padding([style::GAP_S, style::GAP_S])
             .style(move |_, s| {
                 let mut st = style::sidebar_item(theme, s, selected);
                 if danger {
@@ -116,7 +118,7 @@ pub fn overlay<'a, M: Clone + 'a>(
         );
     }
     let menu = container(list)
-        .padding(5)
+        .padding(style::GAP_XS)
         .width(WIDTH)
         .style(move |_| style::popover(theme));
     let catcher = mouse_area(container("").width(Fill).height(Fill))

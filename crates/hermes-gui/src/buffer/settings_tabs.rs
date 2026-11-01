@@ -14,7 +14,8 @@ use super::space_settings::Remote;
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Keybinds};
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label, strong};
 
 /// What the Account tab shows.
 pub struct AccountView<'a> {
@@ -31,7 +32,7 @@ pub fn account<'a>(
     theme: &'a Theme,
 ) -> Element<'a, Message> {
     let mut col = column![heading("Account", fonts)]
-        .spacing(14)
+        .spacing(style::GAP)
         .max_width(720);
     if view.instances.is_empty() {
         return col
@@ -81,9 +82,7 @@ pub fn account<'a>(
                     .map(|s| format!(" · {s}"))
                     .unwrap_or_default()
             ),
-            button(label("Edit profile…", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::primary(theme, s))
+            text_button("Edit profile…", ButtonKind::Primary, fonts, theme)
                 .on_press(Message::EditProfile),
             fonts,
             theme,
@@ -107,28 +106,24 @@ pub fn account<'a>(
                 .padding(style::BUTTON_PAD)
                 .style(move |_, s| style::secondary(theme, s))
                 .on_press(Message::PickAvatar),
-                button(label("Remove", fonts))
-                    .padding(style::BUTTON_PAD)
-                    .style(move |_, s| style::secondary(theme, s))
+                text_button("Remove", ButtonKind::Secondary, fonts, theme)
                     .on_press_maybe(me.user.avatar.is_some().then_some(Message::RemoveAvatar)),
             ]
-            .spacing(8),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ))
         .push(setting(
             "Password",
             "Changing it signs out your other devices.",
-            button(label("Change password…", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Change password…", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::ChangePassword),
             fonts,
             theme,
         ));
     if me.instance_admin {
         col = col.push(
-            small(
+            caption(
                 "You are an admin of this instance. Manage users with the hermes-server user \
                  commands, or from the API (/admin/users).",
                 fonts,
@@ -140,31 +135,26 @@ pub fn account<'a>(
     let mut sessions = column![
         row![
             strong("Signed-in devices", fonts).width(Fill),
-            button(small("Refresh", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Refresh", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::LoadSessions),
-            button(small("Sign out all others", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::danger(theme, s))
-                .on_press_maybe(
-                    view.sessions
-                        .ready()
-                        .is_some_and(|l| l.iter().any(|s| !s.current))
-                        .then_some(Message::RevokeOthers)
-                ),
+            text_button("Sign out all others", ButtonKind::Danger, fonts, theme).on_press_maybe(
+                view.sessions
+                    .ready()
+                    .is_some_and(|l| l.iter().any(|s| !s.current))
+                    .then_some(Message::RevokeOthers)
+            ),
         ]
-        .spacing(8)
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center)
     ]
-    .spacing(8);
+    .spacing(style::GAP_S);
     match view.sessions {
         Remote::Idle | Remote::Loading => {
-            sessions = sessions.push(small("Loading…", fonts).color(theme.text.tertiary.0));
+            sessions = sessions.push(caption("Loading…", fonts).color(theme.text.tertiary.0));
         }
         Remote::Failed(err) => {
             sessions = sessions
-                .push(small(format!("Could not load: {err}"), fonts).color(theme.text.error.0));
+                .push(caption(format!("Could not load: {err}"), fonts).color(theme.text.error.0));
         }
         Remote::Ready(list) => {
             for s in list {
@@ -180,17 +170,15 @@ pub fn account<'a>(
                                 },
                                 fonts
                             ),
-                            small(format!("Last active {seen}"), fonts)
+                            caption(format!("Last active {seen}"), fonts)
                                 .color(theme.text.tertiary.0),
                         ]
                         .spacing(2)
                         .width(Fill),
-                        button(small("Sign out", fonts))
-                            .padding(style::BUTTON_PAD)
-                            .style(move |_, st| style::secondary(theme, st))
+                        text_button("Sign out", ButtonKind::Secondary, fonts, theme)
                             .on_press_maybe((!s.current).then_some(Message::RevokeSession(s.id))),
                     ]
-                    .spacing(8)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 );
             }
@@ -204,8 +192,8 @@ pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> El
     let check = |on: bool, text: &'static str, key: &'static str| {
         iced::widget::toggler(on)
             .label(text)
-            .size(20)
-            .spacing(style::GAP_L)
+            .size(style::TOGGLER)
+            .spacing(style::GAP)
             .style(move |_, st| style::toggler(theme, st))
             .on_toggle(move |v| Message::Flag(key, v))
             .text_size(fonts.size)
@@ -230,7 +218,7 @@ pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> El
                     "buffer.enter_sends"
                 ),
             ]
-            .spacing(6),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ),
@@ -261,7 +249,7 @@ pub fn chat<'a>(config: &'a ClientConfig, fonts: &Fonts, theme: &'a Theme) -> El
             theme,
         ),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720)
     .into()
 }
@@ -276,8 +264,8 @@ pub fn notifications<'a>(
     let check = |on: bool, text: &'static str, key: &'static str| {
         iced::widget::toggler(on)
             .label(text)
-            .size(20)
-            .spacing(style::GAP_L)
+            .size(style::TOGGLER)
+            .spacing(style::GAP)
             .style(move |_, st| style::toggler(theme, st))
             .on_toggle(move |v| Message::Flag(key, v))
             .text_size(fonts.size)
@@ -303,7 +291,7 @@ pub fn notifications<'a>(
                     "notifications.flash_taskbar"
                 ),
             ]
-            .spacing(6),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ),
@@ -327,12 +315,12 @@ pub fn notifications<'a>(
                     "general.check_for_updates"
                 ),
             ]
-            .spacing(6),
+            .spacing(style::GAP_S),
             fonts,
             theme,
         ),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720)
     .into()
 }
@@ -344,14 +332,14 @@ pub fn keybinds<'a>(
 ) -> Element<'a, Message> {
     let mut list = column![
         heading("Keybinds", fonts),
-        small(
+        caption(
             "Change them in the [keys] section of config.toml (Settings changes apply at once). \
              Examples: \"Ctrl+K\", \"Alt+Shift+Down\", \"Ctrl+\\\\\".",
             fonts
         )
         .color(theme.text.tertiary.0),
     ]
-    .spacing(6)
+    .spacing(style::GAP_S)
     .max_width(720);
     for (action, _, _, title) in ACTIONS {
         let combo = Keybinds::combo_text(&config.keys, action).unwrap_or_else(|| "—".into());
@@ -369,7 +357,7 @@ pub fn keybinds<'a>(
         .push(Space::new().height(10))
         .push(strong("Everywhere", fonts))
         .push(
-            small(
+            caption(
                 "Right-click channels, spaces, messages and people for more actions. Double-click \
                  a voice channel to join it. Drag channels and roles to reorder them. Escape \
                  closes menus and dialogs. Ctrl+K finds anything.",
@@ -384,29 +372,23 @@ pub fn about<'a>(fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
     column![
         heading("About Hermes", fonts),
         label(format!("Version {}", env!("CARGO_PKG_VERSION")), fonts),
-        small(
+        caption(
             "A self-hostable chat with spaces, text and voice channels, DMs and calls. Licensed \
              GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
             fonts
         )
         .color(theme.text.tertiary.0),
         row![
-            button(label("Copy debug info", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Copy debug info", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::CopyDebugInfo),
-            button(label("Open the logs folder", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Open the logs folder", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::OpenLogs),
-            button(label("Project page", fonts))
-                .padding(style::BUTTON_PAD)
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Project page", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::OpenProjectPage),
         ]
-        .spacing(8),
+        .spacing(style::GAP_S),
     ]
-    .spacing(14)
+    .spacing(style::GAP)
     .max_width(720)
     .into()
 }

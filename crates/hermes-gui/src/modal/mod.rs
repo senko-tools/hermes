@@ -11,7 +11,7 @@ pub mod new_dm;
 use iced::widget::{center, container, mouse_area, opaque, stack};
 use iced::{Color, Element, Fill};
 
-use crate::theme::Theme;
+use crate::theme::{Theme, style};
 
 /// `content` in a centered card over a dimmed `base`. Clicks on the backdrop send `on_blur`.
 pub fn overlay<'a, M: Clone + 'a>(
@@ -21,9 +21,9 @@ pub fn overlay<'a, M: Clone + 'a>(
     on_blur: Option<M>,
 ) -> Element<'a, M> {
     let card = container(content)
-        .padding(24)
+        .padding(style::GAP_XL)
         .max_width(540)
-        .style(move |_| crate::theme::style::card(theme));
+        .style(move |_| style::card(theme));
     let backdrop = center(opaque(card))
         .width(Fill)
         .height(Fill)
