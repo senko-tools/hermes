@@ -1628,8 +1628,8 @@ Goal: remove the biggest unknowns before writing real code.
 
 ### Phase 8: Hardening and v1.0 (2 weeks)
 - [ ] Load test (see [Testing](#19-testing-strategy)) and fix bottlenecks.
-- [ ] Security review pass over the checklist in [Security](#13-security-model); fuzz the datagram parser and gateway decoder (`cargo fuzz`).
-- [ ] Accessibility basics: full keyboard navigation in the GUI, high-contrast theme, scalable UI.
+- [x] Security review pass over the checklist in [Security](#13-security-model); fuzz the datagram parser and gateway decoder (`cargo fuzz`).
+- [x] Accessibility basics: full keyboard navigation in the GUI, high-contrast theme, scalable UI.
 - [x] Update check, crash log file, "copy debug info" in About.
 - [ ] Bug bash with friends for a week; fix.
 

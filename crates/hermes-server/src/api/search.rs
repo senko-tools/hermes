@@ -17,6 +17,8 @@ use crate::state::{AppState, Cache};
 
 /// At most this many search words are used.
 const MAX_TERMS: usize = 16;
+/// Longer queries are refused.
+const MAX_QUERY_CHARS: usize = 256;
 
 /// Channels `user_id` may read (`VIEW_CHANNEL` + `READ_HISTORY`), DMs included, optionally only
 /// in one space or one channel.
@@ -64,6 +66,12 @@ pub async fn search(
     auth: Auth,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<SearchResponse>> {
+    if q.q.chars().count() > MAX_QUERY_CHARS {
+        return Err(validate::field_error(
+            "q",
+            format!("must be at most {MAX_QUERY_CHARS} characters"),
+        ));
+    }
     let Some(fts) = fts_query(&q.q) else {
         return Err(validate::field_error("q", "type something to search for"));
     };

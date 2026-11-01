@@ -1232,3 +1232,13 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Crash logs** (`client-core::crash`): a panic writes `logs/crash-<unix ms>.log` (version, OS,
   message, location, backtrace) in the config folder; GUI and TUI. Settings → About has "Copy
   debug info" and "Open the logs folder".
+
+## 2026-11-01: Accessibility basics (Phase 8)
+
+- High-contrast theme and the UI scale setting already existed; keyboard navigation was missing
+  in menus and dialogs. Now: **Tab / Shift+Tab** move between the fields of dialogs and settings
+  (iced only focuses text fields), context menus take **Up/Down + Enter/Space** (Escape closes),
+  and **Shift+F10 or the Menu key** opens the focused channel's menu, as on Windows. Together
+  with the existing keybinds (Ctrl+K command bar, Alt+Up/Down channels, Ctrl+Tab panes, Ctrl+F
+  search) everything in the main flow works without a mouse.
+- The security review result is recorded in `docs/security-review.md`.

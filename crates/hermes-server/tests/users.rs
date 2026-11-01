@@ -60,6 +60,14 @@ async fn profile_changes_reach_everyone_who_sees_me() {
         .patch("/users/@me", Some(&alice), json!({ "avatar_id": "12345" }))
         .await
         .err(400, "VALIDATION_FAILED");
+    server
+        .patch(
+            "/users/@me",
+            Some(&alice),
+            json!({ "status_text": "two\nlines" }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
 
     // Lookup: people I share a space with, not strangers.
     let profile = server
@@ -201,6 +209,10 @@ async fn search_finds_only_what_i_may_read() {
     assert_eq!(found["total"], 1, "quotes are not FTS syntax errors");
     server
         .get("/search?q=%20", Some(&alice))
+        .await
+        .err(400, "VALIDATION_FAILED");
+    server
+        .get(&format!("/search?q={}", "a".repeat(300)), Some(&alice))
         .await
         .err(400, "VALIDATION_FAILED");
 }

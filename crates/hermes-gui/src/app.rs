@@ -92,6 +92,8 @@ pub struct App {
     pub collapsed: Collapsed,
     /// An open context menu and where it was opened.
     pub menu: Option<(Target, Point)>,
+    /// The entry chosen with the arrow keys in the open menu.
+    pub menu_index: Option<usize>,
     pub(crate) cursor: Cursor,
     window_size: Size,
     /// A destructive menu action waiting for confirmation.
@@ -171,6 +173,7 @@ impl App {
             single_instance,
             collapsed,
             menu: None,
+            menu_index: None,
             cursor: Cursor::default(),
             window_size: Size::new(1200.0, 800.0),
             confirm: None,
@@ -419,7 +422,10 @@ impl App {
                     return self.download(viewer.inst.clone(), viewer.attachment.clone());
                 }
             }
-            Message::OpenMenu(target) => self.menu = Some((target, self.cursor.get())),
+            Message::OpenMenu(target) => {
+                self.menu = Some((target, self.cursor.get()));
+                self.menu_index = None;
+            }
             Message::CloseMenu => self.menu = None,
             Message::Menu(target, action) => {
                 self.menu = None;
@@ -1467,6 +1473,43 @@ impl App {
         if !captured && !self.ptt_down && self.ptt_matches(key) {
             return self.on_voice(VoiceMsg::Ptt(true));
         }
+        // Context menu: arrows choose, Enter runs (keyboard users, section 15 accessibility).
+        if self.menu.is_some() {
+            match key {
+                keyboard::Key::Named(Named::ArrowDown) => return self.step_menu(1),
+                keyboard::Key::Named(Named::ArrowUp) => return self.step_menu(-1),
+                keyboard::Key::Named(Named::Enter | Named::Space) => {
+                    if let Some(message) = self.menu_choice() {
+                        return self.update(message);
+                    }
+                    return Task::none();
+                }
+                _ => {}
+            }
+        }
+        // Tab moves between the fields of a dialog or settings page.
+        if *key == keyboard::Key::Named(Named::Tab)
+            && !captured
+            && !modifiers.control()
+            && !modifiers.alt()
+        {
+            return if modifiers.shift() {
+                operation::focus_previous()
+            } else {
+                operation::focus_next()
+            };
+        }
+        // Shift+F10 or the Menu key: the menu of the focused channel, as a right-click would.
+        let menu_key = *key == keyboard::Key::Named(Named::ContextMenu)
+            || (*key == keyboard::Key::Named(Named::F10) && modifiers.shift());
+        if menu_key && self.menu.is_none() {
+            if let Some((inst, channel)) = self.panes.focused_channel() {
+                let at = Point::new(self.window_size.width / 3.0, self.window_size.height / 4.0);
+                self.menu = Some((Target::Channel(inst, channel), at));
+                self.menu_index = Some(0);
+            }
+            return Task::none();
+        }
         if let Some(bar) = &mut self.command_bar {
             match key {
                 keyboard::Key::Named(Named::ArrowDown) => bar.move_selection(1),
@@ -1493,6 +1536,47 @@ impl App {
             Some(action) => self.key_action(action),
             None => Task::none(),
         }
+    }
+
+    /// The open menu's entries (separators left out).
+    fn menu_entries(&self) -> Vec<(Target, Action)> {
+        let Some((target, _)) = &self.menu else {
+            return Vec::new();
+        };
+        let status = target
+            .inst()
+            .map_or(ConnStatus::Connected, |inst| self.core.status(inst));
+        let store = self.core.store();
+        menu::entries(
+            target,
+            &status,
+            target.inst().and_then(|i| store.instance(i)),
+        )
+        .into_iter()
+        .flatten()
+        .map(|e| (target.clone(), e.action))
+        .collect()
+    }
+
+    fn step_menu(&mut self, delta: i32) -> Task<Message> {
+        let len = self.menu_entries().len() as i32;
+        if len > 0 {
+            let next = match self.menu_index {
+                Some(i) => (i as i32 + delta).rem_euclid(len),
+                None if delta > 0 => 0,
+                None => len - 1,
+            };
+            self.menu_index = Some(next as usize);
+        }
+        Task::none()
+    }
+
+    fn menu_choice(&self) -> Option<Message> {
+        let i = self.menu_index?;
+        self.menu_entries()
+            .into_iter()
+            .nth(i)
+            .map(|(target, action)| Message::Menu(target, action))
     }
 
     fn key_action(&mut self, action: keybinds::Action) -> Task<Message> {
@@ -2249,14 +2333,20 @@ impl App {
                     target.inst().and_then(|i| store.instance(i)),
                 )
             };
+            let mut index = 0;
             let items = entries
                 .into_iter()
                 .map(|e| {
-                    e.map(|e| context_menu::Item {
-                        label: e.action.label().to_owned(),
-                        message: Message::Menu(target.clone(), e.action),
-                        danger: e.action.is_red(),
-                        checked: e.checked,
+                    e.map(|e| {
+                        let selected = self.menu_index == Some(index);
+                        index += 1;
+                        context_menu::Item {
+                            label: e.action.label().to_owned(),
+                            message: Message::Menu(target.clone(), e.action),
+                            danger: e.action.is_red(),
+                            checked: e.checked,
+                            selected,
+                        }
                     })
                 })
                 .collect();
@@ -2514,6 +2604,41 @@ mod tests {
             iced::Color::from_rgb8(4, 5, 6)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn context_menus_work_with_the_keyboard() {
+        use iced::keyboard::Key;
+        use iced::keyboard::key::Named;
+
+        const ANY: keyboard::key::Physical =
+            keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
+        let dir = temp_dir("menu-keys");
+        let mut app = app_in(&dir);
+        let pane = app.panes.focus;
+        let _ = app.update(Message::OpenMenu(Target::Pane(pane)));
+        assert!(app.menu_choice().is_none(), "nothing chosen yet");
+        let key = |name| Message::Key(Key::Named(name), ANY, Modifiers::empty(), false);
+        let _ = app.update(key(Named::ArrowDown));
+        let _ = app.update(key(Named::ArrowDown));
+        assert!(matches!(
+            app.menu_choice(),
+            Some(Message::Menu(Target::Pane(p), Action::SplitDown)) if p == pane
+        ));
+        let _ = app.update(key(Named::ArrowUp));
+        let _ = app.update(key(Named::ArrowUp));
+        assert!(
+            matches!(
+                app.menu_choice(),
+                Some(Message::Menu(Target::Pane(p), Action::ClosePane)) if p == pane
+            ),
+            "wraps around"
+        );
+        let _ = app.update(key(Named::Enter));
+        assert!(
+            app.menu.is_none(),
+            "Enter runs the entry and closes the menu"
+        );
     }
 
     #[tokio::test]

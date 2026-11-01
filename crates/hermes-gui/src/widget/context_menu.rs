@@ -15,6 +15,8 @@ pub struct Item<M> {
     pub danger: bool,
     /// A check mark in front (the current choice).
     pub checked: bool,
+    /// Chosen with the arrow keys.
+    pub selected: bool,
 }
 
 /// `base` with the menu over it at `at`, moved inside `window` if it would leave it. `None`
@@ -43,6 +45,7 @@ pub fn overlay<'a, M: Clone + 'a>(
             continue;
         };
         let danger = item.danger;
+        let selected = item.selected;
         let text = if item.checked {
             format!("✓ {}", item.label)
         } else {
@@ -56,7 +59,7 @@ pub fn overlay<'a, M: Clone + 'a>(
             }))
             .width(Fill)
             .padding([5, 10])
-            .style(move |_, s| style::sidebar_item(theme, s, false))
+            .style(move |_, s| style::sidebar_item(theme, s, selected))
             .on_press(item.message),
         );
     }

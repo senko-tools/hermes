@@ -94,6 +94,8 @@ pub async fn update_me(
     }
     if let Some(status) = &req.status_text {
         let checked = match status {
+            // One line, like a name.
+            Some(s) if s.contains(['\n', '\t']) => Err("must be one line".to_owned()),
             Some(s) => validate::optional_text(s, UpdateMeRequest::STATUS_TEXT_CHARS),
             None => Ok(None),
         };
