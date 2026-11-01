@@ -103,6 +103,19 @@ unsafe_code = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# The audio path is real-time: unoptimized DSP in debug builds falls behind when two voice
+# clients and a server share one slow CI runner. Optimize just these crates in dev/test builds.
+[profile.dev.package]
+hermes-audio = { opt-level = 3 }
+opus = { opt-level = 3 }
+opusic-sys = { opt-level = 3 }
+nnnoiseless = { opt-level = 3 }
+easyfft = { opt-level = 3 }
+rubato = { opt-level = 3 }
+realfft = { opt-level = 3 }
+rustfft = { opt-level = 3 }
+transpose = { opt-level = 3 }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

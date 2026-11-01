@@ -29,9 +29,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install ALSA headers (Linux)
+      - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+        # ALSA for cpal; GTK, libxdo and appindicator for the GUI's tray icon (tray-icon, muda).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
