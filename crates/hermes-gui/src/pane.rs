@@ -2,7 +2,8 @@
 //! `[[layout]]` as one table per window: a split is
 //! `{ split = "vertical", ratio = 0.5, a = {…}, b = {…} }`, a pane is
 //! `{ buffer = "channel", instance = "…", channel = "…", members = true }`,
-//! `{ buffer = "voice_room", instance = "…", channel = "…" }`, `{ buffer = "settings" }` or
+//! `{ buffer = "voice_room", instance = "…", channel = "…" }`,
+//! `{ buffer = "space_settings", instance = "…", space = "…" }`, `{ buffer = "settings" }` or
 //! `{ buffer = "empty" }`.
 
 use hermes_client_core::InstanceId;
@@ -76,6 +77,11 @@ fn node_table(state: &pane_grid::State<Pane>, node: &Node) -> toml::Table {
                     table.insert("instance".into(), inst.clone().into());
                     table.insert("channel".into(), channel.to_string().into());
                 }
+                Buffer::SpaceSettings { inst, space } => {
+                    table.insert("buffer".into(), "space_settings".into());
+                    table.insert("instance".into(), inst.clone().into());
+                    table.insert("space".into(), space.to_string().into());
+                }
             }
             if pane.members {
                 table.insert("members".into(), true.into());
@@ -118,6 +124,10 @@ fn config_of(table: &toml::Table) -> Option<Configuration<Pane>> {
                 Buffer::VoiceRoom { inst, channel }
             }
         }
+        "space_settings" => Buffer::SpaceSettings {
+            inst: table.get("instance")?.as_str()?.to_owned(),
+            space: Id(table.get("space")?.as_str()?.parse::<u64>().ok()?),
+        },
         _ => Buffer::Empty,
     };
     Some(Configuration::Pane(Pane {
@@ -146,6 +156,16 @@ mod tests {
         let (mut state, first) = pane_grid::State::new(Pane::new(channel(11)));
         let (right, _) = state
             .split(Axis::Vertical, first, Pane::new(Buffer::Settings))
+            .unwrap();
+        state
+            .split(
+                Axis::Vertical,
+                right,
+                Pane::new(Buffer::SpaceSettings {
+                    inst: "h".into(),
+                    space: Id(10),
+                }),
+            )
             .unwrap();
         state
             .split(
@@ -180,7 +200,12 @@ mod tests {
         assert_eq!(save(&restored), saved);
         let mut buffers: Vec<_> = restored.iter().map(|(_, p)| p.clone()).collect();
         buffers.sort_by_key(|p| format!("{:?}", p.buffer));
-        assert_eq!(buffers.len(), 4);
+        assert_eq!(buffers.len(), 5);
+        assert!(
+            buffers
+                .iter()
+                .any(|p| matches!(p.buffer, Buffer::SpaceSettings { space: Id(10), .. }))
+        );
         assert!(buffers.iter().any(|p| matches!(
             p.buffer,
             Buffer::VoiceRoom {

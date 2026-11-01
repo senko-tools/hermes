@@ -5,8 +5,8 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::pane_grid;
 use iced::{Size, window};
 
-use crate::buffer::{channel, settings};
-use crate::modal::{add_instance, command_bar, new_dm};
+use crate::buffer::{channel, settings, space_settings};
+use crate::modal::{add_instance, command_bar, form, new_dm};
 use crate::panes::PaneAction;
 use crate::sidebar::collapsed::Node;
 use crate::sidebar::menu::{Action, Target};
@@ -80,4 +80,20 @@ pub enum Message {
     Voice(crate::voice::VoiceMsg),
     /// A key was released (push-to-talk without global polling).
     KeyReleased(Key),
+    SpaceSettings(InstanceId, Id, space_settings::Message),
+    Form(form::Message),
+    /// A form's request finished: close it (with a status line) or show the error in it.
+    FormDone(Result<String, String>),
+    /// The left mouse button went down or up anywhere (drag and drop).
+    MousePressed,
+    MouseReleased,
+    /// The pointer entered a draggable sidebar row (or left it).
+    DragHover(Option<crate::drag::Item>),
+    DragLeave(crate::drag::Item),
+    /// An invite was made from the form: copy the link and refresh the list.
+    InviteCreated(InstanceId, Id, String),
+    /// Nothing to do (a request whose result the gateway delivers).
+    Nothing,
+    /// An icon file was picked for a space.
+    IconPicked(InstanceId, Id, Option<std::path::PathBuf>),
 }

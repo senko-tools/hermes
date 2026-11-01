@@ -1,5 +1,9 @@
 //! App state, update and view (PLAN.md section 15.8). All side effects go through `Core`.
 
+mod actions;
+mod forms;
+mod space;
+
 use std::path::PathBuf;
 
 use hermes_client_core::config::ClientConfig;
@@ -15,14 +19,14 @@ use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
 use crate::buffer::channel::input::{self, Composer, Upload, UploadState};
 use crate::buffer::channel::message::{Images, Img};
-use crate::buffer::{Buffer, channel, settings};
+use crate::buffer::{Buffer, channel, settings, space_settings};
 use crate::desktop::tray::{Tray, TrayAction};
 use crate::desktop::{self, CloseAction};
 use crate::font::Fonts;
 use crate::keybinds::{self, Keybinds};
 use crate::message::Message;
 use crate::modal::image_viewer::{self, Viewer};
-use crate::modal::{self, add_instance, command_bar, confirm, new_dm};
+use crate::modal::{self, add_instance, command_bar, confirm, form, new_dm};
 use crate::panes::{self, PaneAction, Panes};
 use crate::sidebar::collapsed::Collapsed;
 use crate::sidebar::menu::{self, Action, Target};
@@ -111,6 +115,12 @@ pub struct App {
     pub ptt_draft: Option<String>,
     /// The global mute key, if global hotkeys work here.
     pub global_keys: Option<crate::ptt::GlobalKeys>,
+    /// What each opened space settings buffer remembers.
+    pub space_settings: std::collections::HashMap<(InstanceId, Id), space_settings::State>,
+    default_space_settings: space_settings::State,
+    /// The open small dialog (create channel, ban, …).
+    pub form: Option<form::Form>,
+    pub drag: crate::drag::Drag,
 }
 
 impl App {
@@ -166,6 +176,10 @@ impl App {
             meter_on: false,
             ptt_draft: None,
             global_keys: None,
+            space_settings: std::collections::HashMap::new(),
+            default_space_settings: space_settings::State::default(),
+            form: None,
+            drag: crate::drag::Drag::default(),
         };
         app.reload_theme();
         if let Some(warning) = key_warnings.into_iter().next() {
@@ -431,6 +445,8 @@ impl App {
                     self.command_bar = None;
                 } else if self.confirm.is_some() {
                     self.confirm = None;
+                } else if self.form.is_some() {
+                    self.form = None;
                 } else if self.new_dm.is_some() {
                     self.new_dm = None;
                 } else if self.add_instance.is_some() {
@@ -438,6 +454,52 @@ impl App {
                 } else {
                     return self.key_action(keybinds::Action::MarkRead);
                 }
+            }
+            Message::SpaceSettings(inst, space, message) => {
+                return self.on_space_settings(inst, space, message);
+            }
+            Message::Form(message) => return self.on_form(message),
+            Message::FormDone(result) => self.on_form_done(result),
+            Message::MousePressed => self.drag.press(),
+            Message::MouseReleased => return self.on_mouse_released(),
+            Message::DragHover(item) => self.drag.hover(item),
+            Message::DragLeave(item) => self.drag.leave(&item),
+            Message::Nothing => {}
+            Message::InviteCreated(inst, space, link) => {
+                self.form = None;
+                let reload = self.update(Message::SpaceSettings(
+                    inst,
+                    space,
+                    space_settings::Message::Refresh,
+                ));
+                return Task::batch([self.update(Message::Copy(link, "Invite link")), reload]);
+            }
+            Message::IconPicked(inst, space, path) => {
+                let Some(path) = path else {
+                    return Task::none();
+                };
+                let core = self.core.clone();
+                return Task::perform(
+                    async move {
+                        let icon = core.upload(&inst, &path).await?;
+                        core.rest(&inst)?
+                            .update_space(
+                                space,
+                                &hermes_client_core::proto::api::UpdateSpaceRequest {
+                                    icon_id: Some(Some(icon.id)),
+                                    ..Default::default()
+                                },
+                            )
+                            .await?;
+                        Ok::<_, hermes_client_core::CoreError>(())
+                    },
+                    |r| {
+                        Message::Done(
+                            r.map(|()| "Icon changed".to_owned())
+                                .map_err(|e| format!("could not change the icon: {e}")),
+                        )
+                    },
+                );
             }
             Message::Forwarded(link) => {
                 tracing::info!(
@@ -518,6 +580,14 @@ impl App {
             channel::Message::Palette(id) => view.palette = id,
             channel::Message::More(id) => {
                 self.menu = Some((Target::Message(inst, channel, id), self.cursor.get()));
+            }
+            channel::Message::Author(user) => {
+                let space = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.space_of(channel));
+                self.menu = Some((Target::Member(inst, space, user), self.cursor.get()));
             }
             channel::Message::React(id, emoji, add) => {
                 view.palette = None;
@@ -1318,9 +1388,7 @@ impl App {
                     },
                 );
             }
-            (target, action) => {
-                tracing::warn!("menu action {action:?} does not apply to {target:?}")
-            }
+            (target, action) => return self.run_more_action(target, action),
         }
         Task::none()
     }
@@ -1354,6 +1422,7 @@ impl App {
             || self.menu.is_some()
             || self.confirm.is_some()
             || self.new_dm.is_some()
+            || self.form.is_some()
             || self.add_instance.is_some();
         if escape && (overlay || !captured) {
             return self.update(Message::Escape);
@@ -1479,6 +1548,12 @@ impl App {
                 self.on_voice(VoiceMsg::Join(inst, channel))
             }
             Some(command_bar::Command::LeaveVoice) => self.on_voice(VoiceMsg::Leave),
+            Some(command_bar::Command::SpaceSettings(inst, space)) => {
+                self.open_space_settings(inst, space, crate::buffer::space_settings::Tab::Overview)
+            }
+            Some(command_bar::Command::Menu(target, action)) => {
+                self.update(Message::Menu(target, action))
+            }
             None => Task::none(),
         }
     }
@@ -2015,6 +2090,7 @@ impl App {
                 .width
                 .clamp(settings::MIN_SIDEBAR_WIDTH, settings::MAX_SIDEBAR_WIDTH),
             self.ptt_down,
+            self.drag.target(),
         );
 
         let mut main = column![].width(Fill).height(Fill);
@@ -2053,6 +2129,9 @@ impl App {
                 mic_test: self.mic_test,
                 ptt_draft: self.ptt_draft.as_deref(),
             },
+            space_settings: &self.space_settings,
+            default_space_settings: &self.default_space_settings,
+            drag: &self.drag,
         }));
 
         let layout = if !self.sidebar_visible {
@@ -2070,38 +2149,26 @@ impl App {
             .style(|_| style::app(theme));
         let mut root: Element<'_, Message> = base.into();
         if let Some((target, at)) = &self.menu {
-            let status = match target {
-                Target::Instance(inst)
-                | Target::Space(inst, _)
-                | Target::Channel(inst, _)
-                | Target::Message(inst, ..) => self.core.status(inst),
-                Target::Pane(_) => ConnStatus::Connected,
+            let status = target
+                .inst()
+                .map_or(ConnStatus::Connected, |inst| self.core.status(inst));
+            let entries = {
+                let store = self.core.store();
+                menu::entries(
+                    target,
+                    &status,
+                    target.inst().and_then(|i| store.instance(i)),
+                )
             };
-            let actions = match target {
-                Target::Message(inst, channel, message) => {
-                    let store = self.core.store();
-                    let s = store.instance(inst);
-                    let msg = s
-                        .and_then(|s| s.window(*channel))
-                        .and_then(|w| w.get(*message));
-                    let own = msg.is_some_and(|m| s.and_then(|s| s.me_id()) == Some(m.author.id));
-                    let manage = s.is_some_and(|s| {
-                        hermes_client_core::view::can(
-                            s,
-                            *channel,
-                            hermes_client_core::proto::permissions::Permissions::MANAGE_MESSAGES,
-                        )
-                    });
-                    menu::message_actions(own, manage, msg.is_some_and(|m| m.pinned))
-                }
-                _ => menu::actions(target, &status),
-            };
-            let items = actions
+            let items = entries
                 .into_iter()
-                .map(|action| context_menu::Item {
-                    label: action.label(),
-                    message: Message::Menu(target.clone(), action),
-                    danger: action.is_destructive(),
+                .map(|e| {
+                    e.map(|e| context_menu::Item {
+                        label: e.action.label().to_owned(),
+                        message: Message::Menu(target.clone(), e.action),
+                        danger: e.action.is_red(),
+                        checked: e.checked,
+                    })
                 })
                 .collect();
             root = context_menu::overlay(
@@ -2141,6 +2208,14 @@ impl App {
                 dialog.view(fonts, theme).map(Message::AddInstance),
                 theme,
                 None,
+            );
+        }
+        if let Some(form) = &self.form {
+            root = modal::overlay(
+                root,
+                form.view(fonts, theme).map(Message::Form),
+                theme,
+                Some(Message::Form(form::Message::Cancel)),
             );
         }
         if let Some(dialog) = &self.new_dm {
@@ -2186,6 +2261,34 @@ fn confirm_text(action: Action) -> (&'static str, &'static str) {
         Action::LeaveSpace => (
             "Leave this space?",
             "You will need a new invite to join again.",
+        ),
+        Action::DeleteSpace => (
+            "Delete this space?",
+            "Every channel, message, role and invite of the space is deleted for everyone. This              cannot be undone.",
+        ),
+        Action::DeleteChannel => (
+            "Delete this channel?",
+            "Its messages are deleted for everyone. Channels inside a deleted category move to              the top level. This cannot be undone.",
+        ),
+        Action::LeaveGroup => (
+            "Leave this group?",
+            "You stop getting its messages. Someone in it can add you again.",
+        ),
+        Action::Kick => (
+            "Kick this member?",
+            "They are removed from the space but can rejoin with an invite.",
+        ),
+        Action::DeleteRole => (
+            "Delete this role?",
+            "Members who have it lose its permissions. This cannot be undone.",
+        ),
+        Action::RevokeInvite => (
+            "Revoke this invite?",
+            "The link stops working at once. People who already joined stay.",
+        ),
+        Action::TransferOwnership => (
+            "Transfer ownership?",
+            "They become the owner and can delete the space. Only they can give it back.",
         ),
         _ => ("Are you sure?", ""),
     }

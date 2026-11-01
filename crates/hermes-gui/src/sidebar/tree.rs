@@ -7,7 +7,10 @@ use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{InstanceId, Store, view};
 
+use hermes_client_core::proto::permissions::Permissions;
+
 use super::collapsed::{Collapsed, Node};
+use crate::drag::{Item, Kind};
 
 /// The channel shown in the main area.
 pub type Selection = (InstanceId, Id);
@@ -32,6 +35,8 @@ pub enum Row {
         name: String,
         collapsed: bool,
         badge: Badge,
+        /// Set when I may move it (drag and drop).
+        drag: Option<Item>,
     },
     Channel {
         inst: InstanceId,
@@ -42,6 +47,10 @@ pub enum Row {
         nested: bool,
         badge: Badge,
         selected: bool,
+        /// Set when I may move it (drag and drop).
+        drag: Option<Item>,
+        /// Muted: drawn dimmed.
+        muted: bool,
     },
     /// Someone in a voice channel (or a DM call), listed under it whether I am in voice or not.
     VoiceUser {
@@ -157,6 +166,15 @@ fn space_rows(
     if space_collapsed {
         return;
     }
+    let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
+    let drag = |id: Id| {
+        manage.then(|| Item {
+            inst: inst.clone(),
+            space,
+            kind: Kind::Channel,
+            id,
+        })
+    };
     let mut hidden_by: Option<Id> = None;
     for (i, c) in tree.iter().enumerate() {
         let badge = Badge {
@@ -181,6 +199,7 @@ fn space_rows(
                 name: c.name.clone(),
                 collapsed: cat_collapsed,
                 badge: sum,
+                drag: drag(c.id),
             });
             continue;
         }
@@ -198,6 +217,8 @@ fn space_rows(
             nested: c.depth == 1,
             badge,
             selected: selected == Some(c.id),
+            drag: drag(c.id),
+            muted: c.muted,
         });
         if c.kind == ChannelKind::Voice {
             voice_users(s, inst, c.id, Some(space), speaking, rows);

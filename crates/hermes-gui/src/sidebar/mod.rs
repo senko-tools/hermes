@@ -17,6 +17,7 @@ use iced::{Alignment, Border, Element, Fill, Length};
 use self::collapsed::Node;
 use self::menu::Target;
 use self::tree::{Badge, Row};
+use crate::drag::Item;
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
@@ -32,11 +33,18 @@ pub fn view<'a>(
     theme: &'a Theme,
     width: u16,
     ptt_down: bool,
+    drop_target: Option<&Item>,
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(1).padding([0, 4]);
     for row in rows {
-        list = list.push(row_view(row, join_on, fonts, theme));
+        let (element, drag) = match row {
+            Row::Channel { drag, .. } | Row::Category { drag, .. } => {
+                (row_view(row, join_on, fonts, theme), drag.as_ref())
+            }
+            _ => (row_view(row, join_on, fonts, theme), None),
+        };
+        list = list.push(draggable(element, drag, drop_target, theme));
     }
     list = list.push(
         button(small("+ Add instance", fonts).color(theme.text.secondary.0))
@@ -128,6 +136,10 @@ fn row_view<'a>(
                 arrow(*collapsed, fonts, theme),
                 label(name.clone(), fonts).font(fonts.medium()).width(Fill),
                 badge_view(*badge, fonts, theme),
+                button(small("⋮", fonts).color(theme.text.tertiary.0))
+                    .padding([0, 6])
+                    .style(move |_, s| style::sidebar_item(theme, s, false))
+                    .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -143,6 +155,7 @@ fn row_view<'a>(
             name,
             collapsed,
             badge,
+            ..
         } => item(
             row![
                 arrow(*collapsed, fonts, theme),
@@ -157,7 +170,7 @@ fn row_view<'a>(
             false,
             theme,
             Message::Toggle(Node::Category(inst.clone(), *id)),
-            None,
+            Some(Target::Channel(inst.clone(), *id)),
         ),
         Row::Channel {
             inst,
@@ -167,6 +180,8 @@ fn row_view<'a>(
             nested,
             badge,
             selected,
+            muted,
+            ..
         } => {
             let icon = if *kind == ChannelKind::Voice {
                 "♪"
@@ -176,6 +191,8 @@ fn row_view<'a>(
             let name = label(name.clone(), fonts);
             let name = if badge.unread || *selected {
                 name.font(fonts.bold()).color(theme.text.primary.0)
+            } else if *muted {
+                name.color(theme.text.tertiary.0)
             } else {
                 name.color(theme.text.secondary.0)
             };
@@ -301,6 +318,38 @@ fn row_view<'a>(
             )
         }
     }
+}
+
+/// A row that can be dragged onto another (reports the pointer entering and leaving it), with
+/// a marker while a drag is over it.
+fn draggable<'a>(
+    element: Element<'a, Message>,
+    drag: Option<&Item>,
+    drop_target: Option<&Item>,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let Some(item) = drag else {
+        return element;
+    };
+    let targeted = drop_target == Some(item);
+    let element: Element<'a, Message> = if targeted {
+        container(element)
+            .style(move |_| container::Style {
+                border: Border {
+                    color: theme.pane.focused_border.0,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..container::Style::default()
+            })
+            .into()
+    } else {
+        element
+    };
+    mouse_area(element)
+        .on_enter(Message::DragHover(Some(item.clone())))
+        .on_exit(Message::DragLeave(item.clone()))
+        .into()
 }
 
 /// A clickable row; right-click opens the menu for `target`.

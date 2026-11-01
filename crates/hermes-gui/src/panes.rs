@@ -249,6 +249,11 @@ pub struct Context<'a> {
     pub composers: &'a std::collections::HashMap<(InstanceId, Id), channel::input::Composer>,
     pub settings_tab: settings::Tab,
     pub voice: settings::VoiceView<'a>,
+    pub space_settings:
+        &'a std::collections::HashMap<(InstanceId, Id), crate::buffer::space_settings::State>,
+    /// Shown for a space whose settings were never opened (restored layouts).
+    pub default_space_settings: &'a crate::buffer::space_settings::State,
+    pub drag: &'a crate::drag::Drag,
 }
 
 /// Actions from a pane header.
@@ -323,6 +328,14 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
     match buffer {
         Buffer::Empty => ("Hermes".into(), String::new()),
         Buffer::Settings => ("Settings".into(), String::new()),
+        Buffer::SpaceSettings { inst, space } => {
+            let store = core.store();
+            let name = store
+                .instance(inst)
+                .and_then(|s| s.spaces.get(space))
+                .map_or_else(|| "(not available)".to_owned(), |sp| sp.space.name.clone());
+            (name, "Space settings".into())
+        }
         Buffer::Channel { inst, channel } => {
             let store = core.store();
             match store
@@ -386,6 +399,34 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
             theme,
         )
         .map(Message::Settings),
+        Buffer::SpaceSettings { inst, space } => {
+            let store = ctx.core.store();
+            let Some(s) = store.instance(inst) else {
+                return container(label("This instance is not available.", fonts))
+                    .center(Fill)
+                    .into();
+            };
+            let state = ctx
+                .space_settings
+                .get(&(inst.clone(), *space))
+                .unwrap_or(ctx.default_space_settings);
+            let drop_target = ctx
+                .drag
+                .target()
+                .filter(|t| t.inst == *inst && t.space == *space)
+                .map(|t| (t.kind, t.id));
+            let (inst, space) = (inst.clone(), *space);
+            crate::buffer::space_settings::view(&crate::buffer::space_settings::Ctx {
+                s,
+                space,
+                state,
+                fonts,
+                theme,
+                utc_offset: ctx.utc_offset,
+                drop_target,
+            })
+            .map(move |m| Message::SpaceSettings(inst.clone(), space, m))
+        }
         Buffer::VoiceRoom { inst, channel } => {
             crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
         }
@@ -460,13 +501,23 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                 let name_color = member.color.map_or(theme.text.primary.0, |c| {
                     iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
                 });
+                let target = Target::Member(inst.clone(), s.space_of(channel), member.user_id);
                 list = list.push(
-                    row![
-                        small("●", fonts).color(dot),
-                        label(member.name, fonts).color(name_color),
-                    ]
-                    .spacing(6)
-                    .align_y(Alignment::Center),
+                    mouse_area(
+                        button(
+                            row![
+                                small("●", fonts).color(dot),
+                                label(member.name, fonts).color(name_color),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([2, 4])
+                        .width(Fill)
+                        .style(move |_, st| style::sidebar_item(theme, st, false))
+                        .on_press(Message::OpenMenu(target.clone())),
+                    )
+                    .on_right_press(Message::OpenMenu(target)),
                 );
             }
             list = list.push(Space::new().height(6));

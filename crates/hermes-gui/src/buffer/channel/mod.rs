@@ -121,6 +121,8 @@ pub enum Message {
     Reply(Id),
     /// Edit my message (toolbar).
     StartEdit(Id),
+    /// A message author's name or avatar was clicked: their menu.
+    Author(Id),
 }
 
 /// What the view needs besides the pane state.

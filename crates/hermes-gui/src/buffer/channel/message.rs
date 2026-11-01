@@ -113,9 +113,13 @@ pub fn view<'a>(
         let color = space
             .and_then(|sp| super::author_color(s, sp, msg.author.id))
             .map_or(theme.roles.default_color.0, super::rgb);
+        let author = msg.author.id;
         body = body.push(
             row![
-                label(name, fonts).font(fonts.bold()).color(color),
+                mouse_area(label(name, fonts).font(fonts.bold()).color(color))
+                    .on_press(Message::Author(author))
+                    .on_right_press(Message::Author(author))
+                    .interaction(iced::mouse::Interaction::Pointer),
                 small(time_text.clone(), fonts).color(theme.text.tertiary.0),
             ]
             .spacing(8)
@@ -152,7 +156,11 @@ pub fn view<'a>(
 
     // Gutter: avatar on the first message of a group, the time on hover for the others.
     let gutter: Element<'a, Message> = if !m.grouped && ctx.config.buffer.show_avatars {
-        avatar(&s.display_name(space, msg.author.id), fonts)
+        mouse_area(avatar(&s.display_name(space, msg.author.id), fonts))
+            .on_press(Message::Author(msg.author.id))
+            .on_right_press(Message::Author(msg.author.id))
+            .interaction(iced::mouse::Interaction::Pointer)
+            .into()
     } else if m.grouped && hovered {
         container(small(time_text, fonts).color(theme.text.tertiary.0))
             .padding([3, 0])
@@ -190,9 +198,11 @@ pub fn view<'a>(
             .padding([0, 12]),
         );
     }
+    // Right-click anywhere on the message opens its menu (the author has their own).
     mouse_area(layers)
         .on_enter(Message::Hover(id, true))
         .on_exit(Message::Hover(id, false))
+        .on_right_press(Message::More(id))
         .into()
 }
 

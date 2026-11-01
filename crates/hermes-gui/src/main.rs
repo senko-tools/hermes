@@ -6,6 +6,7 @@
 mod app;
 mod buffer;
 mod desktop;
+mod drag;
 #[cfg(test)]
 mod fixtures;
 mod font;

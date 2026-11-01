@@ -25,6 +25,9 @@ pub enum Command {
     AddInstance,
     JoinVoice(InstanceId, Id),
     LeaveVoice,
+    SpaceSettings(InstanceId, Id),
+    /// A menu action (create space, create channel, edit profile, …).
+    Menu(crate::sidebar::menu::Target, crate::sidebar::menu::Action),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,7 +189,48 @@ pub fn entries(
         let Some(s) = store.instance(inst) else {
             continue;
         };
+        use crate::sidebar::menu::{Action as M, Target};
+        out.push(Entry {
+            label: "Create a space".into(),
+            detail: inst.clone(),
+            command: Command::Menu(Target::Instance(inst.clone()), M::CreateSpace),
+        });
+        out.push(Entry {
+            label: "Edit profile".into(),
+            detail: inst.clone(),
+            command: Command::Menu(Target::Instance(inst.clone()), M::EditProfile),
+        });
         for (space_id, space) in &s.spaces {
+            out.push(Entry {
+                label: format!("Space settings: {}", space.space.name),
+                detail: inst.clone(),
+                command: Command::SpaceSettings(inst.clone(), *space_id),
+            });
+            if view::can_in_space(
+                s,
+                *space_id,
+                hermes_client_core::proto::permissions::Permissions::MANAGE_CHANNELS,
+            ) {
+                out.push(Entry {
+                    label: format!("Create channel in {}", space.space.name),
+                    detail: inst.clone(),
+                    command: Command::Menu(
+                        Target::Space(inst.clone(), *space_id),
+                        M::CreateChannel,
+                    ),
+                });
+            }
+            if view::can_in_space(
+                s,
+                *space_id,
+                hermes_client_core::proto::permissions::Permissions::CREATE_INVITES,
+            ) {
+                out.push(Entry {
+                    label: format!("Invite people to {}", space.space.name),
+                    detail: inst.clone(),
+                    command: Command::Menu(Target::Space(inst.clone(), *space_id), M::InvitePeople),
+                });
+            }
             for c in view::channel_tree(s, *space_id) {
                 if c.kind == ChannelKind::Category {
                     continue;

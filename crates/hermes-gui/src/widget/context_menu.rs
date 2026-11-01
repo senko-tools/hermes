@@ -1,6 +1,6 @@
 //! A right-click menu drawn at a point over the whole window. A click outside closes it.
 
-use iced::widget::{button, column, container, mouse_area, pin, stack};
+use iced::widget::{button, column, container, mouse_area, pin, rule, stack};
 use iced::{Border, Element, Fill, Point, Shadow, Size, Vector};
 
 use crate::font::Fonts;
@@ -10,15 +10,18 @@ use crate::widget::label;
 pub const WIDTH: f32 = 220.0;
 
 pub struct Item<M> {
-    pub label: &'static str,
+    pub label: String,
     pub message: M,
     pub danger: bool,
+    /// A check mark in front (the current choice).
+    pub checked: bool,
 }
 
-/// `base` with the menu over it at `at`, moved inside `window` if it would leave it.
+/// `base` with the menu over it at `at`, moved inside `window` if it would leave it. `None`
+/// items are separators.
 pub fn overlay<'a, M: Clone + 'a>(
     base: Element<'a, M>,
-    items: Vec<Item<M>>,
+    items: Vec<Option<Item<M>>>,
     at: Point,
     window: Size,
     fonts: &Fonts,
@@ -26,15 +29,27 @@ pub fn overlay<'a, M: Clone + 'a>(
     on_close: M,
 ) -> Element<'a, M> {
     let row_height = fonts.size + 14.0;
-    let height = items.len() as f32 * row_height + 8.0;
+    let separators = items.iter().filter(|i| i.is_none()).count() as f32;
+    let height = (items.len() as f32 - separators) * row_height + separators * 9.0 + 8.0;
     let x = at.x.min(window.width - WIDTH - 4.0).max(0.0);
     let y = at.y.min(window.height - height - 4.0).max(0.0);
 
     let mut list = column![].spacing(0);
     for item in items {
+        let Some(item) = item else {
+            list = list.push(
+                container(rule::horizontal(1).style(move |_| style::rule(theme))).padding([4, 6]),
+            );
+            continue;
+        };
         let danger = item.danger;
+        let text = if item.checked {
+            format!("✓ {}", item.label)
+        } else {
+            format!("   {}", item.label)
+        };
         list = list.push(
-            button(label(item.label, fonts).color(if danger {
+            button(label(text, fonts).color(if danger {
                 theme.text.error.0
             } else {
                 theme.text.primary.0

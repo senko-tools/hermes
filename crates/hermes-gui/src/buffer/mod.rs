@@ -1,8 +1,8 @@
-//! Buffers: what a pane shows (PLAN.md section 15.1). Mentions, Search, Logs and SpaceSettings
-//! come with their features.
+//! Buffers: what a pane shows (PLAN.md section 15.1).
 
 pub mod channel;
 pub mod settings;
+pub mod space_settings;
 pub mod voice_room;
 
 use hermes_client_core::InstanceId;
@@ -17,6 +17,11 @@ pub enum Buffer {
         channel: Id,
     },
     Settings,
+    /// A space's settings (PLAN.md sections 15.1 and 15.4).
+    SpaceSettings {
+        inst: InstanceId,
+        space: Id,
+    },
     /// The participants of a voice channel's or DM's voice room.
     VoiceRoom {
         inst: InstanceId,

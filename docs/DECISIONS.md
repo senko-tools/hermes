@@ -1105,3 +1105,57 @@ Approved by the developer as a plan before implementation.
   from source for self-builders.
 - **Dry run:** anything but a tag only uploads workflow artifacts (no release, no image push). It
   runs when `release.yml` or `Dockerfile.release` changes on `dev`, or by hand.
+
+## 2026-11-01: Phase 6 in the GUI: space settings, channel management, menus
+
+The developer asked for Phase 6 to v1.0 without questions, decisions logged here.
+
+- **Space settings buffer** (`buffer/space_settings/`): tabs Overview, Roles, Channels &
+  permissions, Members, Invites, Bans, Audit log. Bans and Audit log only show with
+  `BAN_MEMBERS` / `VIEW_AUDIT_LOG`, Invites with `CREATE_INVITES` or `MANAGE_INVITES`. The
+  buffer is saved in the layout as `{ buffer = "space_settings", instance, space }`. Every change
+  goes through REST and comes back over the gateway; only the invite, ban and audit lists are
+  loaded over REST (when their tab opens, with a Refresh button).
+- **Roles editor:** name, color (12 swatches plus a `#RRGGBB` field instead of a full color
+  picker widget), hoist, mentionable, permission checkboxes grouped General / Text / Voice with a
+  description each. Checkboxes for bits I do not have are disabled (the server refuses them
+  anyway). The descriptions live in `hermes_proto::permissions::CATALOG` so both UIs share them.
+- **Drag and drop** (roles in the settings, channels in the sidebar and the Channels tab): iced
+  buttons take the mouse press, so rows report the pointer entering/leaving and a window-wide
+  listener reports the left button going down and up (`drag.rs`). Dropping a channel on another
+  takes its place; on a category moves it in first. **Move up / Move down** buttons do the same
+  without a mouse (keyboard users, accessibility). The order logic is in client-core
+  (`view::move_channel`, `view::step_channel`) so the TUI can use it too.
+- **Channel overrides:** per role, each channel-relevant permission has Deny / Inherit / Allow
+  buttons; setting all to Inherit deletes the override. Text channels hide the voice bits.
+- **Private channel** in the create dialog: an `@everyone` deny-`VIEW_CHANNEL` override plus an
+  allow-`VIEW_CHANNEL` override for each ticked role. Text channel names are slugged
+  (`My Room` → `my-room`), voice channel names are kept as typed.
+- **One generic form dialog** (`modal/form.rs`) for create space / channel / category, edit
+  channel (name, topic, slow mode, voice user limit and bitrate), ban (reason, delete messages
+  from the last hour / day / week), nickname, invite (expiry, max uses) and profile.
+- **Context menus everywhere** (muscle memory): right-click on a message (anywhere on it), on a
+  message author's name or avatar, on members in the member list, on categories, on spaces
+  (also a visible `⋮` button on space rows for people who do not right-click). Menus only offer
+  what I may do, have separators, and check marks for the current notification level. New
+  actions: create space/channel/category, space settings, mark all read, notification level,
+  mute, open in a new pane, join voice, edit channel, permissions, delete channel, rename/leave
+  group, reply, edit, quote, message / mention / copy username / nickname / roles / kick / ban,
+  transfer ownership, delete space. Destructive ones ask first.
+- **Command bar** additions: "Create a space", "Edit profile", "Space settings: X",
+  "Create channel in X", "Invite people to X".
+
+## 2026-11-01: Server endpoints for Phase 6 (search, profile, notification settings, admin)
+
+- Implemented as PLAN.md section 10 says: `PATCH /users/@me`, `GET /users/{id}`,
+  `PUT /users/@me/notification-settings/{target_id}`, `GET /search` (FTS5), `GET/PATCH
+  /admin/users`.
+- **Additions:** `DELETE /users/@me/notification-settings/{target_id}` with a new dispatch event
+  `notification_settings_delete {target_id}`, because "back to the default" (a channel following
+  its space again) cannot be expressed with `PUT`. `GET /users/@me/mentions?before&limit` for
+  the Mentions buffer: the `message_mentions` table was meant for a "mentions inbox" (its schema
+  comment), but section 10 has no endpoint to read it.
+- **Search syntax:** every word must match as a prefix (`"word"*` in FTS5, quotes escaped), so no
+  input causes an FTS syntax error; at most 16 words. Deleted messages never match.
+- **Admin:** disabling a user deletes all their sessions (closing their gateways); admins cannot
+  disable or demote themselves, so an instance never loses its last admin by accident.

@@ -14,8 +14,17 @@ pub struct TreeChannel {
     pub name: String,
     /// 0 = top level, 1 = inside a category.
     pub depth: u8,
+    /// Unread messages; never set while muted (mentions still count).
     pub unread: bool,
     pub mentions: u32,
+    /// Muted, or set to notify about nothing (shown dimmed).
+    pub muted: bool,
+}
+
+/// Whether a channel is muted or set to "nothing" (its own setting or its space's).
+pub fn is_quiet(store: &InstanceStore, channel: Id) -> bool {
+    crate::notify::level(store, channel, crate::core::now_ms())
+        .is_none_or(|l| l == hermes_proto::models::NotificationLevel::None)
 }
 
 fn order(a: &Channel, b: &Channel) -> std::cmp::Ordering {
@@ -34,13 +43,17 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
         .filter(|c| c.parent_id.is_none_or(|p| !state.channels.contains_key(&p)))
         .collect();
     top.sort_by(|a, b| order(a, b));
-    let entry = |c: &Channel, depth| TreeChannel {
-        id: c.id,
-        kind: c.kind,
-        name: c.name.clone().unwrap_or_default(),
-        depth,
-        unread: c.kind.has_messages() && store.unread(c.id),
-        mentions: store.mention_count(c.id),
+    let entry = |c: &Channel, depth| {
+        let muted = c.kind.has_messages() && is_quiet(store, c.id);
+        TreeChannel {
+            id: c.id,
+            kind: c.kind,
+            name: c.name.clone().unwrap_or_default(),
+            depth,
+            unread: c.kind.has_messages() && !muted && store.unread(c.id),
+            mentions: store.mention_count(c.id),
+            muted,
+        }
     };
     let mut out = Vec::new();
     for c in top {
@@ -58,18 +71,133 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
     out
 }
 
+/// The new positions after dropping channel `moved` onto `onto` in the space's tree (for
+/// `PUT /spaces/{id}/channels/order`): `moved` takes `onto`'s place among its siblings. A channel
+/// dropped on a category goes first into it; a category dropped inside a category takes that
+/// category's place. Only entries whose position or parent change are returned.
+pub fn move_channel(
+    store: &InstanceStore,
+    space: Id,
+    moved: Id,
+    onto: Id,
+) -> Vec<hermes_proto::api::ChannelPosition> {
+    use hermes_proto::api::ChannelPosition;
+
+    let Some(state) = store.spaces.get(&space) else {
+        return Vec::new();
+    };
+    let (Some(m), Some(t)) = (state.channels.get(&moved), state.channels.get(&onto)) else {
+        return Vec::new();
+    };
+    if moved == onto {
+        return Vec::new();
+    }
+    let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
+    let (parent, anchor) = if m.kind == ChannelKind::Category {
+        // Categories live at the top level; aim at the item there.
+        match parent_of(t) {
+            Some(p) => (None, Some(p)),
+            None => (None, Some(onto)),
+        }
+    } else if t.kind == ChannelKind::Category {
+        (Some(onto), None)
+    } else {
+        (parent_of(t), Some(onto))
+    };
+    if anchor == Some(moved) {
+        return Vec::new();
+    }
+    let mut siblings: Vec<&Channel> = state
+        .channels
+        .values()
+        .filter(|c| parent_of(c) == parent && c.id != moved)
+        .collect();
+    siblings.sort_by(|a, b| order(a, b));
+    let index = match anchor {
+        None => 0,
+        Some(anchor) => {
+            let at = siblings.iter().position(|c| c.id == anchor).unwrap_or(0);
+            // Moving down within the same list lands after the anchor.
+            let was_before = parent_of(m) == parent && order(m, &state.channels[&anchor]).is_lt();
+            if was_before { at + 1 } else { at }
+        }
+    };
+    siblings.insert(index.min(siblings.len()), m);
+    siblings
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let position = i as i32;
+            let reparent = c.id == moved && parent_of(c) != parent;
+            (c.position != position || reparent).then_some(ChannelPosition {
+                id: c.id,
+                position,
+                parent_id: (c.id == moved).then_some(parent),
+            })
+        })
+        .collect()
+}
+
+/// The new positions after moving channel `id` one place up (`delta < 0`) or down among its
+/// siblings (same parent); empty at either end.
+pub fn step_channel(
+    store: &InstanceStore,
+    space: Id,
+    id: Id,
+    delta: i32,
+) -> Vec<hermes_proto::api::ChannelPosition> {
+    use hermes_proto::api::ChannelPosition;
+
+    let Some(state) = store.spaces.get(&space) else {
+        return Vec::new();
+    };
+    let Some(channel) = state.channels.get(&id) else {
+        return Vec::new();
+    };
+    let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
+    let parent = parent_of(channel);
+    let mut siblings: Vec<&Channel> = state
+        .channels
+        .values()
+        .filter(|c| parent_of(c) == parent)
+        .collect();
+    siblings.sort_by(|a, b| order(a, b));
+    let Some(i) = siblings.iter().position(|c| c.id == id) else {
+        return Vec::new();
+    };
+    let j = i as i64 + i64::from(delta.signum());
+    if j < 0 || j as usize >= siblings.len() {
+        return Vec::new();
+    }
+    siblings.swap(i, j as usize);
+    siblings
+        .iter()
+        .enumerate()
+        .filter(|(i, c)| c.position != *i as i32)
+        .map(|(i, c)| ChannelPosition {
+            id: c.id,
+            position: i as i32,
+            parent_id: None,
+        })
+        .collect()
+}
+
 /// DMs, most recent activity first, with a display name.
 pub fn dm_list(store: &InstanceStore) -> Vec<TreeChannel> {
     let mut dms: Vec<&Channel> = store.dms.values().collect();
     dms.sort_by_key(|c| std::cmp::Reverse(c.last_message_id.unwrap_or(c.id)));
     dms.into_iter()
-        .map(|c| TreeChannel {
-            id: c.id,
-            kind: c.kind,
-            name: dm_name(store, c),
-            depth: 0,
-            unread: store.unread(c.id),
-            mentions: store.mention_count(c.id),
+        .map(|c| {
+            let muted = is_quiet(store, c.id);
+            TreeChannel {
+                id: c.id,
+                kind: c.kind,
+                name: dm_name(store, c),
+                depth: 0,
+                unread: !muted && store.unread(c.id),
+                mentions: store.mention_count(c.id),
+                muted,
+            }
         })
         .collect()
 }
@@ -219,6 +347,51 @@ pub fn is_grouped(prev: &Message, message: &Message, minutes: u32) -> bool {
 /// Whether I may do `perm` in a channel (for greying out actions).
 pub fn can(store: &InstanceStore, channel: Id, perm: Permissions) -> bool {
     store.channel_permissions(channel).contains(perm)
+}
+
+/// Whether I have `perm` space-wide.
+pub fn can_in_space(store: &InstanceStore, space: Id, perm: Permissions) -> bool {
+    store.permissions(space, None).contains(perm)
+}
+
+/// Whether I may edit, delete or assign `role`: `MANAGE_ROLES` and a higher role (the owner
+/// always may). `@everyone` can be edited but never assigned or deleted.
+pub fn can_manage_role(store: &InstanceStore, space: Id, role: Id) -> bool {
+    let (Some(me), Some(state)) = (store.me_id(), store.spaces.get(&space)) else {
+        return false;
+    };
+    if !can_in_space(store, space, Permissions::MANAGE_ROLES) {
+        return false;
+    }
+    if state.space.owner_id == me {
+        return true;
+    }
+    match (state.members.get(&me), state.role(role)) {
+        (Some(actor), Some(role)) => {
+            hermes_proto::permissions::can_manage_role(&state.space, &state.roles, actor, role)
+        }
+        _ => false,
+    }
+}
+
+/// Whether I am above `user` in the role hierarchy (kick, ban, roles, nickname). Nobody is above
+/// the owner, and I am never above myself.
+pub fn outranks(store: &InstanceStore, space: Id, user: Id) -> bool {
+    let (Some(me), Some(state)) = (store.me_id(), store.spaces.get(&space)) else {
+        return false;
+    };
+    if me == user || user == state.space.owner_id {
+        return false;
+    }
+    if state.space.owner_id == me {
+        return true;
+    }
+    match (state.members.get(&me), state.members.get(&user)) {
+        (Some(actor), Some(target)) => {
+            hermes_proto::permissions::can_manage_member(&state.space, &state.roles, actor, target)
+        }
+        _ => false,
+    }
 }
 
 /// One autocomplete suggestion.
@@ -377,6 +550,91 @@ mod tests {
         );
         assert!(tree[3].unread);
         assert!(!tree[0].unread);
+    }
+
+    #[test]
+    fn dropping_a_channel_takes_the_target_place() {
+        let mut s = store();
+        let general = channel_tree(&s, Id(10))[0].id;
+        let mut cat = channel(20, Some(10), ChannelKind::Category, "Voice");
+        cat.position = 1;
+        let mut lounge = channel(21, Some(10), ChannelKind::Voice, "Lounge");
+        lounge.parent_id = Some(Id(20));
+        let mut memes = channel(22, Some(10), ChannelKind::Text, "memes");
+        memes.position = 2;
+        for c in [lounge, memes, cat] {
+            s.apply(ServerEvent::ChannelCreate(c), 0);
+        }
+        let apply = |s: &mut InstanceStore, moves: Vec<hermes_proto::api::ChannelPosition>| {
+            for p in moves {
+                let mut c = s.channel(p.id).unwrap().clone();
+                c.position = p.position;
+                if let Some(parent) = p.parent_id {
+                    c.parent_id = parent;
+                }
+                s.apply(ServerEvent::ChannelUpdate(c), 0);
+            }
+        };
+        let names = |s: &InstanceStore| -> Vec<(String, u8)> {
+            channel_tree(s, Id(10))
+                .into_iter()
+                .map(|c| (c.name, c.depth))
+                .collect()
+        };
+
+        // memes onto general: memes goes first.
+        let moves = move_channel(&s, Id(10), Id(22), general);
+        apply(&mut s, moves);
+        assert_eq!(names(&s)[0].0, "memes");
+        assert_eq!(names(&s)[1].0, "general");
+
+        // memes onto the category: into it, first.
+        let moves = move_channel(&s, Id(10), Id(22), Id(20));
+        assert_eq!(
+            moves.iter().find(|p| p.id == Id(22)).unwrap().parent_id,
+            Some(Some(Id(20)))
+        );
+        apply(&mut s, moves);
+        assert_eq!(
+            names(&s),
+            [
+                ("general".to_owned(), 0),
+                ("Voice".to_owned(), 0),
+                ("memes".to_owned(), 1),
+                ("Lounge".to_owned(), 1)
+            ]
+        );
+
+        // Moving down inside the category lands after the target.
+        let moves = move_channel(&s, Id(10), Id(22), Id(21));
+        apply(&mut s, moves);
+        assert_eq!(names(&s)[2].0, "Lounge");
+        assert_eq!(names(&s)[3].0, "memes");
+
+        // The category onto general: it goes first, children follow it.
+        let moves = move_channel(&s, Id(10), Id(20), general);
+        apply(&mut s, moves);
+        assert_eq!(names(&s)[0].0, "Voice");
+        assert_eq!(names(&s)[3].0, "general");
+
+        assert!(move_channel(&s, Id(10), Id(22), Id(22)).is_empty());
+
+        // One step up and down among siblings.
+        let moves = step_channel(&s, Id(10), Id(22), -1);
+        apply(&mut s, moves);
+        assert_eq!(names(&s)[1].0, "memes");
+        assert!(
+            step_channel(&s, Id(10), Id(22), -1).is_empty(),
+            "already first"
+        );
+        let moves = step_channel(&s, Id(10), Id(20), 1);
+        apply(&mut s, moves);
+        assert_eq!(
+            names(&s)[0].0,
+            "general",
+            "the category moved below general"
+        );
+        assert_eq!(names(&s)[1].0, "Voice");
     }
 
     #[test]
