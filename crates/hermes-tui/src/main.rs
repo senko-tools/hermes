@@ -99,6 +99,11 @@ fn main() -> ExitCode {
             DisableBracketedPaste
         );
         ratatui::restore();
+        // Leave voice properly, so others do not see you until the connection times out.
+        if app.core.voice_channel().is_some() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), app.core.leave_voice())
+                .await;
+        }
         result
     });
     match result {

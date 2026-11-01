@@ -31,12 +31,14 @@ pub enum Command {
     Offline,
     Online,
     Help,
+    /// Show the last status messages.
+    Messages,
     Quit,
 }
 
 pub const HELP: &str = ":join <channel>  :dm <user>  :voice [channel]  :leave  :mute  :deafen  :status <s>  :upload <path>  :open <n>  \
 :invite  :instance add <link|host>  :instance remove  :login  :logout  :set <key> <value>  \
-:offline  :online  :retry  :quit";
+:offline  :online  :retry  :messages  :quit";
 
 pub fn parse(line: &str) -> Result<Command, String> {
     let line = line.trim();
@@ -96,6 +98,7 @@ pub fn parse(line: &str) -> Result<Command, String> {
         "offline" => Command::Offline,
         "online" => Command::Online,
         "help" | "h" => Command::Help,
+        "messages" | "log" => Command::Messages,
         "quit" | "q" | "qa" => Command::Quit,
         "" => return Err(String::new()),
         other => return Err(format!("unknown command :{other} (:help lists them)")),

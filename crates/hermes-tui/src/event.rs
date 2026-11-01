@@ -40,7 +40,7 @@ pub async fn run(
                 }
             }
             Some(msg) = tasks.recv() => app.on_task(msg),
-            _ = tick.tick() => {}
+            _ = tick.tick() => app.on_tick(),
         }
         if app.quit {
             return Ok(());

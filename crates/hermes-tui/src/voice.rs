@@ -2,12 +2,19 @@
 //! people in each room in the sidebar, incoming calls and the voice part of the status line.
 //! There is no push-to-talk (section 16.3): voice activity and toggle mute only.
 
+use std::time::{Duration, Instant};
+
+use hermes_client_core::audio::Sound;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{Core, InstanceId, VoiceStatus, view};
 
-use crate::app::{App, Focus, SidebarItem, TaskMsg};
+use crate::app::{App, Focus, Popup, SidebarItem, TaskMsg};
+
+/// An incoming call rings for at most this long, the sound every `RING_EVERY`.
+const RING_FOR: Duration = Duration::from_secs(30);
+const RING_EVERY: Duration = Duration::from_secs(2);
 
 /// Channels with a voice room.
 pub fn has_room(kind: ChannelKind) -> bool {
@@ -45,6 +52,15 @@ pub fn voice_users(
         .collect()
 }
 
+/// The voice part of the status line: `voice: Lounge 38ms m`, `voice: joining Lounge…`; `None`
+/// while not in voice.
+pub fn status_line(app: &App) -> Option<String> {
+    if let Some(name) = &app.joining {
+        return Some(format!("voice: joining {name}…"));
+    }
+    status_text(&app.core)
+}
+
 /// `voice: Lounge 38ms m d`, `voice: Lounge connecting…`; `None` while not in voice.
 pub fn status_text(core: &Core) -> Option<String> {
     let (inst, channel) = core.voice_channel()?;
@@ -68,6 +84,69 @@ pub fn status_text(core: &Core) -> Option<String> {
         text.push_str(" m");
     }
     Some(text)
+}
+
+/// Whether `J` would join something now: the selected sidebar entry (focus there) or the open
+/// channel has a voice room.
+pub fn room_here(app: &App) -> bool {
+    if app.focus == Focus::Sidebar {
+        return match app.sidebar.get(app.sidebar_sel) {
+            Some(SidebarItem::Channel { kind, .. }) => has_room(*kind),
+            Some(SidebarItem::VoiceUser { .. }) => true,
+            _ => false,
+        };
+    }
+    app.current.as_ref().is_some_and(|(inst, channel)| {
+        app.core
+            .store()
+            .instance(inst)
+            .and_then(|s| s.channel(*channel))
+            .is_some_and(|c| has_room(c.kind))
+    })
+}
+
+/// The bottom line of a voice channel's or DM's message pane: who is in the room and the keys.
+pub fn room_footer(app: &App, inst: &str, channel: Id) -> Option<String> {
+    let store = app.core.store();
+    let s = store.instance(inst)?;
+    if !has_room(s.channel(channel)?.kind) {
+        return None;
+    }
+    let mut people: Vec<_> = s
+        .voice_states
+        .values()
+        .filter(|v| v.channel_id == channel)
+        .collect();
+    people.sort_by_key(|v| (v.joined_at, v.user_id));
+    let space = s.space_of(channel);
+    let names: Vec<String> = people
+        .iter()
+        .map(|v| s.display_name(space, v.user_id))
+        .collect();
+    let k = |a| app.keymap.describe(a);
+    use crate::keymap::Action;
+    let here = app
+        .core
+        .voice_channel()
+        .as_ref()
+        .map(|(i, c)| (i.as_str(), *c))
+        == Some((inst, channel));
+    let keys = if here {
+        format!(
+            "{}: mute  {}: deafen  {}: leave",
+            k(Action::ToggleMute),
+            k(Action::ToggleDeafen),
+            k(Action::LeaveVoice)
+        )
+    } else {
+        format!("{}: join voice", k(Action::JoinVoice))
+    };
+    let who = if names.is_empty() {
+        "nobody in voice".to_owned()
+    } else {
+        format!("in voice: {}", names.join(", "))
+    };
+    Some(format!(" {who} · {keys} "))
 }
 
 impl App {
@@ -111,8 +190,10 @@ impl App {
             .as_ref()
             .is_some_and(|(i, c, _)| *i == inst && *c == channel)
         {
-            self.ringing = None;
-            self.core.stop_sounds();
+            self.dismiss_call();
+            if matches!(self.popup, Some(Popup::Call { .. })) {
+                self.popup = None;
+            }
         }
         let name = {
             let store = self.core.store();
@@ -122,15 +203,74 @@ impl App {
                 .unwrap_or_default()
         };
         self.info(format!("joining {name}…"));
+        self.joining = Some(name.clone());
         let core = self.core.clone();
         let tasks = self.tasks.clone();
         tokio::spawn(async move {
-            let msg = match core.join_or_call(&inst, channel).await {
-                Ok(()) => TaskMsg::Info(format!("joined voice: {name}")),
-                Err(e) => TaskMsg::Error(format!("could not join voice: {e}")),
-            };
-            let _ = tasks.send(msg);
+            let result = core
+                .join_or_call(&inst, channel)
+                .await
+                .map(|()| name)
+                .map_err(|e| e.to_string());
+            let _ = tasks.send(TaskMsg::VoiceJoined(result));
         });
+    }
+
+    /// A join finished. A failure is shown in a popup so it cannot be missed.
+    pub fn voice_joined(&mut self, result: Result<String, String>) {
+        let name = self.joining.take().unwrap_or_default();
+        match result {
+            Ok(room) => {
+                self.info(format!(
+                    "in voice: {room} ({}: mute, {}: deafen, {}: leave)",
+                    self.keymap.describe(crate::keymap::Action::ToggleMute),
+                    self.keymap.describe(crate::keymap::Action::ToggleDeafen),
+                    self.keymap.describe(crate::keymap::Action::LeaveVoice)
+                ));
+                self.rebuild_sidebar();
+            }
+            Err(err) => {
+                self.error(format!("could not join voice {name}: {err}"));
+                self.popup = Some(Popup::Notice {
+                    title: "voice".into(),
+                    text: format!("Could not join {name}:\n{err}"),
+                });
+            }
+        }
+    }
+
+    pub fn answer_call(&mut self, inst: InstanceId, channel: Id) {
+        self.dismiss_call();
+        self.open(inst.clone(), channel);
+        self.focus = Focus::Messages;
+        self.join_room(inst, channel);
+    }
+
+    /// Stops the ringing (the popup is closed by the caller).
+    pub fn dismiss_call(&mut self) {
+        if self.ringing.take().is_some() {
+            self.core.stop_sounds();
+        }
+        self.ring_times = None;
+    }
+
+    /// Every 250 ms: repeats the ring sound while a call rings, for at most 30 s.
+    pub fn on_tick(&mut self) {
+        let Some((since, last)) = self.ring_times else {
+            return;
+        };
+        if since.elapsed() >= RING_FOR {
+            if matches!(self.popup, Some(Popup::Call { .. })) {
+                self.popup = None;
+            }
+            if let Some((_, _, name)) = self.ringing.clone() {
+                self.info(format!("missed call from {name}"));
+            }
+            self.dismiss_call();
+        } else if last.elapsed() >= RING_EVERY {
+            self.core.play_sound(Sound::Ring);
+            self.ring_times = Some((since, Instant::now()));
+        }
     }
 
     pub fn leave_voice(&mut self) {
@@ -182,9 +322,10 @@ impl App {
     pub fn voice_command(&mut self, name: &str) {
         if name.trim().is_empty() {
             if let Some((inst, channel, _)) = self.ringing.clone() {
-                self.open(inst.clone(), channel);
-                self.focus = Focus::Messages;
-                return self.join_room(inst, channel);
+                if matches!(self.popup, Some(Popup::Call { .. })) {
+                    self.popup = None;
+                }
+                return self.answer_call(inst, channel);
             }
             self.focus = Focus::Messages;
             return self.join_selected();
@@ -216,11 +357,17 @@ impl App {
             .store()
             .instance(&inst)
             .map_or_else(|| "someone".into(), |s| s.display_name(None, caller));
-        // Terminal bell, like notifications.
-        print!("\x07");
-        self.info(format!(
-            "{name} is calling: :voice to answer (or J on the DM)"
-        ));
+        self.info(format!("{name} is calling"));
+        self.core.play_sound(Sound::Ring);
+        self.ring_times = Some((Instant::now(), Instant::now()));
+        // Do not cover a form or a question; the status line and `:voice` still work then.
+        if self.popup.is_none() || matches!(self.popup, Some(Popup::Call { .. })) {
+            self.popup = Some(Popup::Call {
+                inst: inst.clone(),
+                channel,
+                name: name.clone(),
+            });
+        }
         self.ringing = Some((inst, channel, name));
     }
 
@@ -230,7 +377,10 @@ impl App {
             && *c == channel
         {
             let text = format!("{name} stopped calling");
-            self.ringing = None;
+            self.dismiss_call();
+            if matches!(self.popup, Some(Popup::Call { channel: c, .. }) if c == channel) {
+                self.popup = None;
+            }
             self.info(text);
         }
     }

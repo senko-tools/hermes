@@ -1,7 +1,7 @@
 //! TUI state: mode, focus, selection, input, popups, and what every key does (PLAN.md section
 //! 16.2). Network actions run as tasks and report back through [`TaskMsg`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -136,6 +136,19 @@ pub enum Popup {
     },
     Form(Form),
     Help,
+    /// Something that must not be missed (a failed voice join); any key closes it.
+    Notice {
+        title: String,
+        text: String,
+    },
+    /// Someone is calling: `y` joins, `n` dismisses.
+    Call {
+        inst: InstanceId,
+        channel: Id,
+        name: String,
+    },
+    /// The last status messages (`:messages`).
+    Log,
 }
 
 /// Results of background tasks.
@@ -143,6 +156,8 @@ pub enum Popup {
 pub enum TaskMsg {
     Info(String),
     Error(String),
+    /// A voice join finished: the room's name, or the error.
+    VoiceJoined(Result<String, String>),
     Probed {
         probe: Box<Probe>,
         invite: Option<String>,
@@ -156,6 +171,9 @@ pub enum TaskMsg {
         channel: Id,
     },
 }
+
+/// Status messages kept for `:messages`.
+pub const LOG_LEN: usize = 100;
 
 pub struct App {
     pub core: Core,
@@ -184,6 +202,12 @@ pub struct App {
     pub page: usize,
     /// A ringing incoming call: instance, DM, caller name.
     pub ringing: Option<(InstanceId, Id, String)>,
+    /// When the ringing started and when the ring sound was last played.
+    pub ring_times: Option<(Instant, Instant)>,
+    /// A voice join in progress: the room's name.
+    pub joining: Option<String>,
+    /// Earlier status messages, newest last (`:messages`).
+    pub log: VecDeque<(String, bool, Instant)>,
 }
 
 impl App {
@@ -213,6 +237,9 @@ impl App {
             quit: false,
             page: 10,
             ringing: None,
+            ring_times: None,
+            joining: None,
+            log: VecDeque::new(),
         };
         if let Some(w) = warnings.first() {
             app.error(w.clone());
@@ -225,11 +252,20 @@ impl App {
     }
 
     pub fn info(&mut self, text: String) {
+        self.remember(&text, false);
         self.status = Some((text, false, Instant::now()));
     }
 
     pub fn error(&mut self, text: String) {
+        self.remember(&text, true);
         self.status = Some((text, true, Instant::now()));
+    }
+
+    fn remember(&mut self, text: &str, error: bool) {
+        if self.log.len() == LOG_LEN {
+            self.log.pop_front();
+        }
+        self.log.push_back((text.to_owned(), error, Instant::now()));
     }
 
     // ---- sidebar --------------------------------------------------------------------------
@@ -564,6 +600,7 @@ impl App {
         match msg {
             TaskMsg::Info(text) => self.info(text),
             TaskMsg::Error(text) => self.error(text),
+            TaskMsg::VoiceJoined(result) => self.voice_joined(result),
             TaskMsg::Probed { probe, invite } => match probe.cert {
                 CertStatus::Trusted | CertStatus::Pinned => self.login_form(probe.host, invite),
                 CertStatus::Unknown => {
@@ -706,6 +743,11 @@ impl App {
             }
             Action::Open => match self.focus {
                 Focus::Sidebar => match self.sidebar.get(self.sidebar_sel).cloned() {
+                    // Someone in a room: open the room's chat.
+                    Some(SidebarItem::VoiceUser { inst, channel, .. }) => {
+                        self.open(inst, channel);
+                        self.focus = Focus::Messages;
+                    }
                     Some(SidebarItem::Channel {
                         inst,
                         channel,
@@ -797,13 +839,19 @@ impl App {
                 self.command.clear();
                 self.mode = Mode::Command;
             }
-            Action::Quit if self.core.voice_channel().is_some() => {
+            Action::Help => self.popup = Some(Popup::Help),
+            // `q` always asks (`:quit` does not).
+            Action::Quit => {
+                let text = if self.core.voice_channel().is_some() {
+                    "You are in voice. Leave and quit Hermes? (y/n)"
+                } else {
+                    "Quit Hermes? (y/n)"
+                };
                 self.popup = Some(Popup::Confirm {
-                    text: "You are in voice. Quit anyway? (y/n)".into(),
+                    text: text.into(),
                     action: ConfirmAction::Quit,
                 });
             }
-            Action::Quit => self.quit = true,
         }
     }
 
@@ -1115,6 +1163,7 @@ impl App {
         match cmd {
             Command::Quit => self.quit = true,
             Command::Help => self.popup = Some(Popup::Help),
+            Command::Messages => self.popup = Some(Popup::Log),
             Command::Join(name) => self.join_by_name(&name),
             Command::Dm(user) => match self.selected_instance() {
                 Some(inst) => self.open_dm(&inst, &user),
@@ -1420,7 +1469,19 @@ impl App {
         };
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match popup {
-            Popup::Help => self.popup = None,
+            Popup::Help | Popup::Notice { .. } | Popup::Log => self.popup = None,
+            Popup::Call { inst, channel, .. } => match event.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    let (inst, channel) = (inst.clone(), *channel);
+                    self.popup = None;
+                    self.answer_call(inst, channel);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.popup = None;
+                    self.dismiss_call();
+                }
+                _ => {}
+            },
             Popup::Confirm { action, .. } => match event.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
                     let action = action.clone();

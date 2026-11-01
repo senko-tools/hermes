@@ -203,11 +203,19 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         })
         .expect("a voice channel");
     assert_eq!(app.focus, Focus::Sidebar);
+    assert!(crate::voice::room_here(&app));
+    assert!(screen(&mut app).contains("J:join voice"));
     app.on_key(key('J'));
+    assert!(
+        crate::voice::status_line(&app)
+            .unwrap()
+            .starts_with("voice: joining ")
+    );
     pump(&mut app, &mut events, &mut tasks, "in voice", |a| {
-        a.core.voice_channel().is_some() && !voice_users(a).is_empty()
+        a.core.voice_channel().is_some() && !voice_users(a).is_empty() && a.joining.is_none()
     })
     .await;
+    assert!(app.status.as_ref().unwrap().0.starts_with("in voice: "));
     assert_eq!(voice_users(&app), [("alice".to_owned(), false, false)]);
     pump(&mut app, &mut events, &mut tasks, "connected", |a| {
         crate::voice::status_text(&a.core).is_some_and(|t| t.ends_with("ms"))
@@ -248,11 +256,17 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
     app.on_key(key('m'));
     assert!(!app.core.self_mute() && !app.core.self_deaf());
 
-    // q asks first while in voice.
+    // q asks first (in voice it says so).
     app.on_key(key('q'));
-    assert!(matches!(app.popup, Some(Popup::Confirm { .. })));
+    assert!(matches!(&app.popup, Some(Popup::Confirm { text, .. }) if text.contains("in voice")));
     assert!(!app.quit);
     app.on_key(key('n'));
+    assert!(app.popup.is_none());
+
+    // ? opens the help, any key closes it.
+    app.on_key(key('?'));
+    assert!(matches!(app.popup, Some(Popup::Help)));
+    app.on_key(key('x'));
     assert!(app.popup.is_none());
 
     // L leaves.
@@ -262,6 +276,30 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
     })
     .await;
     assert!(crate::voice::status_text(&app.core).is_none());
+
+    // Out of voice, q still asks.
+    app.on_key(key('q'));
+    assert!(
+        matches!(&app.popup, Some(Popup::Confirm { text, .. }) if text == "Quit Hermes? (y/n)")
+    );
+    app.on_key(key('n'));
+    assert!(!app.quit);
+
+    // A failed join cannot be missed: a popup, and it stays in :messages.
+    app.joining = Some("Nowhere".into());
+    app.voice_joined(Err("voice is disabled on this server".into()));
+    assert!(matches!(&app.popup, Some(Popup::Notice { text, .. }) if text.contains("disabled")));
+    app.on_key(key(' '));
+    assert!(app.popup.is_none());
+    assert!(app.joining.is_none());
+    assert!(
+        app.log
+            .iter()
+            .any(|(t, error, _)| *error && t.contains("disabled"))
+    );
+    app.run(Command::Messages);
+    assert!(screen(&mut app).contains("voice is disabled"));
+    app.on_key(key(' '));
 
     // Bob calls alice; `:voice` answers.
     let (bob, _bob_events) = core();
@@ -294,7 +332,10 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
     })
     .await;
     assert!(app.status.as_ref().unwrap().0.contains("bob is calling"));
-    app.run(Command::Voice(String::new()));
+    assert!(matches!(&app.popup, Some(Popup::Call { name, .. }) if name == "bob"));
+    assert!(screen(&mut app).contains("bob is calling you"));
+    app.on_key(key('y'));
+    assert!(app.popup.is_none());
     pump(&mut app, &mut events, &mut tasks, "in the call", |a| {
         a.core.voice_channel() == Some((inst.clone(), dm))
     })
@@ -309,6 +350,16 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         |a| voice_users(a).len() == 2,
     )
     .await;
+    let footer = crate::voice::room_footer(&app, &inst, dm).unwrap();
+    assert!(
+        footer.contains("in voice: ") && footer.contains("L: leave"),
+        "{footer}"
+    );
+
+    // `y` at the quit question quits.
+    app.on_key(key('q'));
+    app.on_key(key('y'));
+    assert!(app.quit);
     alice_core.leave_voice().await;
     bob.leave_voice().await;
     drop(server);

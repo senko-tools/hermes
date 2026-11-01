@@ -31,6 +31,7 @@ pub enum Action {
     ToggleMembers,
     Search,
     Command,
+    Help,
     Quit,
 }
 
@@ -59,6 +60,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ToggleMembers, "toggle_members", "u"),
     (Action::Search, "search", "/"),
     (Action::Command, "command", ":"),
+    (Action::Help, "help", "?"),
     (Action::Quit, "quit", "q"),
 ];
 
