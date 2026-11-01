@@ -12,23 +12,22 @@ use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::{Core, InstanceId};
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
-use iced::{Alignment, Border, Color, Element, Fill, Length};
+use iced::{Alignment, Border, Color, Element, Fill};
 
 use self::collapsed::Node;
 use self::menu::Target;
-use self::tree::{Badge, Row};
+use self::tree::Row;
 use crate::buffer::channel::message::{Images, Img};
 use crate::drag::Item;
 use crate::font::Fonts;
 use crate::message::Message;
-use crate::theme::{Theme, style};
+use crate::theme::Theme;
+use crate::theme::style::{self, RowState};
 use crate::voice::{JoinOn, VoiceMsg};
 use crate::widget::icon::{self, icon};
 use crate::widget::{avatar, caption, icon_button, label, strong, tip, tip_at};
 
-/// Indent per tree level.
-const INDENT: f32 = 10.0;
-/// Width of the chevron / channel icon column, so names line up across row kinds.
+/// Size of row icons.
 const LEAD: f32 = style::ROW_ICON;
 
 #[allow(clippy::too_many_arguments)]
@@ -57,17 +56,20 @@ pub fn view<'a>(
     }
     list = list.push(Space::new().height(style::GAP_S));
     list = list.push(
-        button(
+        row_button(
             row![
-                icon(icon::PLUS, 14.0),
-                caption("Add an instance", fonts).width(Fill)
+                slot(icon(icon::PLUS, LEAD).color(theme.icons.default.0)),
+                label("Add an instance", fonts)
+                    .color(theme.text.secondary.0)
+                    .width(Fill)
             ]
             .spacing(style::GAP_S)
             .align_y(Alignment::Center),
+            0,
+            RowState::Plain,
+            false,
+            theme,
         )
-        .padding(style::ROW_PAD)
-        .width(Fill)
-        .style(move |_, s| style::ghost(theme, s, false))
         .on_press(Message::OpenAddInstance),
     );
 
@@ -251,10 +253,8 @@ fn row_view<'a>(
             status,
             collapsed,
         } => {
-            let color = status_color(status, theme);
             let mut content = row![
-                chevron(*collapsed, theme),
-                icon(icon::SERVER, 14.0).color(color),
+                slot(icon(icon::SERVER, LEAD).color(status_color(status, theme))),
                 strong(inst.clone(), fonts)
                     .wrapping(text::Wrapping::None)
                     .width(Fill),
@@ -262,9 +262,11 @@ fn row_view<'a>(
             .spacing(style::GAP_S)
             .align_y(Alignment::Center);
             let logged_out = *status == ConnStatus::LoggedOut;
-            if logged_out {
-                content = content.push(caption("Sign in", fonts).color(theme.text.link.0));
-            }
+            content = if logged_out {
+                content.push(caption("Sign in", fonts).color(theme.text.link.0))
+            } else {
+                content.push(chevron(*collapsed, theme))
+            };
             let on_press = if logged_out {
                 Message::SignIn(inst.clone())
             } else {
@@ -272,8 +274,8 @@ fn row_view<'a>(
             };
             item(
                 content,
-                0.0,
-                false,
+                0,
+                RowState::Plain,
                 theme,
                 on_press,
                 Some(Target::Instance(inst.clone())),
@@ -286,38 +288,45 @@ fn row_view<'a>(
             name,
             collapsed,
             badge,
-        } => column![
-            Space::new().height(4),
-            item(
-                row![
-                    avatar::space_icon(name, 22.0, fonts),
-                    text(name.clone())
-                        .font(fonts.bold())
-                        .size(fonts.title())
-                        .wrapping(text::Wrapping::None)
-                        .width(Fill),
-                    if *collapsed {
-                        badge_view(*badge, fonts, theme)
-                    } else {
-                        Space::new().into()
-                    },
-                    // No tooltip: it would cover the menu this opens.
-                    button(icon(icon::MORE, 14.0))
-                        .padding([3.0, style::GAP_XS])
-                        .style(move |_, s| style::ghost(theme, s, false))
-                        .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
-                ]
-                .spacing(style::GAP_S)
-                .align_y(Alignment::Center),
-                INDENT,
-                false,
-                theme,
-                Message::Toggle(Node::Space(inst.clone(), *id)),
-                Some(Target::Space(inst.clone(), *id)),
-                menu
-            ),
-        ]
-        .into(),
+        } => {
+            let state = if *collapsed {
+                RowState::of(false, badge.unread, badge.mentions > 0, false)
+            } else {
+                RowState::Plain
+            };
+            let content = row![
+                slot(avatar::space_icon(name, SLOT, fonts)),
+                crate::widget::title(name.clone(), fonts)
+                    .color(theme.accent.highlight.0)
+                    .wrapping(text::Wrapping::None)
+                    .width(Fill),
+                if *collapsed {
+                    mention_count(badge.mentions, fonts, theme)
+                } else {
+                    Space::new().into()
+                },
+                // No tooltip: it would cover the menu this opens.
+                button(icon(icon::MORE, LEAD))
+                    .padding(2)
+                    .style(move |_, s| style::ghost(theme, s, false))
+                    .on_press(Message::OpenMenu(Target::Space(inst.clone(), *id))),
+            ]
+            .spacing(style::GAP_S)
+            .align_y(Alignment::Center);
+            column![
+                Space::new().height(style::GAP_XS),
+                item(
+                    content,
+                    1,
+                    state,
+                    theme,
+                    Message::Toggle(Node::Space(inst.clone(), *id)),
+                    Some(Target::Space(inst.clone(), *id)),
+                    menu,
+                ),
+            ]
+            .into()
+        }
         Row::Category {
             inst,
             id,
@@ -325,29 +334,36 @@ fn row_view<'a>(
             collapsed,
             badge,
             ..
-        } => column![
-            Space::new().height(6),
-            item(
-                row![
-                    chevron(*collapsed, theme),
-                    section_title(name, fonts, theme),
-                    if *collapsed {
-                        badge_view(*badge, fonts, theme)
-                    } else {
-                        Space::new().into()
-                    },
-                ]
-                .spacing(style::GAP_S)
-                .align_y(Alignment::Center),
-                INDENT * 2.0,
-                false,
-                theme,
-                Message::Toggle(Node::Category(inst.clone(), *id)),
-                Some(Target::Channel(inst.clone(), *id)),
-                menu
-            ),
-        ]
-        .into(),
+        } => {
+            let state = if *collapsed {
+                RowState::of(false, badge.unread, badge.mentions > 0, false)
+            } else {
+                RowState::Plain
+            };
+            column![
+                Space::new().height(style::GAP_S),
+                item(
+                    row![
+                        slot(chevron(*collapsed, theme)),
+                        section_title(name, fonts, theme),
+                        if *collapsed {
+                            mention_count(badge.mentions, fonts, theme)
+                        } else {
+                            Space::new().into()
+                        },
+                    ]
+                    .spacing(style::GAP_S)
+                    .align_y(Alignment::Center),
+                    2,
+                    state,
+                    theme,
+                    Message::Toggle(Node::Category(inst.clone(), *id)),
+                    Some(Target::Channel(inst.clone(), *id)),
+                    menu,
+                ),
+            ]
+            .into()
+        }
         Row::Channel {
             inst,
             id,
@@ -357,6 +373,7 @@ fn row_view<'a>(
             badge,
             selected,
             muted,
+            connected,
             ..
         } => {
             let glyph = if *kind == ChannelKind::Voice {
@@ -364,48 +381,32 @@ fn row_view<'a>(
             } else {
                 icon::HASH
             };
-            let unread = badge.unread && !*muted;
-            let name = label(name.clone(), fonts).wrapping(text::Wrapping::None);
-            let (name, icon_color) = if *selected {
-                (
-                    name.font(fonts.medium()).color(theme.text.primary.0),
-                    theme.text.secondary.0,
-                )
-            } else if unread {
-                (
-                    name.font(fonts.bold()).color(theme.text.primary.0),
-                    theme.text.secondary.0,
-                )
-            } else if *muted {
-                (
-                    name.color(theme.text.tertiary.0.scale_alpha(0.8)),
-                    theme.text.tertiary.0.scale_alpha(0.8),
-                )
+            let state = if *muted {
+                RowState::of(*selected, false, false, *connected)
             } else {
-                (name.color(theme.text.secondary.0), theme.text.tertiary.0)
+                RowState::of(*selected, badge.unread, badge.mentions > 0, *connected)
             };
             let content = row![
-                icon(glyph, LEAD).color(icon_color),
-                name.width(Fill),
+                slot(icon(glyph, LEAD).color(glyph_color(state, *muted, theme))),
+                name_text(name, state, *muted, fonts, theme),
                 mention_count(badge.mentions, fonts, theme),
             ]
             .spacing(style::GAP_S)
             .align_y(Alignment::Center);
-            let indent = INDENT * if *nested { 3.0 } else { 2.0 };
-            let row = if *kind == ChannelKind::Voice {
-                voice_item(content, indent, *selected, theme, inst, *id, join_on, menu)
+            let level = if *nested { 3 } else { 2 };
+            if *kind == ChannelKind::Voice {
+                voice_item(content, level, state, theme, inst, *id, join_on, menu)
             } else {
                 item(
                     content,
-                    indent,
-                    *selected,
+                    level,
+                    state,
                     theme,
                     Message::Select(inst.clone(), *id),
                     Some(Target::Channel(inst.clone(), *id)),
                     menu,
                 )
-            };
-            with_unread_pill(row, unread && !*selected, theme)
+            }
         }
         Row::VoiceUser {
             inst,
@@ -415,6 +416,7 @@ fn row_view<'a>(
             deafened,
             speaking,
             me,
+            nested,
             ..
         } => {
             let ring = if *speaking {
@@ -422,19 +424,19 @@ fn row_view<'a>(
             } else {
                 Color::TRANSPARENT
             };
-            let face = container(avatar::view(name, None, 20.0, fonts))
+            let face = container(avatar::view(name, None, SLOT - 4.0, fonts))
                 .padding(2)
                 .style(move |_| container::Style {
                     border: Border {
                         color: ring,
                         width: 2.0,
-                        radius: 12.0.into(),
+                        radius: (SLOT / 2.0).into(),
                     },
                     ..container::Style::default()
                 });
             let mut content = row![
-                face,
-                caption(name.clone(), fonts)
+                slot(face),
+                label(name.clone(), fonts)
                     .color(if *speaking {
                         theme.text.primary.0
                     } else {
@@ -450,12 +452,10 @@ fn row_view<'a>(
             } else if *muted {
                 content = content.push(icon(icon::MIC_OFF, 14.0).color(theme.voice.muted.0));
             }
-            let row = container(content).padding(iced::Padding {
-                top: 1.0,
-                bottom: 1.0,
-                left: 8.0 + INDENT * 2.0 + LEAD + style::GAP_S,
-                right: 8.0,
-            });
+            let level = if *nested { 4 } else { 3 };
+            let row = container(row![Space::new().width(indent(level)), content])
+                .padding(style::ROW_PAD)
+                .center_y(style::VOICE_ROW_H);
             if *me {
                 row.into()
             } else {
@@ -469,32 +469,37 @@ fn row_view<'a>(
             collapsed,
             badge,
         } => {
+            let state = if *collapsed {
+                RowState::of(false, badge.unread, badge.mentions > 0, false)
+            } else {
+                RowState::Plain
+            };
             let header = item(
                 row![
-                    chevron(*collapsed, theme),
+                    slot(chevron(*collapsed, theme)),
                     section_title("Direct messages", fonts, theme),
                     if *collapsed {
-                        badge_view(*badge, fonts, theme)
+                        mention_count(badge.mentions, fonts, theme)
                     } else {
                         Space::new().into()
                     },
                 ]
                 .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
-                INDENT,
-                false,
+                1,
+                state,
                 theme,
                 Message::Toggle(Node::Dms(inst.clone())),
                 None,
                 menu,
             );
             column![
-                Space::new().height(8),
+                Space::new().height(style::GAP_S),
                 row![
                     header,
                     tip(
-                        button(icon(icon::PLUS, 14.0))
-                            .padding([3.0, style::GAP_XS])
+                        button(icon(icon::PLUS, LEAD))
+                            .padding(2)
                             .style(|_, s| style::ghost(theme, s, false))
                             .on_press(Message::NewDm(inst.clone())),
                         "New direct message or group",
@@ -514,49 +519,84 @@ fn row_view<'a>(
             group,
             badge,
             selected,
+            connected,
         } => {
-            let unread = badge.unread;
-            let label_text = label(name.clone(), fonts).wrapping(text::Wrapping::None);
-            let label_text = if unread && !*selected {
-                label_text.font(fonts.bold()).color(theme.text.primary.0)
-            } else if *selected {
-                label_text.font(fonts.medium()).color(theme.text.primary.0)
-            } else {
-                label_text.color(theme.text.secondary.0)
-            };
+            let state = RowState::of(*selected, badge.unread, badge.mentions > 0, *connected);
             let face: Element<'a, Message> = if *group {
-                container(icon(icon::USERS, 13.0).color(theme.text.secondary.0))
-                    .center_x(24)
-                    .center_y(24)
+                container(icon(icon::USERS, 12.0).color(theme.text.secondary.0))
+                    .center_x(SLOT)
+                    .center_y(SLOT)
                     .style(move |_| container::Style {
                         background: Some(theme.buttons.secondary.background.0.into()),
                         border: Border {
-                            radius: 12.0.into(),
+                            radius: (SLOT / 2.0).into(),
                             ..Border::default()
                         },
                         ..container::Style::default()
                     })
                     .into()
             } else {
-                avatar::view(name, None, 24.0, fonts)
+                avatar::view(name, None, SLOT, fonts)
             };
-            let row = item(
+            item(
                 row![
-                    face,
-                    label_text.width(Fill),
+                    slot(face),
+                    name_text(name, state, false, fonts, theme),
                     mention_count(badge.mentions, fonts, theme),
                 ]
                 .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
-                INDENT * 2.0,
-                *selected,
+                2,
+                state,
                 theme,
                 Message::Select(inst.clone(), *id),
                 Some(Target::Channel(inst.clone(), *id)),
                 menu,
-            );
-            with_unread_pill(row, unread && !*selected, theme)
+            )
         }
+    }
+}
+
+/// Every row's leading glyph (chevron, icon, small avatar) sits in a slot this wide, so the names
+/// after them line up.
+const SLOT: f32 = 20.0;
+
+/// Left padding of a row at tree `level`.
+fn indent(level: u8) -> f32 {
+    f32::from(level) * style::INDENT
+}
+
+fn slot<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).center_x(SLOT).into()
+}
+
+/// A channel or DM name: bold when it has news, brighter when it is open.
+fn name_text<'a>(
+    name: &str,
+    state: RowState,
+    muted: bool,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let name = label(name.to_owned(), fonts).wrapping(text::Wrapping::None);
+    match state {
+        RowState::Unread | RowState::Mention => name.font(fonts.bold()).color(theme.text.primary.0),
+        RowState::Selected | RowState::Connected => {
+            name.font(fonts.medium()).color(theme.text.primary.0)
+        }
+        RowState::Plain if muted => name.color(theme.text.tertiary.0.scale_alpha(0.8)),
+        RowState::Plain => name.color(theme.text.secondary.0),
+    }
+    .width(Fill)
+    .into()
+}
+
+/// The channel icon takes the color of the row's state bar.
+fn glyph_color(state: RowState, muted: bool, theme: &Theme) -> Color {
+    match style::state_bar(theme, state) {
+        Some(color) => color.scale_alpha(1.0 / color.a.max(0.01)),
+        None if muted => theme.text.tertiary.0.scale_alpha(0.8),
+        None => theme.icons.default.0,
     }
 }
 
@@ -568,24 +608,32 @@ fn section_title<'a>(name: &str, fonts: &Fonts, theme: &'a Theme) -> Element<'a,
         .into()
 }
 
-/// A row with a short bar on its left edge, marking unread messages.
-fn with_unread_pill<'a>(
-    row: Element<'a, Message>,
-    unread: bool,
+/// `row` with the bar of its state along its left edge.
+fn with_state_bar<'a>(
+    row: impl Into<Element<'a, Message>>,
+    state: RowState,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    if !unread {
-        return row;
+    let Some(color) = style::state_bar(theme, state) else {
+        return row.into();
+    };
+    let width = f32::from(theme.shape.indicator_width);
+    if width == 0.0 {
+        return row.into();
     }
-    let pill = container(Space::new().width(3).height(8)).style(move |_| container::Style {
-        background: Some(theme.general.unread_indicator.0.into()),
+    let bar = container(Space::new().width(width).height(Fill)).style(move |_| container::Style {
+        background: Some(color.into()),
         border: Border {
-            radius: 2.0.into(),
+            radius: if theme.shape.radius > 0 {
+                (width / 2.0).into()
+            } else {
+                0.0.into()
+            },
             ..Border::default()
         },
         ..container::Style::default()
     });
-    iced::widget::stack![row, container(pill).height(Fill).align_y(Alignment::Center),].into()
+    iced::widget::stack![row.into(), bar].into()
 }
 
 /// A row that can be dragged onto another (reports the pointer entering and leaving it), with
@@ -620,37 +668,51 @@ fn draggable<'a>(
         .into()
 }
 
+/// The look of a row at tree `level`: `ROW_H` tall, its content centered.
+fn row_button<'a>(
+    content: impl Into<Element<'a, Message>>,
+    level: u8,
+    state: RowState,
+    open: bool,
+    theme: &'a Theme,
+) -> iced::widget::Button<'a, Message> {
+    button(
+        container(
+            row![Space::new().width(indent(level)), content.into()].align_y(Alignment::Center),
+        )
+        .center_y(Fill),
+    )
+    .height(style::ROW_H)
+    .padding([0.0, style::ROW_PAD.left])
+    .width(Fill)
+    .style(move |_, s| {
+        if open {
+            style::menu_open(theme)
+        } else {
+            style::sidebar_row(theme, s, state)
+        }
+    })
+}
+
 /// A clickable row; right-click opens the menu for `target`.
 fn item<'a>(
     content: impl Into<Element<'a, Message>>,
-    indent: f32,
-    selected: bool,
+    level: u8,
+    state: RowState,
     theme: &'a Theme,
     on_press: Message,
     target: Option<Target>,
     menu: Option<&Target>,
 ) -> Element<'a, Message> {
     let open = menu.is_some() && menu == target.as_ref();
-    let button = button(row![
-        Space::new().width(Length::Fixed(indent)),
-        content.into()
-    ])
-    .padding(style::ROW_PAD)
-    .width(Fill)
-    .style(move |_, s| {
-        if open {
-            style::menu_open(theme)
-        } else {
-            style::sidebar_item(theme, s, selected)
-        }
-    })
-    .on_press(on_press);
-    match target {
+    let button = row_button(content, level, state, open, theme).on_press(on_press);
+    let row: Element<'a, Message> = match target {
         Some(target) => mouse_area(button)
             .on_right_press(Message::OpenMenu(target))
             .into(),
         None => button.into(),
-    }
+    };
+    with_state_bar(row, state, theme)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -658,8 +720,8 @@ fn item<'a>(
 /// unless `voice.join_on = "single_click"`.
 fn voice_item<'a>(
     content: impl Into<Element<'a, Message>>,
-    indent: f32,
-    selected: bool,
+    level: u8,
+    state: RowState,
     theme: &'a Theme,
     inst: &InstanceId,
     channel: Id,
@@ -668,23 +730,11 @@ fn voice_item<'a>(
 ) -> Element<'a, Message> {
     let open = menu == Some(&Target::Channel(inst.clone(), channel));
     // No `on_press`: the button only draws; the mouse area takes the clicks.
-    let look = button(row![
-        Space::new().width(Length::Fixed(indent)),
-        content.into()
-    ])
-    .padding(style::ROW_PAD)
-    .width(Fill)
-    .style(move |_, s| {
-        if open {
-            style::menu_open(theme)
-        } else {
-            style::sidebar_item(theme, s, selected)
-        }
-    });
+    let look = row_button(content, level, state, open, theme);
     let area = mouse_area(look)
         .on_right_press(Message::OpenMenu(Target::Channel(inst.clone(), channel)))
         .interaction(iced::mouse::Interaction::Pointer);
-    match join_on {
+    let area = match join_on {
         JoinOn::SingleClick => area.on_press(Message::Voice(VoiceMsg::SelectAndJoin(
             inst.clone(),
             channel,
@@ -692,8 +742,8 @@ fn voice_item<'a>(
         JoinOn::DoubleClick => area
             .on_press(Message::Select(inst.clone(), channel))
             .on_double_click(Message::Voice(VoiceMsg::Join(inst.clone(), channel))),
-    }
-    .into()
+    };
+    with_state_bar(area, state, theme)
 }
 
 fn chevron<'a>(collapsed: bool, theme: &'a Theme) -> Element<'a, Message> {
@@ -706,28 +756,7 @@ fn chevron<'a>(collapsed: bool, theme: &'a Theme) -> Element<'a, Message> {
         12.0,
     )
     .color(theme.text.tertiary.0)
-    .width(LEAD)
     .into()
-}
-
-/// A collapsed node: mention count if any, else an unread dot.
-fn badge_view<'a>(badge: Badge, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-    if badge.mentions > 0 {
-        mention_count(badge.mentions, fonts, theme)
-    } else if badge.unread {
-        container(Space::new().width(6).height(6))
-            .style(move |_| container::Style {
-                background: Some(theme.general.unread_indicator.0.into()),
-                border: Border {
-                    radius: 3.0.into(),
-                    ..Border::default()
-                },
-                ..container::Style::default()
-            })
-            .into()
-    } else {
-        Space::new().into()
-    }
 }
 
 fn mention_count<'a>(count: u32, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {

@@ -45,6 +45,12 @@ pub const ROW_PAD: Padding = Padding {
     left: 8.0,
     right: 8.0,
 };
+/// Height of a sidebar, list or menu row.
+pub const ROW_H: f32 = 32.0;
+/// Height of a row listing someone in a voice channel.
+pub const VOICE_ROW_H: f32 = 28.0;
+/// One level of indentation in the sidebar tree.
+pub const INDENT: f32 = 12.0;
 /// Height of an on/off switch.
 pub const TOGGLER: f32 = 20.0;
 /// Height of the pane header and the sidebar's top bar.
@@ -374,17 +380,75 @@ pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
     filled(theme, &theme.buttons.secondary, status)
 }
 
-/// A flat row in the sidebar; `selected` keeps the highlight.
+/// A flat row in a list (settings navigation, command bar, suggestions); `selected` keeps the
+/// highlight.
 pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
-    let background = if selected {
-        Some(theme.sidebar.selected.0)
-    } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        Some(theme.surface.hover.0)
-    } else {
-        None
+    sidebar_row(
+        theme,
+        status,
+        if selected {
+            RowState::Selected
+        } else {
+            RowState::Plain
+        },
+    )
+}
+
+/// What a sidebar row is marking, as a bar on its left edge and its background (`[channel]` in
+/// the theme). When several apply, the later one wins, as in the Neko theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowState {
+    Plain,
+    Selected,
+    Unread,
+    Mention,
+    /// The voice channel or call I am in.
+    Connected,
+}
+
+impl RowState {
+    pub fn of(selected: bool, unread: bool, mentioned: bool, connected: bool) -> RowState {
+        if connected {
+            RowState::Connected
+        } else if mentioned {
+            RowState::Mention
+        } else if unread {
+            RowState::Unread
+        } else if selected {
+            RowState::Selected
+        } else {
+            RowState::Plain
+        }
+    }
+}
+
+/// The bar color of `state`, if it shows one.
+pub fn state_bar(theme: &Theme, state: RowState) -> Option<Color> {
+    let c = &theme.channel;
+    let color = match state {
+        RowState::Plain => return None,
+        RowState::Selected => c.selected_border.0,
+        RowState::Unread => c.unread_border.0,
+        RowState::Mention => c.mention_border.0,
+        RowState::Connected => c.connected_border.0,
     };
+    (color.a > 0.0).then_some(color)
+}
+
+/// A sidebar row in `state`.
+pub fn sidebar_row(theme: &Theme, status: button::Status, state: RowState) -> button::Style {
+    let c = &theme.channel;
+    let (resting, hover) = match state {
+        RowState::Plain => (Color::TRANSPARENT, theme.surface.hover.0),
+        RowState::Selected => (c.selected_bg.0, c.selected_hover.0),
+        RowState::Unread => (c.unread_bg.0, c.unread_hover.0),
+        RowState::Mention => (c.mention_bg.0, c.mention_hover.0),
+        RowState::Connected => (c.connected_bg.0, c.connected_hover.0),
+    };
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let background = if hovered { hover } else { resting };
     button::Style {
-        background: background.map(Background::Color),
+        background: (background.a > 0.0).then_some(Background::Color(background)),
         text_color: theme.text.primary.0,
         border: Border {
             radius: radius(theme).into(),

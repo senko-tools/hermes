@@ -51,6 +51,8 @@ pub enum Row {
         drag: Option<Item>,
         /// Muted: drawn dimmed.
         muted: bool,
+        /// I am in this voice channel.
+        connected: bool,
     },
     /// Someone in a voice channel (or a DM call), listed under it whether I am in voice or not.
     VoiceUser {
@@ -63,6 +65,8 @@ pub enum Row {
         speaking: bool,
         /// It is me (no volume menu).
         me: bool,
+        /// Under a channel inside a category (one level deeper).
+        nested: bool,
     },
     Dms {
         inst: InstanceId,
@@ -76,6 +80,8 @@ pub enum Row {
         group: bool,
         badge: Badge,
         selected: bool,
+        /// I am in this DM's call.
+        connected: bool,
     },
 }
 
@@ -219,11 +225,18 @@ fn space_rows(
             selected: selected == Some(c.id),
             drag: drag(c.id),
             muted: c.muted,
+            connected: my_channel(s) == Some(c.id),
         });
         if c.kind == ChannelKind::Voice {
-            voice_users(s, inst, c.id, Some(space), speaking, rows);
+            voice_users(s, inst, c.id, Some(space), c.depth == 1, speaking, rows);
         }
     }
+}
+
+/// The voice channel or DM call I am in on this instance.
+fn my_channel(s: &InstanceStore) -> Option<Id> {
+    let me = s.me_id()?;
+    s.voice_states.get(&me).map(|v| v.channel_id)
 }
 
 /// The people in the voice room of `channel`, in join order.
@@ -232,6 +245,7 @@ fn voice_users(
     inst: &InstanceId,
     channel: Id,
     space: Option<Id>,
+    nested: bool,
     speaking: &dyn Fn(&str, Id) -> bool,
     rows: &mut Vec<Row>,
 ) {
@@ -252,6 +266,7 @@ fn voice_users(
             deafened: v.self_deaf || v.server_deaf,
             speaking: speaking(inst, v.user_id),
             me: Some(v.user_id) == me,
+            nested,
         });
     }
 }
@@ -295,9 +310,10 @@ fn dm_rows(
                 mentions: dm.mentions,
             },
             selected: selected == Some(id),
+            connected: my_channel(s) == Some(id),
         });
         // People in the DM's call.
-        voice_users(s, inst, id, None, speaking, rows);
+        voice_users(s, inst, id, None, false, speaking, rows);
     }
 }
 
@@ -457,6 +473,61 @@ mod tests {
             "    voice carol muted=false deaf=true speaking"
         );
         assert!(shown.contains(&"    voice Bobby muted=true deaf=false".to_owned()));
+    }
+
+    #[test]
+    fn the_channel_i_am_in_is_connected() {
+        use hermes_client_core::proto::models::VoiceState;
+
+        let mut store = store();
+        let s = store.instances.get_mut("h").unwrap();
+        let me = s.me_id().unwrap();
+        let lounge = Id(14); // "Lounge" in the fixtures
+        s.voice_states.insert(
+            me,
+            VoiceState {
+                user_id: me,
+                channel_id: lounge,
+                self_mute: false,
+                self_deaf: false,
+                server_mute: false,
+                server_deaf: false,
+                joined_at: 9,
+            },
+        );
+        let list = rows(
+            &store,
+            &connected(),
+            &Collapsed::default(),
+            None,
+            &|_, _| false,
+        );
+        let connected: Vec<&str> = list
+            .iter()
+            .filter_map(|row| match row {
+                Row::Channel {
+                    name,
+                    connected: true,
+                    ..
+                } => Some(name.as_str()),
+                Row::Dm {
+                    name,
+                    connected: true,
+                    ..
+                } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(connected, ["Lounge"]);
+        // Lounge is inside the Games category, so its people are one level deeper.
+        assert!(list.iter().any(|row| matches!(
+            row,
+            Row::VoiceUser {
+                nested: true,
+                me: true,
+                ..
+            }
+        )));
     }
 
     #[test]
