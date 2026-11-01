@@ -54,8 +54,6 @@ pub fn overlay<'a, M: Clone + 'a>(
     items: Vec<Option<Item<M>>>,
     at: Point,
     window: Size,
-    // How far its opening animation is (0–1): the menu drops in from a little higher.
-    t: f32,
     fonts: &Fonts,
     theme: &'a Theme,
     on_close: M,
@@ -150,5 +148,5 @@ pub fn overlay<'a, M: Clone + 'a>(
     // A left click outside closes the menu; a right click passes through, so right-clicking
     // something else opens its menu instead. Clicks inside the menu never reach the catcher.
     let catcher = mouse_area(container("").width(Fill).height(Fill)).on_press(on_close);
-    stack![base, catcher, pin(opaque(menu)).x(x).y(y - 6.0 * (1.0 - t))].into()
+    stack![base, catcher, pin(opaque(menu)).x(x).y(y)].into()
 }

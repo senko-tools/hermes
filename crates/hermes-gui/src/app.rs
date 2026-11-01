@@ -72,7 +72,6 @@ pub struct App {
     pub theme_previews: Vec<(String, Result<Theme, String>)>,
     pub fonts: Fonts,
     pub status: Option<Status>,
-    pub(crate) anims: crate::anim::Anims,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -185,7 +184,6 @@ impl App {
             core,
             events,
             status: None,
-            anims: crate::anim::Anims::default(),
             add_instance: None,
             single_instance,
             collapsed,
@@ -269,28 +267,9 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        let before = self.open_overlays();
         let task = self.update_inner(message);
         self.sync_meter();
-        let now = self.open_overlays();
-        if before != now {
-            self.anims.sync(before, now, iced::time::Instant::now());
-        }
         task
-    }
-
-    /// Which animated overlays are open.
-    fn open_overlays(&self) -> crate::anim::Open {
-        crate::anim::Open {
-            menu: self.menu.is_some(),
-            dialog: self.command_bar.is_some()
-                || self.add_instance.is_some()
-                || self.form.is_some()
-                || self.new_dm.is_some()
-                || self.confirm.is_some(),
-            page: self.page.is_some(),
-            toast: self.status.is_some(),
-        }
     }
 
     /// Runs the level meter (and allows the mic test) only while the Voice & Audio tab shows.
@@ -367,7 +346,6 @@ impl App {
             Message::OpenSettings => self.page = Some(Buffer::Settings),
             Message::Settings(message) => return self.on_settings(message),
             Message::DismissStatus => self.status = None,
-            Message::Frame => {}
             Message::StatusTick => {
                 if self
                     .status
@@ -2480,9 +2458,6 @@ impl App {
             subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
         subscriptions.push(subscription::window_and_keys());
-        if self.anims.animating(iced::time::Instant::now()) {
-            subscriptions.push(iced::window::frames().map(|_| Message::Frame));
-        }
         if self.status.as_ref().is_some_and(|s| s.level == Level::Info) {
             subscriptions.push(
                 iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::StatusTick),
@@ -2588,7 +2563,6 @@ impl App {
         );
 
         let account_inst = self.account_instance();
-        let now = iced::time::Instant::now();
         // Every slot of the layout is always there (empty when unused), so showing a banner or
         // hiding the sidebar does not shift the panes in the widget tree and reset their state.
         let banner: Element<'_, Message> = match &self.call {
@@ -2665,21 +2639,17 @@ impl App {
         };
         let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
         if let Some(page) = page {
-            // Settings pages cover the window and slide up a little as they open.
-            let t = crate::anim::progress(&self.anims.page, now);
+            // Settings pages cover the window.
             layers.push(iced::widget::opaque(
                 container(page)
-                    .padding(iced::Padding::ZERO.top(16.0 * (1.0 - t)))
                     .width(Fill)
                     .height(Fill)
                     .style(|_| style::app(theme)),
             ));
         }
         if let Some(status) = &self.status {
-            let t = crate::anim::progress(&self.anims.toast, now);
             layers.push(crate::widget::toast::view(
                 status,
-                t,
                 Message::DismissStatus,
                 fonts,
                 theme,
@@ -2723,7 +2693,6 @@ impl App {
                 items,
                 *at,
                 self.window_size,
-                crate::anim::progress(&self.anims.menu, now),
                 fonts,
                 theme,
                 Message::CloseMenu,
@@ -2751,7 +2720,6 @@ impl App {
         if let Some(bar) = &self.command_bar {
             layers.push(modal::overlay(
                 blank(),
-                crate::anim::progress(&self.anims.dialog, now),
                 bar.view(fonts, theme).map(Message::CommandBar),
                 theme,
                 Some(Message::CommandBar(command_bar::Message::Close)),
@@ -2760,7 +2728,6 @@ impl App {
         if let Some(dialog) = &self.add_instance {
             layers.push(modal::overlay(
                 blank(),
-                crate::anim::progress(&self.anims.dialog, now),
                 dialog.view(fonts, theme).map(Message::AddInstance),
                 theme,
                 None,
@@ -2769,7 +2736,6 @@ impl App {
         if let Some(form) = &self.form {
             layers.push(modal::overlay(
                 blank(),
-                crate::anim::progress(&self.anims.dialog, now),
                 form.view(fonts, theme).map(Message::Form),
                 theme,
                 Some(Message::Form(form::Message::Cancel)),
@@ -2778,7 +2744,6 @@ impl App {
         if let Some(dialog) = &self.new_dm {
             layers.push(modal::overlay(
                 blank(),
-                crate::anim::progress(&self.anims.dialog, now),
                 dialog.view(fonts, theme).map(Message::NewDmMsg),
                 theme,
                 Some(Message::NewDmMsg(new_dm::Message::Cancel)),
@@ -2788,7 +2753,6 @@ impl App {
             let (title, text) = confirm_text(*action);
             layers.push(modal::overlay(
                 blank(),
-                crate::anim::progress(&self.anims.dialog, now),
                 confirm::view(
                     title,
                     text,

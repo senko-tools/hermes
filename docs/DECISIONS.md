@@ -1371,3 +1371,15 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Animations:** menus, dialogs, the settings page and notifications animate in (iced
   `Animation`, 140–220 ms).
 - **Why:** the developer's review of the previous round.
+
+## 2026-11-02: GUI fixes after 1.0.0
+
+- **No animations:** the open animations of menus, dialogs, the settings page and
+  notifications (previous entry) are removed; everything appears at once.
+- **Voice channels open on their voice room** (a click in the sidebar, the voice panel, a
+  `<#channel>` link); the chat is the "Chat" button in the pane header. Sidebar rows keep the
+  same widget tree in every state, so the first click of a double-click is no longer lost.
+- **Footer colour:** the user and voice panels default to the sidebar colour
+  (`surface.footer` stays a theme key).
+- **Message scrollbar** touches the pane's right edge; "Jump to present" sits clear of it.
+- **Why:** the developer's review of 1.0.0.
