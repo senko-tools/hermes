@@ -16,13 +16,14 @@ use hermes_client_core::proto::models::Attachment;
 use hermes_client_core::store::{InstanceStore, LocalId, MessageWindow, PendingState};
 use hermes_client_core::{Core, InstanceId, now_ms, time};
 use iced::widget::{Space, button, column, container, row, scrollable, sensor, stack};
-use iced::{Alignment, Element, Fill, Length, Size};
+use iced::{Alignment, Element, Fill, Size};
 
 use self::list::Heights;
 use self::rows::{Row, RowKey};
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, label};
 
 /// Within this many pixels of the bottom counts as "at the bottom" (live, marks read).
 pub const AT_BOTTOM: f32 = 4.0;
@@ -42,12 +43,18 @@ pub struct ChannelView {
     /// My read marker when the channel was opened (the divider position).
     pub read_marker: Option<Id>,
     pub loading_older: bool,
+    pub loading_newer: bool,
     /// The message under the pointer (shows the toolbar).
     pub hovered: Option<Id>,
     /// The message whose quick-reaction palette is open.
     pub palette: Option<Id>,
     /// Messages whose spoilers were clicked.
     pub revealed: HashSet<Id>,
+    /// A message to scroll to once its page is loaded and measured (search results, reply
+    /// previews, pins).
+    pub jump: Option<Id>,
+    /// The message jumped to, drawn highlighted.
+    pub highlight: Option<Id>,
 }
 
 impl Default for ChannelView {
@@ -60,9 +67,12 @@ impl Default for ChannelView {
             heights: Heights::default(),
             read_marker: None,
             loading_older: false,
+            loading_newer: false,
             hovered: None,
             palette: None,
             revealed: HashSet::new(),
+            jump: None,
+            highlight: None,
         }
     }
 }
@@ -117,10 +127,51 @@ pub enum Message {
     OpenImage(Attachment),
     Download(Attachment),
     Input(input::Message),
-    /// Reply to a message (toolbar).
-    Reply(Id),
-    /// Edit my message (toolbar).
-    StartEdit(Id),
+    /// A message author's name or avatar was clicked: their menu.
+    Author(Id),
+    /// Scroll to a message (a reply preview was clicked), loading it if needed.
+    JumpTo(Id),
+    /// The page around a jumped-to message arrived.
+    JumpLoaded,
+    /// Newer messages arrived after scrolling down from an old position.
+    NewerLoaded,
+}
+
+/// Where to scroll to show message `target` in the middle of the viewport: the offset from the
+/// bottom, and whether the target row was measured (else the offset is an estimate).
+pub fn jump_offset(
+    ctx: &Context<'_>,
+    inst: &InstanceId,
+    channel: Id,
+    state: &ChannelView,
+    target: Id,
+) -> Option<(f32, bool)> {
+    let store = ctx.core.store();
+    let s = store.instance(inst)?;
+    let window = s.window(channel)?;
+    let rows = rows::build(
+        s,
+        window,
+        &rows::Options {
+            group_minutes: ctx.config.buffer.group_minutes,
+            utc_offset: ctx.utc_offset,
+            read_marker: state.read_marker,
+        },
+    );
+    let index = rows
+        .iter()
+        .position(|r| r.key() == RowKey::Message(target))?;
+    let height = |r: &Row| {
+        state
+            .heights
+            .get(&r.key())
+            .unwrap_or_else(|| estimate(r, window, state.viewport.width, ctx.fonts.size))
+    };
+    let below: f32 = rows[index + 1..].iter().map(height).sum();
+    let own = height(&rows[index]);
+    let measured = state.heights.get(&RowKey::Message(target)).is_some();
+    let offset = (below + own / 2.0 - state.viewport.height / 2.0).max(0.0);
+    Some((offset, measured))
 }
 
 /// What the view needs besides the pane state.
@@ -132,6 +183,8 @@ pub struct Context<'a> {
     pub utc_offset: i64,
     pub images: &'a message::Images,
     pub composer: Option<&'a input::Composer>,
+    /// The message whose right-click menu is open: it stays highlighted.
+    pub menu_message: Option<Id>,
 }
 
 pub fn view<'a>(
@@ -144,13 +197,13 @@ pub fn view<'a>(
     let theme = ctx.theme;
     let store = ctx.core.store();
     let Some(s) = store.instance(inst) else {
-        return centered(small("Not connected to this instance.", fonts));
+        return centered(caption("Not connected to this instance.", fonts));
     };
     let Some(window) = s.window(channel) else {
-        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+        return centered(caption("Loading…", fonts).color(theme.text.tertiary.0));
     };
     if !window.loaded {
-        return centered(small("Loading…", fonts).color(theme.text.tertiary.0));
+        return centered(caption("Loading…", fonts).color(theme.text.tertiary.0));
     }
     let rows = rows::build(
         s,
@@ -166,10 +219,27 @@ pub fn view<'a>(
             .channel(channel)
             .map(|c| hermes_client_core::view::channel_title(s, c))
             .unwrap_or_default();
+        let accent = theme.accent.base.0;
+        let start = column![
+            container(crate::widget::icon::icon(crate::widget::icon::CHAT, 26.0).color(accent))
+                .center_x(56)
+                .center_y(56)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.14).into()),
+                    border: iced::Border {
+                        radius: 28.0.into(),
+                        ..iced::Border::default()
+                    },
+                    ..container::Style::default()
+                }),
+            crate::widget::display(format!("Welcome to {title}"), fonts),
+            caption("This is the start of the conversation. Say hello!", fonts)
+                .color(theme.text.secondary.0),
+        ]
+        .spacing(style::GAP)
+        .align_x(Alignment::Center);
         return column![
-            centered(
-                small(format!("This is the start of {title}."), fonts).color(theme.text.tertiary.0)
-            ),
+            centered(start),
             typing_line(ctx, s, channel),
             composer(ctx, s, channel),
         ]
@@ -199,33 +269,48 @@ pub fn view<'a>(
     list = list.push(Space::new().height(visible.below));
 
     let messages = scrollable(list.width(Fill))
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(6)
+                .scroller_width(6)
+                .margin(2),
+        ))
+        .style(move |_, st| style::scrollbar(theme, st))
         .id(state.scroll_id.clone())
         .anchor_bottom()
         .on_scroll(Message::Scrolled)
         .height(Fill)
         .width(Fill);
 
-    let mut layers = stack![messages];
+    // A little room on both sides, so message highlights do not touch the sidebar.
+    let mut layers = stack![container(messages).padding([0.0, style::GAP_S])];
     if !state.at_bottom() || !window.reached_end {
         layers = layers.push(
             container(
-                button(small("Jump to present", fonts))
-                    .padding([4, 12])
-                    .style(move |_, st| style::primary(theme, st))
-                    .on_press(Message::JumpToPresent),
+                button(
+                    row![
+                        crate::widget::icon::icon(crate::widget::icon::ARROW_DOWN, 14.0),
+                        label("Jump to present", fonts),
+                    ]
+                    .spacing(style::GAP_S)
+                    .align_y(Alignment::Center),
+                )
+                .padding(style::BUTTON_PAD)
+                .style(move |_, st| style::primary(theme, st))
+                .on_press(Message::JumpToPresent),
             )
             .align_right(Fill)
             .align_bottom(Fill)
-            .padding(12),
+            .padding(style::GAP),
         );
     }
 
-    column![
-        layers,
-        typing_line(ctx, s, channel),
-        composer(ctx, s, channel)
-    ]
-    .into()
+    // Who is typing floats over the bottom of the messages, so they scroll right down to the
+    // composer instead of stopping above an empty line.
+    if let Some(typing) = typing_line(ctx, s, channel) {
+        layers = layers.push(typing);
+    }
+    column![layers, composer(ctx, s, channel)].into()
 }
 
 fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
@@ -233,10 +318,13 @@ fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a
         .channel(channel)
         .map(|c| hermes_client_core::view::channel_title(s, c))
         .unwrap_or_default();
-    let placeholder = if title.starts_with('#') {
-        format!("Message {title}")
-    } else {
+    let dm = s
+        .channel(channel)
+        .is_some_and(|c| c.kind == hermes_client_core::proto::models::ChannelKind::Dm);
+    let placeholder = if dm {
         format!("Message @{title}")
+    } else {
+        format!("Message {title}")
     };
     let can_send = hermes_client_core::view::can(
         s,
@@ -259,8 +347,8 @@ fn centered<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message
 fn estimate(r: &Row, window: &MessageWindow, width: f32, font_size: f32) -> f32 {
     match r {
         Row::Older => 32.0,
-        Row::Day { .. } => 30.0,
-        Row::NewMessages => 24.0,
+        Row::Day { .. } => 44.0,
+        Row::NewMessages => 40.0,
         Row::Message(m) => match window.get(m.id) {
             Some(msg) => list::estimate_message(
                 &msg.content,
@@ -293,7 +381,11 @@ pub fn typing_text(names: &[String]) -> Option<String> {
     }
 }
 
-fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
+fn typing_line<'a>(
+    ctx: &Context<'a>,
+    s: &InstanceStore,
+    channel: Id,
+) -> Option<Element<'a, Message>> {
     let fonts = ctx.fonts;
     let names: Vec<String> = if ctx.config.buffer.show_typing {
         let space = s.space_of(channel);
@@ -304,12 +396,26 @@ fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element
     } else {
         Vec::new()
     };
-    container(
-        small(typing_text(&names).unwrap_or_default(), fonts).color(ctx.theme.text.secondary.0),
+    let text = typing_text(&names)?;
+    let theme = ctx.theme;
+    let pill = container(caption(text, fonts).color(theme.text.secondary.0))
+        .padding([2.0, style::GAP_S])
+        .style(move |_| container::Style {
+            background: Some(theme.surface.main.0.scale_alpha(0.92).into()),
+            border: iced::Border {
+                radius: style::radius(theme).into(),
+                ..iced::Border::default()
+            },
+            ..container::Style::default()
+        });
+    Some(
+        container(pill)
+            .width(Fill)
+            .height(Fill)
+            .align_bottom(Fill)
+            .padding([0.0, style::GAP])
+            .into(),
     )
-    .padding([2, 12])
-    .height(Length::Fixed(fonts.small() * 1.4 + 4.0))
-    .into()
 }
 
 fn row_view<'a>(
@@ -324,28 +430,28 @@ fn row_view<'a>(
     let theme = ctx.theme;
     match r {
         Row::Older => {
-            container(small("Loading older messages…", fonts).color(theme.text.tertiary.0))
+            container(caption("Loading older messages…", fonts).color(theme.text.tertiary.0))
                 .center_x(Fill)
-                .padding(8)
+                .padding(style::GAP_S)
                 .into()
         }
-        Row::Day { label: day, .. } => row![
-            rule_line(theme, theme.general.horizontal_rule.0),
-            small(day.clone(), fonts).color(theme.text.tertiary.0),
-            rule_line(theme, theme.general.horizontal_rule.0),
-        ]
-        .spacing(8)
-        .padding([6, 12])
-        .align_y(Alignment::Center)
-        .into(),
-        Row::NewMessages => row![
-            rule_line(theme, theme.text.error.0),
-            small("New messages", fonts).color(theme.text.error.0),
-        ]
-        .spacing(8)
-        .padding([2, 12])
-        .align_y(Alignment::Center)
-        .into(),
+        Row::Day { day, .. } => {
+            let today = time::day(now_ms(), ctx.utc_offset);
+            divider(
+                caption(day_label(*day, today), fonts)
+                    .font(fonts.bold())
+                    .color(theme.text.tertiary.0),
+                theme.general.horizontal_rule.0,
+                theme,
+            )
+        }
+        Row::NewMessages => divider(
+            caption("New messages", fonts)
+                .font(fonts.bold())
+                .color(theme.text.error.0),
+            theme.text.error.0.scale_alpha(0.6),
+            theme,
+        ),
         Row::Message(m) => match window.get(m.id) {
             Some(msg) => message::view(ctx, s, inst, m, msg, state),
             None => Space::new().into(),
@@ -366,7 +472,7 @@ fn row_view<'a>(
                     body = column![
                         row![
                             label(me, fonts).font(fonts.bold()),
-                            small(
+                            caption(
                                 time::format(
                                     pm.created_at,
                                     &ctx.config.buffer.timestamp_format,
@@ -376,36 +482,32 @@ fn row_view<'a>(
                             )
                             .color(theme.text.tertiary.0),
                         ]
-                        .spacing(8)
+                        .spacing(style::GAP_S)
                         .align_y(Alignment::Center),
                         body
                     ]
                     .spacing(2);
                 }
                 if let Some(note) = note {
-                    let mut line = row![small(note, fonts).color(color)]
-                        .spacing(8)
+                    let mut line = row![caption(note, fonts).color(color)]
+                        .spacing(style::GAP_S)
                         .align_y(Alignment::Center);
                     if let PendingState::Failed(reason) = &pm.state {
                         line = line
-                            .push(small(reason.clone(), fonts).color(theme.text.tertiary.0))
+                            .push(caption(reason.clone(), fonts).color(theme.text.tertiary.0))
                             .push(
-                                button(small("Retry", fonts))
-                                    .padding([1, 8])
-                                    .style(move |_, st| style::secondary(theme, st))
+                                text_button("Retry", ButtonKind::Secondary, fonts, theme)
                                     .on_press(Message::Retry(p.local_id)),
                             )
                             .push(
-                                button(small("Delete", fonts))
-                                    .padding([1, 8])
-                                    .style(move |_, st| style::danger(theme, st))
+                                text_button("Delete", ButtonKind::Danger, fonts, theme)
                                     .on_press(Message::Discard(p.local_id)),
                             );
                     }
                     body = body.push(line);
                 }
                 container(body)
-                    .padding(row_padding(p.grouped))
+                    .padding(row_padding(p.grouped, p.ends_group))
                     .width(Fill)
                     .into()
             }
@@ -414,13 +516,85 @@ fn row_view<'a>(
     }
 }
 
-pub(super) fn row_padding(grouped: bool) -> iced::Padding {
+/// The padding of a message row: a group gets the same room above its first message as below
+/// its last, so an outline around a message (jumped to, right-clicked) is evenly spaced.
+pub(super) fn row_padding(grouped: bool, ends_group: bool) -> iced::Padding {
     iced::Padding {
-        top: if grouped { 1.0 } else { 8.0 },
-        bottom: 1.0,
+        top: if grouped { 2.0 } else { 8.0 },
+        bottom: if ends_group { 8.0 } else { 2.0 },
         left: 16.0,
         right: 16.0,
     }
+}
+
+/// A day divider's text: `Today`, `Yesterday`, the weekday within the last week, else the
+/// date (`October 31, 2026`). `day` and `today` count days since 1970-01-01.
+pub fn day_label(day: i64, today: i64) -> String {
+    const WEEKDAYS: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    match today - day {
+        0 => "Today".to_owned(),
+        1 => "Yesterday".to_owned(),
+        // 1970-01-01 was a Thursday.
+        2..=6 => WEEKDAYS[(day + 4).rem_euclid(7) as usize].to_owned(),
+        _ => {
+            let date = time::format(day * 86_400_000, "%Y %m %d", 0);
+            let mut parts = date.split(' ').map(|p| p.parse::<usize>().unwrap_or(1));
+            let (y, m, d) = (
+                parts.next().unwrap_or(1970),
+                parts.next().unwrap_or(1),
+                parts.next().unwrap_or(1),
+            );
+            format!("{} {d}, {y}", MONTHS[(m - 1).min(11)])
+        }
+    }
+}
+
+/// A centered label on a hairline (day dividers, the new messages marker).
+fn divider<'a>(
+    content: impl Into<Element<'a, Message>>,
+    color: iced::Color,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    row![
+        rule_line(theme, color),
+        container(content)
+            .padding([2.0, style::GAP_S])
+            .style(move |_| container::Style {
+                border: iced::Border {
+                    color,
+                    width: 1.0,
+                    radius: 10.0.into(),
+                },
+                background: Some(theme.surface.main.0.into()),
+                ..container::Style::default()
+            }),
+        rule_line(theme, color),
+    ]
+    .padding([style::GAP_S, style::GAP_L])
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn rule_line<'a>(_theme: &'a Theme, color: iced::Color) -> Element<'a, Message> {
@@ -444,13 +618,21 @@ pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
         .find_map(|r| r.color)
 }
 
-pub(super) fn rgb(c: u32) -> iced::Color {
-    iced::Color::from_rgb8((c >> 16) as u8, (c >> 8) as u8, c as u8)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn day_labels() {
+        // Day 20_757 is 2026-10-31, a Saturday.
+        let today = 20_757;
+        assert_eq!(day_label(today, today), "Today");
+        assert_eq!(day_label(today - 1, today), "Yesterday");
+        assert_eq!(day_label(today - 2, today), "Thursday");
+        assert_eq!(day_label(today - 6, today), "Sunday");
+        assert_eq!(day_label(today - 7, today), "October 24, 2026");
+        assert_eq!(day_label(0, today), "January 1, 1970");
+    }
 
     #[test]
     fn typing_texts() {

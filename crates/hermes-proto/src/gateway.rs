@@ -284,6 +284,10 @@ pub enum ServerEvent {
     },
     /// Own sessions only.
     NotificationSettingsUpdate(NotificationSetting),
+    /// The setting for a space or channel was removed (back to the default). Own sessions only.
+    NotificationSettingsDelete {
+        target_id: Id,
+    },
 }
 
 impl ServerEvent {

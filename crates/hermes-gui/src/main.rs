@@ -3,9 +3,11 @@
 // No console window next to the GUI in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod anim;
 mod app;
 mod buffer;
 mod desktop;
+mod drag;
 #[cfg(test)]
 mod fixtures;
 mod font;
@@ -16,6 +18,7 @@ mod open;
 mod pane;
 mod panes;
 mod ptt;
+mod resize;
 mod sidebar;
 mod single_instance;
 mod subscription;
@@ -124,6 +127,7 @@ fn main() -> ExitCode {
                 app.status = Some(app::Status {
                     text: format!("config: {warning}"),
                     level: app::Level::Warning,
+                    since: iced::time::Instant::now(),
                 });
             }
             let open = match link {
@@ -131,7 +135,11 @@ fn main() -> ExitCode {
                 None => Task::none(),
             };
             let restored = app.open_restored();
-            (app, Task::batch([app::load_fonts().chain(open), restored]))
+            let update = app.check_for_update();
+            (
+                app,
+                Task::batch([app::load_fonts().chain(open), restored, update]),
+            )
         },
         App::update,
         App::view,
@@ -178,6 +186,7 @@ fn fail(message: &str) -> ExitCode {
 /// Logs go to `<config dir>/logs/hermes.log` (`HERMES_LOG` sets the filter).
 fn init_logging(paths: &ConfigPaths) {
     let dir = paths.dir.join("logs");
+    hermes_client_core::crash::install(dir.clone(), "hermes");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
     }

@@ -22,7 +22,7 @@ fn status_text(status: &ConnStatus) -> (&'static str, Color) {
     }
 }
 
-pub fn draw(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_width = area.width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = app
         .sidebar
@@ -130,4 +130,5 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         });
     let mut state = ListState::default().with_selected(Some(app.sidebar_sel));
     f.render_stateful_widget(list, area, &mut state);
+    app.areas.sidebar_offset = state.offset();
 }

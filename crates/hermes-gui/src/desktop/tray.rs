@@ -1,5 +1,6 @@
 //! The tray icon (PLAN.md section 15.7): show/hide, mute, deafen, quit, and a badge dot while
-//! something needs attention. The icon is drawn in code, so there is no image file to ship.
+//! something needs attention. The icon is drawn in code from the feather of the header (a mask
+//! rendered from the bundled Nerd Font's `md-feather`, `assets/icons/feather-mask.png`).
 
 use std::sync::{Mutex, OnceLock};
 
@@ -9,7 +10,15 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, Predefin
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub const ICON_SIZE: u32 = 32;
-const ACCENT: [u8; 3] = [0x58, 0x65, 0xf2];
+/// A silver feather on a slate square, each a soft gradient from top to bottom.
+const BACKGROUND: ([u8; 3], [u8; 3]) = ([0x55, 0x50, 0x5e], [0x38, 0x34, 0x3f]);
+const FEATHER: ([u8; 3], [u8; 3]) = ([0xf4, 0xf4, 0xf7], [0xb4, 0xb7, 0xc2]);
+
+/// `top` blended towards `bottom` by `t` (0–1).
+fn gradient((top, bottom): ([u8; 3], [u8; 3]), t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| f32::from(top[i]) + (f32::from(bottom[i]) - f32::from(top[i])) * t)
+}
+const FEATHER_MASK: &[u8] = include_bytes!("../../assets/icons/feather-mask.png");
 const BADGE: [u8; 3] = [0xed, 0x42, 0x45];
 
 /// What the tray asks the app to do.
@@ -144,11 +153,23 @@ fn tray_icon(badge: bool) -> Result<tray_icon::Icon, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The app icon as RGBA pixels: a rounded square in the accent color with a white "H", and a
-/// red dot in the top right corner when `badge`.
+/// The feather's coverage (0–255) at `size`, scaled down from the bundled mask.
+fn feather(size: u32) -> image::GrayImage {
+    let mask = image::load_from_memory(FEATHER_MASK)
+        .expect("the bundled feather mask is a PNG")
+        .to_luma_alpha8();
+    let alpha = image::GrayImage::from_fn(mask.width(), mask.height(), |x, y| {
+        image::Luma([mask.get_pixel(x, y)[1]])
+    });
+    image::imageops::resize(&alpha, size, size, image::imageops::FilterType::Lanczos3)
+}
+
+/// The app icon as RGBA pixels: a slate rounded square with the silver feather, and a red dot
+/// in the top right corner when `badge`.
 pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
     let s = size as f32;
     let radius = s * 0.22;
+    let feather = feather(size);
     let mut out = vec![0u8; (size * size * 4) as usize];
     for y in 0..size {
         for x in 0..size {
@@ -156,14 +177,11 @@ pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
             let inside = rounded_square(fx, fy, s, radius);
             let mut px = [0u8; 4];
             if inside {
-                px = [ACCENT[0], ACCENT[1], ACCENT[2], 255];
-                // The "H": two bars and a crossbar.
-                let (u, v) = (fx / s, fy / s);
-                let bar = (0.28..0.40).contains(&u) || (0.60..0.72).contains(&u);
-                let cross = (0.28..0.72).contains(&u) && (0.45..0.56).contains(&v);
-                if (bar && (0.25..0.75).contains(&v)) || cross {
-                    px = [255, 255, 255, 255];
-                }
+                let cover = f32::from(feather.get_pixel(x, y)[0]) / 255.0;
+                let v = fy / s;
+                let (bg, fg) = (gradient(BACKGROUND, v), gradient(FEATHER, v));
+                let blend = |i: usize| (bg[i] + (fg[i] - bg[i]) * cover).round() as u8;
+                px = [blend(0), blend(1), blend(2), 255];
             }
             if badge {
                 let (cx, cy, r) = (s * 0.78, s * 0.22, s * 0.2);
@@ -199,12 +217,43 @@ mod tests {
         let badged = icon_rgba(32, true);
         assert_eq!(plain.len(), 32 * 32 * 4);
         assert_ne!(plain, badged);
-        // Corners are transparent, the middle is not.
+        // Corners are transparent, the middle is not, and the feather is silver.
         assert_eq!(plain[3], 0);
         let mid = ((16 * 32 + 16) * 4) as usize;
         assert_eq!(plain[mid + 3], 255);
+        assert!(
+            plain.chunks(4).any(|px| px[0] > 0xb0 && px[2] > 0xb0),
+            "no feather pixels"
+        );
         // The badge is red in the top right.
         let dot = ((7 * 32 + 25) * 4) as usize;
         assert_eq!(&badged[dot..dot + 3], &BADGE);
+    }
+
+    #[test]
+    fn the_installer_version_is_the_crate_version() {
+        let config = include_str!("../../Packager.toml");
+        let line = format!("version = \"{}\"", env!("CARGO_PKG_VERSION"));
+        assert!(
+            config.lines().any(|l| l == line),
+            "set {line} in crates/hermes-gui/Packager.toml"
+        );
+    }
+
+    /// Writes `assets/icons/icon-<size>.png`, from which `assets/icons/hermes.ico` (installer,
+    /// shortcuts) is made: `magick icon-16.png … icon-256.png hermes.ico`. Run by hand with
+    /// `cargo test -p hermes-gui write_icon_files -- --ignored` after changing the icon.
+    #[test]
+    #[ignore]
+    fn write_icon_files() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+        std::fs::create_dir_all(&dir).unwrap();
+        for size in [16, 24, 32, 48, 64, 128, 256, 512] {
+            let rgba = icon_rgba(size, false);
+            image::RgbaImage::from_raw(size, size, rgba)
+                .unwrap()
+                .save(dir.join(format!("icon-{size}.png")))
+                .unwrap();
+        }
     }
 }

@@ -207,3 +207,120 @@ async fn invite_sign_up_open_channel_and_send() {
     let text = screen(&mut app);
     assert!(text.contains("¯\\_(ツ"), "{text}");
 }
+
+#[tokio::test]
+async fn menus_search_and_space_commands() {
+    let server = start("menus").await;
+    let (core, mut events) = Core::new(
+        ClientConfig::default(),
+        CoreOptions::in_memory("hermes-tui"),
+    );
+    let (tx, mut tasks) = mpsc::unbounded_channel();
+    let mut app = App::new(core, tx, 0);
+    app.run(Command::AddInstance(server.link.clone()));
+    pump(&mut app, &mut events, &mut tasks, "the form", |a| {
+        matches!(a.popup, Some(Popup::Form(_)))
+    })
+    .await;
+    type_text(&mut app, "alice");
+    app.on_key(key(KeyCode::Enter));
+    type_text(&mut app, "correct horse");
+    app.on_key(key(KeyCode::Enter));
+    let general = |a: &App| {
+        a.sidebar
+            .iter()
+            .position(|i| matches!(i, SidebarItem::Channel { name, .. } if name == "general"))
+    };
+    pump(&mut app, &mut events, &mut tasks, "#general", |a| {
+        general(a).is_some()
+    })
+    .await;
+
+    // `a` on a sidebar channel opens its menu; "Open" opens it.
+    app.sidebar_sel = general(&app).unwrap();
+    app.on_key(key(KeyCode::Char('a')));
+    let Some(Popup::Menu { items, .. }) = &app.popup else {
+        panic!("no menu: {:?}", app.popup)
+    };
+    assert_eq!(items[0].0, "Open");
+    assert!(items.iter().any(|(l, _)| l == "Mute"));
+    assert!(screen(&mut app).contains("Enter: do it"));
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.popup.is_none());
+    let (inst, channel) = app.current.clone().expect("opened");
+
+    for text in ["the pizza party", "something else", "more pizza"] {
+        app.on_key(key(KeyCode::Char('i')));
+        type_text(&mut app, text);
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Esc));
+    }
+    pump(&mut app, &mut events, &mut tasks, "messages sent", |a| {
+        a.core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.window(channel))
+            .is_some_and(|w| w.pending.is_empty() && w.messages.len() >= 3)
+    })
+    .await;
+
+    // `/` starts a search; the results popup jumps to the message.
+    app.on_key(key(KeyCode::Char('/')));
+    assert_eq!(app.mode, Mode::Command);
+    type_text(&mut app, "pizza");
+    app.on_key(key(KeyCode::Enter));
+    pump(&mut app, &mut events, &mut tasks, "search results", |a| {
+        matches!(a.popup, Some(Popup::Results { .. }))
+    })
+    .await;
+    let Some(Popup::Results { lines, .. }) = &app.popup else {
+        unreachable!()
+    };
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].contains("more pizza"), "newest first: {lines:?}");
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Enter));
+    let selected = app.selected_message().map(|(_, _, content)| content);
+    assert_eq!(selected.as_deref(), Some("the pizza party"));
+
+    // The message menu offers pinning to the owner; then :pins lists it.
+    app.on_key(key(KeyCode::Char('a')));
+    let Some(Popup::Menu { items, .. }) = &app.popup else {
+        panic!("no message menu")
+    };
+    let pin = items
+        .iter()
+        .position(|(l, _)| l == "Pin")
+        .expect("Pin entry");
+    for _ in 0..pin {
+        app.on_key(key(KeyCode::Down));
+    }
+    app.on_key(key(KeyCode::Enter));
+    pump(&mut app, &mut events, &mut tasks, "pinned", |a| {
+        a.core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.window(channel))
+            .is_some_and(|w| w.messages.iter().any(|m| m.pinned))
+    })
+    .await;
+    app.run(Command::Pins);
+    pump(
+        &mut app,
+        &mut events,
+        &mut tasks,
+        "pins",
+        |a| matches!(&a.popup, Some(Popup::Results { lines, .. }) if lines.len() == 1),
+    )
+    .await;
+    app.on_key(key(KeyCode::Esc));
+
+    // :create makes a channel in the space.
+    app.run(crate::commands::parse("create text Game Night").unwrap());
+    pump(&mut app, &mut events, &mut tasks, "#game-night", |a| {
+        a.sidebar
+            .iter()
+            .any(|i| matches!(i, SidebarItem::Channel { name, .. } if name == "game-night"))
+    })
+    .await;
+}

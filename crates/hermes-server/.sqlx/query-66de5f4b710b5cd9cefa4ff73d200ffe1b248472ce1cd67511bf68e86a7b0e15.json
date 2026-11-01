@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO notification_settings (user_id, target_id, level, muted_until)\n         VALUES (?, ?, ?, ?)\n         ON CONFLICT (user_id, target_id)\n         DO UPDATE SET level = excluded.level, muted_until = excluded.muted_until",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "66de5f4b710b5cd9cefa4ff73d200ffe1b248472ce1cd67511bf68e86a7b0e15"
+}

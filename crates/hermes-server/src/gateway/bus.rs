@@ -285,6 +285,14 @@ impl Gateway {
             .any(|s| s.user_id == user_id && lock(&s.inner).conn.is_some())
     }
 
+    /// The REST sessions that have a gateway session.
+    pub fn auth_session_ids(&self) -> HashSet<Id> {
+        lock(&self.sessions)
+            .values()
+            .map(|s| s.auth_session_id)
+            .collect()
+    }
+
     /// Closes (4011) and forgets every session opened with one of these REST sessions.
     pub fn revoke(&self, auth_session_ids: &[Id]) {
         let revoked: Vec<Arc<Session>> = {

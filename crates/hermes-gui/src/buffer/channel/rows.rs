@@ -49,6 +49,8 @@ pub struct MessageRow {
     pub id: Id,
     /// Continues the previous message's group: no author line.
     pub grouped: bool,
+    /// The next row does not continue this message's group.
+    pub ends_group: bool,
     pub system: bool,
     pub mentions_me: bool,
     pub reply: Option<Reply>,
@@ -66,6 +68,7 @@ pub struct Reply {
 pub struct PendingRow {
     pub local_id: LocalId,
     pub grouped: bool,
+    pub ends_group: bool,
 }
 
 pub struct Options {
@@ -113,6 +116,7 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
         rows.push(Row::Message(MessageRow {
             id: m.id,
             grouped,
+            ends_group: true,
             system: m.kind == MessageKind::System,
             mentions_me: store.mentions_me(m),
             reply: m.reply_to.as_ref().map(|r| Reply {
@@ -142,9 +146,27 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
         rows.push(Row::Pending(PendingRow {
             local_id: p.local_id,
             grouped: grouped || pending_follows_pending(&rows),
+            ends_group: true,
         }));
     }
+    mark_group_ends(&mut rows);
     rows
+}
+
+/// A message ends its group unless the next row continues it.
+fn mark_group_ends(rows: &mut [Row]) {
+    for i in 0..rows.len() {
+        let next_grouped = match rows.get(i + 1) {
+            Some(Row::Message(m)) => m.grouped,
+            Some(Row::Pending(p)) => p.grouped,
+            _ => false,
+        };
+        match &mut rows[i] {
+            Row::Message(m) => m.ends_group = !next_grouped,
+            Row::Pending(p) => p.ends_group = !next_grouped,
+            _ => {}
+        }
+    }
 }
 
 /// A pending message right after another pending one is grouped with it.
@@ -155,6 +177,27 @@ fn pending_follows_pending(rows: &[Row]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_message_of_a_group_ends_it() {
+        let message = |id: u64, grouped: bool| {
+            Row::Message(MessageRow {
+                id: Id(id),
+                grouped,
+                ends_group: false,
+                system: false,
+                mentions_me: false,
+                reply: None,
+            })
+        };
+        let mut rows = vec![message(1, false), message(2, true), message(3, false)];
+        mark_group_ends(&mut rows);
+        let ends: Vec<bool> = rows
+            .iter()
+            .map(|r| matches!(r, Row::Message(m) if m.ends_group))
+            .collect();
+        assert_eq!(ends, [false, true, true]);
+    }
     use crate::fixtures;
     use hermes_client_core::proto::models::{MessageRef, User};
     use hermes_client_core::store::{PendingMessage, PendingState};

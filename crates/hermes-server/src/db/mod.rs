@@ -23,6 +23,7 @@ pub mod messages;
 pub mod roles;
 pub mod spaces;
 pub mod state;
+pub mod users;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

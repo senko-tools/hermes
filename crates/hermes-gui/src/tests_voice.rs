@@ -363,7 +363,7 @@ async fn voice_settings_are_applied_and_saved() {
     let app = &mut client.app;
     let _ = app.update(Message::Voice(VoiceMsg::OpenAudioSettings));
     assert_eq!(app.settings_tab, settings::Tab::Voice);
-    assert_eq!(app.panes.focused().unwrap().buffer, Buffer::Settings);
+    assert_eq!(app.page, Some(Buffer::Settings));
 
     let send = |app: &mut App, m: settings::Message| {
         let _ = app.update(Message::Settings(m));

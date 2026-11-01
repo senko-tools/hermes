@@ -435,3 +435,100 @@ fn backup_copies_the_database_while_running() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+#[test]
+fn user_commands_change_accounts() {
+    let dir = TempDir::new("user-commands");
+    // Any command that opens the database creates it.
+    let output = server(dir.path())
+        .args(["invite", "create"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let db = dir.path().join("data").join("hermes.db");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let sql = |q: &'static str| {
+        rt.block_on(async {
+            let url = format!("sqlite://{}", db.display());
+            let pool = sqlx::SqlitePool::connect(&url).await.unwrap();
+            let rows: Vec<(i64, i64)> = sqlx::query_as(q).fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            rows
+        })
+    };
+    sql("INSERT INTO users (id, username, password_hash, created_at)
+         VALUES (42, 'alice', 'x', 1793491200000) RETURNING id, 0");
+    sql(
+        "INSERT INTO sessions (id, user_id, token_hash, device_name, created_at, last_seen_at)
+         VALUES (7, 42, x'01', 'PC', 0, 0) RETURNING id, 0",
+    );
+
+    let output = server(dir.path()).args(["user", "list"]).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("alice"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("2026-11-01"),
+        "{}",
+        stdout(&output)
+    );
+
+    let output = server(dir.path())
+        .args(["user", "set-admin", "Alice", "true"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        sql("SELECT instance_admin, disabled FROM users WHERE id = 42"),
+        [(1, 0)]
+    );
+
+    let output = server(dir.path())
+        .args(["user", "disable", "alice"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("1 session"), "{}", stdout(&output));
+    assert_eq!(
+        sql("SELECT instance_admin, disabled FROM users WHERE id = 42"),
+        [(1, 1)]
+    );
+    assert!(sql("SELECT id, user_id FROM sessions").is_empty());
+    server(dir.path())
+        .args(["user", "enable", "alice"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        sql("SELECT instance_admin, disabled FROM users WHERE id = 42"),
+        [(1, 0)]
+    );
+
+    let output = server(dir.path())
+        .args(["user", "reset-password", "alice"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let line = stdout(&output);
+    let password = line
+        .lines()
+        .next()
+        .and_then(|l| l.rsplit(' ').next())
+        .unwrap();
+    assert_eq!(password.len(), 16, "{line}");
+
+    let output = server(dir.path())
+        .args(["user", "disable", "nobody"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("no user called"),
+        "{}",
+        stderr(&output)
+    );
+
+    let output = server(dir.path()).arg("version").output().unwrap();
+    assert!(stdout(&output).starts_with("hermes-server "));
+}

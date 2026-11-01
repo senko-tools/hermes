@@ -1,53 +1,244 @@
 name: release
 
-# Builds the server release files on a `v*` tag and publishes them as a GitHub release
-# (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.1). For now only the parts of
-# PLAN.md section 18.1 that deploy/install.sh needs: the x86_64 musl server, hermes.service,
-# install.sh itself and SHA256SUMS. The other artifacts come with the Phase 7 release workflow.
+# Builds every release artifact from PLAN.md section 18.1 and publishes them as one GitHub release
+# on a `v*` tag (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.6):
+#   - hermes-server for x86_64 and aarch64 Linux (static musl) and x86_64 Windows
+#   - the Docker image ghcr.io/senko-tools/hermes-server (amd64 + arm64)
+#   - Hermes-Setup-<version>.exe (NSIS installer with hermes:// links, built by cargo-packager from
+#     crates/hermes-gui/Packager.toml), Hermes-<version>-portable.zip (GUI + TUI for Windows) and
+#     hermes-tui for Windows and Linux
+#   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
+# macOS builds are left out for now.
+#
+# Anything but a tag is a dry run: everything is built and uploaded as workflow artifacts, but no
+# release is created and no image is pushed. A dry run starts when this workflow or the release
+# Dockerfile changes on `dev`, or by hand ("Run workflow").
 on:
   push:
     tags: ["v*"]
+    branches: [dev]
+    paths:
+      - .github/workflows/release.yml
+      - deploy/docker/Dockerfile.release
+  workflow_dispatch:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+  IMAGE: ghcr.io/senko-tools/hermes-server
 
 jobs:
-  server-linux:
-    name: x86_64-unknown-linux-musl
+  version:
     runs-on: ubuntu-latest
-    env:
-      TARGET: x86_64-unknown-linux-musl
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+  server-linux:
+    name: server ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ env.TARGET }}
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ env.TARGET }}
-      - name: musl toolchain
+          key: ${{ matrix.target }}
+      - name: musl toolchain (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
           echo "CC_x86_64_unknown_linux_musl=musl-gcc" >> "$GITHUB_ENV"
-      - name: Build
-        env:
-          SQLX_OFFLINE: "true"
-        run: cargo build --release --locked -p hermes-server --target "$TARGET"
+      - name: Build (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: cargo build --release --locked -p hermes-server --target ${{ matrix.target }}
+      - name: Build (aarch64, cross-compiled with zig)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          pip3 install --user cargo-zigbuild
+          cargo zigbuild --release --locked -p hermes-server --target ${{ matrix.target }}
       - name: Package
         run: |
           mkdir dist
-          bin="target/$TARGET/release/hermes-server"
+          bin="target/${{ matrix.target }}/release/hermes-server"
+          file "$bin"
           file "$bin" | grep -Eq "static(ally|-pie) linked"
-          tar -czf "dist/hermes-server-$TARGET.tar.gz" -C "$(dirname "$bin")" hermes-server
-          cp deploy/systemd/hermes.service deploy/install.sh dist/
-      - name: Checksums
+          tar -czf "dist/hermes-server-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" hermes-server
+      - uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  windows:
+    name: windows (server, GUI, TUI)
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # No VC++ redistributable needed on the user's machine.
+      RUSTFLAGS: -C target-feature=+crt-static
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+      - name: Build
+        run: cargo build --release --locked -p hermes-server -p hermes-gui -p hermes-tui
+      - name: cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+      - name: Installer
+        run: |
+          # The version in Cargo.toml is the workspace's; the installer file is named after the tag.
+          (cd crates/hermes-gui && cargo packager --release -c Packager.toml -f nsis)
+          mv dist/*-setup.exe "dist/Hermes-Setup-$VERSION.exe"
+      - name: Package
+        run: |
+          mkdir -p dist stage/server stage/portable stage/tui
+          r=target/release
+          cp "$r/hermes-server.exe" LICENSE-AGPL-3.0 stage/server/
+          cp "$r/hermes.exe" "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/portable/
+          cp "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/tui/
+          (cd stage/server && 7z a -tzip -bso0 "../../dist/hermes-server-x86_64-pc-windows-msvc.zip" .)
+          (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)
+          (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/
+          if-no-files-found: error
+
+  tui-linux:
+    name: tui x86_64-unknown-linux-gnu
+    needs: version
+    # The oldest supported runner, so the binary runs on older glibc versions too.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: tui-linux
+      - name: ALSA headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build
+        run: cargo build --release --locked -p hermes-tui
+      - name: Package
+        run: |
+          mkdir -p dist stage
+          cp target/release/hermes-tui LICENSE-GPL-3.0 stage/
+          tar -czf "dist/hermes-tui-$VERSION-x86_64-unknown-linux-gnu.tar.gz" -C stage .
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tui-linux
+          path: dist/
+          if-no-files-found: error
+
+  docker:
+    name: docker image
+    needs: [version, server-linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      DOCKER_BUILD_RECORD_UPLOAD: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
+      - name: Build context
+        # The image only copies the binaries built above: nothing is compiled under emulation.
+        run: |
+          mkdir -p ctx/bin/amd64 ctx/bin/arm64 ctx/data
+          tar -xzf artifacts/hermes-server-x86_64-unknown-linux-musl.tar.gz -C ctx/bin/amd64
+          tar -xzf artifacts/hermes-server-aarch64-unknown-linux-musl.tar.gz -C ctx/bin/arm64
+          cp deploy/docker/Dockerfile.release ctx/Dockerfile
+      - name: Tags
+        id: tags
+        run: |
+          tags="$IMAGE:$VERSION"
+          case "$VERSION" in
+            *-*) ;;
+            *) tags="$tags,$IMAGE:latest" ;;
+          esac
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.ref_type == 'tag'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ctx
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref_type == 'tag' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+  release:
+    needs: [server-linux, windows, tui-linux, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Only the release files (the Docker job uploads a build record artifact too).
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: server-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
+          name: tui-linux
+          path: dist
+      - name: Add the install files and checksums
         working-directory: dist
-        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+        run: |
+          cp ../deploy/systemd/hermes.service ../deploy/install.sh ../deploy/pterodactyl/egg-hermes.json .
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run
+          path: dist/
       - name: Create release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}

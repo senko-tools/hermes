@@ -1,6 +1,7 @@
 //! Command line interface (PLAN.md section 9.1).
 
 mod healthcheck;
+mod user;
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -56,6 +57,11 @@ pub enum Command {
     },
     /// Check that the server on this machine answers `GET /healthz` (exit code 0 if it does).
     Healthcheck,
+    /// Manage accounts: list, reset-password, set-admin, disable, enable.
+    #[command(subcommand)]
+    User(user::UserCommand),
+    /// Print the version.
+    Version,
 }
 
 #[derive(Debug, Subcommand)]
@@ -138,6 +144,11 @@ pub fn run() -> ExitCode {
         }) => invite_create(&cli.config, space, uses, expires),
         Command::Backup { output } => backup(&cli.config, &output),
         Command::Healthcheck => health(&cli.config),
+        Command::User(command) => user::run(&cli.config, command),
+        Command::Version => {
+            println!("hermes-server {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
     }
 }
 

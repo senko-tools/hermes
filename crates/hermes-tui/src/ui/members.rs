@@ -57,7 +57,9 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let mut items = Vec::new();
     let mut rows = 0;
+    let mut member_rows = Vec::new();
     for g in &groups {
+        member_rows.push(None);
         items.push(ListItem::new(Line::from(Span::styled(
             format!("{} — {}", g.title, g.members.len()),
             bold().fg(Color::Gray),
@@ -76,6 +78,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled(format!(" {}", m.name), style),
                 dot(m.status),
             ])));
+            member_rows.push(Some(rows));
             rows += 1;
         }
     }
@@ -107,4 +110,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         });
     let mut state = ListState::default().with_selected(list_index);
     f.render_stateful_widget(list, area, &mut state);
+    app.areas.member_rows = member_rows;
+    app.areas.member_offset = state.offset();
 }

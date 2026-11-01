@@ -10,7 +10,8 @@ use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
-use crate::widget::{small, strong};
+use crate::widget::icon::{self, icon};
+use crate::widget::{caption, tip_at};
 
 /// The panel's text, computed without widgets so it can be tested.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,32 +73,71 @@ pub fn view<'a>(
 ) -> Option<Element<'a, Message>> {
     let p = panel(core, ptt_down)?;
     let (inst, channel) = core.voice_channel()?;
-    let quality_color = if p.connected {
+    let state_color = if p.connected {
         theme.text.success.0
     } else {
         theme.text.warning.0
     };
-    let place = button(strong(p.place, fonts).color(quality_color))
-        .padding(0)
-        .style(move |_, s| style::sidebar_item(theme, s, false))
-        .on_press(Message::Select(inst, channel));
-    let mut status = row![
-        small(p.quality, fonts)
-            .color(theme.text.secondary.0)
-            .width(Fill)
+    let mut heading = row![
+        icon(icon::WAVEFORM, 14.0).color(state_color),
+        caption(
+            if p.connected {
+                "Voice connected"
+            } else {
+                "Voice connecting"
+            },
+            fonts
+        )
+        .font(fonts.bold())
+        .color(state_color)
+        .width(Fill),
     ]
-    .spacing(6)
+    .spacing(style::GAP_S)
     .align_y(Alignment::Center);
     if let Some(held) = p.ptt {
-        status = status.push(small("PTT", fonts).color(if held {
-            theme.voice.speaking_ring.0
-        } else {
-            theme.text.tertiary.0
-        }));
+        heading = heading.push(
+            container(caption("PTT", fonts).font(fonts.bold()).color(if held {
+                theme.buttons.primary.text.0
+            } else {
+                theme.text.tertiary.0
+            }))
+            .padding([0.0, style::GAP_S])
+            .style(move |_| iced::widget::container::Style {
+                background: held.then(|| theme.voice.speaking_ring.0.into()),
+                border: iced::Border {
+                    color: theme.general.border.0,
+                    width: 1.0,
+                    radius: style::radius_small(theme).into(),
+                },
+                ..iced::widget::container::Style::default()
+            }),
+        );
     }
-    let toggle = |text: &'static str, on: bool, message: VoiceMsg| {
-        button(small(text, fonts))
-            .padding([3, 8])
+    let place = button(
+        column![
+            heading,
+            caption(p.place, fonts)
+                .color(theme.text.secondary.0)
+                .wrapping(iced::widget::text::Wrapping::None),
+            caption(p.quality, fonts)
+                .color(theme.text.tertiary.0)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(2),
+    )
+    .padding([style::GAP_XS, style::GAP_S])
+    .width(Fill)
+    .style(move |_, s| style::sidebar_item(theme, s, false))
+    .on_press(Message::Select(inst, channel));
+    let toggle = |glyph: char, on: bool, hint: &'a str, message: VoiceMsg| {
+        tip_at(
+            button(
+                container(icon(glyph, style::ICON))
+                    .center_x(Fill)
+                    .center_y(style::ICON_BUTTON),
+            )
+            .padding(0)
+            .width(Fill)
             .style(move |_, s| {
                 if on {
                     style::danger(theme, s)
@@ -105,34 +145,58 @@ pub fn view<'a>(
                     style::secondary(theme, s)
                 }
             })
-            .on_press(Message::Voice(message))
+            .on_press(Message::Voice(message)),
+            hint,
+            iced::widget::tooltip::Position::Top,
+            fonts,
+            theme,
+        )
     };
     let buttons = row![
         toggle(
-            if p.muted { "Unmute" } else { "Mute" },
+            if p.muted { icon::MIC_OFF } else { icon::MIC },
             p.muted,
+            if p.muted { "Unmute" } else { "Mute" },
             VoiceMsg::ToggleMute
         ),
         toggle(
-            if p.deafened { "Undeafen" } else { "Deafen" },
+            if p.deafened {
+                icon::HEADPHONES_OFF
+            } else {
+                icon::HEADPHONES
+            },
             p.deafened,
+            if p.deafened { "Undeafen" } else { "Deafen" },
             VoiceMsg::ToggleDeafen
         ),
-        button(small("Leave", fonts))
-            .padding([3, 8])
+        toggle(
+            icon::SETTINGS,
+            false,
+            "Audio settings",
+            VoiceMsg::OpenAudioSettings
+        ),
+        tip_at(
+            button(
+                container(icon(icon::HANG_UP, style::ICON))
+                    .center_x(Fill)
+                    .center_y(style::ICON_BUTTON),
+            )
+            .padding(0)
+            .width(Fill)
             .style(move |_, s| style::danger(theme, s))
             .on_press(Message::Voice(VoiceMsg::Leave)),
-        button(small("Audio", fonts))
-            .padding([3, 8])
-            .style(move |_, s| style::secondary(theme, s))
-            .on_press(Message::Voice(VoiceMsg::OpenAudioSettings)),
+            "Leave voice",
+            iced::widget::tooltip::Position::Top,
+            fonts,
+            theme,
+        ),
     ]
-    .spacing(4);
+    .spacing(style::GAP_S);
     Some(
-        container(column![place, status, buttons].spacing(6))
-            .padding(8)
+        container(column![place, buttons].spacing(style::GAP_S))
+            .padding([style::GAP_S, style::GAP_S])
             .width(Fill)
-            .style(move |_| style::pane_header(theme))
+            .style(move |_| style::sidebar_footer(theme))
             .into(),
     )
 }

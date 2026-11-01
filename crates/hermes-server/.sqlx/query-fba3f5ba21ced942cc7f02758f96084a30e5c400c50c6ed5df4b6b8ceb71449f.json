@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET disabled = ?, instance_admin = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "fba3f5ba21ced942cc7f02758f96084a30e5c400c50c6ed5df4b6b8ceb71449f"
+}

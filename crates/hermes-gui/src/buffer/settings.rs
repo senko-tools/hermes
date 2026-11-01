@@ -1,22 +1,20 @@
-//! The Settings buffer (PLAN.md section 15.1): the Appearance and Voice & Audio tabs; the other
-//! tabs come with the features they configure. Every change is written to `config.toml`.
+//! The Settings buffer (PLAN.md section 15.1): Account, Appearance, Chat, Voice & Audio,
+//! Notifications, Keybinds and About (the last tabs are in `settings_tabs`). Every change is
+//! written to `config.toml`.
 
 use std::fmt;
 
 use hermes_client_core::audio::AudioDevices;
 use hermes_client_core::config::ClientConfig;
-use iced::widget::{
-    button, checkbox, column, container, pick_list, progress_bar, row, rule, scrollable, slider,
-    space, text_input,
-};
-use iced::{Alignment, Element, Fill, Length};
+use iced::widget::{button, column, container, progress_bar, row, scrollable, slider, text_input};
+use iced::{Element, Fill};
 
+use super::page::{dropdown, group, group_with, nav_item, nav_title, page, setting, toggle};
 use crate::font::{self, Fonts};
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small, strong};
+use crate::widget::label;
+use crate::widget::{ButtonKind, text_button};
 
-pub const MIN_SIDEBAR_WIDTH: u16 = 160;
-pub const MAX_SIDEBAR_WIDTH: u16 = 480;
 /// The level meter and the voice activity slider share this range (dBFS).
 pub const METER_MIN: f32 = -70.0;
 pub const PTT_INPUT: &str = "settings-ptt-key";
@@ -24,10 +22,23 @@ pub const PTT_INPUT: &str = "settings-ptt-key";
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
     Theme(String),
+    OpenThemesFolder,
+    /// Copy the current theme to a new file in the themes folder, to edit it.
+    CopyTheme,
+    /// A family picked from the font list ([`CUSTOM_FONT`] shows the name field).
+    Font(FontSlot, String),
+    /// The custom family name field changed.
+    FontText(FontSlot, String),
+    /// Enter in the custom family name field: save it.
+    SaveFont(FontSlot),
     FontSize(u16),
+    /// The UI scale slider moved (applied on release, see [`Setting::UiScale`]).
     UiScale(f64),
+    /// A UI scale preset: applied and saved at once.
+    UiScalePreset(f64),
     SidebarPosition(Position),
-    SidebarWidth(u16),
+    /// Back to the default sidebar and member list widths.
+    ResetWidths,
     /// A slider was released: save what it changed.
     Save(Setting),
     Close,
@@ -52,6 +63,24 @@ pub enum Message {
     MicTest(bool),
     /// A voice slider was released: apply and save `[voice]`.
     SaveVoice,
+    /// A boolean setting (`section.key`).
+    Flag(&'static str, bool),
+    GroupMinutes(u32),
+    SaveGroupMinutes,
+    TimestampFormat(String),
+    SaveTimestampFormat,
+    AccountInstance(String),
+    EditProfile,
+    PickAvatar,
+    RemoveAvatar,
+    ChangePassword,
+    LoadSessions,
+    Sessions(Result<Vec<hermes_client_core::proto::api::SessionInfo>, String>),
+    RevokeSession(hermes_client_core::proto::id::Id),
+    RevokeOthers,
+    CopyDebugInfo,
+    OpenLogs,
+    OpenProjectPage,
 }
 
 /// A slider-driven setting, saved on release.
@@ -59,14 +88,18 @@ pub enum Message {
 pub enum Setting {
     FontSize,
     UiScale,
-    SidebarWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
+    Account,
     #[default]
     Appearance,
+    Chat,
     Voice,
+    Notifications,
+    Keybinds,
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,133 +237,283 @@ pub fn saved_value(config: &ClientConfig, setting: Setting) -> (&'static str, St
     match setting {
         Setting::FontSize => ("font.size", config.font.size.to_string()),
         Setting::UiScale => ("font.ui_scale", format!("{:.2}", config.font.ui_scale)),
-        Setting::SidebarWidth => ("sidebar.width", config.sidebar.width.to_string()),
     }
 }
 
-pub fn view<'a>(
-    config: &'a ClientConfig,
-    themes: &'a [String],
-    tab: Tab,
-    voice: &VoiceView<'a>,
+/// Which font a setting is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontSlot {
+    /// `font.family`: all text.
+    Ui,
+    /// `font.mono_family`: code.
+    Mono,
+}
+
+impl FontSlot {
+    pub fn key(self) -> &'static str {
+        match self {
+            FontSlot::Ui => "font.family",
+            FontSlot::Mono => "font.mono_family",
+        }
+    }
+}
+
+/// The font list entry that lets you type the name of an installed font.
+pub const CUSTOM_FONT: &str = "Custom…";
+
+/// A font row: the bundled families plus [`CUSTOM_FONT`], and a name field for a custom one.
+fn font_picker<'a>(
+    slot: FontSlot,
+    family: &'a str,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let tab_button = |name: &'static str, t: Tab| {
-        button(label(name, fonts))
-            .padding([4, 10])
-            .style(move |_, s| style::tab(theme, s, tab == t))
-            .on_press(Message::Tab(t))
+    let mut choices: Vec<String> = font::CHOICES.iter().map(|c| (*c).to_owned()).collect();
+    choices.push(CUSTOM_FONT.to_owned());
+    let custom = !font::CHOICES.contains(&family);
+    let selected = if custom {
+        CUSTOM_FONT.to_owned()
+    } else {
+        family.to_owned()
     };
-    let header = container(
-        row![
-            heading("Settings", fonts),
-            space::horizontal().width(16),
-            tab_button("Appearance", Tab::Appearance),
-            tab_button("Voice & Audio", Tab::Voice),
-            space::horizontal(),
-            button(label("Close", fonts))
-                .style(|_, status| style::secondary(theme, status))
-                .on_press(Message::Close),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .padding([8, 12])
-    .width(Fill)
-    .style(|_| style::pane_header(theme));
-
-    let content = match tab {
-        Tab::Appearance => appearance(config, themes, fonts, theme),
-        Tab::Voice => voice_tab(config, voice, fonts, theme),
-    };
+    let picker = dropdown(
+        choices,
+        Some(selected),
+        move |c| Message::Font(slot, c),
+        fonts,
+        theme,
+    );
+    if !custom {
+        return picker.into();
+    }
     column![
-        header,
-        scrollable(container(content).padding(20).width(Fill)).height(Fill),
+        picker,
+        text_input("Installed font, e.g. Segoe UI", family)
+            .padding(style::INPUT_PAD)
+            .style(move |_, st| style::input(theme, st))
+            .on_input(move |t| Message::FontText(slot, t))
+            .on_submit(Message::SaveFont(slot))
+            .font(fonts.ui)
+            .size(fonts.size),
     ]
+    .spacing(style::GAP_S)
     .into()
+}
+
+/// UI scales offered as one-click choices.
+pub const SCALE_PRESETS: [f64; 5] = [0.9, 1.0, 1.1, 1.25, 1.5];
+
+#[allow(clippy::too_many_arguments)]
+pub fn view<'a>(
+    config: &'a ClientConfig,
+    themes: &'a [(String, Result<Theme, String>)],
+    tab: Tab,
+    ui_scale_draft: Option<f64>,
+    return_to: &str,
+    voice: &VoiceView<'a>,
+    account: &crate::buffer::settings_tabs::AccountView<'a>,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    use crate::buffer::settings_tabs as more;
+    use crate::widget::icon as i;
+
+    let tab_button = |glyph: char, name: &'static str, t: Tab| {
+        nav_item(glyph, name, tab == t, Message::Tab(t), fonts, theme)
+    };
+    let nav = column![
+        nav_title("User settings", fonts, theme),
+        tab_button(i::ACCOUNT, "Account", Tab::Account),
+        tab_button(i::PALETTE, "Appearance", Tab::Appearance),
+        tab_button(i::CHAT, "Chat", Tab::Chat),
+        tab_button(i::MIC, "Voice & Audio", Tab::Voice),
+        tab_button(i::BELL, "Notifications", Tab::Notifications),
+        tab_button(i::KEYBOARD, "Keybinds", Tab::Keybinds),
+        tab_button(i::INFO, "About", Tab::About),
+    ]
+    .spacing(2);
+    let content = match tab {
+        Tab::Account => more::account(account, fonts, theme),
+        Tab::Appearance => appearance(config, themes, ui_scale_draft, fonts, theme),
+        Tab::Chat => more::chat(config, account.utc_offset, fonts, theme),
+        Tab::Voice => voice_tab(config, voice, fonts, theme),
+        Tab::Notifications => more::notifications(config, fonts, theme),
+        Tab::Keybinds => more::keybinds(config, fonts, theme),
+        Tab::About => more::about(fonts, theme),
+    };
+    crate::buffer::page_frame(
+        nav.into(),
+        scrollable(
+            container(content)
+                // Room on the right for the scrollbar, which is drawn over the content.
+                .padding(
+                    iced::Padding::ZERO
+                        .top(style::GAP_XL)
+                        .bottom(style::HEADER)
+                        .right(style::GAP_L),
+                )
+                .width(Fill),
+        )
+        .style(move |_, st| style::scrollbar(theme, st))
+        .height(Fill)
+        .into(),
+        Message::Close,
+        return_to,
+        fonts,
+        theme,
+    )
 }
 
 fn appearance<'a>(
     config: &'a ClientConfig,
-    themes: &'a [String],
+    themes: &'a [(String, Result<Theme, String>)],
+    ui_scale_draft: Option<f64>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let current_theme = themes.iter().find(|t| **t == config.general.theme).cloned();
-    column![
-        strong("Appearance", fonts),
-        setting(
-            "Theme",
-            "Built-in themes, plus any .toml file in the themes folder of the config directory.",
-            pick_list(themes, current_theme, Message::Theme)
-                .font(fonts.ui)
-                .text_size(fonts.size)
-                .width(220),
+    let cards = row(themes.iter().map(|(name, loaded)| {
+        crate::widget::theme_card::card(
+            name,
+            loaded,
+            *name == config.general.theme,
+            Message::Theme(name.clone()),
             fonts,
             theme,
-        ),
-        setting(
-            "Font size",
-            &format!("{} px", config.font.size),
-            slider(font::MIN_SIZE..=24, config.font.size, Message::FontSize)
-                .on_release(Message::Save(Setting::FontSize))
-                .width(220),
-            fonts,
-            theme,
-        ),
-        setting(
-            "UI scale",
-            &format!(
-                "{:.0} % (on top of the system scaling)",
-                fonts.scale * 100.0
+        )
+    }))
+    .spacing(style::GAP)
+    .wrap()
+    .vertical_spacing(style::GAP);
+    let scale = ui_scale_draft.unwrap_or(config.font.ui_scale);
+    let saved_scale = config.font.ui_scale;
+    let preset = |value: f64| {
+        let selected = (saved_scale - value).abs() < 0.001 && ui_scale_draft.is_none();
+        button(
+            container(label(format!("{:.0}%", value * 100.0), fonts))
+                .center_x(Fill)
+                .center_y(style::CONTROL_H),
+        )
+        .padding(0)
+        .width(Fill)
+        .style(move |_, s| style::tab(theme, s, selected))
+        .on_press(Message::UiScalePreset(value))
+        .into()
+    };
+    let presets = row(SCALE_PRESETS.iter().map(|v| preset(*v))).spacing(style::GAP_XS);
+    page(
+        "Appearance",
+        None,
+        vec![
+            group_with(
+                "Theme",
+                vec![
+                    text_button("Open themes folder", ButtonKind::Secondary, fonts, theme)
+                        .on_press(Message::OpenThemesFolder)
+                        .into(),
+                    text_button("Copy current theme", ButtonKind::Secondary, fonts, theme)
+                        .on_press(Message::CopyTheme)
+                        .into(),
+                ],
+                vec![
+                    cards.into(),
+                    crate::widget::caption(
+                        "Your own themes are .toml files in the themes folder: copy one to start, \
+                         and changes show up as soon as you save. Keys you leave out come from \
+                         the dark theme.",
+                        fonts,
+                    )
+                    .color(theme.text.tertiary.0)
+                    .into(),
+                ],
+                fonts,
+                theme,
             ),
-            slider(
-                font::MIN_SCALE..=font::MAX_SCALE,
-                config.font.ui_scale,
-                Message::UiScale
-            )
-            .step(0.05)
-            .on_release(Message::Save(Setting::UiScale))
-            .width(220),
-            fonts,
-            theme,
-        ),
-        setting(
-            "Sidebar position",
-            "",
-            pick_list(
-                Position::ALL,
-                Some(Position::from_config(&config.sidebar.position)),
-                Message::SidebarPosition
-            )
-            .font(fonts.ui)
-            .text_size(fonts.size)
-            .width(220),
-            fonts,
-            theme,
-        ),
-        setting(
-            "Sidebar width",
-            &format!("{} px", config.sidebar.width),
-            slider(
-                MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH,
-                config
-                    .sidebar
-                    .width
-                    .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH),
-                Message::SidebarWidth
-            )
-            .step(10u16)
-            .on_release(Message::Save(Setting::SidebarWidth))
-            .width(220),
-            fonts,
-            theme,
-        ),
-    ]
-    .spacing(14)
-    .max_width(720)
-    .into()
+            group(
+                "Text",
+                vec![
+                    setting(
+                        "Font",
+                        "Used for all text. Pick Custom… to use any installed font (Enter saves).",
+                        font_picker(FontSlot::Ui, &config.font.family, fonts, theme),
+                        fonts,
+                        theme,
+                    ),
+                    setting(
+                        "Code font",
+                        "Used for code blocks and inline code.",
+                        font_picker(FontSlot::Mono, &config.font.mono_family, fonts, theme),
+                        fonts,
+                        theme,
+                    ),
+                    setting(
+                        "Font size",
+                        &format!("{} px", config.font.size),
+                        slider(font::MIN_SIZE..=24, config.font.size, Message::FontSize)
+                            .on_release(Message::Save(Setting::FontSize)),
+                        fonts,
+                        theme,
+                    ),
+                ],
+                fonts,
+                theme,
+            ),
+            group(
+                "Layout",
+                vec![
+                    setting(
+                        "UI scale",
+                        &if ui_scale_draft.is_some() {
+                            format!("{:.0} %, applied when you let go", scale * 100.0)
+                        } else {
+                            format!(
+                                "{:.0} % on top of the system scaling. Ctrl+= and Ctrl+- \
+                                 zoom, Ctrl+0 resets.",
+                                scale * 100.0
+                            )
+                        },
+                        column![
+                            presets,
+                            slider(font::MIN_SCALE..=font::MAX_SCALE, scale, Message::UiScale)
+                                .step(0.05)
+                                .on_release(Message::Save(Setting::UiScale)),
+                        ]
+                        .spacing(style::GAP_S),
+                        fonts,
+                        theme,
+                    ),
+                    setting(
+                        "Sidebar position",
+                        "",
+                        dropdown(
+                            Position::ALL,
+                            Some(Position::from_config(&config.sidebar.position)),
+                            Message::SidebarPosition,
+                            fonts,
+                            theme,
+                        ),
+                        fonts,
+                        theme,
+                    ),
+                    setting(
+                        "Panel widths",
+                        &format!(
+                            "Sidebar {} px, member list {} px. Drag their inner edge to resize; \
+                             a double-click on it resets.",
+                            config.sidebar.width, config.sidebar.member_list_width
+                        ),
+                        text_button("Reset", ButtonKind::Secondary, fonts, theme)
+                            .on_press(Message::ResetWidths),
+                        fonts,
+                        theme,
+                    ),
+                ],
+                fonts,
+                theme,
+            ),
+        ],
+        fonts,
+        theme,
+    )
 }
 
 /// The hint under the push-to-talk key field.
@@ -356,239 +539,233 @@ fn voice_tab<'a>(
         list.extend(names.into_iter().flatten().map(|n| Device(Some(n.clone()))));
         list
     };
-    let check = |on: bool, text: &'static str, f: fn(bool) -> Message| {
-        checkbox(on)
-            .label(text)
-            .on_toggle(f)
-            .text_size(fonts.size)
-            .font(fonts.ui)
-    };
-    let picker_width = 260;
     let mode = Mode::from_config(&v.mode);
     let level = voice.level.clamp(METER_MIN, 0.0);
     let open = level >= v.vad_sensitivity as f32;
     let meter = progress_bar(METER_MIN..=0.0, level)
-        .girth(8)
+        .girth(6)
         .style(move |_| iced::widget::progress_bar::Style {
-            background: theme.sidebar.hover.0.into(),
+            background: theme.surface.hover.0.into(),
             bar: if open {
                 theme.voice.speaking_ring.0
             } else {
                 theme.text.tertiary.0
             }
             .into(),
-            border: iced::Border::default().rounded(4),
+            border: iced::Border::default().rounded(3),
         });
     let mic_test = voice.mic_test;
 
-    let mut section = column![
-        strong("Devices", fonts),
-        setting(
-            "Microphone",
-            "",
-            pick_list(
-                devices(voice.devices.map(|d| &d.inputs)),
-                Some(Device::from_config(&v.input_device)),
-                Message::InputDevice
-            )
-            .font(fonts.ui)
-            .text_size(fonts.size)
-            .width(picker_width),
-            fonts,
-            theme,
-        ),
-        setting(
-            "Speakers",
-            "",
-            pick_list(
-                devices(voice.devices.map(|d| &d.outputs)),
-                Some(Device::from_config(&v.output_device)),
-                Message::OutputDevice
-            )
-            .font(fonts.ui)
-            .text_size(fonts.size)
-            .width(picker_width),
-            fonts,
-            theme,
-        ),
-        row![
-            space::horizontal(),
-            button(small("Refresh devices", fonts))
-                .style(move |_, s| style::secondary(theme, s))
-                .on_press(Message::RefreshDevices),
-        ],
-        setting(
-            "Microphone volume",
-            &format!("{:.0} %", v.input_volume * 100.0),
-            slider(0.0..=2.0, v.input_volume, Message::InputVolume)
-                .step(0.05)
-                .on_release(Message::SaveVoice)
-                .width(picker_width),
-            fonts,
-            theme,
-        ),
-        setting(
-            "Output volume",
-            &format!("{:.0} %", v.output_volume * 100.0),
-            slider(0.0..=2.0, v.output_volume, Message::OutputVolume)
-                .step(0.05)
-                .on_release(Message::SaveVoice)
-                .width(picker_width),
-            fonts,
-            theme,
-        ),
-        strong("Input", fonts),
-        setting(
-            "Input mode",
-            "Voice activity sends while you talk; push-to-talk while a key is held.",
-            pick_list(Mode::ALL, Some(mode), Message::Mode)
-                .font(fonts.ui)
-                .text_size(fonts.size)
-                .width(picker_width),
-            fonts,
-            theme,
-        ),
-    ]
-    .spacing(14)
-    .max_width(720);
-    if mode == Mode::PushToTalk {
-        let ptt_text = voice.ptt_draft.unwrap_or(v.ptt_key.as_str());
-        section = section
-            .push(setting(
-                "Push-to-talk key",
-                ptt_hint(ptt_text),
-                text_input("e.g. Mouse4", ptt_text)
-                    .id(PTT_INPUT)
-                    .on_input(Message::PttKey)
-                    .on_submit(Message::SavePttKey)
-                    .font(fonts.ui)
-                    .size(fonts.size)
-                    .width(picker_width),
-                fonts,
-                theme,
-            ))
-            .push(setting(
-                "Release delay",
-                &format!("{} ms", v.ptt_release_delay_ms),
-                slider(0..=1000, v.ptt_release_delay_ms, Message::ReleaseDelay)
-                    .step(10u32)
-                    .on_release(Message::SaveVoice)
-                    .width(picker_width),
-                fonts,
-                theme,
-            ));
-    }
-    section = section
-        .push(setting(
-            "Voice activity sensitivity",
-            &format!(
-                "Opens above {} dBFS · microphone now {:.0} dBFS",
-                v.vad_sensitivity, level
-            ),
-            column![
-                meter,
-                slider(
-                    METER_MIN as i32..=0,
-                    v.vad_sensitivity.clamp(METER_MIN as i32, 0),
-                    Message::VadSensitivity
-                )
-                .on_release(Message::SaveVoice),
-            ]
-            .spacing(6)
-            .width(picker_width),
-            fonts,
-            theme,
-        ))
-        .push(setting(
-            "Mic test",
-            "Hear your processed microphone (use headphones).",
-            button(label(
-                if mic_test { "Stop test" } else { "Start test" },
-                fonts,
-            ))
-            .style(move |_, s| {
-                if mic_test {
-                    style::danger(theme, s)
-                } else {
-                    style::secondary(theme, s)
-                }
-            })
-            .on_press(Message::MicTest(!mic_test)),
-            fonts,
-            theme,
-        ))
-        .push(setting(
-            "Processing",
-            if v.noise_suppression {
-                ""
-            } else {
-                "Without noise suppression, headphones are recommended."
-            },
-            column![
-                check(
-                    v.noise_suppression,
-                    "Noise suppression",
-                    Message::NoiseSuppression
+    let device_group = group(
+        "Devices",
+        vec![
+            setting(
+                "Microphone",
+                "",
+                dropdown(
+                    devices(voice.devices.map(|d| &d.inputs)),
+                    Some(Device::from_config(&v.input_device)),
+                    Message::InputDevice,
+                    fonts,
+                    theme,
                 ),
-                check(v.auto_gain, "Automatic gain", Message::AutoGain),
-            ]
-            .spacing(6),
-            fonts,
-            theme,
-        ))
-        .push(strong("Other", fonts))
-        .push(setting(
-            "Sounds",
-            &format!(
-                "Join, leave and mute sounds at {:.0} %",
-                v.sounds_volume * 100.0
+                fonts,
+                theme,
             ),
-            column![
-                check(v.sounds, "Play sounds", Message::Sounds),
-                slider(0.0..=1.0, v.sounds_volume, Message::SoundsVolume)
+            setting(
+                "Speakers",
+                "",
+                dropdown(
+                    devices(voice.devices.map(|d| &d.outputs)),
+                    Some(Device::from_config(&v.output_device)),
+                    Message::OutputDevice,
+                    fonts,
+                    theme,
+                ),
+                fonts,
+                theme,
+            ),
+            setting(
+                "Device list",
+                "Plugged in a headset? List the devices again.",
+                text_button("Refresh devices", ButtonKind::Secondary, fonts, theme)
+                    .on_press(Message::RefreshDevices),
+                fonts,
+                theme,
+            ),
+        ],
+        fonts,
+        theme,
+    );
+    let volume_group = group(
+        "Volume",
+        vec![
+            setting(
+                "Microphone volume",
+                &format!("{:.0} %", v.input_volume * 100.0),
+                slider(0.0..=2.0, v.input_volume, Message::InputVolume)
                     .step(0.05)
                     .on_release(Message::SaveVoice),
-            ]
-            .spacing(6)
-            .width(picker_width),
-            fonts,
-            theme,
-        ))
-        .push(setting(
-            "Join a voice channel with",
-            "With double-click, a single click only opens the channel's chat.",
-            pick_list(
-                JoinOn::ALL,
-                Some(JoinOn(crate::voice::JoinOn::from_config(&v.join_on))),
-                Message::JoinOn,
-            )
-            .font(fonts.ui)
-            .text_size(fonts.size)
-            .width(picker_width),
+                fonts,
+                theme,
+            ),
+            setting(
+                "Output volume",
+                &format!("{:.0} %", v.output_volume * 100.0),
+                slider(0.0..=2.0, v.output_volume, Message::OutputVolume)
+                    .step(0.05)
+                    .on_release(Message::SaveVoice),
+                fonts,
+                theme,
+            ),
+        ],
+        fonts,
+        theme,
+    );
+    let mut input_rows = vec![setting(
+        "Input mode",
+        "Voice activity sends while you talk; push-to-talk while a key is held.",
+        dropdown(Mode::ALL, Some(mode), Message::Mode, fonts, theme),
+        fonts,
+        theme,
+    )];
+    if mode == Mode::PushToTalk {
+        let ptt_text = voice.ptt_draft.unwrap_or(v.ptt_key.as_str());
+        input_rows.push(setting(
+            "Push-to-talk key",
+            ptt_hint(ptt_text),
+            text_input("e.g. Mouse4", ptt_text)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
+                .id(PTT_INPUT)
+                .on_input(Message::PttKey)
+                .on_submit(Message::SavePttKey)
+                .font(fonts.ui)
+                .size(fonts.size),
             fonts,
             theme,
         ));
-    section.into()
-}
-
-fn setting<'a>(
-    name: &'a str,
-    hint: &str,
-    control: impl Into<Element<'a, Message>>,
-    fonts: &Fonts,
-    theme: &'a Theme,
-) -> Element<'a, Message> {
-    column![
-        rule::horizontal(1).style(move |_| style::rule(theme)),
-        row![
-            column![label(name, fonts), small(hint.to_owned(), fonts)]
-                .spacing(2)
-                .width(Length::Fill),
-            control.into(),
+        input_rows.push(setting(
+            "Release delay",
+            &format!("{} ms", v.ptt_release_delay_ms),
+            slider(0..=1000, v.ptt_release_delay_ms, Message::ReleaseDelay)
+                .step(10u32)
+                .on_release(Message::SaveVoice),
+            fonts,
+            theme,
+        ));
+    }
+    input_rows.push(setting(
+        "Voice activity sensitivity",
+        &format!(
+            "Opens above {} dBFS · microphone now {:.0} dBFS",
+            v.vad_sensitivity, level
+        ),
+        column![
+            meter,
+            slider(
+                METER_MIN as i32..=0,
+                v.vad_sensitivity.clamp(METER_MIN as i32, 0),
+                Message::VadSensitivity
+            )
+            .on_release(Message::SaveVoice),
         ]
-        .spacing(16)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(10)
-    .into()
+        .spacing(style::GAP_XS),
+        fonts,
+        theme,
+    ));
+    input_rows.push(setting(
+        "Mic test",
+        "Hear your processed microphone (use headphones).",
+        text_button(
+            if mic_test { "Stop test" } else { "Start test" },
+            if mic_test {
+                ButtonKind::Danger
+            } else {
+                ButtonKind::Secondary
+            },
+            fonts,
+            theme,
+        )
+        .on_press(Message::MicTest(!mic_test)),
+        fonts,
+        theme,
+    ));
+    let processing_group = group(
+        "Processing",
+        vec![
+            toggle(
+                "Noise suppression",
+                if v.noise_suppression {
+                    "Removes background noise like fans and keyboards."
+                } else {
+                    "Without it, headphones are recommended."
+                },
+                v.noise_suppression,
+                Message::NoiseSuppression,
+                fonts,
+                theme,
+            ),
+            toggle(
+                "Automatic gain",
+                "Evens out how loud you are.",
+                v.auto_gain,
+                Message::AutoGain,
+                fonts,
+                theme,
+            ),
+        ],
+        fonts,
+        theme,
+    );
+    let sounds_group = group(
+        "Sounds and joining",
+        vec![
+            toggle(
+                "Play sounds",
+                "When people join or leave, and when you mute.",
+                v.sounds,
+                Message::Sounds,
+                fonts,
+                theme,
+            ),
+            setting(
+                "Sound volume",
+                &format!("{:.0} %", v.sounds_volume * 100.0),
+                slider(0.0..=1.0, v.sounds_volume, Message::SoundsVolume)
+                    .step(0.05)
+                    .on_release(Message::SaveVoice),
+                fonts,
+                theme,
+            ),
+            setting(
+                "Join a voice channel with",
+                "With double-click, a single click only opens the channel's chat.",
+                dropdown(
+                    JoinOn::ALL,
+                    Some(JoinOn(crate::voice::JoinOn::from_config(&v.join_on))),
+                    Message::JoinOn,
+                    fonts,
+                    theme,
+                ),
+                fonts,
+                theme,
+            ),
+        ],
+        fonts,
+        theme,
+    );
+    page(
+        "Voice & Audio",
+        None,
+        vec![
+            device_group,
+            volume_group,
+            group("Input", input_rows, fonts, theme),
+            processing_group,
+            sounds_group,
+        ],
+        fonts,
+        theme,
+    )
 }

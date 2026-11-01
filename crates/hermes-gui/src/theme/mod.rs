@@ -1,6 +1,7 @@
-//! Themes (PLAN.md section 15.5): TOML files in `<config dir>/themes/`, hot-reloaded, plus the
-//! built-in `dark`, `light` and `high-contrast`. A user theme only needs the keys it changes;
-//! the others come from `dark`.
+//! Themes (PLAN.md section 15.5, extended in docs/DECISIONS.md): TOML files in
+//! `<config dir>/themes/`, hot-reloaded, plus the built-ins. A user theme only needs the keys it
+//! changes; the others come from `dark`, except the [`DERIVED`] sections, which a file that leaves
+//! them out gets from its own older keys (so themes written before they existed look the same).
 
 pub mod style;
 
@@ -13,13 +14,14 @@ pub const DEFAULT: &str = "dark";
 pub const THEMES_DIR: &str = "themes";
 
 /// Built-in themes: name and TOML text.
-pub const BUILTIN: [(&str, &str); 3] = [
+pub const BUILTIN: [(&str, &str); 4] = [
     ("dark", include_str!("../../assets/themes/dark.toml")),
     ("light", include_str!("../../assets/themes/light.toml")),
     (
         "high-contrast",
         include_str!("../../assets/themes/high-contrast.toml"),
     ),
+    ("neko", include_str!("../../assets/themes/neko.toml")),
 ];
 
 /// A color written as `#rrggbb` or `#rrggbbaa`.
@@ -63,8 +65,18 @@ pub struct Theme {
     pub sidebar: Sidebar,
     pub pane: Pane,
     pub voice: Voice,
+    pub presence: Presence,
     pub roles: Roles,
+    pub surface: Surface,
+    pub accent: Accent,
+    pub icons: Icons,
+    pub channel: Channel,
+    pub shape: Shape,
 }
+
+/// Sections added after the first theme format. Keys a file leaves out are derived from its
+/// older keys instead of copied from `dark`, and are not reported as missing.
+pub const DERIVED: [&str; 5] = ["surface", "accent", "icons", "channel", "shape"];
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,10 +141,102 @@ pub struct Voice {
     pub muted: Hex,
 }
 
+/// Status dots: online, idle, do not disturb, offline or invisible.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Presence {
+    pub online: Hex,
+    pub idle: Hex,
+    pub dnd: Hex,
+    pub offline: Hex,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roles {
     pub default_color: Hex,
+}
+
+/// Background levels, darkest to lightest.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Surface {
+    /// The darkest level: the dimmed window behind dialogs.
+    pub deep: Hex,
+    /// The bottom of the sidebar (voice and user panels).
+    pub footer: Hex,
+    /// Chat and page content.
+    pub main: Hex,
+    /// Sidebar, member list, settings navigation.
+    pub sidebar: Hex,
+    /// Inputs, the composer, cards and code.
+    pub raised: Hex,
+    /// Menus, tooltips and other floating panels.
+    pub overlay: Hex,
+    /// A hovered row or button.
+    pub hover: Hex,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Accent {
+    /// Switches, focus lines, selected icons.
+    pub base: Hex,
+    /// Brighter: hovered accent things, the space name.
+    pub highlight: Hex,
+    /// Quieter: secondary accents.
+    pub muted: Hex,
+    /// A see-through tint for selections.
+    pub glow: Hex,
+    /// The border of a focused input.
+    pub focus: Hex,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Icons {
+    pub default: Hex,
+    /// Hovered.
+    pub active: Hex,
+}
+
+/// The states of a sidebar row: the bar on its left edge, its background, and its background
+/// while hovered.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Channel {
+    pub selected_border: Hex,
+    pub selected_bg: Hex,
+    pub selected_hover: Hex,
+    pub unread_border: Hex,
+    pub unread_bg: Hex,
+    pub unread_hover: Hex,
+    pub mention_border: Hex,
+    pub mention_bg: Hex,
+    pub mention_hover: Hex,
+    /// The voice channel or call I am in.
+    pub connected_border: Hex,
+    pub connected_bg: Hex,
+    pub connected_hover: Hex,
+}
+
+/// Corner radii and the width of the row state bar, in pixels.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Shape {
+    /// Things that stand on their own: buttons, inputs, menus, tooltips.
+    pub radius: u8,
+    /// Rows in lists (sidebar, menus, settings navigation), which sit right against each other.
+    pub row_radius: u8,
+    /// Cards, dialogs, the composer.
+    pub radius_large: u8,
+    pub indicator_width: u8,
+}
+
+impl Shape {
+    pub const MAX_RADIUS: u8 = 16;
+    pub const MAX_RADIUS_LARGE: u8 = 24;
+    pub const MAX_INDICATOR: u8 = 6;
 }
 
 /// A theme and what was wrong with its file.
@@ -168,7 +272,132 @@ impl Theme {
             .try_into()
             .map_err(|e: toml::de::Error| e.to_string())?;
         theme.name = name.to_owned();
+        theme.derive_missing(&user);
+        theme.clamp_shape(&mut warnings);
         Ok(Loaded { theme, warnings })
+    }
+
+    /// Fills the [`DERIVED`] keys `user` leaves out from the theme's older keys.
+    fn derive_missing(&mut self, user: &toml::Table) {
+        let d = self.derived();
+        let has = |section: &str, key: &str| {
+            user.get(section)
+                .and_then(|s| s.as_table())
+                .is_some_and(|s| s.contains_key(key))
+        };
+        macro_rules! fill {
+            ($($section:ident . $key:ident),* $(,)?) => {
+                $(if !has(stringify!($section), stringify!($key)) {
+                    self.$section.$key = d.$section.$key.clone();
+                })*
+            };
+        }
+        fill!(
+            surface.deep,
+            surface.footer,
+            surface.main,
+            surface.sidebar,
+            surface.raised,
+            surface.overlay,
+            surface.hover,
+            accent.base,
+            accent.highlight,
+            accent.muted,
+            accent.glow,
+            accent.focus,
+            icons.default,
+            icons.active,
+            channel.selected_border,
+            channel.selected_bg,
+            channel.selected_hover,
+            channel.unread_border,
+            channel.unread_bg,
+            channel.unread_hover,
+            channel.mention_border,
+            channel.mention_bg,
+            channel.mention_hover,
+            channel.connected_border,
+            channel.connected_bg,
+            channel.connected_hover,
+            shape.radius,
+            shape.row_radius,
+            shape.radius_large,
+            shape.indicator_width,
+        );
+    }
+
+    /// The [`DERIVED`] sections as the older keys imply them (how the app looked before they
+    /// existed).
+    fn derived(&self) -> Theme {
+        let none = Hex(Color::TRANSPARENT);
+        let accent = self.buttons.primary.background.0;
+        let mut d = self.clone();
+        d.surface = Surface {
+            deep: Hex(style::mix(self.sidebar.background.0, Color::BLACK, 0.12)),
+            footer: Hex(style::mix(
+                self.sidebar.background.0,
+                self.text.code_bg.0,
+                0.4,
+            )),
+            main: self.general.background,
+            sidebar: self.sidebar.background,
+            raised: self.text.code_bg,
+            overlay: self.sidebar.background,
+            hover: self.sidebar.hover,
+        };
+        d.accent = Accent {
+            base: Hex(accent),
+            highlight: self.buttons.primary.background_hover,
+            muted: Hex(style::mix(accent, self.general.background.0, 0.35)),
+            glow: Hex(accent.scale_alpha(0.15)),
+            focus: Hex(accent),
+        };
+        d.icons = Icons {
+            default: self.text.secondary,
+            active: self.text.primary,
+        };
+        d.channel = Channel {
+            selected_border: none,
+            selected_bg: self.sidebar.selected,
+            selected_hover: self.sidebar.selected,
+            unread_border: self.general.unread_indicator,
+            unread_bg: none,
+            unread_hover: self.sidebar.hover,
+            mention_border: self.general.unread_indicator,
+            mention_bg: none,
+            mention_hover: self.sidebar.hover,
+            connected_border: self.voice.speaking_ring,
+            connected_bg: Hex(self.voice.speaking_ring.0.scale_alpha(0.12)),
+            connected_hover: Hex(self.voice.speaking_ring.0.scale_alpha(0.2)),
+        };
+        d.shape = Shape {
+            radius: 6,
+            row_radius: 6,
+            radius_large: 10,
+            indicator_width: 3,
+        };
+        d
+    }
+
+    fn clamp_shape(&mut self, warnings: &mut Vec<String>) {
+        let mut clamp = |value: &mut u8, max: u8, key: &str| {
+            if *value > max {
+                warnings.push(format!("`shape.{key}` is at most {max} (using {max})"));
+                *value = max;
+            }
+        };
+        clamp(&mut self.shape.radius, Shape::MAX_RADIUS, "radius");
+        clamp(&mut self.shape.row_radius, Shape::MAX_RADIUS, "row_radius");
+        clamp(
+            &mut self.shape.radius_large,
+            Shape::MAX_RADIUS_LARGE,
+            "radius_large",
+        );
+        clamp(
+            &mut self.shape.indicator_width,
+            Shape::MAX_INDICATOR,
+            "indicator_width",
+        );
     }
 
     /// Loads theme `name`: `<themes dir>/<name>.toml` first, then the built-ins. A theme that
@@ -252,9 +481,12 @@ fn overlay(base: &mut toml::Table, user: &toml::Table, path: &str, warnings: &mu
     }
 }
 
-/// Warns about every key of `base` that `user` leaves out.
+/// Warns about every key of `base` that `user` leaves out ([`DERIVED`] sections excepted).
 fn missing(base: &toml::Table, user: &toml::Table, path: &str, warnings: &mut Vec<String>) {
     for (key, value) in base {
+        if path.is_empty() && DERIVED.contains(&key.as_str()) {
+            continue;
+        }
         let key_path = join(path, key);
         match (value, user.get(key)) {
             (toml::Value::Table(b), Some(toml::Value::Table(u))) => {
@@ -323,6 +555,98 @@ mod tests {
         assert!(loaded.warnings.iter().any(|w| w.contains("`sidebar`")));
     }
 
+    /// `text` without the [`DERIVED`] sections: a theme file from before they existed.
+    fn old_format(text: &str) -> String {
+        let mut table: toml::Table = toml::from_str(text).unwrap();
+        for section in DERIVED {
+            table.remove(section);
+        }
+        toml::to_string(&table).unwrap()
+    }
+
+    #[test]
+    fn old_theme_files_derive_the_new_sections_from_their_own_keys() {
+        // The themes from before these sections write out exactly what derivation gives.
+        for (name, text) in BUILTIN.iter().filter(|(name, _)| *name != "neko") {
+            let loaded = Theme::parse(name, &old_format(text)).unwrap();
+            assert!(loaded.warnings.is_empty(), "{name}: {:?}", loaded.warnings);
+            let (old, new) = (loaded.theme, Theme::builtin(name).unwrap());
+            // Compared as 8-bit values: the files round what derivation computes.
+            assert_eq!(
+                format!("{:?}", rgba8(&old)),
+                format!("{:?}", rgba8(&new)),
+                "{name}"
+            );
+        }
+
+        let loaded = Theme::parse("mine", "[sidebar]\nbackground = \"#ff0000\"\n").unwrap();
+        assert_eq!(loaded.theme.surface.sidebar.0, Color::from_rgb8(255, 0, 0));
+        assert_eq!(loaded.theme.surface.overlay.0, Color::from_rgb8(255, 0, 0));
+        let loaded = Theme::parse(
+            "mine",
+            "[sidebar]\nbackground = \"#ff0000\"\n[surface]\nsidebar = \"#00ff00\"\n",
+        )
+        .unwrap();
+        assert_eq!(loaded.theme.surface.sidebar.0, Color::from_rgb8(0, 255, 0));
+    }
+
+    /// Every color of the new sections as 8-bit RGBA, for comparing derived values.
+    fn rgba8(theme: &Theme) -> Vec<[u8; 4]> {
+        let s = &theme.surface;
+        let a = &theme.accent;
+        let c = &theme.channel;
+        [
+            s.deep,
+            s.footer,
+            s.main,
+            s.sidebar,
+            s.raised,
+            s.overlay,
+            s.hover,
+            a.base,
+            a.highlight,
+            a.muted,
+            a.glow,
+            a.focus,
+            theme.icons.default,
+            theme.icons.active,
+            c.selected_border,
+            c.selected_bg,
+            c.selected_hover,
+            c.unread_border,
+            c.unread_bg,
+            c.unread_hover,
+            c.mention_border,
+            c.mention_bg,
+            c.mention_hover,
+            c.connected_border,
+            c.connected_bg,
+            c.connected_hover,
+        ]
+        .iter()
+        .map(|h| h.0.into_rgba8())
+        .chain(std::iter::once([
+            theme.shape.radius,
+            theme.shape.radius_large,
+            theme.shape.indicator_width,
+            theme.shape.row_radius,
+        ]))
+        .collect()
+    }
+
+    #[test]
+    fn shape_values_are_clamped() {
+        let loaded = Theme::parse("x", "[shape]\nradius = 99\nindicator_width = 2\n").unwrap();
+        assert_eq!(loaded.theme.shape.radius, Shape::MAX_RADIUS);
+        assert_eq!(loaded.theme.shape.indicator_width, 2);
+        assert!(
+            loaded.warnings.iter().any(|w| w.contains("shape.radius")),
+            "{:?}",
+            loaded.warnings
+        );
+        assert!(Theme::parse("x", "[shape]\nradius = -1\n").is_err());
+    }
+
     #[test]
     fn bad_color_is_an_error() {
         let err = Theme::parse("x", "[text]\nprimary = \"red\"\n").unwrap_err();
@@ -363,7 +687,7 @@ mod tests {
 
         assert_eq!(
             available(Some(&dir)),
-            ["dark", "light", "high-contrast", "broken"]
+            ["dark", "light", "high-contrast", "neko", "broken"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

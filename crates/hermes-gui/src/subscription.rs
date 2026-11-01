@@ -97,7 +97,8 @@ pub fn single_instance(endpoint: Endpoint) -> Subscription<Message> {
     })
 }
 
-/// Window size (for placing menus) and key presses (keybinds).
+/// Window size (for placing menus), key presses (keybinds) and the left mouse button (drag and
+/// drop).
 pub fn window_and_keys() -> Subscription<Message> {
     event::listen_with(|event, status, _window| match event {
         Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
@@ -115,6 +116,12 @@ pub fn window_and_keys() -> Subscription<Message> {
         )),
         Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. }) => {
             Some(Message::KeyReleased(key))
+        }
+        Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+            Some(Message::MousePressed)
+        }
+        Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::MouseReleased)
         }
         _ => None,
     })

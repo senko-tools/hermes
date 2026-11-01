@@ -7,7 +7,7 @@ use hermes_client_core::audio::Sound;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::{Core, InstanceId};
-use iced::widget::{button, checkbox, column, container, mouse_area, pin, row, slider, stack};
+use iced::widget::{checkbox, column, container, mouse_area, pin, row, slider, stack};
 use iced::{Alignment, Border, Element, Fill, Point, Shadow, Size, Task, Vector};
 
 use crate::app::App;
@@ -15,7 +15,8 @@ use crate::buffer::{Buffer, settings};
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
-use crate::widget::{label, small, strong};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, strong};
 
 /// An incoming call rings for at most this long.
 pub const RING_FOR: Duration = Duration::from_secs(30);
@@ -164,7 +165,7 @@ impl App {
             }
             VoiceMsg::OpenAudioSettings => {
                 self.settings_tab = settings::Tab::Voice;
-                self.panes.open(Buffer::Settings);
+                self.page = Some(Buffer::Settings);
                 return self.load_devices();
             }
             VoiceMsg::UserMenu(inst, user) => {
@@ -293,17 +294,15 @@ pub fn banner<'a>(
     container(
         row![
             strong(format!("{caller} is calling{place}"), fonts).width(Fill),
-            button(label("Join", fonts))
-                .style(move |_, s| style::primary(theme, s))
+            text_button("Join", ButtonKind::Primary, fonts, theme)
                 .on_press(Message::Voice(VoiceMsg::AnswerCall)),
-            button(label("Dismiss", fonts))
-                .style(move |_, s| style::secondary(theme, s))
+            text_button("Dismiss", ButtonKind::Secondary, fonts, theme)
                 .on_press(Message::Voice(VoiceMsg::DismissCall)),
         ]
-        .spacing(8)
+        .spacing(style::GAP_S)
         .align_y(Alignment::Center),
     )
-    .padding([6, 10])
+    .padding([style::GAP_S, style::GAP_S])
     .width(Fill)
     .style(move |_| container::Style {
         text_color: Some(theme.buttons.primary.text.0),
@@ -333,8 +332,9 @@ pub fn volume_overlay<'a>(
         column![
             strong(menu.name.clone(), fonts),
             row![
-                small("Volume", fonts).width(Fill),
-                small(format!("{:.0} %", menu.volume * 100.0), fonts).color(theme.text.secondary.0),
+                caption("Volume", fonts).width(Fill),
+                caption(format!("{:.0} %", menu.volume * 100.0), fonts)
+                    .color(theme.text.secondary.0),
             ],
             slider(0.0..=2.0, menu.volume, |v| Message::Voice(
                 VoiceMsg::UserVolume(v)
@@ -346,13 +346,13 @@ pub fn volume_overlay<'a>(
                 .text_size(fonts.size)
                 .font(fonts.ui),
         ]
-        .spacing(8),
+        .spacing(style::GAP_S),
     )
-    .padding(10)
+    .padding(style::GAP_S)
     .width(MENU_WIDTH)
     .style(move |_| container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.sidebar.background.0.into()),
+        background: Some(theme.surface.overlay.0.into()),
         border: Border {
             color: theme.general.border.0,
             width: 1.0,

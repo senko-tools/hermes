@@ -1,4 +1,5 @@
-//! Fonts (PLAN.md section 15.5): Inter for the UI and JetBrains Mono for code are bundled; any
+//! Fonts (PLAN.md section 15.5, default changed in docs/DECISIONS.md): JetBrainsMono Nerd Font
+//! (the default for text and code, and the icon font), Inter and JetBrains Mono are bundled; any
 //! other `font.family` / `font.mono_family` is looked up among the system fonts by name.
 
 use std::collections::BTreeSet;
@@ -8,11 +9,19 @@ use hermes_client_core::config;
 use iced::Font;
 use iced::font::Weight;
 
+pub const NERD_FONT: &str = "JetBrainsMono Nerd Font";
 pub const INTER: &str = "Inter";
 pub const JETBRAINS_MONO: &str = "JetBrains Mono";
 
+/// The bundled families, offered first in the font settings.
+pub const CHOICES: [&str; 3] = [NERD_FONT, INTER, JETBRAINS_MONO];
+
 /// The bundled font files, loaded at startup.
-pub const BUNDLED: [&[u8]; 6] = [
+pub const BUNDLED: [&[u8]; 10] = [
+    include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Italic.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Medium.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Bold.ttf"),
     include_bytes!("../assets/fonts/Inter-Regular.ttf"),
     include_bytes!("../assets/fonts/Inter-Italic.ttf"),
     include_bytes!("../assets/fonts/Inter-Medium.ttf"),
@@ -20,6 +29,9 @@ pub const BUNDLED: [&[u8]; 6] = [
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
 ];
+
+/// Icons (`widget::icon`) always come from the bundled Nerd Font, whatever `font.family` is.
+pub const ICONS: Font = Font::with_name(NERD_FONT);
 
 pub const MIN_SIZE: u16 = 8;
 pub const MAX_SIZE: u16 = 32;
@@ -40,8 +52,8 @@ pub struct Fonts {
 impl Fonts {
     pub fn from_config(font: &config::Font) -> Fonts {
         Fonts {
-            ui: Font::with_name(family_name(&font.family, INTER)),
-            mono: Font::with_name(family_name(&font.mono_family, JETBRAINS_MONO)),
+            ui: Font::with_name(family_name(&font.family, NERD_FONT)),
+            mono: Font::with_name(family_name(&font.mono_family, NERD_FONT)),
             size: f32::from(font.size.clamp(MIN_SIZE, MAX_SIZE)),
             scale: if font.ui_scale.is_finite() {
                 font.ui_scale.clamp(MIN_SCALE, MAX_SCALE) as f32
@@ -65,14 +77,26 @@ impl Fonts {
         }
     }
 
-    /// Smaller text: timestamps, hints.
-    pub fn small(&self) -> f32 {
+    // The type scale: every text in the app uses one of these sizes (see `widget`).
+
+    /// Captions: timestamps, hints, section titles, badges.
+    pub fn caption(&self) -> f32 {
         (self.size - 2.0).max(f32::from(MIN_SIZE))
     }
 
-    /// Headings.
-    pub fn large(&self) -> f32 {
+    /// Titles: the pane header, the space name, the sidebar brand.
+    pub fn title(&self) -> f32 {
+        self.size + 2.0
+    }
+
+    /// Page headings.
+    pub fn heading(&self) -> f32 {
         self.size + 5.0
+    }
+
+    /// Welcome and empty screens.
+    pub fn display(&self) -> f32 {
+        self.size + 11.0
     }
 }
 
@@ -100,10 +124,19 @@ mod tests {
     #[test]
     fn defaults_and_limits() {
         let fonts = Fonts::from_config(&config::Font::default());
-        assert_eq!(fonts.ui.family, Family::Name(INTER));
-        assert_eq!(fonts.mono.family, Family::Name(JETBRAINS_MONO));
+        assert_eq!(fonts.ui.family, Family::Name(NERD_FONT));
+        assert_eq!(fonts.mono.family, Family::Name(NERD_FONT));
         assert_eq!(fonts.size, 13.0);
         assert_eq!(fonts.scale, 1.0);
+        assert_eq!(
+            [
+                fonts.caption(),
+                fonts.title(),
+                fonts.heading(),
+                fonts.display()
+            ],
+            [11.0, 15.0, 18.0, 24.0]
+        );
 
         let fonts = Fonts::from_config(&config::Font {
             family: "  ".into(),
@@ -111,10 +144,16 @@ mod tests {
             size: 200,
             ui_scale: 0.1,
         });
-        assert_eq!(fonts.ui.family, Family::Name(INTER));
+        assert_eq!(fonts.ui.family, Family::Name(NERD_FONT));
         assert_eq!(fonts.mono.family, Family::Name("Consolas"));
         assert_eq!(fonts.size, f32::from(MAX_SIZE));
         assert_eq!(fonts.scale, MIN_SCALE as f32);
+
+        let tiny = Fonts::from_config(&config::Font {
+            size: 8,
+            ..config::Font::default()
+        });
+        assert_eq!(tiny.caption(), f32::from(MIN_SIZE));
     }
 
     #[test]

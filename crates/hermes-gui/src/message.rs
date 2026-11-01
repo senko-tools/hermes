@@ -5,8 +5,8 @@ use iced::keyboard::{Key, Modifiers};
 use iced::widget::pane_grid;
 use iced::{Size, window};
 
-use crate::buffer::{channel, settings};
-use crate::modal::{add_instance, command_bar, new_dm};
+use crate::buffer::{channel, settings, space_settings};
+use crate::modal::{add_instance, command_bar, form, new_dm};
 use crate::panes::PaneAction;
 use crate::sidebar::collapsed::Node;
 use crate::sidebar::menu::{Action, Target};
@@ -80,4 +80,38 @@ pub enum Message {
     Voice(crate::voice::VoiceMsg),
     /// A key was released (push-to-talk without global polling).
     KeyReleased(Key),
+    SpaceSettings(InstanceId, Id, space_settings::Message),
+    Form(form::Message),
+    /// A form's request finished: close it (with a status line) or show the error in it.
+    FormDone(Result<String, String>),
+    /// The left mouse button went down or up anywhere (drag and drop).
+    MousePressed,
+    MouseReleased,
+    /// The pointer entered a draggable sidebar row (or left it).
+    DragHover(Option<crate::drag::Item>),
+    DragLeave(crate::drag::Item),
+    /// The edge of the sidebar or member list was pressed: start resizing it.
+    ResizeStart(crate::resize::Edge),
+    /// The pointer moved while resizing (window coordinates).
+    ResizeMove(iced::Point),
+    /// The edge was double-clicked: back to the default width.
+    ResizeReset(crate::resize::Edge),
+    /// An invite was made from the form: copy the link and refresh the list.
+    InviteCreated(InstanceId, Id, String),
+    OpenResults(crate::buffer::results::Key),
+    Results(crate::buffer::results::Key, crate::buffer::results::Message),
+    /// Search in the space of a channel (the whole instance for a DM).
+    SearchFrom(InstanceId, Id),
+    UpdateChecked(Result<Option<hermes_client_core::update::Update>, String>),
+    OpenUpdate,
+    /// Run a keybind action from a button.
+    Shortcut(crate::keybinds::Action),
+    /// Nothing to do (a request whose result the gateway delivers).
+    Nothing,
+    /// A frame was drawn while something animates (only asked for then).
+    Frame,
+    /// Once a second while an info notification shows: it goes away after a while.
+    StatusTick,
+    /// An icon file was picked for a space.
+    IconPicked(InstanceId, Id, Option<std::path::PathBuf>),
 }

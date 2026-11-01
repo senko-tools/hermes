@@ -10,7 +10,7 @@ use iced::{Alignment, Element, Fill};
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Action};
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{caption, label};
 
 pub const INPUT: &str = "command-bar-input";
 const MAX_SHOWN: usize = 50;
@@ -25,6 +25,10 @@ pub enum Command {
     AddInstance,
     JoinVoice(InstanceId, Id),
     LeaveVoice,
+    SpaceSettings(InstanceId, Id),
+    Results(crate::buffer::results::Key),
+    /// A menu action (create space, create channel, edit profile, …).
+    Menu(crate::sidebar::menu::Target, crate::sidebar::menu::Action),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,40 +104,51 @@ impl CommandBar {
     }
 
     pub fn view<'a>(&'a self, fonts: &Fonts, theme: &'a Theme) -> Element<'a, Message> {
-        let mut list = column![].spacing(1);
+        let mut list = column![].spacing(2).padding(iced::Padding::ZERO.right(12));
         for (n, entry) in self.shown().enumerate() {
             let selected = n == self.selected;
             list = list.push(
                 button(
                     row![
                         label(entry.label.as_str(), fonts).width(Fill),
-                        small(entry.detail.as_str(), fonts).color(theme.text.tertiary.0),
+                        caption(entry.detail.as_str(), fonts).color(theme.text.tertiary.0),
                     ]
-                    .spacing(8)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
-                .padding([5, 8])
+                .padding([style::GAP_S, style::GAP_S])
                 .style(move |_, s| style::sidebar_item(theme, s, selected))
                 .on_press(Message::Run(n)),
             );
         }
         if self.shown.is_empty() {
             list = list.push(
-                container(small("Nothing matches", fonts).color(theme.text.tertiary.0)).padding(8),
+                container(caption("Nothing matches", fonts).color(theme.text.tertiary.0))
+                    .padding(style::GAP_S),
             );
         }
         column![
             text_input("Jump to a channel, a person or an action…", &self.input)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
+                .icon(iced::widget::text_input::Icon {
+                    font: crate::font::ICONS,
+                    code_point: crate::widget::icon::SEARCH,
+                    size: Some(16.into()),
+                    spacing: 8.0,
+                    side: iced::widget::text_input::Side::Left,
+                })
                 .id(INPUT)
                 .on_input(Message::Input)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
-            scrollable(list).height(360),
+                .size(fonts.size),
+            scrollable(list)
+                .style(move |_, st| style::scrollbar(theme, st))
+                .height(360),
         ]
-        .spacing(8)
+        .spacing(style::GAP)
         .into()
     }
 }
@@ -186,7 +201,61 @@ pub fn entries(
         let Some(s) = store.instance(inst) else {
             continue;
         };
+        use crate::sidebar::menu::{Action as M, Target};
+        out.push(Entry {
+            label: "Create a space".into(),
+            detail: inst.clone(),
+            command: Command::Menu(Target::Instance(inst.clone()), M::CreateSpace),
+        });
+        out.push(Entry {
+            label: "Edit profile".into(),
+            detail: inst.clone(),
+            command: Command::Menu(Target::Instance(inst.clone()), M::EditProfile),
+        });
+        out.push(Entry {
+            label: "Search everywhere".into(),
+            detail: inst.clone(),
+            command: Command::Results(crate::buffer::results::Key::Search(inst.clone(), None)),
+        });
         for (space_id, space) in &s.spaces {
+            out.push(Entry {
+                label: format!("Search in {}", space.space.name),
+                detail: inst.clone(),
+                command: Command::Results(crate::buffer::results::Key::Search(
+                    inst.clone(),
+                    Some(*space_id),
+                )),
+            });
+            out.push(Entry {
+                label: format!("Space settings: {}", space.space.name),
+                detail: inst.clone(),
+                command: Command::SpaceSettings(inst.clone(), *space_id),
+            });
+            if view::can_in_space(
+                s,
+                *space_id,
+                hermes_client_core::proto::permissions::Permissions::MANAGE_CHANNELS,
+            ) {
+                out.push(Entry {
+                    label: format!("Create channel in {}", space.space.name),
+                    detail: inst.clone(),
+                    command: Command::Menu(
+                        Target::Space(inst.clone(), *space_id),
+                        M::CreateChannel,
+                    ),
+                });
+            }
+            if view::can_in_space(
+                s,
+                *space_id,
+                hermes_client_core::proto::permissions::Permissions::CREATE_INVITES,
+            ) {
+                out.push(Entry {
+                    label: format!("Invite people to {}", space.space.name),
+                    detail: inst.clone(),
+                    command: Command::Menu(Target::Space(inst.clone(), *space_id), M::InvitePeople),
+                });
+            }
             for c in view::channel_tree(s, *space_id) {
                 if c.kind == ChannelKind::Category {
                     continue;
@@ -228,6 +297,11 @@ pub fn entries(
             });
         }
     }
+    out.push(Entry {
+        label: "Mentions".into(),
+        detail: "Messages that mention you".into(),
+        command: Command::Results(crate::buffer::results::Key::Mentions),
+    });
     for (action, _, _, title) in ACTIONS {
         if matches!(action, Action::CommandBar | Action::MarkRead) {
             continue;

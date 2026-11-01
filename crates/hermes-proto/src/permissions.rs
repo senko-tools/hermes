@@ -123,6 +123,239 @@ impl<'de> Deserialize<'de> for Permissions {
     }
 }
 
+/// The groups permissions are shown in by the clients' role and channel editors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionGroup {
+    General,
+    Text,
+    Voice,
+}
+
+impl PermissionGroup {
+    pub const ALL: [PermissionGroup; 3] = [
+        PermissionGroup::General,
+        PermissionGroup::Text,
+        PermissionGroup::Voice,
+    ];
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            PermissionGroup::General => "General",
+            PermissionGroup::Text => "Text",
+            PermissionGroup::Voice => "Voice",
+        }
+    }
+}
+
+/// One permission as the clients present it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionInfo {
+    pub flag: Permissions,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub group: PermissionGroup,
+    /// Meaningful in a channel override (space-wide permissions are not).
+    pub channel: bool,
+}
+
+const fn info(
+    flag: Permissions,
+    name: &'static str,
+    description: &'static str,
+    group: PermissionGroup,
+    channel: bool,
+) -> PermissionInfo {
+    PermissionInfo {
+        flag,
+        name,
+        description,
+        group,
+        channel,
+    }
+}
+
+/// Every permission with a readable name and description, in display order.
+pub const CATALOG: &[PermissionInfo] = {
+    use PermissionGroup::{General, Text, Voice};
+    &[
+        info(
+            Permissions::ADMINISTRATOR,
+            "Administrator",
+            "Every permission, in every channel. Give this only to people you fully trust.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::MANAGE_SPACE,
+            "Manage space",
+            "Change the space's name, description and icon.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::MANAGE_ROLES,
+            "Manage roles",
+            "Create, edit and delete roles below their own highest role, and assign them.",
+            General,
+            true,
+        ),
+        info(
+            Permissions::MANAGE_CHANNELS,
+            "Manage channels",
+            "Create, edit, reorder and delete channels and their permissions.",
+            General,
+            true,
+        ),
+        info(
+            Permissions::KICK_MEMBERS,
+            "Kick members",
+            "Remove members; they can come back with a new invite.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::BAN_MEMBERS,
+            "Ban members",
+            "Remove members and keep them out.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::CREATE_INVITES,
+            "Create invites",
+            "Make invite links to this space.",
+            General,
+            true,
+        ),
+        info(
+            Permissions::MANAGE_INVITES,
+            "Manage invites",
+            "See and revoke everyone's invite links.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::CHANGE_NICKNAME,
+            "Change nickname",
+            "Set their own nickname in this space.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::MANAGE_NICKNAMES,
+            "Manage nicknames",
+            "Change other members' nicknames.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::VIEW_AUDIT_LOG,
+            "View audit log",
+            "See who changed what in the space settings.",
+            General,
+            false,
+        ),
+        info(
+            Permissions::VIEW_CHANNEL,
+            "View channels",
+            "See the channel, and who is in a voice channel. Without it the channel is hidden.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::SEND_MESSAGES,
+            "Send messages",
+            "Write in text channels.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::READ_HISTORY,
+            "Read message history",
+            "Read messages sent before they opened the channel.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::ATTACH_FILES,
+            "Attach files",
+            "Upload images and files.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::ADD_REACTIONS,
+            "Add reactions",
+            "React with new emoji (joining an existing reaction is always allowed).",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::MENTION_EVERYONE,
+            "Mention @everyone",
+            "Notify everyone with @everyone or @here, and mention any role.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::MANAGE_MESSAGES,
+            "Manage messages",
+            "Delete other people's messages and pin messages.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::BYPASS_SLOWMODE,
+            "Bypass slow mode",
+            "Send messages without waiting for the slow mode timer.",
+            Text,
+            true,
+        ),
+        info(
+            Permissions::CONNECT,
+            "Connect",
+            "Join voice channels.",
+            Voice,
+            true,
+        ),
+        info(
+            Permissions::SPEAK,
+            "Speak",
+            "Talk in voice channels.",
+            Voice,
+            true,
+        ),
+        info(
+            Permissions::USE_VOICE_ACTIVITY,
+            "Use voice activity",
+            "Talk without push-to-talk.",
+            Voice,
+            true,
+        ),
+        info(
+            Permissions::MUTE_MEMBERS,
+            "Mute members",
+            "Mute other people in voice for everyone.",
+            Voice,
+            true,
+        ),
+        info(
+            Permissions::DEAFEN_MEMBERS,
+            "Deafen members",
+            "Stop other people from hearing voice.",
+            Voice,
+            true,
+        ),
+        info(
+            Permissions::MOVE_MEMBERS,
+            "Move members",
+            "Move people between voice channels or disconnect them, and join full channels.",
+            Voice,
+            true,
+        ),
+    ]
+};
+
 fn find_role(roles: &[Role], id: Id) -> Option<&Role> {
     roles.iter().find(|r| r.id == id)
 }
@@ -224,6 +457,17 @@ mod tests {
     use crate::models::Override;
     use crate::models::tests::user;
     use serde_json::json;
+
+    #[test]
+    fn the_catalog_lists_every_bit_once() {
+        let mut seen = Permissions::empty();
+        for info in CATALOG {
+            assert_eq!(info.flag.bits().count_ones(), 1, "{}", info.name);
+            assert!(!seen.contains(info.flag), "{} twice", info.name);
+            seen |= info.flag;
+        }
+        assert_eq!(seen, Permissions::all());
+    }
 
     const SPACE: Id = Id(100);
     const OWNER: u64 = 1;

@@ -30,10 +30,13 @@ pub enum Action {
     ToggleMute,
     ToggleDeafen,
     Settings,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 }
 
 /// Every action: config name, default combo and the name shown in the command bar.
-pub const ACTIONS: [(Action, &str, &str, &str); 18] = [
+pub const ACTIONS: [(Action, &str, &str, &str); 21] = [
     (Action::CommandBar, "command_bar", "Ctrl+K", "Command bar"),
     (
         Action::NextUnread,
@@ -117,6 +120,9 @@ pub const ACTIONS: [(Action, &str, &str, &str); 18] = [
         "Toggle deafen",
     ),
     (Action::Settings, "settings", "Ctrl+,", "Open settings"),
+    (Action::ZoomIn, "zoom_in", "Ctrl+=", "Zoom in"),
+    (Action::ZoomOut, "zoom_out", "Ctrl+-", "Zoom out"),
+    (Action::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
 ];
 
 /// `[keys]` entry of the global mute key (unbound by default). It is registered system-wide with

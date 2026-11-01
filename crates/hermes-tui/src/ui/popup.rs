@@ -41,6 +41,46 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     match popup {
+        Popup::Menu {
+            title,
+            items,
+            selected,
+        } => {
+            let labels: Vec<String> = items.iter().map(|(l, _)| format!(" {l} ")).collect();
+            let w = labels
+                .iter()
+                .map(|l| width(l))
+                .max()
+                .unwrap_or(10)
+                .max(width(title) + 4) as u16
+                + 2;
+            let area = centered(screen, w, labels.len() as u16 + 3);
+            let inner = frame(f, area, title);
+            let mut lines = list_lines(&labels, *selected);
+            lines.push(Line::from(Span::styled(
+                " Enter: do it · Esc: close",
+                dim(),
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+        Popup::Results {
+            title,
+            lines,
+            selected,
+            ..
+        } => {
+            let area = centered(
+                screen,
+                110,
+                screen.height.saturating_sub(4).min(lines.len() as u16 + 3),
+            );
+            let inner = frame(f, area, &format!("{title} · Enter: go to the message"));
+            let shown = inner.height as usize;
+            // Keep the selection in view.
+            let skip = selected.saturating_sub(shown.saturating_sub(1));
+            let visible: Vec<String> = lines.iter().skip(skip).take(shown).cloned().collect();
+            f.render_widget(Paragraph::new(list_lines(&visible, selected - skip)), inner);
+        }
         Popup::Complete { items, selected } => {
             let labels: Vec<String> = items.iter().map(|s| s.label.clone()).collect();
             let w = labels.iter().map(|l| width(l)).max().unwrap_or(10) as u16 + 4;
@@ -149,8 +189,70 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
                 inner.y + form.focus as u16,
             ));
         }
+        Popup::Notice { title, text } => {
+            let w = text.lines().map(width).max().unwrap_or(20) as u16 + 4;
+            let area = centered(screen, w.clamp(30, 90), text.lines().count() as u16 + 4);
+            let inner = frame(f, area, title);
+            let mut lines: Vec<Line> = text.lines().map(|l| Line::from(l.to_owned())).collect();
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("any key closes", dim())));
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
+        Popup::Call { name, .. } => {
+            let area = centered(screen, 44, 5);
+            let inner = frame(f, area, "incoming call");
+            f.render_widget(
+                Paragraph::new(vec![
+                    Line::from(Span::styled(format!("{name} is calling you"), bold())),
+                    Line::from(""),
+                    Line::from(vec![
+                        Span::styled("y", Style::default().fg(Color::Green)),
+                        Span::raw(": join    "),
+                        Span::styled("n", Style::default().fg(Color::Red)),
+                        Span::raw(": dismiss"),
+                    ]),
+                ]),
+                inner,
+            );
+        }
+        Popup::Log => {
+            let area = centered(screen, 100, screen.height.saturating_sub(4));
+            let inner = frame(f, area, "messages (any key closes)");
+            let shown = inner.height as usize;
+            let skip = app.log.len().saturating_sub(shown);
+            let lines: Vec<Line> = app
+                .log
+                .iter()
+                .skip(skip)
+                .map(|(text, error, at)| {
+                    let age = at.elapsed().as_secs();
+                    let age = if age < 60 {
+                        format!("{age:>3}s ")
+                    } else {
+                        format!("{:>3}m ", age / 60)
+                    };
+                    Line::from(vec![
+                        Span::styled(age, dim()),
+                        Span::styled(
+                            text.replace('\n', " "),
+                            if *error {
+                                Style::default().fg(Color::Red)
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                    ])
+                })
+                .collect();
+            let lines = if lines.is_empty() {
+                vec![Line::from(Span::styled("nothing yet", dim()))]
+            } else {
+                lines
+            };
+            f.render_widget(Paragraph::new(lines), inner);
+        }
         Popup::Help => {
-            let area = centered(screen, 76, 22);
+            let area = centered(screen, 90, 34);
             let inner = frame(f, area, "help (any key closes)");
             let mut lines = vec![Line::from(Span::styled(
                 "Normal mode keys ([tui.keys] in config.toml):",
@@ -167,8 +269,23 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             lines.push(Line::from(Span::styled("Commands:", bold())));
             lines.push(Line::from(HELP));
             lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Menus and mouse:", bold())));
+            lines.push(Line::from(
+                "a (or a right-click) shows what you can do with the selected channel, space, \
+                 message or person. Click a channel to open it; the wheel scrolls. / searches \
+                 (:search! everywhere); in results, Enter jumps to the message.",
+            ));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Voice:", bold())));
+            lines.push(Line::from(
+                "Select a voice channel or a DM and press J (from the sidebar, or inside the \
+                 channel). m mutes, D deafens, L leaves. :voice answers a call. The TUI has \
+                 no push-to-talk: voice activity only (:set voice.mode voice_activity).",
+            ));
+            lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Insert mode: /me /shrug /nick /dm /invite /status work too.",
+                "Insert mode: /me /shrug /nick /dm /invite /status /join /leave /mute /deafen \
+                 work too.",
                 dim(),
             )));
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);

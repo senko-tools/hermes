@@ -1082,3 +1082,292 @@ error-prone (a binary copied with WinSCP lost its executable bit and the service
 - **Private repository:** the server cannot download from GitHub, so the script uses the release
   files in its own folder automatically. Every release now ships `install.sh` (release.yml), so
   "download the release, copy the folder, run `sh install.sh`" works.
+
+## 2026-11-01: Release workflow (Phase 7, item 1) details
+
+Approved by the developer as a plan before implementation.
+
+- **Artifacts:** `hermes-server-{x86_64,aarch64}-unknown-linux-musl.tar.gz`,
+  `hermes-server-x86_64-pc-windows-msvc.zip`, `Hermes-<version>-portable.zip` (`hermes.exe` +
+  `hermes-tui.exe`), `hermes-tui-<version>-x86_64-pc-windows-msvc.zip`,
+  `hermes-tui-<version>-x86_64-unknown-linux-gnu.tar.gz`, `install.sh`, `hermes.service`,
+  `SHA256SUMS`, and the image `ghcr.io/senko-tools/hermes-server:<version>` (amd64 + arm64;
+  `:latest` only for releases without a `-`). Server archive names stay unversioned (install.sh
+  and the egg use them).
+- **Left out:** the Windows installer comes with the installer item (Phase 7 item 2); macOS
+  builds are skipped for now (10x runner minutes on a private repository; Windows first, Linux a
+  bonus, as the developer asked).
+- **aarch64** is cross-compiled with `cargo-zigbuild` (arm runners are not free for private
+  repositories). Windows binaries link the C runtime statically. The Linux TUI is built on
+  `ubuntu-22.04` (older glibc) and needs the system's `libasound2`.
+- **Docker:** `deploy/docker/Dockerfile.release` copies the musl binaries built by the workflow
+  (per `TARGETARCH`), so nothing is compiled under QEMU; `deploy/docker/Dockerfile` still builds
+  from source for self-builders.
+- **Dry run:** anything but a tag only uploads workflow artifacts (no release, no image push). It
+  runs when `release.yml` or `Dockerfile.release` changes on `dev`, or by hand.
+
+## 2026-11-01: Phase 6 in the GUI: space settings, channel management, menus
+
+The developer asked for Phase 6 to v1.0 without questions, decisions logged here.
+
+- **Space settings buffer** (`buffer/space_settings/`): tabs Overview, Roles, Channels &
+  permissions, Members, Invites, Bans, Audit log. Bans and Audit log only show with
+  `BAN_MEMBERS` / `VIEW_AUDIT_LOG`, Invites with `CREATE_INVITES` or `MANAGE_INVITES`. The
+  buffer is saved in the layout as `{ buffer = "space_settings", instance, space }`. Every change
+  goes through REST and comes back over the gateway; only the invite, ban and audit lists are
+  loaded over REST (when their tab opens, with a Refresh button).
+- **Roles editor:** name, color (12 swatches plus a `#RRGGBB` field instead of a full color
+  picker widget), hoist, mentionable, permission checkboxes grouped General / Text / Voice with a
+  description each. Checkboxes for bits I do not have are disabled (the server refuses them
+  anyway). The descriptions live in `hermes_proto::permissions::CATALOG` so both UIs share them.
+- **Drag and drop** (roles in the settings, channels in the sidebar and the Channels tab): iced
+  buttons take the mouse press, so rows report the pointer entering/leaving and a window-wide
+  listener reports the left button going down and up (`drag.rs`). Dropping a channel on another
+  takes its place; on a category moves it in first. **Move up / Move down** buttons do the same
+  without a mouse (keyboard users, accessibility). The order logic is in client-core
+  (`view::move_channel`, `view::step_channel`) so the TUI can use it too.
+- **Channel overrides:** per role, each channel-relevant permission has Deny / Inherit / Allow
+  buttons; setting all to Inherit deletes the override. Text channels hide the voice bits.
+- **Private channel** in the create dialog: an `@everyone` deny-`VIEW_CHANNEL` override plus an
+  allow-`VIEW_CHANNEL` override for each ticked role. Text channel names are slugged
+  (`My Room` → `my-room`), voice channel names are kept as typed.
+- **One generic form dialog** (`modal/form.rs`) for create space / channel / category, edit
+  channel (name, topic, slow mode, voice user limit and bitrate), ban (reason, delete messages
+  from the last hour / day / week), nickname, invite (expiry, max uses) and profile.
+- **Context menus everywhere** (muscle memory): right-click on a message (anywhere on it), on a
+  message author's name or avatar, on members in the member list, on categories, on spaces
+  (also a visible `⋮` button on space rows for people who do not right-click). Menus only offer
+  what I may do, have separators, and check marks for the current notification level. New
+  actions: create space/channel/category, space settings, mark all read, notification level,
+  mute, open in a new pane, join voice, edit channel, permissions, delete channel, rename/leave
+  group, reply, edit, quote, message / mention / copy username / nickname / roles / kick / ban,
+  transfer ownership, delete space. Destructive ones ask first.
+- **Command bar** additions: "Create a space", "Edit profile", "Space settings: X",
+  "Create channel in X", "Invite people to X".
+
+## 2026-11-01: Server endpoints for Phase 6 (search, profile, notification settings, admin)
+
+- Implemented as PLAN.md section 10 says: `PATCH /users/@me`, `GET /users/{id}`,
+  `PUT /users/@me/notification-settings/{target_id}`, `GET /search` (FTS5), `GET/PATCH
+  /admin/users`.
+- **Additions:** `DELETE /users/@me/notification-settings/{target_id}` with a new dispatch event
+  `notification_settings_delete {target_id}`, because "back to the default" (a channel following
+  its space again) cannot be expressed with `PUT`. `GET /users/@me/mentions?before&limit` for
+  the Mentions buffer: the `message_mentions` table was meant for a "mentions inbox" (its schema
+  comment), but section 10 has no endpoint to read it.
+- **Search syntax:** every word must match as a prefix (`"word"*` in FTS5, quotes escaped), so no
+  input causes an FTS syntax error; at most 16 words. Deleted messages never match.
+- **Admin:** disabling a user deletes all their sessions (closing their gateways); admins cannot
+  disable or demote themselves, so an instance never loses its last admin by accident.
+
+## 2026-11-01: Search, mentions, pins and the new Settings tabs (GUI)
+
+- **One results buffer** (`buffer/results.rs`) shows search results, mentions and pins; it opens
+  next to the focused channel (a split) so the channel stays visible, and a click on a result
+  opens its channel at that message, highlighted. Layout keys: `search` (instance, optional
+  space), `mentions`, `pins` (instance, channel); the query is not saved.
+- **Jump to message** (also for reply previews, which the plan says are clickable): the page
+  around the message is loaded (`HistoryAnchor::Around`), the list scrolls to it, and scrolling
+  down from there loads newer pages until the present.
+- **Entry points:** `Ctrl+F` searches the focused channel's space (the whole instance from a DM);
+  pane headers of channels have "Pins" and "Search"; space menus have "Search in this space";
+  the user panel has "Mentions"; the command bar has "Search everywhere", "Search in X" and
+  "Mentions". Mentions load the newest 50 per instance, merged newest first.
+- **Settings tabs** now: Account (profile, avatar, password, signed-in devices with sign out),
+  Appearance, Chat (`[buffer]`), Voice & Audio, Notifications (`[notifications]` and the window
+  options of `[general]`), Keybinds (read-only list; editing stays in `config.toml`) and About
+  (version, copy debug info, open the logs folder, project page). The Instances tab is not a
+  separate tab: the sidebar's instance menu has everything it would (sign in/out, remove).
+- **Muted channels** (muted, or level "nothing") show no unread dot and are drawn dimmed; mentions
+  still count (`view::TreeChannel::muted`, shared with the TUI).
+
+## 2026-11-01: Admin CLI (Phase 7)
+
+- `hermes-server user list | reset-password <name> | set-admin <name> <true|false> |
+  disable <name> | enable <name>` and `hermes-server version`. `list` and `enable` are additions
+  to section 9.1 (otherwise a disabled account could only be re-enabled over the API).
+- Reset passwords are 16 letters and digits without look-alikes (0/O, 1/l/I); reset and disable
+  delete every session of the user.
+- **Pick-up by a running server:** a task compares the database with the cache every 10 seconds
+  (`users::refresh`): it copies `disabled` / `instance_admin` and closes gateway connections whose
+  session no longer exists. REST requests check the session in the database on every request,
+  so they stop at once.
+
+## 2026-11-01: Windows installer, egg, self-hosting guide (Phase 7)
+
+- **Installer:** cargo-packager 0.11.8 (a dev tool, installed in the release job) builds an NSIS
+  installer from `crates/hermes-gui/Packager.toml`: per-user install (no admin prompt) to
+  `%LOCALAPPDATA%\Programs\Hermes`, Start menu and desktop shortcuts, uninstaller, `hermes://`
+  registered in `HKCU\Software\Classes\hermes` (`"…\hermes.exe" "%1"`), and `hermes-tui.exe`
+  installed next to the GUI. The release names it `Hermes-Setup-<version>.exe`. Its version is
+  written in `Packager.toml` (cargo-packager needs it there with `-c`); a test keeps it equal to
+  the crate version. Not code-signed (SmartScreen: "More info → Run anyway", as section 21 says).
+- **App icon:** the rounded "H" the tray already draws (`desktop::tray::icon_rgba`), rendered
+  to `assets/icons/` by an ignored test so the installer, shortcuts and window share it.
+- **Egg:** `deploy/pterodactyl/egg-hermes.json` as in section 18.5, plus a fixed
+  `HERMES__STORAGE__DATA_DIR=./data` and `HERMES__LOG__FORMAT=pretty`, arm64 detection, and
+  `hermes-server version` printed after install. It ships with each release. It still has to be
+  tried on a real panel (the checklist item stays open until then).
+- **`docs/self-hosting.md`** is written for non-experts (install script, Docker, panel, Caddy and
+  nginx, invites, admin commands, backups, troubleshooting). Screenshots are not in it yet: they
+  need the real apps on a desktop (the checklist item stays open until then).
+
+## 2026-11-01: Phase 8 tooling: load test, fuzzing, update check, crash logs
+
+- **`hermes-loadtest`** (in `hermes-voicebot`): N chat bots in one text channel at a steady rate,
+  M voice bots playing tones in one voice channel, an observer measuring send → arrive latency;
+  the first bot creates an invite for the others. Local run (debug server on the developer's
+  Windows desktop, 50 chat bots at 6 messages/min + 20 voice bots): 300/300 messages delivered,
+  p50 8 ms, p99 13 ms, max 19 ms; server working set ≈ 120 MB. The 1 vCPU VPS run of section 19
+  is still to do.
+- **Fuzzing:** `crates/hermes-proto/tests/fuzz.rs` throws 20 000 random and mutated inputs at the
+  datagram parser, the gateway decoder and the markup parser on every test run (seeded, so
+  failures reproduce). `fuzz/` is a separate cargo-fuzz crate (own workspace, `libfuzzer-sys`, a
+  dependency only there) for long coverage-guided runs with nightly.
+- **Update check** (`client-core::update`): GitHub releases API, newest non-draft release newer
+  than the running version (pre-releases only for pre-release users); the GUI shows "Hermes X is
+  available" above the user panel (click opens the release page). Off with
+  `general.check_for_updates = false`. While the repository is private the API answers 404 and
+  nothing is shown.
+- **Crash logs** (`client-core::crash`): a panic writes `logs/crash-<unix ms>.log` (version, OS,
+  message, location, backtrace) in the config folder; GUI and TUI. Settings → About has "Copy
+  debug info" and "Open the logs folder".
+
+## 2026-11-01: Accessibility basics (Phase 8)
+
+- High-contrast theme and the UI scale setting already existed; keyboard navigation was missing
+  in menus and dialogs. Now: **Tab / Shift+Tab** move between the fields of dialogs and settings
+  (iced only focuses text fields), context menus take **Up/Down + Enter/Space** (Escape closes),
+  and **Shift+F10 or the Menu key** opens the focused channel's menu, as on Windows. Together
+  with the existing keybinds (Ctrl+K command bar, Alt+Up/Down channels, Ctrl+Tab panes, Ctrl+F
+  search) everything in the main flow works without a mouse.
+- The security review result is recorded in `docs/security-review.md`.
+
+## 2026-11-01: TUI: action menus, mouse, search and space commands
+
+- **Action menu** (the TUI's right-click): `a` (configurable as `[tui.keys] menu`), `:menu` or a
+  right-click opens a list of what can be done with the selection: a sidebar channel (open,
+  join voice, mark read, pins, notification level, mute, rename, topic, delete), a space (mark
+  read, invite, search, create channels, notifications), an instance (create a space, profile,
+  mentions, offline/online, log out, remove), a message (reply, react, edit, pin, open the
+  attachment, message/mention the author, delete) or a person (message, mention, roles, kick,
+  ban). Entries that need text open the `:` line pre-filled (`:ban bob `). Only what I may do is
+  offered.
+- **Mouse:** a left click on a sidebar row opens it, on a member selects them, on the messages
+  focuses them; a right-click does the same and opens the menu; the wheel scrolls the list under
+  the pointer.
+- **Search** (`/` or `:search <words>`, `:search!` for the whole instance), `:mentions` and
+  `:pins` show a results popup; Enter opens the channel at that message (loading the page
+  around it; scrolling past the newest loaded message loads newer pages).
+- **Commands** for Phase 6 in the TUI: `:notify all|mentions|none|default|mute|unmute [space]`,
+  `:create text|voice|category <name>`, `:space <name>`, `:rename`, `:topic`,
+  `:delete-channel`, `:kick`, `:ban <user> [reason]`, `:unban`, `:role <user> +role|-role`,
+  `:profile name|status <text>`, `:read`. The role editor and channel overrides stay GUI-only
+  (section 16.3: the TUI's settings UI is minimal).
+
+## 2026-11-01: GUI look: own palette, Lucide icons, roomier layout
+
+- **Themes:** the built-in `dark` and `light` themes no longer use Discord's colors. Dark is a
+  warm charcoal, light a warm paper, and both use a gold accent (`buttons.primary`, which also
+  colors focus rings, selected tabs and the active header buttons). `high-contrast` is unchanged.
+  No theme keys were added; new looks derive from the existing keys.
+- **Icons:** PLAN.md section 15.1 asks for an icon font for UI chrome. The GUI bundles a subset
+  of Lucide (`assets/fonts/Lucide.ttf`, ISC license in `Lucide-ISC.txt`, from lucide-static
+  0.468.0), only the glyphs listed in `widget/icon.rs`. Text buttons such as "Pins", "Search",
+  "Members", "Mute" and "React" became icon buttons with tooltips.
+- **Spacing:** shared measurements in `theme/style.rs` (gaps, radii, 32 px controls, 48 px
+  headers, row padding) so rows, buttons and inputs line up; text inputs, drop-downs and
+  scrollbars use themed styles instead of iced's defaults.
+- **Layout changes:** avatars 40 px with more space between authors; the composer is one
+  rounded field with the attach button inside; day dividers say Today / Yesterday / weekday;
+  Settings and Space settings use a side navigation instead of a row of tabs (same tabs);
+  member list and user panel show avatars with presence dots; the empty pane is titled "Home".
+- **Why:** the developer found the GUI cramped, unaligned and too plain, and asked for its own
+  style (like Halloy) that still feels familiar to people coming from Discord.
+
+## 2026-11-01: GUI: Nerd Font, Material icons, full-window settings, calm splits
+
+- **Font:** the default `font.family` and `font.mono_family` are now `JetBrainsMono Nerd Font`
+  (bundled: Regular, Italic, Medium, Bold; SIL OFL in `JetBrainsMonoNerdFont-OFL.txt`) instead
+  of Inter / JetBrains Mono (PLAN.md section 15.5). Inter and JetBrains Mono stay bundled.
+  Settings → Appearance has a font and a code-font picker: the bundled families or "Custom…" for
+  any installed font. Existing `config.toml` files keep the family they already name.
+- **Icons:** the Lucide subset from the previous entry is gone; icons are the Material Design
+  glyphs inside the bundled Nerd Font (`widget/icon.rs`), so there is one font less. No emojis
+  in UI chrome.
+- **Theme keys:** new `[presence] online / idle / dnd / offline` (status dots everywhere,
+  including the status menu). Themes that leave them out get the `dark` values with a warning,
+  like every other key.
+- **Settings and Space settings** open over the whole window instead of in a pane (PLAN.md 15.1
+  lists them as pane buffers): navigation on the left, a round close button (Esc also closes).
+  Layouts saved with a settings pane still restore and show it in the pane.
+- **Split panes ("calm splits"):** 1 px dividers instead of boxed panes with gaps; the focused
+  pane is marked by a gold line under its header; unfocused panes show their header buttons only
+  on hover; only the focused pane shows its member list.
+- **Smaller changes:** right-click menus have a header naming their target, an icon per entry
+  and the check on the right, and the right-clicked row, message or person stays outlined while
+  its menu is open; the reply/edit bar and upload chips sit inside the composer; settings
+  checkboxes are switches; file attachments are cards with a download button; icon buttons are
+  34 px; grouped messages always lay out their timestamp (shown on hover) so rows never move.
+- **Why:** the developer's review of the previous round (too small, text-heavy, cluttered
+  settings and splits, unaligned elements) and their choices: full-window settings, calm
+  splits, Material icons via the Nerd Font, JetBrainsMono Nerd Font as the default.
+
+## 2026-11-01: GUI: one type scale and spacing grid, richer theme format
+
+- **Measurements:** every text uses one of six sizes derived from `font.size` (caption −2,
+  label, strong, title +2, heading +5, display +11); gaps and paddings sit on a 4 px grid
+  (`GAP_XS` 4 … `GAP_XL` 24); text buttons, inputs, drop-downs and rows are 32 px tall and icon
+  buttons 32 px square (was 34).
+- **Theme format (PLAN.md 15.5):** new sections `[surface]` (deep, main, sidebar, raised,
+  overlay, hover), `[accent]` (base, highlight, muted, glow, focus), `[icons]` (default, active),
+  `[channel]` (border / background / hover for the selected, unread, mention and connected row
+  states) and `[shape]` (radius, radius_large, indicator_width). The older keys stay. A theme
+  file that leaves out a key of these sections gets it derived from its own older keys (not from
+  `dark`, and without a warning), so themes written before look the same.
+- **Why:** the developer found the UI messy (many text sizes, buttons of different heights) and
+  wants richer custom themes, e.g. a port of their Vencord theme, which the old keys could not
+  express (surface levels, accent-coloured icons, square corners, row state colours).
+
+## 2026-11-01: GUI: settings on one grid, resizable panels, steady UI scale
+
+- **Settings layout:** every settings row (user and space settings) is a name and hint on the
+  left and the control in a fixed 280 px column on the right; rows are grouped under small
+  titles; every on/off setting is its own row with the switch at the right edge (role
+  permissions too, instead of checkboxes). Kick, Ban and Transfer moved to a "Danger zone"
+  group; the space settings tab "Channels & permissions" is now "Channels".
+- **UI scale** applies when the slider is released (it changed the window scale while dragging,
+  so the slider jumped), with presets (90–150 %) and new keybinds `zoom_in` (Ctrl+=),
+  `zoom_out` (Ctrl+-) and `zoom_reset` (Ctrl+0).
+- **Resizable panels:** the sidebar and the member list are resized by dragging their inner
+  edge (double-click resets); new config key `sidebar.member_list_width` (default 232). The
+  "Sidebar width" slider became a Reset button.
+- **Why:** the developer found settings messy (switches not in one column, controls of
+  different widths) and the UI scale slider unusable, and asked for a draggable sidebar.
+
+## 2026-11-01: GUI: settings header, footer colour, row radius, feather icon
+
+- **Theme keys:** `surface.footer` (the voice and user panels; was `surface.deep`, too dark),
+  `shape.row_radius` (rows in lists; `shape.radius` is now for things that stand alone, so
+  the neko theme rounds buttons, inputs and menus a little while its rows stay square).
+  `surface.deep` now dims the window behind dialogs. Old files derive both new keys.
+- **Settings pages** have a header like the main window instead of the round close button:
+  the brand over the navigation and "Return to <what the focused pane shows>" (Esc) over the
+  content.
+- **App icon:** a gold feather (the header's `md-feather`) on a charcoal square instead of the
+  blue "H", for the window, tray and installer.
+- **Why:** the developer's review of the previous round.
+
+## 2026-11-01: GUI: notifications as toasts, no message toolbar, member list in every pane
+
+- **Notifications** ("Created #x", errors) are a card at the top right instead of a bar above
+  the panes; info ones close on their own after 5 s.
+- **Message hover toolbar removed:** right-click has every action; "Add reaction" moved into
+  that menu (it opens the quick reactions on the message).
+- **Member list:** every pane shows its own when toggled on (the previous round showed it only
+  in the focused pane, which made it disappear when focus moved).
+- **Sidebar:** "New message" is a row under Direct messages instead of a small `+`.
+- **Sounds:** join, leave, mute and unmute are lower (G4/C5) and softer.
+- **Animations:** menus, dialogs, the settings page and notifications animate in (iced
+  `Animation`, 140–220 ms).
+- **Why:** the developer's review of the previous round.

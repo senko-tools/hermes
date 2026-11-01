@@ -1,5 +1,6 @@
 //! Hermes terminal client (ratatui), PLAN.md section 16.
 
+mod actions;
 mod app;
 mod commands;
 mod event;
@@ -83,8 +84,12 @@ fn main() -> ExitCode {
         if let Some(link) = cli.link {
             app.run(commands::Command::AddInstance(link));
         }
-        // `ratatui::init` also restores the terminal when a panic happens.
+        // `ratatui::init` also restores the terminal when a panic happens; the crash log hook
+        // runs that first.
         let mut terminal = ratatui::init();
+        if let Some(paths) = app.core.paths() {
+            hermes_client_core::crash::install(paths.dir.join("logs"), "hermes-tui");
+        }
         let _ = execute!(
             std::io::stdout(),
             EnableMouseCapture,
@@ -99,6 +104,11 @@ fn main() -> ExitCode {
             DisableBracketedPaste
         );
         ratatui::restore();
+        // Leave voice properly, so others do not see you until the connection times out.
+        if app.core.voice_channel().is_some() {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), app.core.leave_voice())
+                .await;
+        }
         result
     });
     match result {

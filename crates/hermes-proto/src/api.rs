@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::gateway::InstanceLimits;
 use crate::id::Id;
-use crate::models::{ChannelKind, CurrentUser};
+use crate::models::{ChannelKind, CurrentUser, Message, NotificationLevel, User};
 use crate::permissions::Permissions;
 
 /// A field of a `PATCH` body that can be cleared: absent = unchanged (`None`), `null` = clear
@@ -109,6 +109,94 @@ pub struct SessionInfo {
 pub struct ChangePasswordRequest {
     pub current_password: String,
     pub new_password: String,
+}
+
+/// `PATCH /users/@me`. A field set to `null` clears it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateMeRequest {
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub display_name: Patch<String>,
+    /// From an image upload.
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub avatar_id: Patch<Id>,
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub status_text: Patch<String>,
+}
+
+impl UpdateMeRequest {
+    pub const DISPLAY_NAME_CHARS: (usize, usize) = (1, 32);
+    pub const STATUS_TEXT_CHARS: usize = 128;
+}
+
+/// `GET /users/{id}`: the user and the spaces we share.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserProfile {
+    #[serde(flatten)]
+    pub user: User,
+    pub mutual_space_ids: Vec<Id>,
+}
+
+/// `PUT /users/@me/notification-settings/{target_id}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationSettingRequest {
+    pub level: NotificationLevel,
+    /// `None` = not muted, `-1` = forever, otherwise until this Unix ms.
+    #[serde(default)]
+    pub muted_until: Option<i64>,
+}
+
+/// `GET /search`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_id: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Id>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// The answer of `GET /search`: newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub messages: Vec<Message>,
+    /// All matches the user may see (the page holds at most `limit`).
+    pub total: u64,
+}
+
+/// `GET /admin/users` entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminUser {
+    #[serde(flatten)]
+    pub user: User,
+    pub disabled: bool,
+    pub instance_admin: bool,
+}
+
+/// `PATCH /admin/users/{id}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminUserPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_admin: Option<bool>,
 }
 
 /// `POST /spaces/{id}/invites`.

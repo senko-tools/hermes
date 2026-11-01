@@ -18,11 +18,13 @@ use super::markup::{self, Block, Link, Piece};
 use super::rows::MessageRow;
 use super::{ChannelView, Context, Message};
 use crate::theme::{Theme, style};
-use crate::widget::{label, small};
+use crate::widget::{caption, label};
 
 /// Quick reactions offered by the toolbar.
 pub const QUICK_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "😮", "😢", "🎉", "👀", "🔥"];
-const GUTTER: f32 = 44.0;
+/// Avatar column: the avatar plus the gap before the text.
+const GUTTER: f32 = 54.0;
+const AVATAR: f32 = 40.0;
 const MAX_IMAGE_WIDTH: f32 = 400.0;
 const MAX_IMAGE_HEIGHT: f32 = 300.0;
 
@@ -91,16 +93,20 @@ pub fn view<'a>(
             reply.excerpt.replace('\n', " ")
         };
         body = body.push(
-            row![
-                small("↪", fonts).color(theme.text.tertiary.0),
-                small(reply.author.clone(), fonts)
-                    .font(fonts.bold())
-                    .color(theme.text.secondary.0),
-                small(excerpt, fonts)
-                    .color(theme.text.tertiary.0)
-                    .wrapping(text::Wrapping::None),
-            ]
-            .spacing(6),
+            mouse_area(
+                row![
+                    caption("↪", fonts).color(theme.text.tertiary.0),
+                    caption(reply.author.clone(), fonts)
+                        .font(fonts.bold())
+                        .color(theme.text.secondary.0),
+                    caption(excerpt, fonts)
+                        .color(theme.text.tertiary.0)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(style::GAP_S),
+            )
+            .on_press(Message::JumpTo(reply.id))
+            .interaction(iced::mouse::Interaction::Pointer),
         );
     }
     let time_text = time::format(
@@ -112,13 +118,17 @@ pub fn view<'a>(
         let name = s.display_name(space, msg.author.id);
         let color = space
             .and_then(|sp| super::author_color(s, sp, msg.author.id))
-            .map_or(theme.roles.default_color.0, super::rgb);
+            .map_or(theme.roles.default_color.0, style::rgb);
+        let author = msg.author.id;
         body = body.push(
             row![
-                label(name, fonts).font(fonts.bold()).color(color),
-                small(time_text.clone(), fonts).color(theme.text.tertiary.0),
+                mouse_area(text(name).font(fonts.bold()).size(fonts.size).color(color))
+                    .on_press(Message::Author(author))
+                    .on_right_press(Message::Author(author))
+                    .interaction(iced::mouse::Interaction::Pointer),
+                caption(time_text.clone(), fonts).color(theme.text.tertiary.0),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         );
     }
@@ -131,46 +141,93 @@ pub fn view<'a>(
         body = body.push(block_view(ctx, block, id, m.system, revealed, edited));
     }
     if msg.content.is_empty() && msg.edited_at.is_some() {
-        body = body.push(small("(edited)", fonts).color(theme.text.tertiary.0));
+        body = body.push(caption("(edited)", fonts).color(theme.text.tertiary.0));
     }
     for a in &msg.attachments {
         body = body.push(attachment_view(ctx, inst, a));
     }
     if !msg.reactions.is_empty() {
-        let mut chips = row![].spacing(4);
+        let mut chips = row![].spacing(style::GAP_S);
         for r in &msg.reactions {
             let mine = r.me;
             chips = chips.push(
-                button(small(format!("{} {}", r.emoji, r.count), fonts))
-                    .padding([1, 8])
-                    .style(move |_, st| reaction_style(theme, st, mine))
-                    .on_press(Message::React(id, r.emoji.clone(), !mine)),
+                button(
+                    row![
+                        label(r.emoji.clone(), fonts),
+                        caption(r.count.to_string(), fonts).font(fonts.bold()),
+                    ]
+                    .spacing(style::GAP_S)
+                    .align_y(Alignment::Center),
+                )
+                .padding([3, 9])
+                .style(move |_, st| reaction_style(theme, st, mine))
+                .on_press(Message::React(id, r.emoji.clone(), !mine)),
             );
         }
-        body = body.push(chips.wrap());
+        body = body.push(container(chips.wrap()).padding(iced::Padding::ZERO.top(4)));
     }
 
     // Gutter: avatar on the first message of a group, the time on hover for the others.
     let gutter: Element<'a, Message> = if !m.grouped && ctx.config.buffer.show_avatars {
-        avatar(&s.display_name(space, msg.author.id), fonts)
-    } else if m.grouped && hovered {
-        container(small(time_text, fonts).color(theme.text.tertiary.0))
-            .padding([3, 0])
-            .into()
+        // The user's current picture (the message keeps the one from when it was sent).
+        let picture = s
+            .user(msg.author.id)
+            .map_or(msg.author.avatar.as_ref(), |u| u.avatar.as_ref())
+            .and_then(|a| ctx.images.get(&(inst.clone(), a.id)));
+        let picture = match picture {
+            Some(Img::Ready(handle)) => Some(handle),
+            _ => None,
+        };
+        mouse_area(crate::widget::avatar::view(
+            &s.display_name(space, msg.author.id),
+            picture,
+            AVATAR,
+            fonts,
+        ))
+        .on_press(Message::Author(msg.author.id))
+        .on_right_press(Message::Author(msg.author.id))
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into()
+    } else if m.grouped {
+        // Always laid out and only made visible on hover, so hovering never resizes the row.
+        container(
+            caption(time_text, fonts)
+                .color(if hovered {
+                    theme.text.tertiary.0
+                } else {
+                    Color::TRANSPARENT
+                })
+                .wrapping(text::Wrapping::None),
+        )
+        .padding(iced::Padding::ZERO.top(2.0))
+        .into()
     } else {
         Space::new().into()
     };
     let line = row![container(gutter).width(Length::Fixed(GUTTER)), body];
 
     let highlight = m.mentions_me;
+    // Jumped to, or its right-click menu is open.
+    let jumped = state.highlight == Some(id) || ctx.menu_message == Some(id);
     let content = container(line)
-        .padding(super::row_padding(m.grouped))
+        .padding(super::row_padding(m.grouped, m.ends_group))
         .width(Fill)
         .style(move |_| container::Style {
-            background: if highlight {
+            border: if jumped {
+                iced::Border {
+                    color: theme.pane.focused_border.0,
+                    width: 1.0,
+                    radius: style::radius_small(theme).into(),
+                }
+            } else {
+                iced::Border::default()
+            },
+            background: if jumped {
+                Some(theme.pane.focused_border.0.scale_alpha(0.15).into())
+            } else if highlight {
                 Some(theme.text.mention_bg.0.into())
             } else if hovered {
-                Some(theme.sidebar.hover.0.scale_alpha(0.35).into())
+                Some(theme.surface.hover.0.scale_alpha(0.35).into())
             } else {
                 None
             },
@@ -178,97 +235,57 @@ pub fn view<'a>(
         });
 
     let mut layers = stack![content];
-    if hovered {
+    if highlight {
+        // A bar on the left edge, like the mention state of a sidebar row.
+        let bar = theme.channel.mention_border.0;
+        let width = f32::from(theme.shape.indicator_width).max(2.0);
         layers = layers.push(
-            container(toolbar(
-                ctx,
-                id,
-                state.palette == Some(id),
-                s.me_id() == Some(msg.author.id) && !m.system,
-            ))
-            .align_right(Fill)
-            .padding([0, 12]),
+            container(Space::new().width(width).height(Fill)).style(move |_| container::Style {
+                background: Some(bar.into()),
+                ..container::Style::default()
+            }),
         );
     }
+    // Quick reactions, opened from the right-click menu ("Add reaction").
+    if state.palette == Some(id) {
+        layers = layers.push(
+            container(palette(ctx, id))
+                .align_right(Fill)
+                .padding([0.0, style::GAP]),
+        );
+    }
+    // Right-click anywhere on the message opens its menu (the author has their own).
     mouse_area(layers)
         .on_enter(Message::Hover(id, true))
         .on_exit(Message::Hover(id, false))
+        .on_right_press(Message::More(id))
         .into()
 }
 
-fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'a, Message> {
+fn palette<'a>(ctx: &Context<'a>, id: Id) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     let mut bar = row![].spacing(2).align_y(Alignment::Center);
-    let tool = |label_text: &'a str| {
-        button(small(label_text, fonts))
-            .padding([2, 8])
-            .style(move |_, st| style::sidebar_item(theme, st, false))
-    };
-    if palette {
-        for emoji in QUICK_REACTIONS {
-            bar = bar.push(tool(emoji).on_press(Message::React(id, emoji.to_owned(), true)));
-        }
-        bar = bar.push(tool("×").on_press(Message::Palette(None)));
-    } else {
-        bar = bar
-            .push(tool("React").on_press(Message::Palette(Some(id))))
-            .push(tool("Reply").on_press(Message::Reply(id)));
-        if own {
-            bar = bar.push(tool("Edit").on_press(Message::StartEdit(id)));
-        }
-        bar = bar.push(tool("⋯").on_press(Message::More(id)));
+    for emoji in QUICK_REACTIONS {
+        bar = bar.push(
+            button(container(label(emoji, fonts)).center(style::ICON_BUTTON))
+                .padding(0)
+                .style(move |_, st| style::ghost(theme, st, false))
+                .on_press(Message::React(id, emoji.to_owned(), true)),
+        );
     }
+    bar = bar.push(crate::widget::tip_at(
+        crate::widget::icon_button(crate::widget::icon::CLOSE, false, theme)
+            .on_press(Message::Palette(None)),
+        "Close",
+        iced::widget::tooltip::Position::Top,
+        fonts,
+        theme,
+    ));
     container(bar)
-        .padding(2)
-        .style(move |_| container::Style {
-            background: Some(theme.sidebar.background.0.into()),
-            border: Border {
-                color: theme.general.border.0,
-                width: 1.0,
-                radius: 6.0.into(),
-            },
-            ..container::Style::default()
-        })
+        .padding(3)
+        .style(move |_| style::popover(theme))
         .into()
-}
-
-fn avatar<'a>(name: &str, fonts: &crate::font::Fonts) -> Element<'a, Message> {
-    let initial: String = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_else(|| "?".into());
-    // A stable color per name.
-    let hue = name
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
-    let palette = [
-        Color::from_rgb8(0x58, 0x65, 0xf2),
-        Color::from_rgb8(0x3b, 0xa5, 0x5d),
-        Color::from_rgb8(0xfa, 0xa6, 0x1a),
-        Color::from_rgb8(0xed, 0x42, 0x45),
-        Color::from_rgb8(0xeb, 0x45, 0x9e),
-        Color::from_rgb8(0x1a, 0xbc, 0x9c),
-    ];
-    let bg = palette[(hue % palette.len() as u32) as usize];
-    container(
-        text(initial)
-            .font(fonts.bold())
-            .size(fonts.size + 1.0)
-            .color(Color::WHITE),
-    )
-    .center_x(32)
-    .center_y(32)
-    .style(move |_| container::Style {
-        background: Some(bg.into()),
-        border: Border {
-            radius: 16.0.into(),
-            ..Border::default()
-        },
-        ..container::Style::default()
-    })
-    .into()
 }
 
 fn block_view<'a>(
@@ -291,7 +308,7 @@ fn block_view<'a>(
                 spans.push(
                     iced::widget::span(" (edited)")
                         .font(fonts.ui)
-                        .size(fonts.small())
+                        .size(fonts.caption())
                         .color(theme.text.tertiary.0),
                 );
             }
@@ -302,8 +319,8 @@ fn block_view<'a>(
         }
         Block::Code { code, .. } => {
             let mut content = column![
-                container(text(code).font(fonts.mono).size(fonts.small()))
-                    .padding(8)
+                container(text(code).font(fonts.mono).size(fonts.caption()))
+                    .padding(style::GAP_S)
                     .width(Fill)
                     .style(move |_| container::Style {
                         background: Some(theme.text.code_bg.0.into()),
@@ -316,7 +333,7 @@ fn block_view<'a>(
                     })
             ];
             if edited {
-                content = content.push(small("(edited)", fonts).color(theme.text.tertiary.0));
+                content = content.push(caption("(edited)", fonts).color(theme.text.tertiary.0));
             }
             content.into()
         }
@@ -334,7 +351,7 @@ fn block_view<'a>(
                     .size(fonts.size)
                     .on_link_click(move |link| Message::Link(id, link)),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .height(Length::Shrink)
             .into()
         }
@@ -368,7 +385,7 @@ fn piece_span<'a>(
         background = Some(theme.text.code_bg.0.into());
     }
     if p.mention {
-        color = p.color.map_or(theme.text.link.0, super::rgb);
+        color = p.color.map_or(theme.text.link.0, style::rgb);
         background = Some(theme.text.link.0.scale_alpha(0.15).into());
     }
     let hidden = p.spoiler && !revealed;
@@ -392,6 +409,7 @@ fn piece_span<'a>(
         span = span.background(bg);
     }
     if p.code {
+        // Monospace looks a size larger than the text around it.
         span = span.size(fonts.size - 1.0);
     }
     span
@@ -417,38 +435,53 @@ fn attachment_view<'a>(
         };
         return content;
     }
+    let accent = theme.accent.base.0;
+    let glyph = if a.content_type.starts_with("image/") {
+        crate::widget::icon::IMAGE
+    } else {
+        crate::widget::icon::FILE
+    };
     container(
         row![
+            container(crate::widget::icon::icon(glyph, 22.0).color(accent))
+                .center_x(40)
+                .center_y(40)
+                .style(move |_| container::Style {
+                    background: Some(accent.scale_alpha(0.12).into()),
+                    border: Border {
+                        radius: style::radius(theme).into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                }),
             column![
-                label(a.filename.clone(), fonts).color(theme.text.link.0),
-                small(human_size(a.size), fonts).color(theme.text.tertiary.0),
+                label(a.filename.clone(), fonts)
+                    .font(fonts.medium())
+                    .color(theme.text.link.0)
+                    .wrapping(text::Wrapping::None),
+                caption(human_size(a.size), fonts).color(theme.text.tertiary.0),
             ]
-            .spacing(2)
-            .width(Length::Shrink),
-            Space::new().width(16),
-            button(small("Download", fonts))
-                .padding([3, 10])
-                .style(move |_, st| style::secondary(theme, st))
-                .on_press(Message::Download(a.clone())),
+            .spacing(3)
+            .width(Length::Fixed(220.0)),
+            crate::widget::tip(
+                crate::widget::icon_button(crate::widget::icon::DOWNLOAD, false, theme)
+                    .on_press(Message::Download(a.clone())),
+                "Download",
+                fonts,
+                theme,
+            ),
         ]
+        .spacing(style::GAP)
         .align_y(Alignment::Center),
     )
-    .padding(10)
-    .style(move |_| container::Style {
-        background: Some(theme.text.code_bg.0.into()),
-        border: Border {
-            color: theme.general.border.0,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..container::Style::default()
-    })
+    .padding([style::GAP_S, style::GAP])
+    .style(move |_| style::panel(theme))
     .into()
 }
 
 fn placeholder<'a>(text: &'a str, w: f32, h: f32, ctx: &Context<'a>) -> Element<'a, Message> {
     let theme = ctx.theme;
-    container(small(text, ctx.fonts).color(theme.text.tertiary.0))
+    container(caption(text, ctx.fonts).color(theme.text.tertiary.0))
         .center_x(w)
         .center_y(h)
         .style(move |_| container::Style {
@@ -467,9 +500,9 @@ fn reaction_style(theme: &Theme, status: button::Status, mine: bool) -> button::
     button::Style {
         background: Some(
             if mine {
-                theme.buttons.primary.background.0.scale_alpha(0.25)
+                theme.accent.base.0.scale_alpha(0.25)
             } else if hovered {
-                theme.sidebar.hover.0
+                theme.surface.hover.0
             } else {
                 theme.text.code_bg.0
             }
@@ -478,7 +511,7 @@ fn reaction_style(theme: &Theme, status: button::Status, mine: bool) -> button::
         text_color: theme.text.primary.0,
         border: Border {
             color: if mine {
-                theme.buttons.primary.background.0
+                theme.accent.base.0
             } else {
                 theme.general.border.0
             },

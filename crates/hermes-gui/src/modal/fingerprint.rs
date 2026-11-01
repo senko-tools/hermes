@@ -7,7 +7,8 @@ use iced::{Alignment, Element};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 /// `pinned` is set when the certificate changed.
 pub fn view<'a, M: Clone + 'a>(
@@ -23,16 +24,16 @@ pub fn view<'a, M: Clone + 'a>(
         container(
             text(fp.colon_hex())
                 .font(fonts.mono)
-                .size(fonts.small())
+                .size(fonts.caption())
                 .wrapping(text::Wrapping::Glyph),
         )
-        .padding(8)
+        .padding(style::GAP_S)
         .style(move |_| container::Style {
             background: Some(theme.text.code_bg.0.into()),
             ..container::Style::default()
         })
     };
-    let mut content = column![].spacing(12);
+    let mut content = column![].spacing(style::GAP);
     match pinned {
         None => {
             content = content
@@ -57,9 +58,9 @@ pub fn view<'a, M: Clone + 'a>(
                     ),
                     fonts,
                 ))
-                .push(small("Trusted before:", fonts))
+                .push(caption("Trusted before:", fonts))
                 .push(fingerprint(pinned))
-                .push(small("Now:", fonts))
+                .push(caption("Now:", fonts))
                 .push(fingerprint(now));
         }
     }
@@ -73,9 +74,7 @@ pub fn view<'a, M: Clone + 'a>(
         .push(
             row![
                 space::horizontal(),
-                button(label("Cancel", fonts))
-                    .style(move |_, s| style::secondary(theme, s))
-                    .on_press(on_cancel),
+                text_button("Cancel", ButtonKind::Secondary, fonts, theme).on_press(on_cancel),
                 button(label(trust_label, fonts))
                     .style(move |_, s| {
                         if changed {
@@ -86,7 +85,7 @@ pub fn view<'a, M: Clone + 'a>(
                     })
                     .on_press(on_trust),
             ]
-            .spacing(8)
+            .spacing(style::GAP_S)
             .align_y(Alignment::Center),
         )
         .into()

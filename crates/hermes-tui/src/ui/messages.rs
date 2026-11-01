@@ -385,12 +385,18 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let topic = channel_info
         .and_then(|c| c.topic.clone())
         .unwrap_or_default();
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .title(Line::from(vec![
             Span::styled(title, bold()),
             Span::styled(topic, dim()),
         ]))
         .border_style(border_style(has_focus));
+    if let Some(footer) = crate::voice::room_footer(app, &inst, channel) {
+        block = block.title_bottom(Line::from(Span::styled(
+            footer,
+            Style::default().fg(Color::Green),
+        )));
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     if inner.height < 2 {

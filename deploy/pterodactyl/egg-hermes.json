@@ -1,0 +1,112 @@
+{
+  "_comment": "Hermes chat server egg. Import in Admin -> Nests -> Import Egg.",
+  "meta": {
+    "version": "PTDL_v2",
+    "update_url": null
+  },
+  "exported_at": "2026-11-01T00:00:00+00:00",
+  "name": "Hermes",
+  "author": "hermes@senko.tools",
+  "description": "Self-hosted chat with spaces, text and voice channels, DMs and calls. Uses the allocated port for both TCP (HTTPS/WebSocket) and UDP (voice). The console shows the owner invite link on the first start.",
+  "features": null,
+  "docker_images": {
+    "Debian": "ghcr.io/parkervcp/yolks:debian"
+  },
+  "file_denylist": [],
+  "startup": "./hermes-server run --config ./hermes.toml",
+  "config": {
+    "files": "{}",
+    "startup": "{\"done\": \"Hermes is ready\"}",
+    "logs": "{}",
+    "stop": "^C"
+  },
+  "scripts": {
+    "installation": {
+      "script": "#!/bin/bash\n# Hermes egg installer: downloads the static server binary from the GitHub release.\nset -e\ncd /mnt/server\ncase \"$(uname -m)\" in\n  aarch64|arm64) ARCH=aarch64 ;;\n  *) ARCH=x86_64 ;;\nesac\nFILE=\"hermes-server-${ARCH}-unknown-linux-musl.tar.gz\"\nif [ -z \"${VERSION}\" ] || [ \"${VERSION}\" = \"latest\" ]; then\n  URL=\"https://github.com/senko-tools/hermes/releases/latest/download/${FILE}\"\nelse\n  URL=\"https://github.com/senko-tools/hermes/releases/download/${VERSION}/${FILE}\"\nfi\necho \"Downloading ${URL}\"\ncurl -fsSL \"${URL}\" -o hermes.tar.gz\ntar -xzf hermes.tar.gz\nrm -f hermes.tar.gz\nchmod +x hermes-server\nmkdir -p data\n[ -f hermes.toml ] || ./hermes-server init --config ./hermes.toml\necho \"Hermes installed: $(./hermes-server version)\"\n",
+      "container": "ghcr.io/parkervcp/installers:debian",
+      "entrypoint": "bash"
+    }
+  },
+  "variables": [
+    {
+      "name": "Version",
+      "description": "Release tag to install (e.g. v1.0.0) or 'latest'. Reinstall the server to update; the database and config are kept.",
+      "env_variable": "VERSION",
+      "default_value": "latest",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:20",
+      "field_type": "text"
+    },
+    {
+      "name": "Instance name",
+      "description": "Name shown in clients.",
+      "env_variable": "HERMES__INSTANCE__NAME",
+      "default_value": "Hermes",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:64",
+      "field_type": "text"
+    },
+    {
+      "name": "Public host",
+      "description": "Domain or public IP that friends connect to (used in invite links). Without a port: the allocated port is added.",
+      "env_variable": "HERMES__INSTANCE__PUBLIC_HOST",
+      "default_value": "",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|max:253",
+      "field_type": "text"
+    },
+    {
+      "name": "Registration mode",
+      "description": "open, invite_only or closed.",
+      "env_variable": "HERMES__REGISTRATION__MODE",
+      "default_value": "invite_only",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|string|in:open,invite_only,closed",
+      "field_type": "text"
+    },
+    {
+      "name": "Max upload size (MB)",
+      "description": "Maximum attachment size.",
+      "env_variable": "HERMES__STORAGE__MAX_UPLOAD_MB",
+      "default_value": "25",
+      "user_viewable": true,
+      "user_editable": true,
+      "rules": "required|integer|between:1,1024",
+      "field_type": "text"
+    },
+    {
+      "name": "Data directory",
+      "description": "Where the database and uploads live (inside the server folder).",
+      "env_variable": "HERMES__STORAGE__DATA_DIR",
+      "default_value": "./data",
+      "user_viewable": false,
+      "user_editable": false,
+      "rules": "required|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Bind address",
+      "description": "Leave as 0.0.0.0.",
+      "env_variable": "HERMES__NETWORK__BIND",
+      "default_value": "0.0.0.0",
+      "user_viewable": false,
+      "user_editable": false,
+      "rules": "required|string",
+      "field_type": "text"
+    },
+    {
+      "name": "Log format",
+      "description": "Plain text lines work best in the panel console.",
+      "env_variable": "HERMES__LOG__FORMAT",
+      "default_value": "pretty",
+      "user_viewable": false,
+      "user_editable": false,
+      "rules": "required|string",
+      "field_type": "text"
+    }
+  ]
+}

@@ -147,8 +147,8 @@ pub struct Font {
 impl Default for Font {
     fn default() -> Self {
         Font {
-            family: "Inter".into(),
-            mono_family: "JetBrains Mono".into(),
+            family: "JetBrainsMono Nerd Font".into(),
+            mono_family: "JetBrainsMono Nerd Font".into(),
             size: 13,
             ui_scale: 1.0,
         }
@@ -161,6 +161,8 @@ pub struct Sidebar {
     pub position: String,
     pub width: u16,
     pub show_voice_users: bool,
+    /// Width of the member list (desktop client).
+    pub member_list_width: u16,
 }
 
 impl Default for Sidebar {
@@ -169,6 +171,7 @@ impl Default for Sidebar {
             position: "left".into(),
             width: 240,
             show_voice_users: true,
+            member_list_width: 232,
         }
     }
 }

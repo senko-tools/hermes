@@ -9,7 +9,8 @@ use iced::{Alignment, Element};
 
 use crate::font::Fonts;
 use crate::theme::{Theme, style};
-use crate::widget::{heading, label, small};
+use crate::widget::{ButtonKind, text_button};
+use crate::widget::{caption, heading, label};
 
 pub const INPUT: &str = "new-dm-input";
 
@@ -46,32 +47,33 @@ impl NewDm {
                 fonts,
             ),
             text_input("alice, bob", &self.input)
+                .padding(style::INPUT_PAD)
+                .style(move |_, st| style::input(theme, st))
                 .id(INPUT)
                 .on_input(Message::Input)
                 .on_submit(Message::Submit)
                 .font(fonts.ui)
-                .size(fonts.size)
-                .padding(8),
+                .size(fonts.size),
         ]
-        .spacing(12);
+        .spacing(style::GAP);
         if let Some(error) = &self.error {
-            content = content.push(small(error.as_str(), fonts).color(theme.text.error.0));
+            content = content.push(caption(error.as_str(), fonts).color(theme.text.error.0));
         }
         content
             .push(
                 row![
                     space::horizontal(),
-                    button(label("Cancel", fonts))
-                        .style(move |_, s| style::secondary(theme, s))
+                    text_button("Cancel", ButtonKind::Secondary, fonts, theme)
                         .on_press(Message::Cancel),
                     button(label(
                         if self.busy { "Please wait…" } else { "Start" },
                         fonts
                     ))
+                    .padding(style::BUTTON_PAD)
                     .style(move |_, s| style::primary(theme, s))
                     .on_press_maybe((!self.busy).then_some(Message::Submit)),
                 ]
-                .spacing(8)
+                .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
             )
             .into()

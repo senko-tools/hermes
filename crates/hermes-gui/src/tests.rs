@@ -655,11 +655,15 @@ async fn input_box_completes_sends_attaches_replies_and_edits() {
             .is_some_and(|w| w.get(first.id).is_some())
     })
     .await;
-    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    let reply = Message::Menu(
+        crate::sidebar::menu::Target::Message(inst.clone(), general, first.id),
+        crate::sidebar::menu::Action::Reply,
+    );
+    let _ = alice.update(reply.clone());
     assert_eq!(composer(&alice, &inst, general).reply_to, Some(first.id));
     input_msg(&mut alice, input::Message::Cancel);
     assert_eq!(composer(&alice, &inst, general).reply_to, None);
-    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    let _ = alice.update(reply);
     alice
         .composers
         .get_mut(&(inst.clone(), general))
@@ -708,4 +712,55 @@ async fn input_box_completes_sends_attaches_replies_and_edits() {
     let _ = alice.update(Message::Select(inst.clone(), general));
     assert_eq!(composer(&alice, &inst, general).text(), "unfinished");
     let _ = std::fs::remove_file(&file);
+}
+
+#[tokio::test]
+async fn typing_anywhere_goes_into_the_message_box() {
+    use iced::keyboard::{self, Key, Modifiers};
+
+    const ANY: keyboard::key::Physical =
+        keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
+    let server = start("type-to-focus").await;
+    let mut owner = app();
+    probe(&mut owner, &server.link).await;
+    submit(&mut owner, "alice", "correct horse").await;
+    let inst = server.host.display();
+    let space = first_space(&owner.core, &inst).await;
+    let general = owner
+        .core
+        .store()
+        .instance(&inst)
+        .and_then(|s| {
+            s.spaces[&space]
+                .channels
+                .values()
+                .find(|c| c.name.as_deref() == Some("general"))
+                .map(|c| c.id)
+        })
+        .expect("#general");
+    let _ = owner.update(Message::Select(inst.clone(), general));
+    let typed = |app: &mut App, c: &str, captured| {
+        let _ = app.update(Message::Key(
+            Key::Character(c.into()),
+            ANY,
+            Modifiers::empty(),
+            captured,
+        ));
+    };
+    typed(&mut owner, "h", false);
+    typed(&mut owner, "i", false);
+    typed(&mut owner, "x", true);
+    assert_eq!(
+        owner.composers[&(inst.clone(), general)].text(),
+        "hi",
+        "keys the box already took are not typed twice"
+    );
+    // Ctrl+letters are shortcuts, not text.
+    let _ = owner.update(Message::Key(
+        Key::Character("k".into()),
+        ANY,
+        Modifiers::CTRL,
+        false,
+    ));
+    assert_eq!(owner.composers[&(inst, general)].text(), "hi");
 }

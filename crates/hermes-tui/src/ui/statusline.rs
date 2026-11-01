@@ -47,7 +47,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::raw("│"));
         spans.push(status);
     }
-    if let Some(voice) = crate::voice::status_text(&app.core) {
+    if let Some(voice) = crate::voice::status_line(app) {
         spans.push(Span::raw("│"));
         spans.push(Span::styled(
             format!(" {voice} "),
@@ -66,14 +66,25 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         Some((text, false, _)) => spans.push(Span::raw(format!(" {}", text.replace('\n', " ")))),
         None => {
             let k = |a| app.keymap.describe(a);
+            let voice = if app.core.voice_channel().is_some() {
+                format!(
+                    " {}:mute {}:deafen {}:leave",
+                    k(Action::ToggleMute),
+                    k(Action::ToggleDeafen),
+                    k(Action::LeaveVoice)
+                )
+            } else if crate::voice::room_here(app) {
+                format!(" {}:join voice", k(Action::JoinVoice))
+            } else {
+                String::new()
+            };
             spans.push(Span::styled(
                 format!(
-                    " {}:type {}:reply {}:react {}:members {}:help {}:quit",
+                    " {}:type {}:actions {}:search{voice} {}:help {}:quit",
                     k(Action::Insert),
-                    k(Action::Reply),
-                    k(Action::React),
-                    k(Action::ToggleMembers),
-                    k(Action::Command),
+                    k(Action::Menu),
+                    k(Action::Search),
+                    k(Action::Help),
                     k(Action::Quit)
                 ),
                 dim(),

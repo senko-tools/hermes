@@ -31,7 +31,10 @@ pub enum Action {
     ToggleMembers,
     Search,
     Command,
+    Help,
     Quit,
+    /// The actions of the selection (the TUI's right-click).
+    Menu,
 }
 
 /// `(action, config name, default key)`.
@@ -59,6 +62,8 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ToggleMembers, "toggle_members", "u"),
     (Action::Search, "search", "/"),
     (Action::Command, "command", ":"),
+    (Action::Help, "help", "?"),
+    (Action::Menu, "menu", "a"),
     (Action::Quit, "quit", "q"),
 ];
 

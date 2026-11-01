@@ -1609,28 +1609,28 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** voice is usable daily from both clients.
 
 ### Phase 6: Community and moderation features (2–3 weeks)
-- [ ] GUI space settings: overview, roles editor (permissions with descriptions, drag-reorder), channel permission overrides (tri-state), members (roles, kick, ban), invites management, bans, audit log viewer.
-- [ ] Create/edit/delete/reorder channels and categories by drag and drop, private channel creation.
-- [ ] Notification settings per space/channel, mute.
-- [ ] Search (FTS5) buffer, mentions inbox, pins.
-- [ ] Profile editing (avatar upload, display name, status text), sessions management.
+- [x] GUI space settings: overview, roles editor (permissions with descriptions, drag-reorder), channel permission overrides (tri-state), members (roles, kick, ban), invites management, bans, audit log viewer.
+- [x] Create/edit/delete/reorder channels and categories by drag and drop, private channel creation.
+- [x] Notification settings per space/channel, mute.
+- [x] Search (FTS5) buffer, mentions inbox, pins.
+- [x] Profile editing (avatar upload, display name, status text), sessions management.
 
 **Done when:** a friend group can run their community without anyone touching the server CLI.
 
 ### Phase 7: Packaging and self-hosting polish (1–2 weeks)
-- [ ] Release workflow: all artifacts from [18.1](#181-release-artifacts-built-by-githubworkflowsreleaseyml-on-git-tag-vxyz).
-- [ ] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
+- [x] Release workflow: all artifacts from [18.1](#181-release-artifacts-built-by-githubworkflowsreleaseyml-on-git-tag-vxyz).
+- [x] Windows installer (cargo-packager/NSIS) with `hermes://` registration, Start-menu shortcut, uninstaller; portable zip.
 - [ ] `install.sh` + systemd unit; Pterodactyl egg tested on a real panel; reverse proxy docs.
 - [ ] `docs/self-hosting.md` written for non-experts (with screenshots).
-- [ ] Admin CLI complete (`backup`, `user …`, `invite create`).
+- [x] Admin CLI complete (`backup`, `user …`, `invite create`).
 
 **Done when:** a person who has never seen the project can host an instance by following `docs/self-hosting.md` with any of the three methods in under 15 minutes.
 
 ### Phase 8: Hardening and v1.0 (2 weeks)
 - [ ] Load test (see [Testing](#19-testing-strategy)) and fix bottlenecks.
-- [ ] Security review pass over the checklist in [Security](#13-security-model); fuzz the datagram parser and gateway decoder (`cargo fuzz`).
-- [ ] Accessibility basics: full keyboard navigation in the GUI, high-contrast theme, scalable UI.
-- [ ] Update check, crash log file, "copy debug info" in About.
+- [x] Security review pass over the checklist in [Security](#13-security-model); fuzz the datagram parser and gateway decoder (`cargo fuzz`).
+- [x] Accessibility basics: full keyboard navigation in the GUI, high-contrast theme, scalable UI.
+- [x] Update check, crash log file, "copy debug info" in About.
 - [ ] Bug bash with friends for a week; fix.
 
 **v1.0 is done when all of these are true:**

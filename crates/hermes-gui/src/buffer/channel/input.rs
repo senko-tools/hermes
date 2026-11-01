@@ -9,12 +9,13 @@ use hermes_client_core::view::Suggestion;
 use iced::keyboard::{self, key::Named};
 use iced::widget::text_editor::{self, Binding, KeyPress};
 use iced::widget::{Space, button, column, container, row, text_editor as editor};
-use iced::{Alignment, Border, Element, Fill, Length};
+use iced::{Alignment, Element, Fill, Length};
 
 use super::Context;
 use super::message::human_size;
 use crate::theme::style;
-use crate::widget::{label, small};
+use crate::widget::icon::{self, icon};
+use crate::widget::{caption, label};
 
 /// Suggestions shown at most.
 pub const MAX_SUGGESTIONS: usize = 8;
@@ -225,75 +226,95 @@ pub fn view<'a>(
     let theme = ctx.theme;
     // Every part has a fixed place (empty when unused), so the editor never moves in the tree
     // and keeps its focus when the popup or a bar appears.
-    let mut col = column![].padding([4, 12]);
+    let mut col = column![].padding(iced::Padding {
+        top: 2.0,
+        bottom: 14.0,
+        left: 16.0,
+        right: 16.0,
+    });
     let Some(composer) = composer else {
         return col.into();
     };
     if !can_send {
         return container(
-            small("You cannot send messages in this channel.", fonts).color(theme.text.tertiary.0),
+            row![
+                icon(icon::LOCK, 14.0).color(theme.text.tertiary.0),
+                caption("You cannot send messages in this channel.", fonts)
+                    .color(theme.text.tertiary.0),
+            ]
+            .spacing(style::GAP_S)
+            .align_y(Alignment::Center),
         )
-        .padding([8, 12])
+        .padding([style::GAP, style::GAP_XL])
         .into();
     }
 
     let popup: Element<'a, Message> = if composer.suggestions.is_empty() {
         Space::new().into()
     } else {
-        let mut list = column![].spacing(1);
+        let mut list = column![].spacing(2);
         for (i, s) in composer.suggestions.iter().enumerate() {
             let selected = i == composer.selected;
             list = list.push(
                 button(label(s.label.clone(), fonts))
                     .width(Fill)
-                    .padding([3, 8])
+                    .padding(style::ROW_PAD)
                     .style(move |_, st| style::sidebar_item(theme, st, selected))
                     .on_press(Message::Accept(i)),
             );
         }
         column![
             container(list)
-                .padding(4)
+                .padding(style::GAP_S)
                 .width(Fill)
-                .style(move |_| container::Style {
-                    background: Some(theme.sidebar.background.0.into()),
-                    border: Border {
-                        color: theme.general.border.0,
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
-                    ..container::Style::default()
-                }),
-            Space::new().height(4)
+                .style(move |_| style::popover(theme)),
+            Space::new().height(6)
         ]
         .into()
     };
     col = col.push(popup);
 
     let mode = match (&composer.editing, &reply_name) {
-        (Some(_), _) => Some("Editing message".to_owned()),
-        (None, Some(name)) => Some(format!("Replying to {name}")),
+        (Some(_), _) => Some((icon::PENCIL, "Editing message".to_owned())),
+        (None, Some(name)) => Some((icon::REPLY, format!("Replying to {name}"))),
         _ => None,
+    };
+    // The reply/edit bar sits inside the composer, above a hairline, so both read as one field.
+    let hairline = move || {
+        container(Space::new().height(1))
+            .width(Fill)
+            .style(move |_| container::Style {
+                background: Some(theme.general.border.0.into()),
+                ..container::Style::default()
+            })
     };
     let mode_bar: Element<'a, Message> = match mode {
         None => Space::new().into(),
-        Some(mode) => row![
-            small(mode, fonts).color(theme.text.secondary.0).width(Fill),
-            button(small("✕", fonts))
-                .padding([0, 6])
-                .style(move |_, st| style::sidebar_item(theme, st, false))
-                .on_press(Message::Cancel),
+        Some((glyph, mode)) => column![
+            row![
+                icon(glyph, 16.0).color(theme.accent.base.0),
+                caption(mode, fonts)
+                    .font(fonts.medium())
+                    .color(theme.text.secondary.0)
+                    .width(Fill),
+                button(icon(icon::CLOSE, 16.0))
+                    .padding(style::GAP_XS)
+                    .style(move |_, st| style::ghost(theme, st, false))
+                    .on_press(Message::Cancel),
+            ]
+            .spacing(style::GAP_S)
+            .align_y(Alignment::Center)
+            .padding([2.0, style::GAP_S]),
+            hairline(),
         ]
-        .padding(iced::Padding::ZERO.bottom(4))
-        .align_y(Alignment::Center)
+        .spacing(style::GAP_XS)
         .into(),
     };
-    col = col.push(mode_bar);
 
     let uploads: Element<'a, Message> = if composer.uploads.is_empty() {
         Space::new().into()
     } else {
-        let mut chips = row![].spacing(6);
+        let mut chips = row![].spacing(style::GAP_S);
         for u in &composer.uploads {
             let (state, color) = match &u.state {
                 UploadState::Uploading => ("uploading…".to_owned(), theme.text.tertiary.0),
@@ -303,37 +324,36 @@ pub fn view<'a>(
             chips = chips.push(
                 container(
                     row![
-                        small(u.name.clone(), fonts),
-                        small(state, fonts).color(color),
-                        button(small("✕", fonts))
-                            .padding([0, 4])
-                            .style(move |_, st| style::sidebar_item(theme, st, false))
+                        icon(icon::FILE, 14.0).color(theme.text.secondary.0),
+                        caption(u.name.clone(), fonts),
+                        caption(state, fonts).color(color),
+                        button(icon(icon::CLOSE, 12.0))
+                            .padding(3)
+                            .style(move |_, st| style::ghost(theme, st, false))
                             .on_press(Message::RemoveUpload(u.local)),
                     ]
-                    .spacing(6)
+                    .spacing(style::GAP_S)
                     .align_y(Alignment::Center),
                 )
-                .padding([3, 8])
-                .style(move |_| container::Style {
-                    background: Some(theme.text.code_bg.0.into()),
-                    border: Border {
-                        color: theme.general.border.0,
-                        width: 1.0,
-                        radius: 6.0.into(),
-                    },
-                    ..container::Style::default()
-                }),
+                .padding([style::GAP_XS, style::GAP_S])
+                .style(move |_| style::panel(theme)),
             );
         }
-        container(chips.wrap())
-            .padding(iced::Padding::ZERO.bottom(4))
-            .into()
+        column![
+            container(chips.wrap()).padding([style::GAP_XS, style::GAP_S]),
+            hairline(),
+        ]
+        .spacing(style::GAP_XS)
+        .into()
     };
-    col = col.push(uploads);
 
     let enter_sends = ctx.config.buffer.enter_sends;
     let suggesting = !composer.suggestions.is_empty();
     let empty = composer.content.is_empty() || composer.is_empty();
+    // A one-line editor is exactly as tall as the attach button (`ICON_BUTTON`), so the first
+    // line and the button share a center.
+    let line = fonts.size * 1.3;
+    let pad_y = ((style::ICON_BUTTON - line) / 2.0).max(4.0);
     let input = editor(&composer.content)
         .id(composer.editor_id.clone())
         .placeholder(placeholder)
@@ -341,21 +361,34 @@ pub fn view<'a>(
         .key_binding(move |kp| binding(kp, enter_sends, suggesting, empty))
         .font(fonts.ui)
         .size(fonts.size)
-        .padding(8)
-        .max_height(fonts.size * 1.4 * 10.0 + 16.0)
-        .height(Length::Shrink);
-    col = col.push(
-        row![
-            button(label("+", fonts))
-                .padding([6, 10])
-                .style(move |_, st| style::secondary(theme, st))
-                .on_press(Message::PickFiles),
-            input,
-        ]
-        .spacing(6)
-        .align_y(Alignment::End),
+        .padding([pad_y, 4.0])
+        // Ten lines and the padding, nothing more: extra height would sit empty under the text
+        // while the first lines already scroll away.
+        .max_height(line * 10.0 + 2.0 * pad_y)
+        .height(Length::Shrink)
+        .style(move |_, st| style::editor(theme, st));
+    let attach = crate::widget::tip_at(
+        crate::widget::icon_button(icon::ATTACH, false, theme).on_press(Message::PickFiles),
+        "Attach files (or drop them here)",
+        iced::widget::tooltip::Position::Top,
+        fonts,
+        theme,
     );
-    col.push(Space::new().height(2)).into()
+    let field = container(
+        column![
+            mode_bar,
+            uploads,
+            row![attach, input]
+                .spacing(style::GAP_XS)
+                .align_y(Alignment::Start),
+        ]
+        .spacing(0),
+    )
+    .padding(style::GAP_XS)
+    .width(Fill)
+    .style(move |_| style::composer(theme, false));
+    col = col.push(field);
+    col.into()
 }
 
 /// Files to upload: paths that exist and are files.

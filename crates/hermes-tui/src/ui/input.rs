@@ -28,14 +28,20 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         let context = app.current.as_ref().and_then(|(inst, channel)| {
             let s = store.instance(inst)?;
             let space = s.space_of(*channel);
+            let w = s.window(*channel);
             if let Some(id) = app.editing {
-                let _ = id;
-                return Some(" Editing — Enter save, Esc cancel ".to_owned());
+                let preview: String = w
+                    .and_then(|w| w.get(id))
+                    .and_then(|m| m.content.lines().next())
+                    .unwrap_or_default()
+                    .chars()
+                    .take(30)
+                    .collect();
+                return Some(format!(" Editing \"{preview}\" — Enter save, Esc cancel "));
             }
             let reply = app.reply_to?;
-            let w = s.window(*channel)?;
-            let author = w.get(reply).map(|m| s.display_name(space, m.author.id))?;
-            Some(format!(" Replying to {author} — Ctrl+C cancel "))
+            let author = w?.get(reply).map(|m| s.display_name(space, m.author.id))?;
+            Some(format!(" Replying to {author} — Esc cancel "))
         });
         context.unwrap_or_else(|| {
             if insert {
@@ -50,6 +56,9 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .border_style(border_style(insert));
     let inner = block.inner(area);
     let text = app.input.text();
+    let (cursor_row, cursor_col) = cursor_position(text, app.input.cursor(), inner.width);
+    // Once the text is taller than the box, scroll so the cursor's row stays visible.
+    let scroll = cursor_row.saturating_sub(inner.height.saturating_sub(1) as usize) as u16;
     let paragraph = if text.is_empty() && !insert {
         let channel = app
             .current
@@ -72,25 +81,46 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 .collect::<Vec<_>>(),
         )
         .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((scroll, 0))
     };
     f.render_widget(paragraph.block(block), area);
     if insert {
-        // Cursor: count wrapped rows before the cursor.
-        let w = inner.width.max(1) as usize;
-        let before = &text[..app.input.cursor()];
-        let mut row = 0;
-        let mut col = 0;
-        let lines: Vec<&str> = before.split('\n').collect();
-        for (i, line) in lines.iter().enumerate() {
-            let lw = width(line);
-            if i + 1 < lines.len() {
-                row += lw.div_ceil(w).max(1);
-            } else {
-                row += lw / w;
-                col = lw % w;
-            }
+        let y = inner.y + (cursor_row as u16 - scroll).min(inner.height.saturating_sub(1));
+        f.set_cursor_position(Position::new(inner.x + cursor_col as u16, y));
+    }
+}
+
+/// The cursor's wrapped (row, column) inside a box `box_width` cells wide.
+fn cursor_position(text: &str, cursor: usize, box_width: u16) -> (usize, usize) {
+    let w = box_width.max(1) as usize;
+    let mut row = 0;
+    let mut col = 0;
+    let lines: Vec<&str> = text[..cursor].split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        let lw = width(line);
+        if i + 1 < lines.len() {
+            row += lw.div_ceil(w).max(1);
+        } else {
+            row += lw / w;
+            col = lw % w;
         }
-        let y = inner.y + (row as u16).min(inner.height.saturating_sub(1));
-        f.set_cursor_position(Position::new(inner.x + col as u16, y));
+    }
+    (row, col)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_follows_wraps_and_newlines() {
+        assert_eq!(cursor_position("", 0, 10), (0, 0));
+        assert_eq!(cursor_position("abc", 3, 10), (0, 3));
+        // 12 cells in a 10-wide box wrap onto a second row.
+        assert_eq!(cursor_position("abcdefghijkl", 12, 10), (1, 2));
+        let text = "a\nb\nc\nd\ne\nf\ng\nh";
+        assert_eq!(cursor_position(text, text.len(), 10), (7, 1));
+        // The cursor at the start stays on the first row.
+        assert_eq!(cursor_position(text, 0, 10), (0, 0));
     }
 }

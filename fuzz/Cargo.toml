@@ -1,0 +1,41 @@
+# Coverage-guided fuzzing (PLAN.md section 20, Phase 8). Not part of the main workspace; needs a
+# nightly toolchain and cargo-fuzz:
+#   cargo install cargo-fuzz
+#   cd fuzz && cargo +nightly fuzz run datagram      (or gateway, markup)
+# The normal test run has a cheaper version of the same checks (crates/hermes-proto/tests/fuzz.rs).
+[package]
+name = "hermes-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+hermes-proto = { path = "../crates/hermes-proto" }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "datagram"
+path = "fuzz_targets/datagram.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gateway"
+path = "fuzz_targets/gateway.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markup"
+path = "fuzz_targets/markup.rs"
+test = false
+doc = false
+bench = false
