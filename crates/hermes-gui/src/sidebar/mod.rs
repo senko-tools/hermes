@@ -1,6 +1,7 @@
-//! The sidebar (PLAN.md section 15.1): one scrollable tree of instances, spaces, categories,
-//! channels with their voice occupants, and the direct messages of each instance, then the voice
-//! panel (while in voice) and the user panel. Right-click opens a context menu.
+//! The sidebar (PLAN.md section 15.1): two tabs, Spaces (a scrollable tree of instances,
+//! spaces, categories and channels with their voice occupants) and Messages (the direct
+//! messages of each instance), then the voice panel (while in voice) and the user panel.
+//! Right-click opens a context menu.
 
 pub mod collapsed;
 pub mod menu;
@@ -16,7 +17,7 @@ use iced::{Alignment, Border, Color, Element, Fill};
 
 use self::collapsed::Node;
 use self::menu::Target;
-use self::tree::Row;
+use self::tree::{Badge, Row, Tab};
 use crate::buffer::channel::message::{Images, Img};
 use crate::drag::Item;
 use crate::font::Fonts;
@@ -42,6 +43,8 @@ pub fn view<'a>(
     update: Option<&hermes_client_core::update::Update>,
     images: &Images,
     menu: Option<&Target>,
+    tab: Tab,
+    badges: (Badge, Badge),
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(2).padding([style::GAP_S, style::GAP_S]);
@@ -89,6 +92,7 @@ pub fn view<'a>(
 
     let mut content = column![
         header,
+        tab_bar(tab, badges, fonts, theme),
         scrollable(list)
             .height(Fill)
             .style(move |_, s| style::scrollbar(theme, s)),
@@ -121,6 +125,47 @@ pub fn view<'a>(
         .height(Fill)
         .style(|_| style::sidebar(theme))
         .into()
+}
+
+/// Spaces | Messages. The other tab shows a dot or the mention count when something there is
+/// unread.
+fn tab_bar<'a>(
+    tab: Tab,
+    (spaces, dms): (Badge, Badge),
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let one = |name: &'static str, glyph: char, this: Tab, badge: Badge| {
+        let selected = tab == this;
+        let mut content = row![
+            icon(glyph, 16.0),
+            label(name, fonts)
+                .wrapping(text::Wrapping::None)
+                .width(Fill),
+        ]
+        .spacing(style::GAP_S)
+        .align_y(Alignment::Center);
+        if !selected {
+            if badge.mentions > 0 {
+                content = content.push(mention_count(badge.mentions, fonts, theme));
+            } else if badge.unread {
+                content = content.push(icon(icon::DOT, 12.0).color(theme.text.primary.0));
+            }
+        }
+        button(container(content).center_y(Fill))
+            .height(style::ROW_H)
+            .width(Fill)
+            .padding([0.0, style::GAP_S])
+            .style(move |_, s| style::tab(theme, s, selected))
+            .on_press(Message::SidebarTab(this))
+    };
+    row![
+        one("Spaces", icon::HOME, Tab::Spaces, spaces),
+        one("Messages", icon::CHAT, Tab::Dms, dms),
+    ]
+    .spacing(style::GAP_XS)
+    .padding(iced::Padding::new(style::GAP_S).bottom(0.0))
+    .into()
 }
 
 /// Me: avatar with presence, name and status text (a click opens the status menu), then the
@@ -421,6 +466,7 @@ fn row_view<'a>(
             speaking,
             me,
             nested,
+            dm,
             ..
         } => {
             let ring = if *speaking {
@@ -456,7 +502,13 @@ fn row_view<'a>(
             } else if *muted {
                 content = content.push(icon(icon::MIC_OFF, 14.0).color(theme.voice.muted.0));
             }
-            let level = if *nested { 4 } else { 3 };
+            let level = if *dm {
+                2
+            } else if *nested {
+                4
+            } else {
+                3
+            };
             // No vertical padding: the row's fixed height centers the avatar, which padding
             // would squeeze into an oval.
             let row = container(row![Space::new().width(indent(level)), content])
@@ -470,59 +522,24 @@ fn row_view<'a>(
                     .into()
             }
         }
-        Row::Dms {
-            inst,
-            collapsed,
-            badge,
-        } => {
-            let state = if *collapsed {
-                RowState::of(false, badge.unread, badge.mentions > 0, false)
-            } else {
-                RowState::Plain
-            };
-            let header = item(
-                row![
-                    slot(chevron(*collapsed, theme)),
-                    section_title("Direct messages", fonts, theme),
-                    if *collapsed {
-                        mention_count(badge.mentions, fonts, theme)
-                    } else {
-                        Space::new().into()
-                    },
-                ]
-                .spacing(style::GAP_S)
-                .align_y(Alignment::Center),
-                1,
-                state,
-                theme,
-                Message::Toggle(Node::Dms(inst.clone())),
-                None,
-                menu,
-            );
-            let mut col = column![Space::new().height(style::GAP_S), header].spacing(2);
-            if !*collapsed {
-                // Starting a conversation is the first entry of the list.
-                col = col.push(
-                    row_button(
-                        row![
-                            slot(icon(icon::ADD_USER, LEAD).color(theme.icons.default.0)),
-                            label("New message", fonts)
-                                .color(theme.text.secondary.0)
-                                .wrapping(text::Wrapping::None)
-                                .width(Fill),
-                        ]
-                        .spacing(style::GAP_S)
-                        .align_y(Alignment::Center),
-                        2,
-                        RowState::Plain,
-                        false,
-                        theme,
-                    )
-                    .on_press(Message::NewDm(inst.clone())),
-                );
-            }
-            col.into()
-        }
+        // Starting a conversation is the first entry of an instance's DMs.
+        Row::NewDm { inst } => row_button(
+            row![
+                slot(icon(icon::ADD_USER, LEAD).color(theme.icons.default.0)),
+                label("New message", fonts)
+                    .color(theme.text.secondary.0)
+                    .wrapping(text::Wrapping::None)
+                    .width(Fill),
+            ]
+            .spacing(style::GAP_S)
+            .align_y(Alignment::Center),
+            1,
+            RowState::Plain,
+            false,
+            theme,
+        )
+        .on_press(Message::NewDm(inst.clone()))
+        .into(),
         Row::Dm {
             inst,
             id,
@@ -557,7 +574,7 @@ fn row_view<'a>(
                 ]
                 .spacing(style::GAP_S)
                 .align_y(Alignment::Center),
-                2,
+                1,
                 state,
                 theme,
                 Message::Select(inst.clone(), *id),

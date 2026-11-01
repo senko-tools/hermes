@@ -1382,4 +1382,9 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Footer colour:** the user and voice panels default to the sidebar colour
   (`surface.footer` stays a theme key).
 - **Message scrollbar** touches the pane's right edge; "Jump to present" sits clear of it.
+- **Sidebar tabs (PLAN.md 15.1 deviation):** "Spaces" and "Messages" tabs under the header
+  instead of a "Direct messages" section after the spaces, which was easy to mistake for one
+  more category. Each tab lists every instance; the other tab shows a dot or the mention count
+  when something there is unread, and opening a channel (also from a notification or a call)
+  switches to its tab. The `<instance>/dms` collapse key is gone.
 - **Why:** the developer's review of 1.0.0.

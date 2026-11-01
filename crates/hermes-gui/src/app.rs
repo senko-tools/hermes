@@ -72,6 +72,8 @@ pub struct App {
     pub theme_previews: Vec<(String, Result<Theme, String>)>,
     pub fonts: Fonts,
     pub status: Option<Status>,
+    /// What the sidebar lists: the spaces or the direct messages.
+    pub(crate) sidebar_tab: crate::sidebar::tree::Tab,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -184,6 +186,7 @@ impl App {
             core,
             events,
             status: None,
+            sidebar_tab: crate::sidebar::tree::Tab::default(),
             add_instance: None,
             single_instance,
             collapsed,
@@ -366,6 +369,7 @@ impl App {
             }
             Message::Select(inst, channel) => return self.select(inst, channel),
             Message::OpenChat(inst, channel) => return self.open_chat(inst, channel),
+            Message::SidebarTab(tab) => self.sidebar_tab = tab,
             Message::PaneClicked(pane) => self.panes.focus = pane,
             Message::PaneDragged(event) => self.panes.on_drag(event),
             Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),
@@ -629,13 +633,17 @@ impl App {
     /// A voice channel opens on its voice room (the chat is a header button away), anything
     /// else on its chat.
     fn select(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
-        let voice = self
+        let kind = self
             .core
             .store()
             .instance(&inst)
             .and_then(|s| s.channel(channel))
-            .is_some_and(|c| c.kind == hermes_client_core::proto::models::ChannelKind::Voice);
-        if voice {
+            .map(|c| c.kind);
+        if let Some(kind) = kind {
+            // The sidebar shows the tab with what was opened (a notification, a call, a link).
+            self.sidebar_tab = crate::sidebar::tree::Tab::of(kind);
+        }
+        if kind == Some(hermes_client_core::proto::models::ChannelKind::Voice) {
             self.panes.open(Buffer::VoiceRoom { inst, channel });
             return Task::none();
         }
@@ -1905,6 +1913,7 @@ impl App {
             &statuses,
             &self.collapsed,
             self.panes.focused_target().as_ref(),
+            self.sidebar_tab,
             &|inst, user| core.is_speaking(inst, user),
         )
     }
@@ -2560,6 +2569,8 @@ impl App {
             self.update.as_ref(),
             &self.images,
             self.menu.as_ref().map(|(target, _)| target),
+            self.sidebar_tab,
+            tree::tab_badges(&self.core.store(), &self.core.instance_ids()),
         );
 
         let account_inst = self.account_instance();

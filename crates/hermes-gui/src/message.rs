@@ -33,6 +33,8 @@ pub enum Message {
     Select(InstanceId, Id),
     /// Opens a channel's chat, also for a voice channel.
     OpenChat(InstanceId, Id),
+    /// Shows the spaces or the direct messages in the sidebar.
+    SidebarTab(crate::sidebar::tree::Tab),
     /// The selected channel's first page loaded.
     ChannelOpened,
     OpenMenu(Target),

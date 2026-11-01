@@ -186,6 +186,7 @@ impl Client {
                 .collect::<Vec<_>>(),
             &self.app.collapsed,
             None,
+            crate::sidebar::tree::Tab::Spaces,
             &|_, _| false,
         );
         rows.into_iter()

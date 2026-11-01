@@ -1,6 +1,5 @@
 //! Collapsed sidebar nodes, kept in `<config dir>/collapsed.toml` (PLAN.md section 17) as
-//! `collapsed = ["<instance>", "<instance>/space/<id>", "<instance>/category/<id>",
-//! "<instance>/dms"]`.
+//! `collapsed = ["<instance>", "<instance>/space/<id>", "<instance>/category/<id>"]`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -17,7 +16,6 @@ pub enum Node {
     Instance(InstanceId),
     Space(InstanceId, Id),
     Category(InstanceId, Id),
-    Dms(InstanceId),
 }
 
 impl Node {
@@ -26,7 +24,6 @@ impl Node {
             Node::Instance(inst) => inst.clone(),
             Node::Space(inst, id) => format!("{inst}/space/{id}"),
             Node::Category(inst, id) => format!("{inst}/category/{id}"),
-            Node::Dms(inst) => format!("{inst}/dms"),
         }
     }
 }
@@ -103,19 +100,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hermes-gui-{}-collapsed", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let space = Node::Space("h".into(), Id(5));
-        let dms = Node::Dms("h".into());
+        let category = Node::Category("h".into(), Id(6));
 
         let mut collapsed = Collapsed::load(&dir);
         assert!(!collapsed.is_collapsed(&space));
         collapsed.toggle(&space).unwrap();
-        collapsed.toggle(&dms).unwrap();
-        collapsed.toggle(&dms).unwrap();
+        collapsed.toggle(&category).unwrap();
+        collapsed.toggle(&category).unwrap();
 
         let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
         assert_eq!(text.trim(), r#"collapsed = ["h/space/5"]"#);
         let loaded = Collapsed::load(&dir);
         assert!(loaded.is_collapsed(&space));
-        assert!(!loaded.is_collapsed(&dms));
+        assert!(!loaded.is_collapsed(&category));
 
         std::fs::write(dir.join(FILE), "broken [").unwrap();
         assert!(!Collapsed::load(&dir).is_collapsed(&space));
