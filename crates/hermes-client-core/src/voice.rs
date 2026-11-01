@@ -49,6 +49,8 @@ pub(crate) struct Voice {
     link: Arc<Mutex<Option<quinn::Connection>>>,
     state: Mutex<State>,
     volumes: Mutex<UserVolumes>,
+    /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
+    rest_state: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -109,6 +111,7 @@ impl Voice {
             link,
             state: Mutex::default(),
             volumes: Mutex::new(volumes),
+            rest_state: Arc::default(),
         }
     }
 
@@ -400,7 +403,19 @@ impl Core {
             self_deaf: deaf,
         });
         if let Ok(rest) = self.rest(&inst) {
+            // Quick toggles spawn several requests that could arrive out of order; one at a
+            // time, each sending the state as it is then, the last one is always the newest.
+            let core = self.clone();
+            let lock = self.voice().rest_state.clone();
             tokio::spawn(async move {
+                let _turn = lock.lock().await;
+                let (mute, deaf) = {
+                    let state = core.voice().state();
+                    if state.session.as_ref().is_none_or(|s| s.inst != inst) {
+                        return;
+                    }
+                    Self::self_flags(&state)
+                };
                 let req = VoiceSelfStateRequest {
                     self_mute: Some(mute),
                     self_deaf: Some(deaf),
