@@ -29,7 +29,10 @@ pub enum Message {
     /// A later launch forwarded its link (empty: just show the window).
     Forwarded(String),
     Toggle(Node),
+    /// Opens a channel in the focused pane: a voice channel's voice room, otherwise its chat.
     Select(InstanceId, Id),
+    /// Opens a channel's chat, also for a voice channel.
+    OpenChat(InstanceId, Id),
     /// The selected channel's first page loaded.
     ChannelOpened,
     OpenMenu(Target),

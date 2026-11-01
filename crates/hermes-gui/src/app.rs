@@ -387,6 +387,7 @@ impl App {
                 }
             }
             Message::Select(inst, channel) => return self.select(inst, channel),
+            Message::OpenChat(inst, channel) => return self.open_chat(inst, channel),
             Message::PaneClicked(pane) => self.panes.focus = pane,
             Message::PaneDragged(event) => self.panes.on_drag(event),
             Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),
@@ -647,7 +648,23 @@ impl App {
     }
 
     /// Shows a channel in the focused pane and loads its latest messages.
+    /// A voice channel opens on its voice room (the chat is a header button away), anything
+    /// else on its chat.
     fn select(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
+        let voice = self
+            .core
+            .store()
+            .instance(&inst)
+            .and_then(|s| s.channel(channel))
+            .is_some_and(|c| c.kind == hermes_client_core::proto::models::ChannelKind::Voice);
+        if voice {
+            self.panes.open(Buffer::VoiceRoom { inst, channel });
+            return Task::none();
+        }
+        self.open_chat(inst, channel)
+    }
+
+    fn open_chat(&mut self, inst: InstanceId, channel: Id) -> Task<Message> {
         let marker = self
             .core
             .store()
@@ -1909,7 +1926,7 @@ impl App {
             &core.store(),
             &statuses,
             &self.collapsed,
-            self.panes.focused_channel().as_ref(),
+            self.panes.focused_target().as_ref(),
             &|inst, user| core.is_speaking(inst, user),
         )
     }

@@ -619,19 +619,20 @@ fn section_title<'a>(name: &str, fonts: &Fonts, theme: &'a Theme) -> Element<'a,
         .into()
 }
 
-/// `row` with the bar of its state along its left edge.
+/// `row` with the bar of its state along its left edge. The bar is always there (empty for
+/// states without one), so the row keeps the same widget tree when its state changes: a new
+/// tree would reset the row's widget state and swallow the first click of a double-click.
 fn with_state_bar<'a>(
     row: impl Into<Element<'a, Message>>,
     state: RowState,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let Some(color) = style::state_bar(theme, state) else {
-        return row.into();
+    let color = style::state_bar(theme, state).unwrap_or(Color::TRANSPARENT);
+    let width = if color.a > 0.0 {
+        f32::from(theme.shape.indicator_width)
+    } else {
+        0.0
     };
-    let width = f32::from(theme.shape.indicator_width);
-    if width == 0.0 {
-        return row.into();
-    }
     let bar = container(Space::new().width(width).height(Fill)).style(move |_| container::Style {
         background: Some(color.into()),
         border: Border {
@@ -727,8 +728,8 @@ fn item<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// A voice channel row: a click selects it (and opens its chat); joining takes a double-click
-/// unless `voice.join_on = "single_click"`.
+/// A voice channel row: a click opens its voice room; joining takes a double-click unless
+/// `voice.join_on = "single_click"`.
 fn voice_item<'a>(
     content: impl Fn() -> Element<'a, Message>,
     level: u8,

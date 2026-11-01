@@ -73,6 +73,17 @@ impl Panes {
         }
     }
 
+    /// The channel the focused pane shows, as its chat or its voice room (what the sidebar
+    /// marks as selected).
+    pub fn focused_target(&self) -> Option<(InstanceId, Id)> {
+        match &self.focused()?.buffer {
+            Buffer::Channel { inst, channel } | Buffer::VoiceRoom { inst, channel } => {
+                Some((inst.clone(), *channel))
+            }
+            _ => None,
+        }
+    }
+
     /// Shows `buffer` in the focused pane. A channel starts at the bottom, with the divider
     /// before the messages newer than `read_marker`.
     pub fn open(&mut self, buffer: Buffer) {
@@ -462,7 +473,7 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
         out.push((text, Message::Voice(VoiceMsg::Join(inst.clone(), channel))));
     }
     if room {
-        out.push(("Chat", Message::Select(inst.clone(), channel)));
+        out.push(("Chat", Message::OpenChat(inst.clone(), channel)));
     } else {
         out.push((
             "Voice room",

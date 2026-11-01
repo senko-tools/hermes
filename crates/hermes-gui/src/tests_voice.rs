@@ -327,10 +327,8 @@ async fn voice_panel_mute_volume_calls_and_leaving() {
     let bob_card = people.iter().find(|p| p.user == bob_id).unwrap();
     assert_eq!(bob_card.volume, Some(1.5));
 
-    // The voice room buffer and the pane header buttons.
-    let _ = alice
-        .app
-        .update(Message::Voice(VoiceMsg::OpenRoom(inst.clone(), room)));
+    // Selecting a voice channel opens its voice room; the header buttons lead to the chat.
+    let _ = alice.app.update(Message::Select(inst.clone(), room));
     let buffer = alice.app.panes.focused().unwrap().buffer.clone();
     assert_eq!(
         buffer,
@@ -344,6 +342,11 @@ async fn voice_panel_mute_volume_calls_and_leaving() {
         .map(|(text, _)| text)
         .collect();
     assert_eq!(labels, ["Leave voice", "Chat"]);
+    let _ = alice.app.update(Message::OpenChat(inst.clone(), room));
+    assert!(matches!(
+        alice.app.panes.focused().unwrap().buffer,
+        Buffer::Channel { channel, .. } if channel == room
+    ));
 
     // Leaving.
     alice.core().leave_voice().await;
