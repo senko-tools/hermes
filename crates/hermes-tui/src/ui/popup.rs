@@ -41,6 +41,46 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
         return;
     };
     match popup {
+        Popup::Menu {
+            title,
+            items,
+            selected,
+        } => {
+            let labels: Vec<String> = items.iter().map(|(l, _)| format!(" {l} ")).collect();
+            let w = labels
+                .iter()
+                .map(|l| width(l))
+                .max()
+                .unwrap_or(10)
+                .max(width(title) + 4) as u16
+                + 2;
+            let area = centered(screen, w, labels.len() as u16 + 3);
+            let inner = frame(f, area, title);
+            let mut lines = list_lines(&labels, *selected);
+            lines.push(Line::from(Span::styled(
+                " Enter: do it · Esc: close",
+                dim(),
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+        Popup::Results {
+            title,
+            lines,
+            selected,
+            ..
+        } => {
+            let area = centered(
+                screen,
+                110,
+                screen.height.saturating_sub(4).min(lines.len() as u16 + 3),
+            );
+            let inner = frame(f, area, &format!("{title} · Enter: go to the message"));
+            let shown = inner.height as usize;
+            // Keep the selection in view.
+            let skip = selected.saturating_sub(shown.saturating_sub(1));
+            let visible: Vec<String> = lines.iter().skip(skip).take(shown).cloned().collect();
+            f.render_widget(Paragraph::new(list_lines(&visible, selected - skip)), inner);
+        }
         Popup::Complete { items, selected } => {
             let labels: Vec<String> = items.iter().map(|s| s.label.clone()).collect();
             let w = labels.iter().map(|l| width(l)).max().unwrap_or(10) as u16 + 4;
@@ -212,7 +252,7 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             f.render_widget(Paragraph::new(lines), inner);
         }
         Popup::Help => {
-            let area = centered(screen, 80, 28);
+            let area = centered(screen, 90, 34);
             let inner = frame(f, area, "help (any key closes)");
             let mut lines = vec![Line::from(Span::styled(
                 "Normal mode keys ([tui.keys] in config.toml):",
@@ -228,6 +268,11 @@ pub fn draw(f: &mut Frame, app: &App, screen: Rect) {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Commands:", bold())));
             lines.push(Line::from(HELP));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled("Menus and mouse:", bold())));
+            lines.push(Line::from(
+                "a (or a right-click) shows what you can do with the selected channel, space,                  message or person. Click a channel to open it; the wheel scrolls. / searches                  (:search! everywhere); in results, Enter jumps to the message.",
+            ));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled("Voice:", bold())));
             lines.push(Line::from(

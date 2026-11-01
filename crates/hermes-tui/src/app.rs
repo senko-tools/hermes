@@ -116,6 +116,15 @@ pub enum ConfirmAction {
     RemoveInstance(InstanceId),
     /// `q` while in voice.
     Quit,
+    DeleteChannel {
+        inst: InstanceId,
+        channel: Id,
+    },
+    Kick {
+        inst: InstanceId,
+        space: Id,
+        user: Id,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +158,19 @@ pub enum Popup {
     },
     /// The last status messages (`:messages`).
     Log,
+    /// Actions for the selection (`a`, `:menu` or a right-click).
+    Menu {
+        title: String,
+        items: crate::actions::Menu,
+        selected: usize,
+    },
+    /// Search results, mentions or pins: Enter jumps to the message.
+    Results {
+        title: String,
+        items: Vec<(InstanceId, hermes_client_core::proto::models::Message)>,
+        lines: Vec<String>,
+        selected: usize,
+    },
 }
 
 /// Results of background tasks.
@@ -169,6 +191,16 @@ pub enum TaskMsg {
     Open {
         inst: InstanceId,
         channel: Id,
+    },
+    Results {
+        title: String,
+        items: Vec<(InstanceId, hermes_client_core::proto::models::Message)>,
+    },
+    /// The page around a jumped-to message arrived.
+    Jumped {
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
     },
 }
 
@@ -208,6 +240,21 @@ pub struct App {
     pub joining: Option<String>,
     /// Earlier status messages, newest last (`:messages`).
     pub log: VecDeque<(String, bool, Instant)>,
+    /// Where the UI drew things (for the mouse).
+    pub areas: Areas,
+}
+
+/// Screen areas from the last draw.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Areas {
+    pub sidebar: ratatui::layout::Rect,
+    /// The first sidebar row shown (the list scrolls).
+    pub sidebar_offset: usize,
+    pub messages: ratatui::layout::Rect,
+    pub members: ratatui::layout::Rect,
+    /// Member index of each member list row (`None` for group titles), from the top.
+    pub member_rows: Vec<Option<usize>>,
+    pub member_offset: usize,
 }
 
 impl App {
@@ -240,6 +287,7 @@ impl App {
             ring_times: None,
             joining: None,
             log: VecDeque::new(),
+            areas: Areas::default(),
         };
         if let Some(w) = warnings.first() {
             app.error(w.clone());
@@ -364,7 +412,7 @@ impl App {
         self.sidebar_sel = self.sidebar_sel.min(self.sidebar.len().saturating_sub(1));
     }
 
-    fn selected_instance(&self) -> Option<InstanceId> {
+    pub(crate) fn selected_instance(&self) -> Option<InstanceId> {
         if let Some((inst, _)) = &self.current {
             return Some(inst.clone());
         }
@@ -451,7 +499,7 @@ impl App {
     }
 
     /// The selected message (not pending): `(id, author, content)`.
-    fn selected_message(&self) -> Option<(Id, Id, String)> {
+    pub(crate) fn selected_message(&self) -> Option<(Id, Id, String)> {
         let (inst, channel) = self.current.as_ref()?;
         let store = self.core.store();
         let w = store.instance(inst)?.window(*channel)?;
@@ -469,7 +517,7 @@ impl App {
         w.pending.get(i).map(|p| (p.local_id, p.state.clone()))
     }
 
-    fn me(&self, inst: &str) -> Option<Id> {
+    pub(crate) fn me(&self, inst: &str) -> Option<Id> {
         self.core.store().instance(inst).and_then(|s| s.me_id())
     }
 
@@ -481,6 +529,11 @@ impl App {
         let current = self.msg_sel.unwrap_or(count) as isize;
         let next = current + delta;
         if next >= count as isize {
+            // After a jump the newest messages are not loaded yet: load them instead.
+            if self.msg_sel.is_some() && self.load_newer() {
+                self.msg_sel = Some(count - 1);
+                return;
+            }
             self.msg_sel = None;
             return;
         }
@@ -491,7 +544,7 @@ impl App {
         }
     }
 
-    fn load_older(&self) {
+    pub(crate) fn load_older(&self) {
         let Some((inst, channel)) = self.current.clone() else {
             return;
         };
@@ -644,13 +697,95 @@ impl App {
                 self.open(inst, channel);
                 self.focus = Focus::Messages;
             }
+            TaskMsg::Results { title, items } => {
+                if items.is_empty() {
+                    self.info(format!("{title}: nothing found"));
+                    return;
+                }
+                let lines = items
+                    .iter()
+                    .map(|(inst, m)| self.result_line(inst, m))
+                    .collect();
+                self.info(format!("{title}: {} found", items.len()));
+                self.popup = Some(Popup::Results {
+                    title,
+                    items,
+                    lines,
+                    selected: 0,
+                });
+            }
+            TaskMsg::Jumped {
+                inst,
+                channel,
+                message,
+            } => {
+                if self.current == Some((inst, channel)) {
+                    self.select_message(message);
+                }
+            }
         }
     }
 
     pub fn on_mouse(&mut self, event: MouseEvent) {
+        use crossterm::event::MouseButton;
+        use ratatui::layout::Position;
+
+        let at = Position::new(event.column, event.row);
+        let a = self.areas.clone();
+        let in_sidebar = a.sidebar.contains(at);
+        let in_members = a.members.contains(at);
+        // The list row under the pointer (inside the border).
+        let row = |area: ratatui::layout::Rect, offset: usize| {
+            (event.row > area.y && event.row + 1 < area.y + area.height)
+                .then(|| offset + (event.row - area.y - 1) as usize)
+        };
         match event.kind {
-            MouseEventKind::ScrollUp => self.move_selection(-3),
-            MouseEventKind::ScrollDown => self.move_selection(3),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let down = event.kind == MouseEventKind::ScrollDown;
+                if in_sidebar {
+                    self.focus = Focus::Sidebar;
+                    self.action(if down {
+                        Action::MoveDown
+                    } else {
+                        Action::MoveUp
+                    });
+                } else {
+                    self.move_selection(if down { 3 } else { -3 });
+                }
+            }
+            MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right)) => {
+                if self.popup.is_some() {
+                    return;
+                }
+                let right = button == MouseButton::Right;
+                if in_sidebar {
+                    self.focus = Focus::Sidebar;
+                    if let Some(i) =
+                        row(a.sidebar, a.sidebar_offset).filter(|i| *i < self.sidebar.len())
+                    {
+                        self.sidebar_sel = i;
+                        if !right {
+                            self.action(Action::Open);
+                            return;
+                        }
+                    }
+                } else if in_members {
+                    self.focus = Focus::Members;
+                    if let Some(Some(m)) =
+                        row(a.members, a.member_offset).and_then(|r| a.member_rows.get(r).copied())
+                    {
+                        self.member_sel = m;
+                    }
+                } else if a.messages.contains(at) {
+                    self.focus = Focus::Messages;
+                    if self.msg_sel.is_none() {
+                        self.msg_sel = self.entry_count().checked_sub(1);
+                    }
+                }
+                if right {
+                    self.open_menu();
+                }
+            }
             _ => {}
         }
     }
@@ -702,7 +837,7 @@ impl App {
         self.action(action);
     }
 
-    fn action(&mut self, action: Action) {
+    pub(crate) fn action(&mut self, action: Action) {
         match action {
             Action::MoveDown | Action::MoveUp => {
                 let delta = if action == Action::MoveDown { 1 } else { -1 };
@@ -834,7 +969,11 @@ impl App {
                     self.focus = Focus::Messages;
                 }
             }
-            Action::Search => self.info("Search comes in a later version.".into()),
+            Action::Search => {
+                self.command = Input::with_text("search ");
+                self.mode = Mode::Command;
+            }
+            Action::Menu => self.open_menu(),
             Action::Command => {
                 self.command.clear();
                 self.mode = Mode::Command;
@@ -1069,7 +1208,7 @@ impl App {
         });
     }
 
-    fn open_dm(&mut self, inst: &str, name: &str) {
+    pub(crate) fn open_dm(&mut self, inst: &str, name: &str) {
         let wanted = name.to_lowercase();
         let user = {
             let store = self.core.store();
@@ -1103,7 +1242,7 @@ impl App {
         });
     }
 
-    fn create_invite(&mut self, inst: &str, channel: Id) {
+    pub(crate) fn create_invite(&mut self, inst: &str, channel: Id) {
         let Some(space) = self
             .core
             .store()
@@ -1160,6 +1299,9 @@ impl App {
     }
 
     pub fn run(&mut self, cmd: Command) {
+        let Some(cmd) = self.run_more(cmd) else {
+            return;
+        };
         match cmd {
             Command::Quit => self.quit = true,
             Command::Help => self.popup = Some(Popup::Help),
@@ -1224,6 +1366,8 @@ impl App {
                     self.error(e.to_string());
                 }
             }
+            // Handled by `run_more`.
+            _ => {}
         }
     }
 
@@ -1470,6 +1614,42 @@ impl App {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         match popup {
             Popup::Help | Popup::Notice { .. } | Popup::Log => self.popup = None,
+            Popup::Menu {
+                items, selected, ..
+            } => match event.code {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    *selected = (*selected + 1) % items.len();
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                    *selected = (*selected + items.len() - 1) % items.len();
+                }
+                KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('l') => {
+                    let choice = items[*selected].1.clone();
+                    self.popup = None;
+                    self.run_menu(choice);
+                }
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Char('h') => {
+                    self.popup = None;
+                }
+                _ => {}
+            },
+            Popup::Results {
+                items, selected, ..
+            } => match event.code {
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    *selected = (*selected + 1) % items.len();
+                }
+                KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
+                    *selected = (*selected + items.len() - 1) % items.len();
+                }
+                KeyCode::Enter => {
+                    let (inst, m) = items[*selected].clone();
+                    self.popup = None;
+                    self.jump(inst, m.channel_id, m.id);
+                }
+                KeyCode::Esc | KeyCode::Char('q') => self.popup = None,
+                _ => {}
+            },
             Popup::Call { inst, channel, .. } => match event.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                     let (inst, channel) = (inst.clone(), *channel);
@@ -1586,7 +1766,7 @@ impl App {
         }
     }
 
-    fn confirmed(&mut self, action: ConfirmAction) {
+    pub(crate) fn confirmed(&mut self, action: ConfirmAction) {
         let core = self.core.clone();
         let tasks = self.tasks.clone();
         match action {
@@ -1628,6 +1808,36 @@ impl App {
                     let _ = tasks.send(msg);
                 });
                 self.rebuild_sidebar();
+            }
+            ConfirmAction::DeleteChannel { inst, channel } => {
+                if self.current == Some((inst.clone(), channel)) {
+                    self.current = None;
+                }
+                tokio::spawn(async move {
+                    let result = match core.rest(&inst) {
+                        Ok(rest) => rest
+                            .delete_channel(channel)
+                            .await
+                            .map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = tasks.send(match result {
+                        Ok(()) => TaskMsg::Info("channel deleted".into()),
+                        Err(e) => TaskMsg::Error(e),
+                    });
+                });
+            }
+            ConfirmAction::Kick { inst, space, user } => {
+                tokio::spawn(async move {
+                    let result = match core.rest(&inst) {
+                        Ok(rest) => rest.kick(space, user).await.map_err(|e| e.to_string()),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    let _ = tasks.send(match result {
+                        Ok(()) => TaskMsg::Info("kicked".into()),
+                        Err(e) => TaskMsg::Error(e),
+                    });
+                });
             }
         }
     }

@@ -34,11 +34,68 @@ pub enum Command {
     /// Show the last status messages.
     Messages,
     Quit,
+    /// `:search <words>` in the open channel's space (everywhere from a DM).
+    Search(String),
+    /// `:search! <words>`: everywhere on the instance.
+    SearchAll(String),
+    Mentions,
+    Pins,
+    /// `:notify all|mentions|none|default|mute|unmute [space]`: the open channel, or its space.
+    Notify(Notify, bool),
+    /// `:create text|voice|category <name>` in the open channel's space (in its category).
+    Create(CreateKind, String),
+    /// `:space <name>`: create a space.
+    CreateSpace(String),
+    Rename(String),
+    /// `:topic [text]`; empty clears it.
+    Topic(String),
+    /// `:delete-channel`: delete the open channel (asks first).
+    DeleteChannel,
+    Kick(String),
+    /// `:ban <user> [reason]`.
+    Ban(String, String),
+    Unban(String),
+    /// `:role <user> +name|-name`.
+    Role(String, String, bool),
+    /// `:profile name <text>` / `:profile status <text>` (empty clears).
+    Profile(ProfileField, String),
+    /// `:read`: mark the open channel's space (or the DM) read.
+    MarkRead,
+    /// `:menu`: the actions of the selection (like `a` or a right-click).
+    Menu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notify {
+    All,
+    Mentions,
+    Nothing,
+    Default,
+    Mute,
+    Unmute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateKind {
+    Text,
+    Voice,
+    Category,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileField {
+    Name,
+    Status,
 }
 
 pub const HELP: &str = ":join <channel>  :dm <user>  :voice [channel]  :leave  :mute  :deafen  :status <s>  :upload <path>  :open <n>  \
 :invite  :instance add <link|host>  :instance remove  :login  :logout  :set <key> <value>  \
-:offline  :online  :retry  :messages  :quit";
+:offline  :online  :retry  :messages  :quit  \
+:search <words> (:search! everywhere)  :mentions  :pins  :read  :menu  \
+:notify all|mentions|none|default|mute|unmute [space]  \
+:create text|voice|category <name>  :space <name>  :rename <name>  :topic [text]  :delete-channel  \
+:kick <user>  :ban <user> [reason]  :unban <user>  :role <user> +role|-role  \
+:profile name|status <text>";
 
 pub fn parse(line: &str) -> Result<Command, String> {
     let line = line.trim();
@@ -97,6 +154,95 @@ pub fn parse(line: &str) -> Result<Command, String> {
         }
         "offline" => Command::Offline,
         "online" => Command::Online,
+        "search" | "s" => Command::Search(need(":search <words>")?),
+        "search!" | "s!" => Command::SearchAll(need(":search! <words>")?),
+        "mentions" => Command::Mentions,
+        "pins" => Command::Pins,
+        "read" => Command::MarkRead,
+        "menu" => Command::Menu,
+        "notify" => {
+            let usage = ":notify all|mentions|none|default|mute|unmute [space]";
+            let (what, scope) = match arg.split_once(char::is_whitespace) {
+                Some((w, s)) => (w, s.trim()),
+                None => (arg, ""),
+            };
+            let level = match what {
+                "all" => Notify::All,
+                "mentions" => Notify::Mentions,
+                "none" | "nothing" => Notify::Nothing,
+                "default" => Notify::Default,
+                "mute" => Notify::Mute,
+                "unmute" => Notify::Unmute,
+                _ => return Err(format!("usage: {usage}")),
+            };
+            match scope {
+                "" => Command::Notify(level, false),
+                "space" => Command::Notify(level, true),
+                _ => return Err(format!("usage: {usage}")),
+            }
+        }
+        "create" => {
+            let usage = ":create text|voice|category <name>";
+            let rest = need(usage)?;
+            let (kind, name) = rest
+                .split_once(char::is_whitespace)
+                .ok_or_else(|| format!("usage: {usage}"))?;
+            let kind = match kind {
+                "text" | "channel" => CreateKind::Text,
+                "voice" => CreateKind::Voice,
+                "category" => CreateKind::Category,
+                _ => return Err(format!("usage: {usage}")),
+            };
+            Command::Create(kind, name.trim().to_owned())
+        }
+        "space" => Command::CreateSpace(need(":space <name>")?),
+        "rename" => Command::Rename(need(":rename <name>")?),
+        "topic" => Command::Topic(arg.to_owned()),
+        "delete-channel" => Command::DeleteChannel,
+        "kick" => Command::Kick(need(":kick <user>")?.trim_start_matches('@').to_owned()),
+        "ban" => {
+            let rest = need(":ban <user> [reason]")?;
+            let (user, reason) = match rest.split_once(char::is_whitespace) {
+                Some((u, r)) => (u, r.trim()),
+                None => (rest.as_str(), ""),
+            };
+            Command::Ban(user.trim_start_matches('@').to_owned(), reason.to_owned())
+        }
+        "unban" => Command::Unban(need(":unban <user>")?.trim_start_matches('@').to_owned()),
+        "role" => {
+            let usage = ":role <user> +role|-role";
+            let rest = need(usage)?;
+            let (user, role) = rest
+                .split_once(char::is_whitespace)
+                .ok_or_else(|| format!("usage: {usage}"))?;
+            let role = role.trim();
+            let (add, name) = match role.chars().next() {
+                Some('+') => (true, &role[1..]),
+                Some('-') => (false, &role[1..]),
+                _ => return Err(format!("usage: {usage}")),
+            };
+            if name.trim().is_empty() {
+                return Err(format!("usage: {usage}"));
+            }
+            Command::Role(
+                user.trim_start_matches('@').to_owned(),
+                name.trim().to_owned(),
+                add,
+            )
+        }
+        "profile" => {
+            let usage = ":profile name|status <text>";
+            let (field, text) = match arg.split_once(char::is_whitespace) {
+                Some((f, t)) => (f, t.trim()),
+                None => (arg, ""),
+            };
+            let field = match field {
+                "name" => ProfileField::Name,
+                "status" => ProfileField::Status,
+                _ => return Err(format!("usage: {usage}")),
+            };
+            Command::Profile(field, text.to_owned())
+        }
         "help" | "h" => Command::Help,
         "messages" | "log" => Command::Messages,
         "quit" | "q" | "qa" => Command::Quit,
@@ -138,5 +284,32 @@ mod tests {
         assert_eq!(parse("q").unwrap(), Command::Quit);
         assert!(parse("frob").is_err());
         assert!(parse("join").is_err());
+        assert_eq!(
+            parse("search pizza party").unwrap(),
+            Command::Search("pizza party".into())
+        );
+        assert_eq!(
+            parse("notify mute space").unwrap(),
+            Command::Notify(Notify::Mute, true)
+        );
+        assert!(parse("notify loud").is_err());
+        assert_eq!(
+            parse("create voice Game Night").unwrap(),
+            Command::Create(CreateKind::Voice, "Game Night".into())
+        );
+        assert_eq!(
+            parse("ban @bob spam links").unwrap(),
+            Command::Ban("bob".into(), "spam links".into())
+        );
+        assert_eq!(
+            parse("role alice +mods").unwrap(),
+            Command::Role("alice".into(), "mods".into(), true)
+        );
+        assert!(parse("role alice mods").is_err());
+        assert_eq!(
+            parse("profile status").unwrap(),
+            Command::Profile(ProfileField::Status, String::new())
+        );
+        assert_eq!(parse("topic").unwrap(), Command::Topic(String::new()));
     }
 }

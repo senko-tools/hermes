@@ -1242,3 +1242,25 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   with the existing keybinds (Ctrl+K command bar, Alt+Up/Down channels, Ctrl+Tab panes, Ctrl+F
   search) everything in the main flow works without a mouse.
 - The security review result is recorded in `docs/security-review.md`.
+
+## 2026-11-01: TUI: action menus, mouse, search and space commands
+
+- **Action menu** (the TUI's right-click): `a` (configurable as `[tui.keys] menu`), `:menu` or a
+  right-click opens a list of what can be done with the selection: a sidebar channel (open,
+  join voice, mark read, pins, notification level, mute, rename, topic, delete), a space (mark
+  read, invite, search, create channels, notifications), an instance (create a space, profile,
+  mentions, offline/online, log out, remove), a message (reply, react, edit, pin, open the
+  attachment, message/mention the author, delete) or a person (message, mention, roles, kick,
+  ban). Entries that need text open the `:` line pre-filled (`:ban bob `). Only what I may do is
+  offered.
+- **Mouse:** a left click on a sidebar row opens it, on a member selects them, on the messages
+  focuses them; a right-click does the same and opens the menu; the wheel scrolls the list under
+  the pointer.
+- **Search** (`/` or `:search <words>`, `:search!` for the whole instance), `:mentions` and
+  `:pins` show a results popup; Enter opens the channel at that message (loading the page
+  around it; scrolling past the newest loaded message loads newer pages).
+- **Commands** for Phase 6 in the TUI: `:notify all|mentions|none|default|mute|unmute [space]`,
+  `:create text|voice|category <name>`, `:space <name>`, `:rename`, `:topic`,
+  `:delete-channel`, `:kick`, `:ban <user> [reason]`, `:unban`, `:role <user> +role|-role`,
+  `:profile name|status <text>`, `:read`. The role editor and channel overrides stay GUI-only
+  (section 16.3: the TUI's settings UI is minimal).

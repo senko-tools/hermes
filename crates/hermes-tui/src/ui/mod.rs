@@ -54,10 +54,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     ])
     .areas(main);
 
+    app.areas.sidebar = left;
+    app.areas.members = right;
     sidebar::draw(f, app, left);
     let input_height = input::height(app, center.width);
     let [messages_area, input_area] =
         Layout::vertical([Constraint::Min(3), Constraint::Length(input_height)]).areas(center);
+    app.areas.messages = messages_area;
     messages::draw(f, app, messages_area);
     input::draw(f, app, input_area);
     if members_width > 0 {

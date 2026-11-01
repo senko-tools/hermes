@@ -1,5 +1,6 @@
 //! Hermes terminal client (ratatui), PLAN.md section 16.
 
+mod actions;
 mod app;
 mod commands;
 mod event;
