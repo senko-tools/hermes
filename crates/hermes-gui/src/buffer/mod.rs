@@ -64,7 +64,7 @@ pub fn page_frame<'a, M: Clone + 'a>(
         .style(move |_, status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: hovered.then_some(theme.sidebar.hover.0.into()),
+                background: hovered.then_some(theme.surface.hover.0.into()),
                 text_color: if hovered {
                     theme.text.primary.0
                 } else {

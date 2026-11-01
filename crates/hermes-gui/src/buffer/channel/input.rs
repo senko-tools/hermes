@@ -292,7 +292,7 @@ pub fn view<'a>(
         None => Space::new().into(),
         Some((glyph, mode)) => column![
             row![
-                icon(glyph, 16.0).color(theme.buttons.primary.background.0),
+                icon(glyph, 16.0).color(theme.accent.base.0),
                 caption(mode, fonts)
                     .font(fonts.medium())
                     .color(theme.text.secondary.0)

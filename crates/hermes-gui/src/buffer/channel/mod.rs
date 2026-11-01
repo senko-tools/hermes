@@ -223,7 +223,7 @@ pub fn view<'a>(
             .channel(channel)
             .map(|c| hermes_client_core::view::channel_title(s, c))
             .unwrap_or_default();
-        let accent = theme.buttons.primary.background.0;
+        let accent = theme.accent.base.0;
         let start = column![
             container(crate::widget::icon::icon(crate::widget::icon::CHAT, 26.0).color(accent))
                 .center_x(56)
@@ -570,7 +570,7 @@ fn divider<'a>(
                     width: 1.0,
                     radius: 10.0.into(),
                 },
-                background: Some(theme.general.background.0.into()),
+                background: Some(theme.surface.main.0.into()),
                 ..container::Style::default()
             }),
         rule_line(theme, color),

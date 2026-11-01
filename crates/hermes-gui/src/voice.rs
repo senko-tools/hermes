@@ -352,7 +352,7 @@ pub fn volume_overlay<'a>(
     .width(MENU_WIDTH)
     .style(move |_| container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.sidebar.background.0.into()),
+        background: Some(theme.surface.overlay.0.into()),
         border: Border {
             color: theme.general.border.0,
             width: 1.0,

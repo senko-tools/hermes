@@ -288,7 +288,7 @@ impl Panes {
             pane_grid::Content::new(body(id, pane, focused || !split, ctx))
                 .title_bar(title_bar)
                 .style(move |_| container::Style {
-                    background: Some(theme.general.background.0.into()),
+                    background: Some(theme.surface.main.0.into()),
                     ..container::Style::default()
                 })
         })
@@ -499,7 +499,7 @@ fn body<'a>(
     let theme = ctx.theme;
     match &pane.buffer {
         Buffer::Empty => {
-            let accent = theme.buttons.primary.background.0;
+            let accent = theme.accent.base.0;
             let badge = container(icon(icon::FEATHER, 30.0).color(accent))
                 .center_x(64)
                 .center_y(64)
@@ -768,7 +768,7 @@ fn welcome_action<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let accent = theme.buttons.primary.background.0;
+    let accent = theme.accent.base.0;
     button(
         row![
             container(icon(glyph, 18.0).color(accent))
@@ -777,7 +777,7 @@ fn welcome_action<'a>(
                 .style(move |_| container::Style {
                     background: Some(accent.scale_alpha(0.12).into()),
                     border: Border {
-                        radius: style::RADIUS.into(),
+                        radius: style::radius(theme).into(),
                         ..Border::default()
                     },
                     ..container::Style::default()
@@ -799,7 +799,7 @@ fn welcome_action<'a>(
         button::Style {
             background: Some(
                 if hovered {
-                    theme.sidebar.hover.0
+                    theme.surface.hover.0
                 } else {
                     theme.text.code_bg.0
                 }
@@ -813,7 +813,7 @@ fn welcome_action<'a>(
                     theme.general.border.0
                 },
                 width: 1.0,
-                radius: style::RADIUS_L.into(),
+                radius: style::radius_large(theme).into(),
             },
             ..button::Style::default()
         }
@@ -882,7 +882,7 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                 let face = if offline {
                     face
                 } else {
-                    crate::widget::avatar::with_dot(face, 30.0, dot, theme.sidebar.background.0)
+                    crate::widget::avatar::with_dot(face, 30.0, dot, theme.surface.sidebar.0)
                 };
                 let target = Target::Member(inst.clone(), s.space_of(channel), member.user_id);
                 let open = ctx.menu == Some(&target);

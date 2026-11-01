@@ -1312,3 +1312,19 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Why:** the developer's review of the previous round (too small, text-heavy, cluttered
   settings and splits, unaligned elements) and their choices: full-window settings, calm
   splits, Material icons via the Nerd Font, JetBrainsMono Nerd Font as the default.
+
+## 2026-11-01: GUI: one type scale and spacing grid, richer theme format
+
+- **Measurements:** every text uses one of six sizes derived from `font.size` (caption −2,
+  label, strong, title +2, heading +5, display +11); gaps and paddings sit on a 4 px grid
+  (`GAP_XS` 4 … `GAP_XL` 24); text buttons, inputs, drop-downs and rows are 32 px tall and icon
+  buttons 32 px square (was 34).
+- **Theme format (PLAN.md 15.5):** new sections `[surface]` (deep, main, sidebar, raised,
+  overlay, hover), `[accent]` (base, highlight, muted, glow, focus), `[icons]` (default, active),
+  `[channel]` (border / background / hover for the selected, unread, mention and connected row
+  states) and `[shape]` (radius, radius_large, indicator_width). The older keys stay. A theme
+  file that leaves out a key of these sections gets it derived from its own older keys (not from
+  `dark`, and without a warning), so themes written before look the same.
+- **Why:** the developer found the UI messy (many text sizes, buttons of different heights) and
+  wants richer custom themes, e.g. a port of their Vencord theme, which the old keys could not
+  express (surface levels, accent-coloured icons, square corners, row state colours).

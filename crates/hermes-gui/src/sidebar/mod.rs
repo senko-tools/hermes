@@ -73,7 +73,7 @@ pub fn view<'a>(
 
     let header = container(
         row![
-            icon(icon::FEATHER, 18.0).color(theme.buttons.primary.background.0),
+            icon(icon::FEATHER, 18.0).color(theme.accent.base.0),
             crate::widget::title("Hermes", fonts),
         ]
         .spacing(style::GAP_S)
@@ -176,7 +176,7 @@ fn user_panel<'a>(
             iced::Background::Color(c) => Some(c),
             _ => None,
         })
-        .unwrap_or(theme.sidebar.background.0);
+        .unwrap_or(theme.surface.deep.0);
     let me_target = Target::Me(first);
     let open = menu == Some(&me_target);
     let me = mouse_area(
@@ -606,7 +606,7 @@ fn draggable<'a>(
                 border: Border {
                     color: theme.pane.focused_border.0,
                     width: 1.0,
-                    radius: style::RADIUS.into(),
+                    radius: style::radius(theme).into(),
                 },
                 ..container::Style::default()
             })

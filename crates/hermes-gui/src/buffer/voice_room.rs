@@ -128,7 +128,7 @@ fn card<'a>(
         .center(Length::Fixed(AVATAR))
         .style(move |_| container::Style {
             text_color: Some(theme.text.primary.0),
-            background: Some(theme.sidebar.hover.0.into()),
+            background: Some(theme.surface.hover.0.into()),
             border: Border {
                 color: ring,
                 width: 3.0,

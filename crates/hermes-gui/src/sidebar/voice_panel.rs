@@ -107,7 +107,7 @@ pub fn view<'a>(
                 border: iced::Border {
                     color: theme.general.border.0,
                     width: 1.0,
-                    radius: style::RADIUS_S.into(),
+                    radius: style::radius_small(theme).into(),
                 },
                 ..iced::widget::container::Style::default()
             }),

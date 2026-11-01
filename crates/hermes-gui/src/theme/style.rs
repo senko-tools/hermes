@@ -16,11 +16,6 @@ pub const GAP: f32 = 12.0;
 pub const GAP_L: f32 = 16.0;
 pub const GAP_XL: f32 = 24.0;
 
-/// Corner radii.
-pub const RADIUS_S: f32 = 4.0;
-pub const RADIUS: f32 = 6.0;
-pub const RADIUS_L: f32 = 10.0;
-
 /// Height of every text button, text input and drop-down.
 pub const CONTROL_H: f32 = 32.0;
 /// Padding of a button whose content is a row (icon and text): `CONTROL_H` tall with the
@@ -55,14 +50,29 @@ pub const TOGGLER: f32 = 20.0;
 /// Height of the pane header and the sidebar's top bar.
 pub const HEADER: f32 = 48.0;
 
+/// Corner radius of buttons, inputs and rows (`shape.radius`).
+pub fn radius(theme: &Theme) -> f32 {
+    f32::from(theme.shape.radius)
+}
+
+/// Corner radius of cards, dialogs and the composer (`shape.radius_large`).
+pub fn radius_large(theme: &Theme) -> f32 {
+    f32::from(theme.shape.radius_large)
+}
+
+/// Corner radius of small things: badges, chips.
+pub fn radius_small(theme: &Theme) -> f32 {
+    (radius(theme) * 2.0 / 3.0).round()
+}
+
 /// The iced theme for `theme`: drives the default look of every widget.
 pub fn iced_theme(theme: &Theme) -> iced::Theme {
     iced::Theme::custom(
         theme.name.clone(),
         iced::theme::Palette {
-            background: theme.general.background.0,
+            background: theme.surface.main.0,
             text: theme.text.primary.0,
-            primary: theme.buttons.primary.background.0,
+            primary: theme.accent.base.0,
             success: theme.text.success.0,
             warning: theme.text.warning.0,
             danger: theme.text.error.0,
@@ -74,7 +84,7 @@ pub fn iced_theme(theme: &Theme) -> iced::Theme {
 pub fn app(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.general.background.0.into()),
+        background: Some(theme.surface.main.0.into()),
         ..container::Style::default()
     }
 }
@@ -82,7 +92,7 @@ pub fn app(theme: &Theme) -> container::Style {
 pub fn sidebar(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.sidebar.background.0.into()),
+        background: Some(theme.surface.sidebar.0.into()),
         ..container::Style::default()
     }
 }
@@ -106,7 +116,7 @@ pub fn pane_header(theme: &Theme) -> container::Style {
 pub fn sidebar_footer(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(mix(theme.sidebar.background.0, Color::BLACK, 0.12).into()),
+        background: Some(theme.surface.deep.0.into()),
         ..container::Style::default()
     }
 }
@@ -115,11 +125,11 @@ pub fn sidebar_footer(theme: &Theme) -> container::Style {
 pub fn popover(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.sidebar.background.0.into()),
+        background: Some(theme.surface.overlay.0.into()),
         border: Border {
             color: theme.general.border.0,
             width: 1.0,
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
@@ -134,11 +144,11 @@ pub fn popover(theme: &Theme) -> container::Style {
 pub fn card(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.general.background.0.into()),
+        background: Some(theme.surface.main.0.into()),
         border: Border {
             color: theme.general.border.0,
             width: 1.0,
-            radius: RADIUS_L.into(),
+            radius: radius_large(theme).into(),
         },
         shadow: Shadow {
             color: Color::from_rgba(0.0, 0.0, 0.0, 0.45),
@@ -153,11 +163,11 @@ pub fn card(theme: &Theme) -> container::Style {
 pub fn panel(theme: &Theme) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.text.code_bg.0.into()),
+        background: Some(theme.surface.raised.0.into()),
         border: Border {
             color: theme.general.border.0,
             width: 1.0,
-            radius: RADIUS_L.into(),
+            radius: radius_large(theme).into(),
         },
         ..container::Style::default()
     }
@@ -167,15 +177,15 @@ pub fn panel(theme: &Theme) -> container::Style {
 pub fn composer(theme: &Theme, focused: bool) -> container::Style {
     container::Style {
         text_color: Some(theme.text.primary.0),
-        background: Some(theme.text.code_bg.0.into()),
+        background: Some(theme.surface.raised.0.into()),
         border: Border {
             color: if focused {
-                theme.buttons.primary.background.0.scale_alpha(0.6)
+                theme.accent.focus.0.scale_alpha(0.6)
             } else {
                 theme.general.border.0
             },
             width: 1.0,
-            radius: RADIUS_L.into(),
+            radius: radius_large(theme).into(),
         },
         ..container::Style::default()
     }
@@ -183,18 +193,18 @@ pub fn composer(theme: &Theme, focused: bool) -> container::Style {
 
 /// A text field.
 pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    let accent = theme.buttons.primary.background.0;
+    let accent = theme.accent.base.0;
     let border = match status {
-        text_input::Status::Focused { .. } => accent,
+        text_input::Status::Focused { .. } => theme.accent.focus.0,
         text_input::Status::Hovered => mix(theme.general.border.0, theme.text.tertiary.0, 0.5),
         _ => theme.general.border.0,
     };
     text_input::Style {
-        background: Background::Color(theme.text.code_bg.0),
+        background: Background::Color(theme.surface.raised.0),
         border: Border {
             color: border,
             width: 1.0,
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
         },
         icon: theme.text.tertiary.0,
         placeholder: theme.text.tertiary.0,
@@ -210,7 +220,7 @@ pub fn pick_list(
 ) -> iced::widget::pick_list::Style {
     use iced::widget::pick_list::Status;
     let border = match status {
-        Status::Opened { .. } => theme.buttons.primary.background.0,
+        Status::Opened { .. } => theme.accent.focus.0,
         Status::Hovered => mix(theme.general.border.0, theme.text.tertiary.0, 0.5),
         Status::Active => theme.general.border.0,
     };
@@ -218,11 +228,11 @@ pub fn pick_list(
         text_color: theme.text.primary.0,
         placeholder_color: theme.text.tertiary.0,
         handle_color: theme.text.secondary.0,
-        background: Background::Color(theme.text.code_bg.0),
+        background: Background::Color(theme.surface.raised.0),
         border: Border {
             color: border,
             width: 1.0,
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
         },
     }
 }
@@ -231,7 +241,7 @@ pub fn pick_list(
 pub fn menu(theme: &Theme) -> iced::overlay::menu::Style {
     let popover = popover(theme);
     iced::overlay::menu::Style {
-        background: Background::Color(theme.sidebar.background.0),
+        background: Background::Color(theme.surface.overlay.0),
         border: popover.border,
         text_color: theme.text.primary.0,
         selected_text_color: theme.text.primary.0,
@@ -247,7 +257,7 @@ pub fn editor(theme: &Theme, _status: text_editor::Status) -> text_editor::Style
         border: Border::default(),
         placeholder: theme.text.tertiary.0,
         value: theme.text.primary.0,
-        selection: theme.buttons.primary.background.0.scale_alpha(0.35),
+        selection: theme.accent.base.0.scale_alpha(0.35),
     }
 }
 
@@ -284,16 +294,16 @@ pub fn scrollbar(theme: &Theme, status: scrollable::Status) -> scrollable::Style
 pub fn ghost(theme: &Theme, status: button::Status, active: bool) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
-        background: (hovered || active).then_some(Background::Color(theme.sidebar.hover.0)),
+        background: (hovered || active).then_some(Background::Color(theme.surface.hover.0)),
         text_color: if active {
-            theme.buttons.primary.background.0
+            theme.accent.base.0
         } else if hovered {
-            theme.text.primary.0
+            theme.icons.active.0
         } else {
-            theme.text.secondary.0
+            theme.icons.default.0
         },
         border: Border {
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
             ..Border::default()
         },
         ..button::Style::default()
@@ -324,7 +334,7 @@ pub fn status_bar(theme: &Theme, level: Level) -> container::Style {
     };
     container::Style {
         text_color: Some(color),
-        background: Some(theme.text.code_bg.0.into()),
+        background: Some(theme.surface.raised.0.into()),
         border: Border {
             color,
             width: 1.0,
@@ -344,24 +354,24 @@ pub fn rule(theme: &Theme) -> rule::Style {
 }
 
 pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
-    filled(&theme.buttons.primary, status)
+    filled(theme, &theme.buttons.primary, status)
 }
 
 pub fn danger(theme: &Theme, status: button::Status) -> button::Style {
-    filled(&theme.buttons.danger, status)
+    filled(theme, &theme.buttons.danger, status)
 }
 
 /// A tab header; `selected` uses the primary colors.
 pub fn tab(theme: &Theme, status: button::Status, selected: bool) -> button::Style {
     if selected {
-        filled(&theme.buttons.primary, status)
+        filled(theme, &theme.buttons.primary, status)
     } else {
-        filled(&theme.buttons.secondary, status)
+        filled(theme, &theme.buttons.secondary, status)
     }
 }
 
 pub fn secondary(theme: &Theme, status: button::Status) -> button::Style {
-    filled(&theme.buttons.secondary, status)
+    filled(theme, &theme.buttons.secondary, status)
 }
 
 /// A flat row in the sidebar; `selected` keeps the highlight.
@@ -369,7 +379,7 @@ pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> bu
     let background = if selected {
         Some(theme.sidebar.selected.0)
     } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        Some(theme.sidebar.hover.0)
+        Some(theme.surface.hover.0)
     } else {
         None
     };
@@ -377,14 +387,14 @@ pub fn sidebar_item(theme: &Theme, status: button::Status, selected: bool) -> bu
         background: background.map(Background::Color),
         text_color: theme.text.primary.0,
         border: Border {
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
             ..Border::default()
         },
         ..button::Style::default()
     }
 }
 
-fn filled(colors: &Button, status: button::Status) -> button::Style {
+fn filled(theme: &Theme, colors: &Button, status: button::Status) -> button::Style {
     let background = match status {
         button::Status::Hovered | button::Status::Pressed => colors.background_hover.0,
         button::Status::Active => colors.background.0,
@@ -398,7 +408,7 @@ fn filled(colors: &Button, status: button::Status) -> button::Style {
             colors.text.0
         },
         border: Border {
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
             ..Border::default()
         },
         ..button::Style::default()
@@ -444,9 +454,9 @@ pub fn menu_open(theme: &Theme) -> button::Style {
         background: Some(Background::Color(theme.sidebar.selected.0)),
         text_color: theme.text.primary.0,
         border: Border {
-            color: theme.buttons.primary.background.0.scale_alpha(0.7),
+            color: theme.accent.base.0.scale_alpha(0.7),
             width: 1.0,
-            radius: RADIUS.into(),
+            radius: radius(theme).into(),
         },
         ..button::Style::default()
     }
@@ -464,7 +474,7 @@ pub fn toggler(
         Status::Disabled { is_toggled } => (is_toggled, false),
     };
     let track = if on {
-        theme.buttons.primary.background.0
+        theme.accent.base.0
     } else if hovered {
         mix(
             theme.buttons.secondary.background.0,

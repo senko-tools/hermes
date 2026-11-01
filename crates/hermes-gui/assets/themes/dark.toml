@@ -57,3 +57,47 @@ offline = "#77717c"
 
 [roles]
 default_color = "#ece7e0"
+
+# --- Sections added later (docs/DECISIONS.md). A theme file that leaves them out gets them
+# --- from its own keys above, so older themes keep their look.
+
+# Background levels, darkest to lightest.
+[surface]
+deep = "#141319"        # behind the voice and user panels
+main = "#1d1c22"        # chat and page content
+sidebar = "#17161c"     # sidebar, member list, settings navigation
+raised = "#26242e"      # inputs, composer, cards, code
+overlay = "#17161c"     # menus, tooltips
+hover = "#221f29"       # hovered rows and buttons
+
+[accent]
+base = "#e5a550"        # switches, focus lines, selected icons
+highlight = "#f0b86b"   # hovered accent things, the space name
+muted = "#9f7540"
+glow = "#e5a55026"      # see-through tint for selections
+focus = "#e5a550"       # border of a focused input
+
+[icons]
+default = "#aca5a1"
+active = "#ece7e0"
+
+# Sidebar row states: the bar on the left edge, the row background, the background on hover.
+[channel]
+selected_border = "#00000000"
+selected_bg = "#2b2833"
+selected_hover = "#2b2833"
+unread_border = "#f3eee7"
+unread_bg = "#00000000"
+unread_hover = "#221f29"
+mention_border = "#f3eee7"
+mention_bg = "#00000000"
+mention_hover = "#221f29"
+connected_border = "#80c48c"   # the voice channel or call you are in
+connected_bg = "#2b2833"
+connected_hover = "#2b2833"
+
+# Corner radii and the width of the row state bar, in pixels.
+[shape]
+radius = 6
+radius_large = 10
+indicator_width = 3

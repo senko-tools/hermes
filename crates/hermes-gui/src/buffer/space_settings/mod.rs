@@ -314,7 +314,7 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
             button(
                 row![
                     icon(glyph, style::ROW_ICON).color(if selected {
-                        theme.buttons.primary.background.0
+                        theme.accent.base.0
                     } else {
                         theme.text.tertiary.0
                     }),

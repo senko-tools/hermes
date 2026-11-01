@@ -316,7 +316,7 @@ pub fn view<'a>(
         button(
             row![
                 crate::widget::icon::icon(glyph, style::ROW_ICON).color(if selected {
-                    theme.buttons.primary.background.0
+                    theme.accent.base.0
                 } else {
                     theme.text.tertiary.0
                 }),
@@ -512,7 +512,7 @@ fn voice_tab<'a>(
     let meter = progress_bar(METER_MIN..=0.0, level)
         .girth(8)
         .style(move |_| iced::widget::progress_bar::Style {
-            background: theme.sidebar.hover.0.into(),
+            background: theme.surface.hover.0.into(),
             bar: if open {
                 theme.voice.speaking_ring.0
             } else {

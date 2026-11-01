@@ -89,9 +89,7 @@ pub fn overlay<'a, M: Clone + 'a>(
             theme.text.tertiary.0
         });
         let check: Element<'a, M> = if item.checked {
-            icon(icon::CHECK, 16.0)
-                .color(theme.buttons.primary.background.0)
-                .into()
+            icon(icon::CHECK, 16.0).color(theme.accent.base.0).into()
         } else {
             Space::new().into()
         };

@@ -227,7 +227,7 @@ pub fn view<'a>(
             } else if highlight {
                 Some(theme.text.mention_bg.0.into())
             } else if hovered {
-                Some(theme.sidebar.hover.0.scale_alpha(0.35).into())
+                Some(theme.surface.hover.0.scale_alpha(0.35).into())
             } else {
                 None
             },
@@ -456,7 +456,7 @@ fn attachment_view<'a>(
         };
         return content;
     }
-    let accent = theme.buttons.primary.background.0;
+    let accent = theme.accent.base.0;
     let glyph = if a.content_type.starts_with("image/") {
         crate::widget::icon::IMAGE
     } else {
@@ -470,7 +470,7 @@ fn attachment_view<'a>(
                 .style(move |_| container::Style {
                     background: Some(accent.scale_alpha(0.12).into()),
                     border: Border {
-                        radius: style::RADIUS.into(),
+                        radius: style::radius(theme).into(),
                         ..Border::default()
                     },
                     ..container::Style::default()
@@ -521,9 +521,9 @@ fn reaction_style(theme: &Theme, status: button::Status, mine: bool) -> button::
     button::Style {
         background: Some(
             if mine {
-                theme.buttons.primary.background.0.scale_alpha(0.25)
+                theme.accent.base.0.scale_alpha(0.25)
             } else if hovered {
-                theme.sidebar.hover.0
+                theme.surface.hover.0
             } else {
                 theme.text.code_bg.0
             }
@@ -532,7 +532,7 @@ fn reaction_style(theme: &Theme, status: button::Status, mine: bool) -> button::
         text_color: theme.text.primary.0,
         border: Border {
             color: if mine {
-                theme.buttons.primary.background.0
+                theme.accent.base.0
             } else {
                 theme.general.border.0
             },
