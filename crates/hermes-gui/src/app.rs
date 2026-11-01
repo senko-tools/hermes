@@ -1,7 +1,10 @@
 //! App state, update and view (PLAN.md section 15.8). All side effects go through `Core`.
 
+mod account;
 mod actions;
 mod forms;
+mod jump;
+mod results;
 mod space;
 
 use std::path::PathBuf;
@@ -121,6 +124,12 @@ pub struct App {
     /// The open small dialog (create channel, ban, …).
     pub form: Option<form::Form>,
     pub drag: crate::drag::Drag,
+    pub results:
+        std::collections::HashMap<crate::buffer::results::Key, crate::buffer::results::State>,
+    default_results: crate::buffer::results::State,
+    /// The instance shown in Settings → Account.
+    pub account_inst: Option<InstanceId>,
+    pub sessions: space_settings::Remote<Vec<hermes_client_core::proto::api::SessionInfo>>,
 }
 
 impl App {
@@ -180,6 +189,10 @@ impl App {
             default_space_settings: space_settings::State::default(),
             form: None,
             drag: crate::drag::Drag::default(),
+            results: std::collections::HashMap::new(),
+            default_results: crate::buffer::results::State::default(),
+            account_inst: None,
+            sessions: space_settings::Remote::Idle,
         };
         app.reload_theme();
         if let Some(warning) = key_warnings.into_iter().next() {
@@ -465,6 +478,9 @@ impl App {
             Message::DragHover(item) => self.drag.hover(item),
             Message::DragLeave(item) => self.drag.leave(&item),
             Message::Nothing => {}
+            Message::OpenResults(key) => return self.open_results(key),
+            Message::Results(key, message) => return self.on_results(key, message),
+            Message::SearchFrom(inst, channel) => return self.search_from(inst, channel),
             Message::InviteCreated(inst, space, link) => {
                 self.form = None;
                 let reload = self.update(Message::SpaceSettings(
@@ -554,19 +570,37 @@ impl App {
             channel::Message::Scrolled(viewport) => {
                 view.scrolled(&viewport);
                 let older = view.near_top() && !view.loading_older;
+                let newer = view.at_bottom() && !view.loading_newer && view.jump.is_none();
                 if view.at_bottom() {
                     self.mark_read_if_visible(pane);
                 }
                 if older {
                     return self.load_older(pane, inst, channel);
                 }
+                if newer {
+                    return self.load_newer(pane, inst, channel);
+                }
             }
             channel::Message::Measured(key, height) => {
                 view.heights.set(key, height);
-                if let channel::rows::RowKey::Message(id) = key {
-                    return self.load_thumbnails(&inst, channel, id);
+                let jumping = view.jump.is_some();
+                let thumbs = if let channel::rows::RowKey::Message(id) = key {
+                    self.load_thumbnails(&inst, channel, id)
+                } else {
+                    Task::none()
+                };
+                if jumping {
+                    return Task::batch([thumbs, self.scroll_to_jump(pane)]);
                 }
+                return thumbs;
             }
+            channel::Message::JumpTo(id) => {
+                view.jump = Some(id);
+                view.highlight = Some(id);
+                return self.load_jump(pane, inst, channel, id);
+            }
+            channel::Message::JumpLoaded => return self.scroll_to_jump(pane),
+            channel::Message::NewerLoaded => view.loading_newer = false,
             channel::Message::Hover(id, entered) => {
                 if entered {
                     view.hovered = Some(id);
@@ -1475,7 +1509,16 @@ impl App {
                     return self.run_action(Target::Channel(inst, channel), Action::MarkRead);
                 }
             }
-            K::Search => self.info("Search comes in a later version".into()),
+            K::Search => {
+                return match self.panes.focused_channel() {
+                    Some((inst, channel)) => self.search_from(inst, channel),
+                    None => match self.core.instance_ids().first() {
+                        Some(inst) => self
+                            .open_results(crate::buffer::results::Key::Search(inst.clone(), None)),
+                        None => Task::none(),
+                    },
+                };
+            }
             K::ToggleMute => return self.on_voice(VoiceMsg::ToggleMute),
             K::ToggleDeafen => return self.on_voice(VoiceMsg::ToggleDeafen),
         }
@@ -1551,6 +1594,7 @@ impl App {
             Some(command_bar::Command::SpaceSettings(inst, space)) => {
                 self.open_space_settings(inst, space, crate::buffer::space_settings::Tab::Overview)
             }
+            Some(command_bar::Command::Results(key)) => self.open_results(key),
             Some(command_bar::Command::Menu(target, action)) => {
                 self.update(Message::Menu(target, action))
             }
@@ -1829,6 +1873,10 @@ impl App {
     fn on_settings(&mut self, message: settings::Message) -> Task<Message> {
         use settings::Message as S;
 
+        let message = match self.on_account(message) {
+            Ok(task) => return task,
+            Err(message) => message,
+        };
         let mut voice = self.config.voice.clone();
         match message {
             S::Tab(tab) => {
@@ -2093,6 +2141,7 @@ impl App {
             self.drag.target(),
         );
 
+        let account_inst = self.account_instance();
         let mut main = column![].width(Fill).height(Fill);
         if let Some(call) = &self.call {
             main = main.push(voice_ui::banner(&self.core, call, fonts, theme));
@@ -2113,26 +2162,40 @@ impl App {
                 .style(|_| style::status_bar(theme, status.level)),
             );
         }
-        main = main.push(self.panes.view(&panes::Context {
-            core: &self.core,
-            fonts,
-            theme,
-            config: &self.config,
-            themes: &self.themes,
-            utc_offset: self.utc_offset,
-            images: &self.images,
-            composers: &self.composers,
-            settings_tab: self.settings_tab,
-            voice: settings::VoiceView {
-                devices: self.audio_devices.as_ref(),
-                level: self.input_level,
-                mic_test: self.mic_test,
-                ptt_draft: self.ptt_draft.as_deref(),
-            },
-            space_settings: &self.space_settings,
-            default_space_settings: &self.default_space_settings,
-            drag: &self.drag,
-        }));
+        main =
+            main.push(self.panes.view(&panes::Context {
+                core: &self.core,
+                fonts,
+                theme,
+                config: &self.config,
+                themes: &self.themes,
+                utc_offset: self.utc_offset,
+                images: &self.images,
+                composers: &self.composers,
+                settings_tab: self.settings_tab,
+                voice: settings::VoiceView {
+                    devices: self.audio_devices.as_ref(),
+                    level: self.input_level,
+                    mic_test: self.mic_test,
+                    ptt_draft: self.ptt_draft.as_deref(),
+                },
+                space_settings: &self.space_settings,
+                default_space_settings: &self.default_space_settings,
+                drag: &self.drag,
+                results: &self.results,
+                default_results: &self.default_results,
+                account:
+                    crate::buffer::settings_tabs::AccountView {
+                        instances: self.core.instance_ids(),
+                        selected: account_inst.clone(),
+                        me:
+                            account_inst.as_ref().and_then(|i| {
+                                self.core.store().instance(i).and_then(|s| s.me.clone())
+                            }),
+                        sessions: &self.sessions,
+                        utc_offset: self.utc_offset,
+                    },
+            }));
 
         let layout = if !self.sidebar_visible {
             row![main]

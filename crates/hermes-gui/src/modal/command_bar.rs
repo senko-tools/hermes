@@ -26,6 +26,7 @@ pub enum Command {
     JoinVoice(InstanceId, Id),
     LeaveVoice,
     SpaceSettings(InstanceId, Id),
+    Results(crate::buffer::results::Key),
     /// A menu action (create space, create channel, edit profile, …).
     Menu(crate::sidebar::menu::Target, crate::sidebar::menu::Action),
 }
@@ -200,7 +201,20 @@ pub fn entries(
             detail: inst.clone(),
             command: Command::Menu(Target::Instance(inst.clone()), M::EditProfile),
         });
+        out.push(Entry {
+            label: "Search everywhere".into(),
+            detail: inst.clone(),
+            command: Command::Results(crate::buffer::results::Key::Search(inst.clone(), None)),
+        });
         for (space_id, space) in &s.spaces {
+            out.push(Entry {
+                label: format!("Search in {}", space.space.name),
+                detail: inst.clone(),
+                command: Command::Results(crate::buffer::results::Key::Search(
+                    inst.clone(),
+                    Some(*space_id),
+                )),
+            });
             out.push(Entry {
                 label: format!("Space settings: {}", space.space.name),
                 detail: inst.clone(),
@@ -272,6 +286,11 @@ pub fn entries(
             });
         }
     }
+    out.push(Entry {
+        label: "Mentions".into(),
+        detail: "Messages that mention you".into(),
+        command: Command::Results(crate::buffer::results::Key::Mentions),
+    });
     for (action, _, _, title) in ACTIONS {
         if matches!(action, Action::CommandBar | Action::MarkRead) {
             continue;

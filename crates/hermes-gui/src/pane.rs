@@ -3,8 +3,10 @@
 //! `{ split = "vertical", ratio = 0.5, a = {…}, b = {…} }`, a pane is
 //! `{ buffer = "channel", instance = "…", channel = "…", members = true }`,
 //! `{ buffer = "voice_room", instance = "…", channel = "…" }`,
-//! `{ buffer = "space_settings", instance = "…", space = "…" }`, `{ buffer = "settings" }` or
-//! `{ buffer = "empty" }`.
+//! `{ buffer = "space_settings", instance = "…", space = "…" }`,
+//! `{ buffer = "search", instance = "…", space = "…" }` (no space: the whole instance),
+//! `{ buffer = "mentions" }`, `{ buffer = "pins", instance = "…", channel = "…" }`,
+//! `{ buffer = "settings" }` or `{ buffer = "empty" }`.
 
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
@@ -12,6 +14,7 @@ use iced::widget::pane_grid::{self, Axis, Configuration, Node};
 
 use crate::buffer::Buffer;
 use crate::buffer::channel::ChannelView;
+use crate::buffer::results::Key;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pane {
@@ -82,6 +85,21 @@ fn node_table(state: &pane_grid::State<Pane>, node: &Node) -> toml::Table {
                     table.insert("instance".into(), inst.clone().into());
                     table.insert("space".into(), space.to_string().into());
                 }
+                Buffer::Results(Key::Search(inst, space)) => {
+                    table.insert("buffer".into(), "search".into());
+                    table.insert("instance".into(), inst.clone().into());
+                    if let Some(space) = space {
+                        table.insert("space".into(), space.to_string().into());
+                    }
+                }
+                Buffer::Results(Key::Mentions) => {
+                    table.insert("buffer".into(), "mentions".into());
+                }
+                Buffer::Results(Key::Pins(inst, channel)) => {
+                    table.insert("buffer".into(), "pins".into());
+                    table.insert("instance".into(), inst.clone().into());
+                    table.insert("channel".into(), channel.to_string().into());
+                }
             }
             if pane.members {
                 table.insert("members".into(), true.into());
@@ -124,6 +142,18 @@ fn config_of(table: &toml::Table) -> Option<Configuration<Pane>> {
                 Buffer::VoiceRoom { inst, channel }
             }
         }
+        "search" => Buffer::Results(Key::Search(
+            table.get("instance")?.as_str()?.to_owned(),
+            match table.get("space") {
+                Some(space) => Some(Id(space.as_str()?.parse::<u64>().ok()?)),
+                None => None,
+            },
+        )),
+        "mentions" => Buffer::Results(Key::Mentions),
+        "pins" => Buffer::Results(Key::Pins(
+            table.get("instance")?.as_str()?.to_owned(),
+            Id(table.get("channel")?.as_str()?.parse::<u64>().ok()?),
+        )),
         "space_settings" => Buffer::SpaceSettings {
             inst: table.get("instance")?.as_str()?.to_owned(),
             space: Id(table.get("space")?.as_str()?.parse::<u64>().ok()?),
@@ -167,6 +197,16 @@ mod tests {
                 }),
             )
             .unwrap();
+        for key in [
+            Key::Search("h".into(), Some(Id(10))),
+            Key::Search("h".into(), None),
+            Key::Mentions,
+            Key::Pins("h".into(), Id(11)),
+        ] {
+            state
+                .split(Axis::Horizontal, right, Pane::new(Buffer::Results(key)))
+                .unwrap();
+        }
         state
             .split(
                 Axis::Horizontal,
@@ -200,7 +240,12 @@ mod tests {
         assert_eq!(save(&restored), saved);
         let mut buffers: Vec<_> = restored.iter().map(|(_, p)| p.clone()).collect();
         buffers.sort_by_key(|p| format!("{:?}", p.buffer));
-        assert_eq!(buffers.len(), 5);
+        assert_eq!(buffers.len(), 9);
+        assert!(
+            buffers
+                .iter()
+                .any(|p| p.buffer == Buffer::Results(Key::Search("h".into(), None)))
+        );
         assert!(
             buffers
                 .iter()

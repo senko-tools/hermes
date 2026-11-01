@@ -62,6 +62,7 @@ pub enum Action {
     CreateCategory,
     InvitePeople,
     MarkSpaceRead,
+    SearchSpace,
     CopySpaceId,
     LeaveSpace,
     DeleteSpace,
@@ -75,6 +76,7 @@ pub enum Action {
     // Channel
     MarkRead,
     OpenInNewPane,
+    ShowPins,
     JoinVoice,
     EditChannel,
     ChannelPermissions,
@@ -129,6 +131,7 @@ impl Action {
             Action::CreateCategory => "Create category…",
             Action::InvitePeople => "Invite people (copy link)",
             Action::MarkSpaceRead => "Mark all as read",
+            Action::SearchSpace => "Search in this space",
             Action::CopySpaceId => "Copy space ID",
             Action::LeaveSpace => "Leave space",
             Action::DeleteSpace => "Delete space",
@@ -140,6 +143,7 @@ impl Action {
             Action::Unmute => "Unmute",
             Action::MarkRead => "Mark as read",
             Action::OpenInNewPane => "Open in a new pane",
+            Action::ShowPins => "Pinned messages",
             Action::JoinVoice => "Join voice",
             Action::EditChannel => "Edit channel…",
             Action::ChannelPermissions => "Permissions…",
@@ -245,7 +249,7 @@ pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) 
         Target::Space(_, space) => {
             let Some(s) = s else { return out };
             let can = |p| view::can_in_space(s, *space, p);
-            push(&mut out, [Action::MarkSpaceRead]);
+            push(&mut out, [Action::MarkSpaceRead, Action::SearchSpace]);
             if can(Permissions::CREATE_INVITES) {
                 push(&mut out, [Action::InvitePeople]);
             }
@@ -298,7 +302,10 @@ pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) 
                     }
                 }
                 ChannelKind::Dm | ChannelKind::GroupDm => {
-                    push(&mut out, [Action::MarkRead, Action::OpenInNewPane]);
+                    push(
+                        &mut out,
+                        [Action::MarkRead, Action::OpenInNewPane, Action::ShowPins],
+                    );
                     push(&mut out, [Action::JoinVoice]);
                     out.push(None);
                     notification_entries(s, *channel, Some(NotificationLevel::All), &mut out);
@@ -312,7 +319,10 @@ pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) 
                     }
                 }
                 ChannelKind::Text | ChannelKind::Voice => {
-                    push(&mut out, [Action::MarkRead, Action::OpenInNewPane]);
+                    push(
+                        &mut out,
+                        [Action::MarkRead, Action::OpenInNewPane, Action::ShowPins],
+                    );
                     if c.kind == ChannelKind::Voice {
                         push(&mut out, [Action::JoinVoice]);
                     }

@@ -1,7 +1,9 @@
 //! Buffers: what a pane shows (PLAN.md section 15.1).
 
 pub mod channel;
+pub mod results;
 pub mod settings;
+pub mod settings_tabs;
 pub mod space_settings;
 pub mod voice_room;
 
@@ -22,9 +24,18 @@ pub enum Buffer {
         inst: InstanceId,
         space: Id,
     },
+    /// Search results, mentions or pins.
+    Results(results::Key),
     /// The participants of a voice channel's or DM's voice room.
     VoiceRoom {
         inst: InstanceId,
         channel: Id,
     },
+}
+
+impl Buffer {
+    /// A list of messages to jump from (search, mentions, pins).
+    pub fn is_results(&self) -> bool {
+        matches!(self, Buffer::Results(_))
+    }
 }

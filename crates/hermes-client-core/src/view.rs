@@ -394,6 +394,68 @@ pub fn outranks(store: &InstanceStore, space: Id, user: Id) -> bool {
     }
 }
 
+/// Message markup as one line of plain text (for result lists and previews): formatting is
+/// dropped, mentions show as `@name` / `#channel` / `@role`, spoilers as `▒▒▒`, line breaks as
+/// spaces. At most `max` characters, with `…` when cut.
+pub fn plain_text(store: &InstanceStore, space: Option<Id>, content: &str, max: usize) -> String {
+    use hermes_proto::markup::{Span, parse};
+
+    fn walk(store: &InstanceStore, space: Option<Id>, spans: &[Span], out: &mut String) {
+        for span in spans {
+            match span {
+                Span::Text(t) | Span::Code(t) => out.push_str(t),
+                Span::LineBreak => out.push(' '),
+                Span::CodeBlock { code, .. } => {
+                    out.push(' ');
+                    out.push_str(&code.replace('\n', " "));
+                    out.push(' ');
+                }
+                Span::Bold(c)
+                | Span::Italic(c)
+                | Span::Underline(c)
+                | Span::Strike(c)
+                | Span::Quote(c) => walk(store, space, c, out),
+                Span::Link { children, .. } => walk(store, space, children, out),
+                Span::Spoiler(_) => out.push_str("▒▒▒"),
+                Span::UserMention(id) => {
+                    out.push('@');
+                    out.push_str(&store.display_name(space, *id));
+                }
+                Span::RoleMention(id) => {
+                    let name = space
+                        .and_then(|sp| store.spaces.get(&sp))
+                        .and_then(|st| st.role(*id))
+                        .map_or("role", |r| r.name.as_str());
+                    out.push('@');
+                    out.push_str(name);
+                }
+                Span::ChannelMention(id) => {
+                    out.push('#');
+                    out.push_str(
+                        store
+                            .channel(*id)
+                            .and_then(|c| c.name.as_deref())
+                            .unwrap_or("channel"),
+                    );
+                }
+                Span::Everyone => out.push_str("@everyone"),
+                Span::Here => out.push_str("@here"),
+            }
+        }
+    }
+
+    let mut out = String::new();
+    walk(store, space, &parse(content), &mut out);
+    let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > max {
+        let mut cut: String = collapsed.chars().take(max.saturating_sub(1)).collect();
+        cut.push('…');
+        cut
+    } else {
+        collapsed
+    }
+}
+
 /// One autocomplete suggestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
@@ -635,6 +697,18 @@ mod tests {
             "the category moved below general"
         );
         assert_eq!(names(&s)[1].0, "Voice");
+    }
+
+    #[test]
+    fn plain_text_flattens_markup() {
+        let s = store();
+        let general = channel_tree(&s, Id(10))[0].id;
+        let text = format!("**hi** <#{general}>\n||secret|| `x`  y");
+        assert_eq!(
+            plain_text(&s, Some(Id(10)), &text, 100),
+            "hi #general ▒▒▒ x y"
+        );
+        assert_eq!(plain_text(&s, None, "abcdef", 4), "abc…");
     }
 
     #[test]

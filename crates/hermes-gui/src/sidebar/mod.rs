@@ -62,6 +62,9 @@ pub fn view<'a>(
     let user_panel = container(
         row![
             strong(user, fonts).width(Fill),
+            button(small("Mentions", fonts))
+                .style(|_, status| style::secondary(theme, status))
+                .on_press(Message::OpenResults(crate::buffer::results::Key::Mentions)),
             button(small("Settings", fonts))
                 .style(|_, status| style::secondary(theme, status))
                 .on_press(Message::OpenSettings),

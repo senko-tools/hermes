@@ -42,12 +42,18 @@ pub struct ChannelView {
     /// My read marker when the channel was opened (the divider position).
     pub read_marker: Option<Id>,
     pub loading_older: bool,
+    pub loading_newer: bool,
     /// The message under the pointer (shows the toolbar).
     pub hovered: Option<Id>,
     /// The message whose quick-reaction palette is open.
     pub palette: Option<Id>,
     /// Messages whose spoilers were clicked.
     pub revealed: HashSet<Id>,
+    /// A message to scroll to once its page is loaded and measured (search results, reply
+    /// previews, pins).
+    pub jump: Option<Id>,
+    /// The message jumped to, drawn highlighted.
+    pub highlight: Option<Id>,
 }
 
 impl Default for ChannelView {
@@ -60,9 +66,12 @@ impl Default for ChannelView {
             heights: Heights::default(),
             read_marker: None,
             loading_older: false,
+            loading_newer: false,
             hovered: None,
             palette: None,
             revealed: HashSet::new(),
+            jump: None,
+            highlight: None,
         }
     }
 }
@@ -123,6 +132,49 @@ pub enum Message {
     StartEdit(Id),
     /// A message author's name or avatar was clicked: their menu.
     Author(Id),
+    /// Scroll to a message (a reply preview was clicked), loading it if needed.
+    JumpTo(Id),
+    /// The page around a jumped-to message arrived.
+    JumpLoaded,
+    /// Newer messages arrived after scrolling down from an old position.
+    NewerLoaded,
+}
+
+/// Where to scroll to show message `target` in the middle of the viewport: the offset from the
+/// bottom, and whether the target row was measured (else the offset is an estimate).
+pub fn jump_offset(
+    ctx: &Context<'_>,
+    inst: &InstanceId,
+    channel: Id,
+    state: &ChannelView,
+    target: Id,
+) -> Option<(f32, bool)> {
+    let store = ctx.core.store();
+    let s = store.instance(inst)?;
+    let window = s.window(channel)?;
+    let rows = rows::build(
+        s,
+        window,
+        &rows::Options {
+            group_minutes: ctx.config.buffer.group_minutes,
+            utc_offset: ctx.utc_offset,
+            read_marker: state.read_marker,
+        },
+    );
+    let index = rows
+        .iter()
+        .position(|r| r.key() == RowKey::Message(target))?;
+    let height = |r: &Row| {
+        state
+            .heights
+            .get(&r.key())
+            .unwrap_or_else(|| estimate(r, window, state.viewport.width, ctx.fonts.size))
+    };
+    let below: f32 = rows[index + 1..].iter().map(height).sum();
+    let own = height(&rows[index]);
+    let measured = state.heights.get(&RowKey::Message(target)).is_some();
+    let offset = (below + own / 2.0 - state.viewport.height / 2.0).max(0.0);
+    Some((offset, measured))
 }
 
 /// What the view needs besides the pane state.

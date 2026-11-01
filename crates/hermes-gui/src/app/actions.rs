@@ -11,6 +11,7 @@ use iced::widget::pane_grid::Axis;
 
 use super::App;
 use crate::buffer::Buffer;
+use crate::buffer::results::Key;
 use crate::buffer::space_settings::{self as ss, Tab};
 use crate::message::Message;
 use crate::sidebar::menu::{Action, Target};
@@ -73,6 +74,12 @@ impl App {
             (Target::Channel(inst, channel), Action::OpenInNewPane) => {
                 self.panes.split(self.panes.focus, Axis::Vertical);
                 self.select(inst, channel)
+            }
+            (Target::Space(inst, space), Action::SearchSpace) => {
+                self.update(Message::OpenResults(Key::Search(inst, Some(space))))
+            }
+            (Target::Channel(inst, channel), Action::ShowPins) => {
+                self.update(Message::OpenResults(Key::Pins(inst, channel)))
             }
             (Target::Channel(inst, channel), Action::JoinVoice) => {
                 self.on_voice(VoiceMsg::Join(inst, channel))

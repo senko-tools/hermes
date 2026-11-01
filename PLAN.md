@@ -1609,11 +1609,11 @@ Goal: remove the biggest unknowns before writing real code.
 **Done when:** voice is usable daily from both clients.
 
 ### Phase 6: Community and moderation features (2–3 weeks)
-- [ ] GUI space settings: overview, roles editor (permissions with descriptions, drag-reorder), channel permission overrides (tri-state), members (roles, kick, ban), invites management, bans, audit log viewer.
-- [ ] Create/edit/delete/reorder channels and categories by drag and drop, private channel creation.
-- [ ] Notification settings per space/channel, mute.
-- [ ] Search (FTS5) buffer, mentions inbox, pins.
-- [ ] Profile editing (avatar upload, display name, status text), sessions management.
+- [x] GUI space settings: overview, roles editor (permissions with descriptions, drag-reorder), channel permission overrides (tri-state), members (roles, kick, ban), invites management, bans, audit log viewer.
+- [x] Create/edit/delete/reorder channels and categories by drag and drop, private channel creation.
+- [x] Notification settings per space/channel, mute.
+- [x] Search (FTS5) buffer, mentions inbox, pins.
+- [x] Profile editing (avatar upload, display name, status text), sessions management.
 
 **Done when:** a friend group can run their community without anyone touching the server CLI.
 

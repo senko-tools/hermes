@@ -47,6 +47,7 @@ pub enum Purpose {
         space: Id,
     },
     EditProfile(InstanceId),
+    ChangePassword(InstanceId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +57,8 @@ pub enum Field {
         hint: String,
         placeholder: &'static str,
         value: String,
+        /// Shown as dots (passwords).
+        secure: bool,
     },
     Choice {
         label: String,
@@ -81,6 +84,17 @@ impl Field {
             hint: String::new(),
             placeholder,
             value: value.into(),
+            secure: false,
+        }
+    }
+
+    pub fn password(label: impl Into<String>) -> Field {
+        Field::Text {
+            label: label.into(),
+            hint: String::new(),
+            placeholder: "",
+            value: String::new(),
+            secure: true,
         }
     }
 
@@ -190,8 +204,13 @@ impl Form {
 
     /// The trimmed value of text field `i` (empty if it is not one).
     pub fn value(&self, i: usize) -> &str {
+        self.raw(i).trim()
+    }
+
+    /// The value of text field `i` as typed (passwords).
+    pub fn raw(&self, i: usize) -> &str {
         match self.fields.get(i) {
-            Some(Field::Text { value, .. }) => value.trim(),
+            Some(Field::Text { value, .. }) => value,
             _ => "",
         }
     }
@@ -221,8 +240,10 @@ impl Form {
                     hint,
                     placeholder,
                     value,
+                    secure,
                 } => {
                     let mut input = text_input(placeholder, value)
+                        .secure(*secure)
                         .on_input(move |t| Message::Input(i, t))
                         .on_submit(Message::Submit)
                         .font(fonts.ui)

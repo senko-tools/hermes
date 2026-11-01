@@ -91,16 +91,20 @@ pub fn view<'a>(
             reply.excerpt.replace('\n', " ")
         };
         body = body.push(
-            row![
-                small("↪", fonts).color(theme.text.tertiary.0),
-                small(reply.author.clone(), fonts)
-                    .font(fonts.bold())
-                    .color(theme.text.secondary.0),
-                small(excerpt, fonts)
-                    .color(theme.text.tertiary.0)
-                    .wrapping(text::Wrapping::None),
-            ]
-            .spacing(6),
+            mouse_area(
+                row![
+                    small("↪", fonts).color(theme.text.tertiary.0),
+                    small(reply.author.clone(), fonts)
+                        .font(fonts.bold())
+                        .color(theme.text.secondary.0),
+                    small(excerpt, fonts)
+                        .color(theme.text.tertiary.0)
+                        .wrapping(text::Wrapping::None),
+                ]
+                .spacing(6),
+            )
+            .on_press(Message::JumpTo(reply.id))
+            .interaction(iced::mouse::Interaction::Pointer),
         );
     }
     let time_text = time::format(
@@ -171,11 +175,23 @@ pub fn view<'a>(
     let line = row![container(gutter).width(Length::Fixed(GUTTER)), body];
 
     let highlight = m.mentions_me;
+    let jumped = state.highlight == Some(id);
     let content = container(line)
         .padding(super::row_padding(m.grouped))
         .width(Fill)
         .style(move |_| container::Style {
-            background: if highlight {
+            border: if jumped {
+                iced::Border {
+                    color: theme.pane.focused_border.0,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                }
+            } else {
+                iced::Border::default()
+            },
+            background: if jumped {
+                Some(theme.pane.focused_border.0.scale_alpha(0.15).into())
+            } else if highlight {
                 Some(theme.text.mention_bg.0.into())
             } else if hovered {
                 Some(theme.sidebar.hover.0.scale_alpha(0.35).into())

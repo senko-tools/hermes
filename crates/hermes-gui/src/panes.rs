@@ -177,7 +177,14 @@ impl Panes {
             for (text, message) in voice_controls(ctx.core, &pane.buffer) {
                 controls = controls.push(header_button(text, ctx).on_press(message));
             }
-            if matches!(pane.buffer, Buffer::Channel { .. }) {
+            if let Buffer::Channel { inst, channel } = &pane.buffer {
+                controls = controls.push(header_button("Pins", ctx).on_press(
+                    Message::OpenResults(crate::buffer::results::Key::Pins(inst.clone(), *channel)),
+                ));
+                controls = controls.push(
+                    header_button("Search", ctx)
+                        .on_press(Message::SearchFrom(inst.clone(), *channel)),
+                );
                 controls = controls.push(
                     header_button(
                         if pane.members {
@@ -254,6 +261,10 @@ pub struct Context<'a> {
     /// Shown for a space whose settings were never opened (restored layouts).
     pub default_space_settings: &'a crate::buffer::space_settings::State,
     pub drag: &'a crate::drag::Drag,
+    pub results:
+        &'a std::collections::HashMap<crate::buffer::results::Key, crate::buffer::results::State>,
+    pub default_results: &'a crate::buffer::results::State,
+    pub account: crate::buffer::settings_tabs::AccountView<'a>,
 }
 
 /// Actions from a pane header.
@@ -328,6 +339,7 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
     match buffer {
         Buffer::Empty => ("Hermes".into(), String::new()),
         Buffer::Settings => ("Settings".into(), String::new()),
+        Buffer::Results(key) => crate::buffer::results::title(core, key),
         Buffer::SpaceSettings { inst, space } => {
             let store = core.store();
             let name = store
@@ -395,6 +407,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
             ctx.themes,
             ctx.settings_tab,
             &ctx.voice,
+            &ctx.account,
             fonts,
             theme,
         )
@@ -429,6 +442,12 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
         }
         Buffer::VoiceRoom { inst, channel } => {
             crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
+        }
+        Buffer::Results(key) => {
+            let state = ctx.results.get(key).unwrap_or(ctx.default_results);
+            let key = key.clone();
+            crate::buffer::results::view(ctx.core, &key, state, ctx.utc_offset, fonts, theme)
+                .map(move |m| Message::Results(key.clone(), m))
         }
         Buffer::Channel { inst, channel } => {
             let messages = channel::view(

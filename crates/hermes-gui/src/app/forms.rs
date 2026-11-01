@@ -537,6 +537,12 @@ fn submit(app: &App, form: Form) -> Result<Task<Message>, String> {
                 },
             ))
         }
+        Purpose::ChangePassword(inst) => app.submit_password(
+            inst,
+            form.raw(0).to_owned(),
+            form.raw(1).to_owned(),
+            form.raw(2).to_owned(),
+        ),
         Purpose::EditProfile(inst) => {
             let display = form.value(0).to_owned();
             let status = form.value(1).to_owned();

@@ -35,6 +35,25 @@ pub fn url(url: &str) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Opens a folder in the system's file manager.
+pub fn path(dir: &Path) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Err(std::io::Error::other("not a folder"));
+    }
+    #[cfg(windows)]
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut cmd = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = std::process::Command::new("xdg-open");
+    cmd.arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 pub use hermes_client_core::files::safe_filename;
 
 /// The Downloads folder (or the home folder, or the current one).

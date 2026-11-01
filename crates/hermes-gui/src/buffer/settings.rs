@@ -1,5 +1,6 @@
-//! The Settings buffer (PLAN.md section 15.1): the Appearance and Voice & Audio tabs; the other
-//! tabs come with the features they configure. Every change is written to `config.toml`.
+//! The Settings buffer (PLAN.md section 15.1): Account, Appearance, Chat, Voice & Audio,
+//! Notifications, Keybinds and About (the last tabs are in `settings_tabs`). Every change is
+//! written to `config.toml`.
 
 use std::fmt;
 
@@ -52,6 +53,24 @@ pub enum Message {
     MicTest(bool),
     /// A voice slider was released: apply and save `[voice]`.
     SaveVoice,
+    /// A boolean setting (`section.key`).
+    Flag(&'static str, bool),
+    GroupMinutes(u32),
+    SaveGroupMinutes,
+    TimestampFormat(String),
+    SaveTimestampFormat,
+    AccountInstance(String),
+    EditProfile,
+    PickAvatar,
+    RemoveAvatar,
+    ChangePassword,
+    LoadSessions,
+    Sessions(Result<Vec<hermes_client_core::proto::api::SessionInfo>, String>),
+    RevokeSession(hermes_client_core::proto::id::Id),
+    RevokeOthers,
+    CopyDebugInfo,
+    OpenLogs,
+    OpenProjectPage,
 }
 
 /// A slider-driven setting, saved on release.
@@ -64,9 +83,14 @@ pub enum Setting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
+    Account,
     #[default]
     Appearance,
+    Chat,
     Voice,
+    Notifications,
+    Keybinds,
+    About,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,9 +237,12 @@ pub fn view<'a>(
     themes: &'a [String],
     tab: Tab,
     voice: &VoiceView<'a>,
+    account: &crate::buffer::settings_tabs::AccountView<'a>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
+    use crate::buffer::settings_tabs as more;
+
     let tab_button = |name: &'static str, t: Tab| {
         button(label(name, fonts))
             .padding([4, 10])
@@ -226,9 +253,22 @@ pub fn view<'a>(
         row![
             heading("Settings", fonts),
             space::horizontal().width(16),
-            tab_button("Appearance", Tab::Appearance),
-            tab_button("Voice & Audio", Tab::Voice),
-            space::horizontal(),
+            scrollable(
+                row![
+                    tab_button("Account", Tab::Account),
+                    tab_button("Appearance", Tab::Appearance),
+                    tab_button("Chat", Tab::Chat),
+                    tab_button("Voice & Audio", Tab::Voice),
+                    tab_button("Notifications", Tab::Notifications),
+                    tab_button("Keybinds", Tab::Keybinds),
+                    tab_button("About", Tab::About),
+                ]
+                .spacing(4)
+            )
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::new().width(4).scroller_width(4)
+            ))
+            .width(Fill),
             button(label("Close", fonts))
                 .style(|_, status| style::secondary(theme, status))
                 .on_press(Message::Close),
@@ -241,8 +281,13 @@ pub fn view<'a>(
     .style(|_| style::pane_header(theme));
 
     let content = match tab {
+        Tab::Account => more::account(account, fonts, theme),
         Tab::Appearance => appearance(config, themes, fonts, theme),
+        Tab::Chat => more::chat(config, fonts, theme),
         Tab::Voice => voice_tab(config, voice, fonts, theme),
+        Tab::Notifications => more::notifications(config, fonts, theme),
+        Tab::Keybinds => more::keybinds(config, fonts, theme),
+        Tab::About => more::about(fonts, theme),
     };
     column![
         header,
@@ -571,7 +616,7 @@ fn voice_tab<'a>(
     section.into()
 }
 
-fn setting<'a>(
+pub(crate) fn setting<'a>(
     name: &'a str,
     hint: &str,
     control: impl Into<Element<'a, Message>>,

@@ -1159,3 +1159,24 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   input causes an FTS syntax error; at most 16 words. Deleted messages never match.
 - **Admin:** disabling a user deletes all their sessions (closing their gateways); admins cannot
   disable or demote themselves, so an instance never loses its last admin by accident.
+
+## 2026-11-01: Search, mentions, pins and the new Settings tabs (GUI)
+
+- **One results buffer** (`buffer/results.rs`) shows search results, mentions and pins; it opens
+  next to the focused channel (a split) so the channel stays visible, and a click on a result
+  opens its channel at that message, highlighted. Layout keys: `search` (instance, optional
+  space), `mentions`, `pins` (instance, channel); the query is not saved.
+- **Jump to message** (also for reply previews, which the plan says are clickable): the page
+  around the message is loaded (`HistoryAnchor::Around`), the list scrolls to it, and scrolling
+  down from there loads newer pages until the present.
+- **Entry points:** `Ctrl+F` searches the focused channel's space (the whole instance from a DM);
+  pane headers of channels have "Pins" and "Search"; space menus have "Search in this space";
+  the user panel has "Mentions"; the command bar has "Search everywhere", "Search in X" and
+  "Mentions". Mentions load the newest 50 per instance, merged newest first.
+- **Settings tabs** now: Account (profile, avatar, password, signed-in devices with sign out),
+  Appearance, Chat (`[buffer]`), Voice & Audio, Notifications (`[notifications]` and the window
+  options of `[general]`), Keybinds (read-only list; editing stays in `config.toml`) and About
+  (version, copy debug info, open the logs folder, project page). The Instances tab is not a
+  separate tab: the sidebar's instance menu has everything it would (sign in/out, remove).
+- **Muted channels** (muted, or level "nothing") show no unread dot and are drawn dimmed; mentions
+  still count (`view::TreeChannel::muted`, shared with the TUI).
