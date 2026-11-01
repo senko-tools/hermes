@@ -1,6 +1,8 @@
 //! A right-click menu drawn at a point over the whole window. A click outside closes it.
 
-use iced::widget::{Space, button, column, container, mouse_area, pin, row, rule, stack, text};
+use iced::widget::{
+    Space, button, column, container, mouse_area, opaque, pin, row, rule, stack, text,
+};
 use iced::{Alignment, Color, Element, Fill, Point, Size};
 
 use crate::font::Fonts;
@@ -52,6 +54,8 @@ pub fn overlay<'a, M: Clone + 'a>(
     items: Vec<Option<Item<M>>>,
     at: Point,
     window: Size,
+    // How far its opening animation is (0–1): the menu drops in from a little higher.
+    t: f32,
     fonts: &Fonts,
     theme: &'a Theme,
     on_close: M,
@@ -143,8 +147,8 @@ pub fn overlay<'a, M: Clone + 'a>(
         .padding(style::GAP_XS)
         .width(width)
         .style(move |_| style::popover(theme));
-    let catcher = mouse_area(container("").width(Fill).height(Fill))
-        .on_press(on_close.clone())
-        .on_right_press(on_close);
-    stack![base, catcher, pin(menu).x(x).y(y)].into()
+    // A left click outside closes the menu; a right click passes through, so right-clicking
+    // something else opens its menu instead. Clicks inside the menu never reach the catcher.
+    let catcher = mouse_area(container("").width(Fill).height(Fill)).on_press(on_close);
+    stack![base, catcher, pin(opaque(menu)).x(x).y(y - 6.0 * (1.0 - t))].into()
 }

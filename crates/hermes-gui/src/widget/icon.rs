@@ -85,8 +85,8 @@ fn ink_center_x(glyph: char) -> f32 {
 }
 
 /// Every glyph's ink is centered 0.36 em above the baseline, which a box centered on the line
-/// height puts this much (in em) too high.
-const INK_RAISE: f32 = 0.083;
+/// height puts a little too high: by about this much (in em), measured on screen at 16–18 px.
+const INK_RAISE: f32 = 0.05;
 
 /// An icon: `glyph` at `size` logical pixels, its ink centered in a `size` square box so icons
 /// line up with each other and sit in the middle of their buttons.

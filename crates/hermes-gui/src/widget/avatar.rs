@@ -55,6 +55,8 @@ pub fn view<'a, M: 'a>(
             // ascender and descender space.
             .line_height(1.0),
     )
+    // Capitals sit above the middle of their line; this moves the letter down by half of it.
+    .padding(iced::Padding::ZERO.top(size * 0.06))
     .center_x(size)
     .center_y(size)
     .style(move |_| container::Style {
@@ -114,6 +116,8 @@ pub fn space_icon<'a, M: 'a>(name: &str, size: f32, fonts: &Fonts) -> Element<'a
             // ascender and descender space.
             .line_height(1.0),
     )
+    // Capitals sit above the middle of their line; this moves the letter down by half of it.
+    .padding(iced::Padding::ZERO.top(size * 0.06))
     .center_x(size)
     .center_y(size)
     .style(move |_| container::Style {

@@ -95,6 +95,8 @@ pub enum Action {
     ClosePane,
     // Message
     Reply,
+    /// Opens the quick reactions of a message.
+    AddReaction,
     Edit,
     QuoteText,
     CopyText,
@@ -167,6 +169,7 @@ impl Action {
             Action::ToggleMembers => "Toggle member list",
             Action::ClosePane => "Close pane",
             Action::Reply => "Reply",
+            Action::AddReaction => "Add reaction",
             Action::Edit => "Edit",
             Action::QuoteText => "Quote",
             Action::CopyText => "Copy text",
@@ -235,6 +238,7 @@ impl Action {
             Action::ToggleMembers => i::USERS,
             Action::ClosePane | Action::RevokeInvite => i::CLOSE,
             Action::Reply | Action::QuoteText => i::REPLY,
+            Action::AddReaction => i::REACT,
             Action::SendMessage => i::CHAT,
             Action::Mention | Action::ShowMentions => i::AT,
             Action::Kick => i::LOG_OUT,
@@ -448,6 +452,9 @@ pub fn entries_with(
             let can_send = view::can(s, *channel, Permissions::SEND_MESSAGES);
             if can_send {
                 push(&mut out, [Action::Reply]);
+            }
+            if view::can(s, *channel, Permissions::ADD_REACTIONS) {
+                push(&mut out, [Action::AddReaction]);
             }
             if own {
                 push(&mut out, [Action::Edit]);

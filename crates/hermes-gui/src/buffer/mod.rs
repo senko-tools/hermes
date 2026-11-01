@@ -44,6 +44,9 @@ impl Buffer {
 /// A settings page over the whole window: a header bar like the main window's (the brand over
 /// the navigation, a "Return to …" button over the content; Esc also returns), the navigation on
 /// a sidebar-colored left part and the content on the right.
+/// Width of a settings page's navigation.
+const NAV_WIDTH: f32 = 260.0;
+
 pub fn page_frame<'a, M: Clone + 'a>(
     nav: iced::Element<'a, M>,
     content: iced::Element<'a, M>,
@@ -53,7 +56,7 @@ pub fn page_frame<'a, M: Clone + 'a>(
     theme: &'a crate::theme::Theme,
 ) -> iced::Element<'a, M> {
     use iced::widget::{button, column, container, row};
-    use iced::{Alignment, Fill, FillPortion};
+    use iced::{Alignment, Fill};
 
     use crate::theme::style;
     use crate::widget::icon::{self, icon};
@@ -96,22 +99,31 @@ pub fn page_frame<'a, M: Clone + 'a>(
     .width(Fill)
     .align_y(Alignment::Center)
     .style(move |_| style::pane_header(theme));
+    // A drawn line under each header: the pane header's shadow would be painted over by the
+    // content below it.
+    let line = || {
+        iced::widget::rule::horizontal(1).style(move |_| iced::widget::rule::Style {
+            color: theme.general.border.0,
+            ..style::rule(theme)
+        })
+    };
     let left = column![
         brand,
-        container(container(nav).width(232).height(Fill))
+        line(),
+        container(nav)
             .height(Fill)
             .width(Fill)
-            .align_right(Fill)
-            .padding([style::GAP_L, style::GAP]),
+            .padding([style::GAP_L, style::GAP_S]),
     ];
     row![
         container(left)
-            .width(FillPortion(2))
+            .width(NAV_WIDTH)
             .height(Fill)
             .style(move |_| style::sidebar(theme)),
         column![
             header,
-            container(container(content).max_width(760).width(Fill).height(Fill))
+            line(),
+            container(content)
                 .width(Fill)
                 .height(Fill)
                 .padding(iced::Padding {
@@ -122,7 +134,7 @@ pub fn page_frame<'a, M: Clone + 'a>(
                 })
                 .style(move |_| style::app(theme)),
         ]
-        .width(FillPortion(5))
+        .width(Fill)
         .height(Fill),
     ]
     .into()

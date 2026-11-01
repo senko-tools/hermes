@@ -173,6 +173,19 @@ impl App {
                 let focus = operation::focus(composer.editor_id.clone());
                 self.show_channel(inst, channel).chain(focus)
             }
+            (Target::Message(inst, channel, message), Action::AddReaction) => {
+                for (_, pane) in self.panes.state.iter_mut() {
+                    if pane.buffer
+                        == (Buffer::Channel {
+                            inst: inst.clone(),
+                            channel,
+                        })
+                    {
+                        pane.channel.palette = Some(message);
+                    }
+                }
+                Task::none()
+            }
             (Target::Message(inst, channel, message), Action::Edit) => {
                 self.start_edit(inst, channel, message)
             }

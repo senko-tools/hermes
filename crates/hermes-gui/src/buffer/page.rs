@@ -12,7 +12,7 @@ use crate::theme::{Theme, style};
 use crate::widget::{caption, heading, icon, label, section_title};
 
 /// Widest a page's content gets.
-pub const MAX_WIDTH: f32 = 720.0;
+pub const MAX_WIDTH: f32 = 880.0;
 
 /// A page: its heading, an optional line under it, then its groups.
 pub fn page<'a, M: 'a>(

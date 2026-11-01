@@ -16,7 +16,7 @@ use hermes_client_core::proto::models::Attachment;
 use hermes_client_core::store::{InstanceStore, LocalId, MessageWindow, PendingState};
 use hermes_client_core::{Core, InstanceId, now_ms, time};
 use iced::widget::{Space, button, column, container, row, scrollable, sensor, stack};
-use iced::{Alignment, Element, Fill, Length, Size};
+use iced::{Alignment, Element, Fill, Size};
 
 use self::list::Heights;
 use self::rows::{Row, RowKey};
@@ -127,10 +127,6 @@ pub enum Message {
     OpenImage(Attachment),
     Download(Attachment),
     Input(input::Message),
-    /// Reply to a message (toolbar).
-    Reply(Id),
-    /// Edit my message (toolbar).
-    StartEdit(Id),
     /// A message author's name or avatar was clicked: their menu.
     Author(Id),
     /// Scroll to a message (a reply preview was clicked), loading it if needed.
@@ -286,7 +282,8 @@ pub fn view<'a>(
         .height(Fill)
         .width(Fill);
 
-    let mut layers = stack![messages];
+    // A little room on both sides, so message highlights do not touch the sidebar.
+    let mut layers = stack![container(messages).padding([0.0, style::GAP_S])];
     if !state.at_bottom() || !window.reached_end {
         layers = layers.push(
             container(
@@ -308,12 +305,12 @@ pub fn view<'a>(
         );
     }
 
-    column![
-        layers,
-        typing_line(ctx, s, channel),
-        composer(ctx, s, channel)
-    ]
-    .into()
+    // Who is typing floats over the bottom of the messages, so they scroll right down to the
+    // composer instead of stopping above an empty line.
+    if let Some(typing) = typing_line(ctx, s, channel) {
+        layers = layers.push(typing);
+    }
+    column![layers, composer(ctx, s, channel)].into()
 }
 
 fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
@@ -384,7 +381,11 @@ pub fn typing_text(names: &[String]) -> Option<String> {
     }
 }
 
-fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
+fn typing_line<'a>(
+    ctx: &Context<'a>,
+    s: &InstanceStore,
+    channel: Id,
+) -> Option<Element<'a, Message>> {
     let fonts = ctx.fonts;
     let names: Vec<String> = if ctx.config.buffer.show_typing {
         let space = s.space_of(channel);
@@ -395,12 +396,26 @@ fn typing_line<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element
     } else {
         Vec::new()
     };
-    container(
-        caption(typing_text(&names).unwrap_or_default(), fonts).color(ctx.theme.text.secondary.0),
+    let text = typing_text(&names)?;
+    let theme = ctx.theme;
+    let pill = container(caption(text, fonts).color(theme.text.secondary.0))
+        .padding([2.0, style::GAP_S])
+        .style(move |_| container::Style {
+            background: Some(theme.surface.main.0.scale_alpha(0.92).into()),
+            border: iced::Border {
+                radius: style::radius(theme).into(),
+                ..iced::Border::default()
+            },
+            ..container::Style::default()
+        });
+    Some(
+        container(pill)
+            .width(Fill)
+            .height(Fill)
+            .align_bottom(Fill)
+            .padding([0.0, style::GAP])
+            .into(),
     )
-    .padding([2.0, style::GAP])
-    .height(Length::Fixed(fonts.caption() * 1.4 + 4.0))
-    .into()
 }
 
 fn row_view<'a>(

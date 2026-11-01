@@ -655,11 +655,15 @@ async fn input_box_completes_sends_attaches_replies_and_edits() {
             .is_some_and(|w| w.get(first.id).is_some())
     })
     .await;
-    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    let reply = Message::Menu(
+        crate::sidebar::menu::Target::Message(inst.clone(), general, first.id),
+        crate::sidebar::menu::Action::Reply,
+    );
+    let _ = alice.update(reply.clone());
     assert_eq!(composer(&alice, &inst, general).reply_to, Some(first.id));
     input_msg(&mut alice, input::Message::Cancel);
     assert_eq!(composer(&alice, &inst, general).reply_to, None);
-    let _ = alice.update(Message::Channel(pane, channel::Message::Reply(first.id)));
+    let _ = alice.update(reply);
     alice
         .composers
         .get_mut(&(inst.clone(), general))

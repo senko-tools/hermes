@@ -1357,3 +1357,17 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **App icon:** a gold feather (the header's `md-feather`) on a charcoal square instead of the
   blue "H", for the window, tray and installer.
 - **Why:** the developer's review of the previous round.
+
+## 2026-11-01: GUI: notifications as toasts, no message toolbar, member list in every pane
+
+- **Notifications** ("Created #x", errors) are a card at the top right instead of a bar above
+  the panes; info ones close on their own after 5 s.
+- **Message hover toolbar removed:** right-click has every action; "Add reaction" moved into
+  that menu (it opens the quick reactions on the message).
+- **Member list:** every pane shows its own when toggled on (the previous round showed it only
+  in the focused pane, which made it disappear when focus moved).
+- **Sidebar:** "New message" is a row under Direct messages instead of a small `+`.
+- **Sounds:** join, leave, mute and unmute are lower (G4/C5) and softer.
+- **Animations:** menus, dialogs, the settings page and notifications animate in (iced
+  `Animation`, 140–220 ms).
+- **Why:** the developer's review of the previous round.

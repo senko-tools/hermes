@@ -10,9 +10,14 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, Predefin
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 pub const ICON_SIZE: u32 = 32;
-/// The dark theme's sidebar and accent: a gold feather on a charcoal square.
-const BACKGROUND: [u8; 3] = [0x17, 0x16, 0x1c];
-const ACCENT: [u8; 3] = [0xe5, 0xa5, 0x50];
+/// A silver feather on a slate square, each a soft gradient from top to bottom.
+const BACKGROUND: ([u8; 3], [u8; 3]) = ([0x55, 0x50, 0x5e], [0x38, 0x34, 0x3f]);
+const FEATHER: ([u8; 3], [u8; 3]) = ([0xf4, 0xf4, 0xf7], [0xb4, 0xb7, 0xc2]);
+
+/// `top` blended towards `bottom` by `t` (0–1).
+fn gradient((top, bottom): ([u8; 3], [u8; 3]), t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| f32::from(top[i]) + (f32::from(bottom[i]) - f32::from(top[i])) * t)
+}
 const FEATHER_MASK: &[u8] = include_bytes!("../../assets/icons/feather-mask.png");
 const BADGE: [u8; 3] = [0xed, 0x42, 0x45];
 
@@ -159,7 +164,7 @@ fn feather(size: u32) -> image::GrayImage {
     image::imageops::resize(&alpha, size, size, image::imageops::FilterType::Lanczos3)
 }
 
-/// The app icon as RGBA pixels: a charcoal rounded square with the gold feather, and a red dot
+/// The app icon as RGBA pixels: a slate rounded square with the silver feather, and a red dot
 /// in the top right corner when `badge`.
 pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
     let s = size as f32;
@@ -172,12 +177,10 @@ pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
             let inside = rounded_square(fx, fy, s, radius);
             let mut px = [0u8; 4];
             if inside {
-                let t = f32::from(feather.get_pixel(x, y)[0]) / 255.0;
-                let blend = |i: usize| {
-                    (f32::from(BACKGROUND[i])
-                        + (f32::from(ACCENT[i]) - f32::from(BACKGROUND[i])) * t)
-                        .round() as u8
-                };
+                let cover = f32::from(feather.get_pixel(x, y)[0]) / 255.0;
+                let v = fy / s;
+                let (bg, fg) = (gradient(BACKGROUND, v), gradient(FEATHER, v));
+                let blend = |i: usize| (bg[i] + (fg[i] - bg[i]) * cover).round() as u8;
                 px = [blend(0), blend(1), blend(2), 255];
             }
             if badge {
@@ -214,12 +217,12 @@ mod tests {
         let badged = icon_rgba(32, true);
         assert_eq!(plain.len(), 32 * 32 * 4);
         assert_ne!(plain, badged);
-        // Corners are transparent, the middle is not, and the feather is gold.
+        // Corners are transparent, the middle is not, and the feather is silver.
         assert_eq!(plain[3], 0);
         let mid = ((16 * 32 + 16) * 4) as usize;
         assert_eq!(plain[mid + 3], 255);
         assert!(
-            plain.chunks(4).any(|px| px[0] > 0xc0 && px[2] < 0x90),
+            plain.chunks(4).any(|px| px[0] > 0xb0 && px[2] > 0xb0),
             "no feather pixels"
         );
         // The badge is red in the top right.

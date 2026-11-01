@@ -3,6 +3,7 @@
 // No console window next to the GUI in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod anim;
 mod app;
 mod buffer;
 mod desktop;
@@ -126,6 +127,7 @@ fn main() -> ExitCode {
                 app.status = Some(app::Status {
                     text: format!("config: {warning}"),
                     level: app::Level::Warning,
+                    since: iced::time::Instant::now(),
                 });
             }
             let open = match link {

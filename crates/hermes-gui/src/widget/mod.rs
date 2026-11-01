@@ -5,6 +5,7 @@ pub mod context_menu;
 pub mod cursor;
 pub mod icon;
 pub mod theme_card;
+pub mod toast;
 
 use iced::widget::{Button, Text, button, text};
 

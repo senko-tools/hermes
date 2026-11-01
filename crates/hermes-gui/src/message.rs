@@ -108,6 +108,10 @@ pub enum Message {
     Shortcut(crate::keybinds::Action),
     /// Nothing to do (a request whose result the gateway delivers).
     Nothing,
+    /// A frame was drawn while something animates (only asked for then).
+    Frame,
+    /// Once a second while an info notification shows: it goes away after a while.
+    StatusTick,
     /// An icon file was picked for a space.
     IconPicked(InstanceId, Id, Option<std::path::PathBuf>),
 }

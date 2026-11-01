@@ -279,7 +279,9 @@ impl Panes {
             let marked = split && focused;
             let mut title_bar =
                 pane_grid::TitleBar::new(heading.height(style::ICON_BUTTON).clip(true))
-                    .controls(pane_grid::Controls::new(controls))
+                    .controls(pane_grid::Controls::new(
+                        container(controls).height(style::ICON_BUTTON),
+                    ))
                     .padding([style::GAP_S, style::GAP])
                     .style(move |_| {
                         let mut st = style::pane_header(theme);
@@ -296,7 +298,7 @@ impl Panes {
                 title_bar = title_bar.always_show_controls();
             }
 
-            pane_grid::Content::new(body(id, pane, focused || !split, ctx))
+            pane_grid::Content::new(body(id, pane, ctx))
                 .title_bar(title_bar)
                 .style(move |_| container::Style {
                     background: Some(theme.surface.main.0.into()),
@@ -370,12 +372,18 @@ fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a,
         "Leave voice" => 2,
         _ => 0,
     };
+    // Exactly as tall as the icon buttons beside it at any text size, so every pane header is
+    // as tall as the sidebar's.
     button(
-        row![icon(glyph, 14.0), label(text, ctx.fonts)]
-            .spacing(style::GAP_S)
-            .align_y(Alignment::Center),
+        container(
+            row![icon(glyph, 14.0), label(text, ctx.fonts)]
+                .spacing(style::GAP_S)
+                .align_y(Alignment::Center),
+        )
+        .center_y(Fill),
     )
-    .padding(style::BUTTON_PAD)
+    .height(style::ICON_BUTTON)
+    .padding([0.0, style::BUTTON_PAD.left])
     .style(move |_, s| match kind {
         1 => style::primary(theme, s),
         2 => style::danger(theme, s),
@@ -506,12 +514,7 @@ pub fn title(core: &Core, buffer: &Buffer) -> (String, String) {
 
 /// `active`: the focused pane, or the only one; only it shows its member list, so a split
 /// window has at most one.
-fn body<'a>(
-    id: pane_grid::Pane,
-    pane: &'a Pane,
-    active: bool,
-    ctx: &Context<'a>,
-) -> Element<'a, Message> {
+fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     match &pane.buffer {
@@ -659,15 +662,16 @@ fn body<'a>(
                 &pane.channel,
             )
             .map(move |m| Message::Channel(id, m));
-            let messages: Element<'a, Message> = match connection_banner(ctx, inst) {
-                Some(banner) => column![banner, messages].into(),
-                None => messages,
-            };
-            if pane.members && active {
-                row![messages, member_list(ctx, inst, *channel)].into()
+            // The same shape whatever shows, so toggling the member list or a banner keeps the
+            // messages' state (their scroll position).
+            let banner: Element<'a, Message> =
+                connection_banner(ctx, inst).unwrap_or_else(|| Space::new().into());
+            let members: Element<'a, Message> = if pane.members {
+                member_list(ctx, inst, *channel)
             } else {
-                messages
-            }
+                Space::new().into()
+            };
+            row![column![banner, messages], members].into()
         }
     }
 }

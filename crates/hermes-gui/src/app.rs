@@ -39,17 +39,19 @@ use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
 use crate::voice::{self as voice_ui, VoiceMsg};
-use crate::widget::caption;
 use crate::widget::context_menu;
 use crate::widget::cursor::{self, Cursor};
-use crate::widget::{ButtonKind, text_button};
 
 /// A line shown above the main area until dismissed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub text: String,
     pub level: Level,
+    pub since: iced::time::Instant,
 }
+
+/// How long an info notification stays.
+const INFO_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -70,6 +72,7 @@ pub struct App {
     pub theme_previews: Vec<(String, Result<Theme, String>)>,
     pub fonts: Fonts,
     pub status: Option<Status>,
+    pub(crate) anims: crate::anim::Anims,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -182,6 +185,7 @@ impl App {
             core,
             events,
             status: None,
+            anims: crate::anim::Anims::default(),
             add_instance: None,
             single_instance,
             collapsed,
@@ -265,9 +269,28 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let before = self.open_overlays();
         let task = self.update_inner(message);
         self.sync_meter();
+        let now = self.open_overlays();
+        if before != now {
+            self.anims.sync(before, now, iced::time::Instant::now());
+        }
         task
+    }
+
+    /// Which animated overlays are open.
+    fn open_overlays(&self) -> crate::anim::Open {
+        crate::anim::Open {
+            menu: self.menu.is_some(),
+            dialog: self.command_bar.is_some()
+                || self.add_instance.is_some()
+                || self.form.is_some()
+                || self.new_dm.is_some()
+                || self.confirm.is_some(),
+            page: self.page.is_some(),
+            toast: self.status.is_some(),
+        }
     }
 
     /// Runs the level meter (and allows the mic test) only while the Voice & Audio tab shows.
@@ -344,6 +367,16 @@ impl App {
             Message::OpenSettings => self.page = Some(Buffer::Settings),
             Message::Settings(message) => return self.on_settings(message),
             Message::DismissStatus => self.status = None,
+            Message::Frame => {}
+            Message::StatusTick => {
+                if self
+                    .status
+                    .as_ref()
+                    .is_some_and(|s| s.level == Level::Info && s.since.elapsed() >= INFO_FOR)
+                {
+                    self.status = None;
+                }
+            }
             Message::FontLoaded | Message::ChannelOpened => {}
             Message::OpenAddInstance => return self.open_add_instance(String::new()),
             Message::SignIn(inst) => return self.sign_in(&inst),
@@ -751,15 +784,6 @@ impl App {
             }
             channel::Message::Download(attachment) => return self.download(inst, attachment),
             channel::Message::Input(message) => return self.on_input(inst, channel, message),
-            channel::Message::Reply(id) => {
-                let composer = self.composers.entry((inst, channel)).or_default();
-                if composer.editing.is_some() {
-                    composer.clear();
-                }
-                composer.reply_to = Some(id);
-                return operation::focus(composer.editor_id.clone());
-            }
-            channel::Message::StartEdit(id) => return self.start_edit(inst, channel, id),
             channel::Message::OlderLoaded => view.loading_older = false,
             channel::Message::JumpToPresent => {
                 let id = view.scroll_id.clone();
@@ -2405,6 +2429,7 @@ impl App {
         self.status = Some(Status {
             text,
             level: Level::Info,
+            since: iced::time::Instant::now(),
         });
     }
 
@@ -2413,6 +2438,7 @@ impl App {
         self.status = Some(Status {
             text,
             level: Level::Warning,
+            since: iced::time::Instant::now(),
         });
     }
 
@@ -2421,6 +2447,7 @@ impl App {
         self.status = Some(Status {
             text,
             level: Level::Error,
+            since: iced::time::Instant::now(),
         });
     }
 
@@ -2436,6 +2463,14 @@ impl App {
             subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
         subscriptions.push(subscription::window_and_keys());
+        if self.anims.animating(iced::time::Instant::now()) {
+            subscriptions.push(iced::window::frames().map(|_| Message::Frame));
+        }
+        if self.status.as_ref().is_some_and(|s| s.level == Level::Info) {
+            subscriptions.push(
+                iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::StatusTick),
+            );
+        }
         subscriptions.push(window::close_requests().map(Message::CloseRequested));
         if self.tray.is_some() {
             subscriptions.push(Subscription::run(crate::desktop::tray::events).map(Message::Tray));
@@ -2536,25 +2571,14 @@ impl App {
         );
 
         let account_inst = self.account_instance();
-        let mut main = column![].width(Fill).height(Fill);
-        if let Some(call) = &self.call {
-            main = main.push(voice_ui::banner(&self.core, call, fonts, theme));
-        }
-        if let Some(status) = &self.status {
-            main = main.push(
-                container(
-                    row![
-                        caption(status.text.as_str(), fonts).width(Fill),
-                        text_button("Dismiss", ButtonKind::Secondary, fonts, theme)
-                            .on_press(Message::DismissStatus),
-                    ]
-                    .spacing(style::GAP_S)
-                    .align_y(iced::Alignment::Center),
-                )
-                .padding([style::GAP_XS, style::GAP_S])
-                .style(|_| style::status_bar(theme, status.level)),
-            );
-        }
+        let now = iced::time::Instant::now();
+        // Every slot of the layout is always there (empty when unused), so showing a banner or
+        // hiding the sidebar does not shift the panes in the widget tree and reset their state.
+        let banner: Element<'_, Message> = match &self.call {
+            Some(call) => voice_ui::banner(&self.core, call, fonts, theme),
+            None => iced::widget::Space::new().into(),
+        };
+        let mut main = column![banner].width(Fill).height(Fill);
         let return_to = self.panes.focused_title(&self.core);
         let ctx = panes::Context {
             core: &self.core,
@@ -2591,10 +2615,8 @@ impl App {
             ui_scale_draft: self.ui_scale_draft,
             return_to,
         };
-        main = main.push(match &self.page {
-            Some(page) => panes::page_view(page, &ctx),
-            None => self.panes.view(&ctx),
-        });
+        main = main.push(self.panes.view(&ctx));
+        let page = self.page.as_ref().map(|page| panes::page_view(page, &ctx));
 
         let right = settings::Position::from_config(&self.config.sidebar.position)
             == settings::Position::Right;
@@ -2605,9 +2627,12 @@ impl App {
             self.resize.is_some_and(|r| r.edge == Edge::Sidebar),
             theme,
         );
-        let layout = if !self.sidebar_visible || self.page.is_some() {
-            row![main]
-        } else if right {
+        let sidebar: Element<'_, Message> = if self.sidebar_visible {
+            sidebar
+        } else {
+            iced::widget::Space::new().into()
+        };
+        let layout = if right {
             row![main, sidebar]
         } else {
             row![sidebar, main]
@@ -2616,7 +2641,33 @@ impl App {
             .width(Fill)
             .height(Fill)
             .style(|_| style::app(theme));
-        let mut root: Element<'_, Message> = base.into();
+        // The window is one stack whose first layer never moves, whatever is open over it:
+        // wrapping the base in new widgets would reset its state (the chat's scroll position).
+        let blank = || -> Element<'_, Message> {
+            iced::widget::Space::new().width(Fill).height(Fill).into()
+        };
+        let mut layers: Vec<Element<'_, Message>> = vec![base.into()];
+        if let Some(page) = page {
+            // Settings pages cover the window and slide up a little as they open.
+            let t = crate::anim::progress(&self.anims.page, now);
+            layers.push(iced::widget::opaque(
+                container(page)
+                    .padding(iced::Padding::ZERO.top(16.0 * (1.0 - t)))
+                    .width(Fill)
+                    .height(Fill)
+                    .style(|_| style::app(theme)),
+            ));
+        }
+        if let Some(status) = &self.status {
+            let t = crate::anim::progress(&self.anims.toast, now);
+            layers.push(crate::widget::toast::view(
+                status,
+                t,
+                Message::DismissStatus,
+                fonts,
+                theme,
+            ));
+        }
         if let Some((target, at)) = &self.menu {
             let status = target
                 .inst()
@@ -2649,66 +2700,78 @@ impl App {
                     })
                 })
                 .collect();
-            root = context_menu::overlay(
-                root,
+            layers.push(context_menu::overlay(
+                blank(),
                 self.menu_header(target),
                 items,
                 *at,
                 self.window_size,
+                crate::anim::progress(&self.anims.menu, now),
                 fonts,
                 theme,
                 Message::CloseMenu,
-            );
+            ));
         }
         if let Some(menu) = &self.volume_menu {
-            root = voice_ui::volume_overlay(root, menu, self.window_size, fonts, theme);
+            layers.push(voice_ui::volume_overlay(
+                blank(),
+                menu,
+                self.window_size,
+                fonts,
+                theme,
+            ));
         }
         if let Some(viewer) = &self.viewer {
-            root = image_viewer::view(
-                root,
+            layers.push(image_viewer::view(
+                blank(),
                 viewer,
                 fonts,
                 theme,
                 Message::CloseViewer,
                 Message::DownloadViewer,
-            );
+            ));
         }
         if let Some(bar) = &self.command_bar {
-            root = modal::overlay(
-                root,
+            layers.push(modal::overlay(
+                blank(),
+                crate::anim::progress(&self.anims.dialog, now),
                 bar.view(fonts, theme).map(Message::CommandBar),
                 theme,
                 Some(Message::CommandBar(command_bar::Message::Close)),
-            );
+            ));
         }
         if let Some(dialog) = &self.add_instance {
-            root = modal::overlay(
-                root,
+            layers.push(modal::overlay(
+                blank(),
+                crate::anim::progress(&self.anims.dialog, now),
                 dialog.view(fonts, theme).map(Message::AddInstance),
                 theme,
                 None,
-            );
+            ));
         }
         if let Some(form) = &self.form {
-            root = modal::overlay(
-                root,
+            layers.push(modal::overlay(
+                blank(),
+                crate::anim::progress(&self.anims.dialog, now),
                 form.view(fonts, theme).map(Message::Form),
                 theme,
                 Some(Message::Form(form::Message::Cancel)),
-            );
+            ));
         }
         if let Some(dialog) = &self.new_dm {
-            root = modal::overlay(
-                root,
+            layers.push(modal::overlay(
+                blank(),
+                crate::anim::progress(&self.anims.dialog, now),
                 dialog.view(fonts, theme).map(Message::NewDmMsg),
                 theme,
                 Some(Message::NewDmMsg(new_dm::Message::Cancel)),
-            );
+            ));
         }
         if let Some((_, action)) = &self.confirm {
             let (title, text) = confirm_text(*action);
-            root = modal::overlay(
-                root,
+            layers.push(modal::overlay(
+                blank(),
+                crate::anim::progress(&self.anims.dialog, now),
                 confirm::view(
                     title,
                     text,
@@ -2720,15 +2783,20 @@ impl App {
                 ),
                 theme,
                 Some(Message::CancelConfirm),
-            );
+            ));
         }
         if self.resize.is_some() {
             // While resizing, the whole window follows the pointer.
-            root = iced::widget::mouse_area(root)
-                .on_move(Message::ResizeMove)
-                .interaction(iced::mouse::Interaction::ResizingHorizontally)
-                .into();
+            layers.push(
+                iced::widget::mouse_area(blank())
+                    .on_move(Message::ResizeMove)
+                    .interaction(iced::mouse::Interaction::ResizingHorizontally)
+                    .into(),
+            );
         }
+        let root = iced::widget::Stack::with_children(layers)
+            .width(Fill)
+            .height(Fill);
         cursor::tracker(&self.cursor, root).into()
     }
 }

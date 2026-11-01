@@ -31,10 +31,11 @@ impl Sound {
     /// The samples of this sound at 48 kHz mono, peak about 0.5.
     pub fn samples(self) -> Vec<f32> {
         match self {
-            Sound::Join => notes(&[(660.0, 0.08), (880.0, 0.12)]),
-            Sound::Leave => notes(&[(880.0, 0.08), (660.0, 0.12)]),
-            Sound::Mute => notes(&[(440.0, 0.07)]),
-            Sound::Unmute => notes(&[(660.0, 0.07)]),
+            // Low and soft (G4 and C5): a rising pair to join, falling to leave.
+            Sound::Join => soft_notes(&[(392.0, 0.09), (523.25, 0.16)]),
+            Sound::Leave => soft_notes(&[(523.25, 0.09), (392.0, 0.16)]),
+            Sound::Mute => soft_notes(&[(330.0, 0.08)]),
+            Sound::Unmute => soft_notes(&[(440.0, 0.08)]),
             Sound::Ping => notes(&[(1046.5, 0.05), (1318.5, 0.09)]),
             Sound::Ring => {
                 let mut out = notes(&[(784.0, 0.15), (659.3, 0.15), (784.0, 0.15), (659.3, 0.15)]);
@@ -56,6 +57,26 @@ fn notes(notes: &[(f32, f32)]) -> Vec<f32> {
         for i in 0..len {
             let env = (i.min(len - i) as f32 / fade as f32).min(1.0);
             out.push(0.5 * env * (TAU * freq * i as f32 / rate).sin());
+        }
+    }
+    out
+}
+
+/// Like [`notes`], but rounder: a slower attack and a decay through each note, at a lower
+/// level, so they do not sting.
+fn soft_notes(notes: &[(f32, f32)]) -> Vec<f32> {
+    let rate = SAMPLE_RATE as f32;
+    let mut out = Vec::new();
+    for &(freq, secs) in notes {
+        let len = (secs * rate) as usize;
+        let attack = (0.012 * rate) as usize;
+        let release = (0.02 * rate) as usize;
+        for i in 0..len {
+            let t = i as f32 / len as f32;
+            let rise = (i as f32 / attack as f32).min(1.0);
+            let fall = ((len - i) as f32 / release as f32).min(1.0);
+            let decay = (-2.5 * t).exp();
+            out.push(0.38 * rise * fall * decay * (TAU * freq * i as f32 / rate).sin());
         }
     }
     out

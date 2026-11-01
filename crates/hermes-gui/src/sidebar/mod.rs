@@ -25,7 +25,7 @@ use crate::theme::Theme;
 use crate::theme::style::{self, RowState};
 use crate::voice::{JoinOn, VoiceMsg};
 use crate::widget::icon::{self, icon};
-use crate::widget::{avatar, caption, icon_button, label, strong, tip, tip_at};
+use crate::widget::{avatar, caption, icon_button, label, strong, tip_at};
 
 /// Size of row icons.
 const LEAD: f32 = style::ROW_ICON;
@@ -386,19 +386,23 @@ fn row_view<'a>(
             } else {
                 RowState::of(*selected, badge.unread, badge.mentions > 0, *connected)
             };
-            let content = row![
-                slot(icon(glyph, LEAD).color(glyph_color(state, *muted, theme))),
-                name_text(name, state, *muted, fonts, theme),
-                mention_count(badge.mentions, fonts, theme),
-            ]
-            .spacing(style::GAP_S)
-            .align_y(Alignment::Center);
+            let muted = *muted;
+            let content = || -> Element<'a, Message> {
+                row![
+                    slot(icon(glyph, LEAD).color(glyph_color(state, muted, theme))),
+                    name_text(name, state, muted, fonts, theme),
+                    mention_count(badge.mentions, fonts, theme),
+                ]
+                .spacing(style::GAP_S)
+                .align_y(Alignment::Center)
+                .into()
+            };
             let level = if *nested { 3 } else { 2 };
             if *kind == ChannelKind::Voice {
                 voice_item(content, level, state, theme, inst, *id, join_on, menu)
             } else {
                 item(
-                    content,
+                    content(),
                     level,
                     state,
                     theme,
@@ -453,8 +457,10 @@ fn row_view<'a>(
                 content = content.push(icon(icon::MIC_OFF, 14.0).color(theme.voice.muted.0));
             }
             let level = if *nested { 4 } else { 3 };
+            // No vertical padding: the row's fixed height centers the avatar, which padding
+            // would squeeze into an oval.
             let row = container(row![Space::new().width(indent(level)), content])
-                .padding(style::ROW_PAD)
+                .padding([0.0, style::ROW_PAD.left])
                 .center_y(style::VOICE_ROW_H);
             if *me {
                 row.into()
@@ -493,24 +499,29 @@ fn row_view<'a>(
                 None,
                 menu,
             );
-            column![
-                Space::new().height(style::GAP_S),
-                row![
-                    header,
-                    tip(
-                        button(icon(icon::PLUS, LEAD))
-                            .padding(2)
-                            .style(|_, s| style::ghost(theme, s, false))
-                            .on_press(Message::NewDm(inst.clone())),
-                        "New direct message or group",
-                        fonts,
+            let mut col = column![Space::new().height(style::GAP_S), header].spacing(2);
+            if !*collapsed {
+                // Starting a conversation is the first entry of the list.
+                col = col.push(
+                    row_button(
+                        row![
+                            slot(icon(icon::ADD_USER, LEAD).color(theme.icons.default.0)),
+                            label("New message", fonts)
+                                .color(theme.text.secondary.0)
+                                .wrapping(text::Wrapping::None)
+                                .width(Fill),
+                        ]
+                        .spacing(style::GAP_S)
+                        .align_y(Alignment::Center),
+                        2,
+                        RowState::Plain,
+                        false,
                         theme,
-                    ),
-                ]
-                .spacing(2)
-                .align_y(Alignment::Center),
-            ]
-            .into()
+                    )
+                    .on_press(Message::NewDm(inst.clone())),
+                );
+            }
+            col.into()
         }
         Row::Dm {
             inst,
@@ -719,7 +730,7 @@ fn item<'a>(
 /// A voice channel row: a click selects it (and opens its chat); joining takes a double-click
 /// unless `voice.join_on = "single_click"`.
 fn voice_item<'a>(
-    content: impl Into<Element<'a, Message>>,
+    content: impl Fn() -> Element<'a, Message>,
     level: u8,
     state: RowState,
     theme: &'a Theme,
@@ -729,8 +740,29 @@ fn voice_item<'a>(
     menu: Option<&Target>,
 ) -> Element<'a, Message> {
     let open = menu == Some(&Target::Channel(inst.clone(), channel));
-    // No `on_press`: the button only draws; the mouse area takes the clicks.
-    let look = row_button(content, level, state, open, theme);
+    // Not a button: a button would take the clicks the double-click needs. The row is drawn
+    // twice, plain and hovered, and `hover` shows the second while the pointer is over it.
+    let look = |status| {
+        let st = if open {
+            style::menu_open(theme)
+        } else {
+            style::sidebar_row(theme, status, state)
+        };
+        container(row![Space::new().width(indent(level)), content()].align_y(Alignment::Center))
+            .center_y(style::ROW_H)
+            .width(Fill)
+            .padding([0.0, style::ROW_PAD.left])
+            .style(move |_| container::Style {
+                background: st.background,
+                text_color: Some(st.text_color),
+                border: st.border,
+                ..container::Style::default()
+            })
+    };
+    let look = iced::widget::hover(
+        look(iced::widget::button::Status::Active),
+        look(iced::widget::button::Status::Hovered),
+    );
     let area = mouse_area(look)
         .on_right_press(Message::OpenMenu(Target::Channel(inst.clone(), channel)))
         .interaction(iced::mouse::Interaction::Pointer);

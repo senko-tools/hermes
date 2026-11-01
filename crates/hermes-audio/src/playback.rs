@@ -274,7 +274,8 @@ mod tests {
         for _ in 0..20 {
             out.extend_from_slice(playback.render());
         }
-        assert!(dsp::rms(&out) > 0.05);
+        // Audible (the UI sounds are soft on purpose).
+        assert!(dsp::rms(&out) > 0.02, "{}", dsp::rms(&out));
         assert!(out.len() > 44_100 * 380 / 1000, "{}", out.len());
         assert!(!playback.is_active());
         playback.sounds_enabled = false;

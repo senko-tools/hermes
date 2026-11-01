@@ -246,16 +246,12 @@ pub fn view<'a>(
             }),
         );
     }
-    if hovered {
+    // Quick reactions, opened from the right-click menu ("Add reaction").
+    if state.palette == Some(id) {
         layers = layers.push(
-            container(toolbar(
-                ctx,
-                id,
-                state.palette == Some(id),
-                s.me_id() == Some(msg.author.id) && !m.system,
-            ))
-            .align_right(Fill)
-            .padding([0.0, style::GAP]),
+            container(palette(ctx, id))
+                .align_right(Fill)
+                .padding([0.0, style::GAP]),
         );
     }
     // Right-click anywhere on the message opens its menu (the author has their own).
@@ -266,54 +262,26 @@ pub fn view<'a>(
         .into()
 }
 
-fn toolbar<'a>(ctx: &Context<'a>, id: Id, palette: bool, own: bool) -> Element<'a, Message> {
+fn palette<'a>(ctx: &Context<'a>, id: Id) -> Element<'a, Message> {
     let fonts = ctx.fonts;
     let theme = ctx.theme;
     let mut bar = row![].spacing(2).align_y(Alignment::Center);
-    let tool = |glyph: char, hint: &'a str, message: Message| {
-        crate::widget::tip_at(
-            crate::widget::icon_button(glyph, false, theme).on_press(message),
-            hint,
-            iced::widget::tooltip::Position::Top,
-            fonts,
-            theme,
-        )
-    };
-    if palette {
-        for emoji in QUICK_REACTIONS {
-            bar = bar.push(
-                button(container(label(emoji, fonts)).center(style::ICON_BUTTON))
-                    .padding(0)
-                    .style(move |_, st| style::ghost(theme, st, false))
-                    .on_press(Message::React(id, emoji.to_owned(), true)),
-            );
-        }
-        bar = bar.push(tool(
-            crate::widget::icon::CLOSE,
-            "Close",
-            Message::Palette(None),
-        ));
-    } else {
-        bar = bar
-            .push(tool(
-                crate::widget::icon::REACT,
-                "Add reaction",
-                Message::Palette(Some(id)),
-            ))
-            .push(tool(
-                crate::widget::icon::REPLY,
-                "Reply",
-                Message::Reply(id),
-            ));
-        if own {
-            bar = bar.push(tool(
-                crate::widget::icon::PENCIL,
-                "Edit",
-                Message::StartEdit(id),
-            ));
-        }
-        bar = bar.push(tool(crate::widget::icon::MORE, "More", Message::More(id)));
+    for emoji in QUICK_REACTIONS {
+        bar = bar.push(
+            button(container(label(emoji, fonts)).center(style::ICON_BUTTON))
+                .padding(0)
+                .style(move |_, st| style::ghost(theme, st, false))
+                .on_press(Message::React(id, emoji.to_owned(), true)),
+        );
     }
+    bar = bar.push(crate::widget::tip_at(
+        crate::widget::icon_button(crate::widget::icon::CLOSE, false, theme)
+            .on_press(Message::Palette(None)),
+        "Close",
+        iced::widget::tooltip::Position::Top,
+        fonts,
+        theme,
+    ));
     container(bar)
         .padding(3)
         .style(move |_| style::popover(theme))
