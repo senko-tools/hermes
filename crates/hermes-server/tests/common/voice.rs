@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hermes_proto::voice::{self, ALPN, AudioHeader};
+use hermes_proto::voice::{self, ALPN, AudioHeader, VideoHeader};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -197,6 +197,32 @@ impl VoiceClient {
             .ok()?;
         let (header, opus) = AudioHeader::decode(&data).unwrap();
         Some((header, opus.to_vec()))
+    }
+
+    /// Sends one screen share frame (`payload` after the header) on its own stream.
+    pub async fn send_video(&self, keyframe: bool, timestamp: u32, payload: &[u8]) {
+        let header = VideoHeader {
+            keyframe,
+            sender_id: 999,
+            width: 640,
+            height: 360,
+            timestamp,
+        };
+        let mut stream = self.conn.open_uni().await.unwrap();
+        stream.write_all(&header.encode()).await.unwrap();
+        stream.write_all(payload).await.unwrap();
+        stream.finish().unwrap();
+    }
+
+    /// The next screen share frame within `ms`, if any.
+    pub async fn recv_video(&self, ms: u64) -> Option<(VideoHeader, Vec<u8>)> {
+        let mut stream = tokio::time::timeout(Duration::from_millis(ms), self.conn.accept_uni())
+            .await
+            .ok()?
+            .ok()?;
+        let data = stream.read_to_end(voice::MAX_VIDEO_FRAME).await.ok()?;
+        let header = VideoHeader::decode(&data).unwrap();
+        Some((header, data[voice::VIDEO_HEADER_LEN..].to_vec()))
     }
 
     /// Sends a few packets and returns how many arrive at `to`, with the sender ID they carry.

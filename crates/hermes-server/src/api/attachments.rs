@@ -320,7 +320,7 @@ async fn serve(
 }
 
 /// `X-Filename` → the stored filename: percent-decoded UTF-8, without any directory part,
-/// trimmed, no control characters, at most 255 bytes.
+/// trimmed, no control characters or text direction overrides, at most 255 bytes.
 fn filename(raw: &str) -> Result<String, String> {
     let decoded = percent_decode(raw).ok_or("must be URL-encoded UTF-8")?;
     let name = decoded
@@ -331,9 +331,7 @@ fn filename(raw: &str) -> Result<String, String> {
     if name.is_empty() || name == "." || name == ".." {
         return Err("must be a file name".into());
     }
-    if name.chars().any(char::is_control) {
-        return Err("must not contain control characters".into());
-    }
+    validate::name_characters(name)?;
     if name.len() > MAX_FILENAME_BYTES {
         return Err(format!("must be at most {MAX_FILENAME_BYTES} bytes"));
     }
@@ -413,6 +411,10 @@ mod tests {
         assert!(filename("..").is_err());
         assert!(filename("dir%2F").is_err());
         assert!(filename("a%0Ab").is_err());
+        // U+202E RIGHT-TO-LEFT OVERRIDE would make "invoice\u{202E}fdp.exe" read as a PDF.
+        assert!(filename("invoice%E2%80%AEfdp.exe").is_err());
+        // Emoji with zero-width joiners are fine.
+        assert!(filename("%F0%9F%91%A9%E2%80%8D%F0%9F%92%BB.png").is_ok());
         assert!(filename("%ZZ").is_err());
         assert!(filename("%FF").is_err());
         assert!(filename(&"a".repeat(256)).is_err());

@@ -6,11 +6,12 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{
-    ChangePasswordRequest, NotificationSettingRequest, Pagination, UpdateMeRequest, UserProfile,
+    ChangePasswordRequest, NotificationSettingRequest, Pagination, UpdateMeRequest,
+    UpdatePrivacyRequest, UserProfile,
 };
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
-use hermes_proto::models::{CurrentUser, Message, NotificationSetting};
+use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
 use hermes_proto::permissions::Permissions;
 
 use super::validate::{self, Fields};
@@ -172,6 +173,52 @@ fn notification_target(cache: &Cache, user_id: Id, target_id: Id) -> bool {
         || cache
             .channel_permissions(target_id, user_id)
             .contains(Permissions::VIEW_CHANNEL)
+}
+
+/// Your privacy settings.
+pub async fn privacy(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+) -> ApiResult<Json<PrivacySettings>> {
+    let cache = state.cache();
+    let user = cache
+        .users
+        .get(&auth.user_id)
+        .ok_or_else(|| Error::not_found("user"))?;
+    Ok(Json(user.privacy))
+}
+
+/// Changes the fields given; `privacy_update` goes to your sessions. Existing DMs and requests
+/// stay as they are; the settings decide only how new DMs reach you.
+pub async fn update_privacy(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Json(req): Json<UpdatePrivacyRequest>,
+) -> ApiResult<Json<PrivacySettings>> {
+    let _writes = state.writes.lock().await;
+    let mut privacy = state
+        .cache()
+        .users
+        .get(&auth.user_id)
+        .map(|u| u.privacy)
+        .ok_or_else(|| Error::not_found("user"))?;
+    if let Some(dm_from) = req.dm_from {
+        privacy.dm_from = dm_from;
+    }
+    if let Some(on) = req.message_requests {
+        privacy.message_requests = on;
+    }
+    let mut conn = state.db.write.acquire().await?;
+    db::users::set_privacy(&mut conn, auth.user_id, &privacy).await?;
+    drop(conn);
+    if let Some(user) = state.cache_mut().users.get_mut(&auth.user_id) {
+        user.privacy = privacy;
+    }
+    state.publish(
+        ServerEvent::PrivacyUpdate(privacy),
+        Audience::User(auth.user_id),
+    );
+    Ok(Json(privacy))
 }
 
 pub async fn put_notification_setting(

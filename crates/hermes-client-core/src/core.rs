@@ -82,6 +82,11 @@ pub enum CoreEvent {
     },
     /// Microphone level in dBFS, 20 times a second while [`Core::set_level_meter`] is on.
     InputLevel(f32),
+    /// Who shares their screen in your voice room changed, or your own share started or
+    /// stopped ([`Core::screen_sharers`], [`Core::sharing_screen`]).
+    ScreenShares,
+    /// Someone needs a keyframe of your screen share: encode the next frame as one.
+    KeyframeRequested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,6 +595,29 @@ impl Core {
         Ok(())
     }
 
+    /// An invite link's `#fp=` (PLAN.md section 13): pinned only for a host this client has
+    /// never trusted. A host that is already pinned keeps its pin, and an instance that is
+    /// already added (trusted through its CA certificate when it has no pin) is never switched
+    /// to a pin by a link: a pin replaces CA validation, so a crafted link could otherwise
+    /// hand someone else's certificate the trust of a real server. Returns whether it pinned.
+    pub fn trust_invite_fingerprint(
+        &self,
+        host: &HostPort,
+        fingerprint: Fingerprint,
+    ) -> Result<bool> {
+        let added = self
+            .config()
+            .instances
+            .iter()
+            .any(|i| i.url.authority() == host.authority());
+        let mut known = self.inner.known_hosts.lock().expect("known hosts");
+        if added || known.get(host).is_some() {
+            return Ok(false);
+        }
+        known.trust(host, fingerprint)?;
+        Ok(true)
+    }
+
     /// Fails unless the host's certificate is trusted (CA-valid or pinned).
     async fn check_trusted(&self, host: &HostPort) -> Result<()> {
         let probe = self.probe_instance(host).await?;
@@ -901,12 +929,36 @@ impl Core {
             ServerEvent::MessageCreate(m) => Some(m.clone()),
             _ => None,
         };
+        // A message request notifies once, when it first arrives.
+        let request = match &event {
+            ServerEvent::DmCreate(dm) if dm.request => self
+                .with_store(inst, |s| !s.dms.get(&dm.id).is_some_and(|d| d.request))
+                .unwrap_or(false)
+                .then(|| dm.clone()),
+            _ => None,
+        };
         let Some(changed) = self.with_store(inst, |s| s.apply(event, now)) else {
             return;
         };
         self.changed(inst, changed);
         if let Some(message) = message {
             self.maybe_notify(inst, &message, now);
+        }
+        if let Some(dm) = request
+            && self.config().notifications.enabled
+        {
+            let notification = {
+                let store = self.store();
+                store
+                    .instance(inst)
+                    .and_then(|s| notify::request(s, &dm, self.presence()))
+            };
+            if let Some(notification) = notification {
+                self.emit(CoreEvent::Notification {
+                    inst: inst.to_owned(),
+                    notification,
+                });
+            }
         }
     }
 

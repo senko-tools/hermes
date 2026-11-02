@@ -188,6 +188,28 @@ impl App {
                         .instance(&inst)
                         .is_some_and(|s| view::can(s, channel, Permissions::MANAGE_CHANNELS))
                 };
+                let request = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.channel(channel))
+                    .is_some_and(|c| c.request);
+                if request {
+                    out.push(item(
+                        "Accept request",
+                        within(MenuItem::Run(Command::Accept)),
+                    ));
+                }
+                if kind == ChannelKind::Dm {
+                    out.push(item(
+                        if request {
+                            "Ignore request"
+                        } else {
+                            "Close conversation"
+                        },
+                        within(MenuItem::Run(Command::CloseDm)),
+                    ));
+                }
                 if manage && !kind.is_private() {
                     out.push(item(
                         "Rename…",
@@ -216,7 +238,7 @@ impl App {
                 out.push(item("Mention", MenuItem::Mention(username)));
                 Some((name, out))
             }
-            SidebarItem::DmHeader => None,
+            SidebarItem::DmHeader | SidebarItem::RequestHeader => None,
         }
     }
 
@@ -572,6 +594,53 @@ impl App {
                 self.popup = Some(Popup::Confirm {
                     text: format!("Delete #{name} and all its messages for everyone? (y/n)"),
                     action: ConfirmAction::DeleteChannel { inst, channel },
+                });
+            }
+            Command::Accept => {
+                let (inst, channel, _) = self.here()?;
+                let request = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.channel(channel))
+                    .is_some_and(|c| c.request);
+                if !request {
+                    self.error("this conversation is not a message request".into());
+                    return None;
+                }
+                self.rest(&inst, "request accepted", move |r| async move {
+                    r.accept_dm(channel).await
+                });
+            }
+            Command::Privacy(req) => {
+                // The open channel's instance, or the only one.
+                let inst = self.current.as_ref().map(|(i, _)| i.clone()).or_else(|| {
+                    let ids = self.core.instance_ids();
+                    (ids.len() == 1).then(|| ids[0].clone())
+                });
+                let Some(inst) = inst else {
+                    self.error("open a channel of the instance first".into());
+                    return None;
+                };
+                self.rest(&inst, "privacy saved", move |r| async move {
+                    r.update_privacy(&req).await
+                });
+            }
+            Command::CloseDm => {
+                let (inst, channel, _) = self.here()?;
+                let dm = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.channel(channel))
+                    .is_some_and(|c| c.kind == ChannelKind::Dm);
+                if !dm {
+                    self.error(":close works in a 1:1 DM (leave group DMs from their menu)".into());
+                    return None;
+                }
+                self.current = None;
+                self.rest(&inst, "conversation closed", move |r| async move {
+                    r.close_dm(channel).await
                 });
             }
             Command::Kick(name) => {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE dm_recipients SET closed = ? WHERE channel_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "73884202726e1ff52c64f6cba45a4bad79e476302372933d986de90c23b18d79"
+}

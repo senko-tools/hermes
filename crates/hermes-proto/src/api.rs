@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::gateway::InstanceLimits;
 use crate::id::Id;
-use crate::models::{ChannelKind, CurrentUser, Message, NotificationLevel, User};
+use crate::models::{ChannelKind, CurrentUser, DmFrom, Message, NotificationLevel, User};
 use crate::permissions::Permissions;
 
 /// A field of a `PATCH` body that can be cleared: absent = unchanged (`None`), `null` = clear
@@ -451,6 +451,15 @@ pub struct AckRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateDmRequest {
     pub recipient_ids: Vec<Id>,
+}
+
+/// `PATCH /users/@me/privacy`: only the fields given change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdatePrivacyRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dm_from: Option<DmFrom>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_requests: Option<bool>,
 }
 
 /// `POST /voice/join`.

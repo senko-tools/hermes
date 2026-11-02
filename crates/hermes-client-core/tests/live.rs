@@ -415,6 +415,31 @@ async fn changed_certificates_are_refused() {
 }
 
 #[tokio::test]
+async fn invite_links_never_replace_a_pin() {
+    let server = start("invite-pin").await;
+    let (core, _events) = core();
+    // A new host: the invite's fingerprint is pinned.
+    assert!(
+        core.trust_invite_fingerprint(&server.host, server.fingerprint)
+            .unwrap()
+    );
+    assert_eq!(
+        core.probe_instance(&server.host).await.unwrap().cert,
+        CertStatus::Pinned
+    );
+    // A crafted link with another fingerprint changes nothing.
+    assert!(
+        !core
+            .trust_invite_fingerprint(&server.host, Fingerprint([7; 32]))
+            .unwrap()
+    );
+    assert_eq!(
+        core.probe_instance(&server.host).await.unwrap().cert,
+        CertStatus::Pinned
+    );
+}
+
+#[tokio::test]
 async fn revoked_sessions_log_out_and_login_works() {
     let server = start("revoke").await;
     let (alice, mut events) = core();

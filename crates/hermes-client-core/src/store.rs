@@ -9,7 +9,7 @@ use hermes_proto::gateway::{
 use hermes_proto::id::Id;
 use hermes_proto::models::{
     Attachment, Channel, ChannelKind, CurrentUser, Member, Message, NotificationSetting,
-    ReactionSummary, ReadState, Role, Space, Status, User, VoiceState,
+    PrivacySettings, ReactionSummary, ReadState, Role, Space, Status, User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
@@ -200,6 +200,8 @@ pub struct InstanceStore {
     /// channel → user → expiry (Unix ms).
     pub typing: HashMap<Id, BTreeMap<Id, i64>>,
     pub voice_states: HashMap<Id, VoiceState>,
+    /// My privacy settings on this instance.
+    pub privacy: PrivacySettings,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }
@@ -230,6 +232,7 @@ impl InstanceStore {
         self.users
             .insert(ready.user.user.id, ready.user.user.clone());
         self.me = Some(ready.user);
+        self.privacy = ready.privacy;
         self.instance = Some(ready.instance);
         self.voice = Some(ready.voice);
         for snapshot in ready.spaces {
@@ -897,6 +900,10 @@ impl InstanceStore {
                 self.notification_settings.remove(&target_id);
                 vec![C::NotificationSettings]
             }
+            ServerEvent::PrivacyUpdate(privacy) => {
+                self.privacy = privacy;
+                vec![C::Me]
+            }
         }
     }
 
@@ -942,6 +949,7 @@ pub(crate) mod tests {
             recipients: vec![],
             owner_id: None,
             last_message_id: None,
+            request: false,
         }
     }
 
@@ -1002,6 +1010,7 @@ pub(crate) mod tests {
             }],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,
                 quic_port: Some(7700),

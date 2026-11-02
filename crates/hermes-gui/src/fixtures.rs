@@ -41,6 +41,7 @@ fn channel(id: u64, kind: ChannelKind, name: &str, parent: Option<u64>, position
         recipients: vec![],
         owner_id: None,
         last_message_id: None,
+        request: false,
     }
 }
 
@@ -143,6 +144,7 @@ pub fn store() -> InstanceStore {
         presences: vec![],
         notification_settings: vec![],
         dm_voice_states: vec![],
+        privacy: Default::default(),
         voice: VoiceInfo {
             enabled: true,
             quic_port: Some(7700),

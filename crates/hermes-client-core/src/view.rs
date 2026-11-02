@@ -184,7 +184,20 @@ pub fn step_channel(
 
 /// DMs, most recent activity first, with a display name.
 pub fn dm_list(store: &InstanceStore) -> Vec<TreeChannel> {
-    let mut dms: Vec<&Channel> = store.dms.values().collect();
+    dms_where(store, false)
+}
+
+/// Message requests waiting for me to accept them, newest first. They never count as unread.
+pub fn dm_requests(store: &InstanceStore) -> Vec<TreeChannel> {
+    dms_where(store, true)
+}
+
+fn dms_where(store: &InstanceStore, requests: bool) -> Vec<TreeChannel> {
+    let mut dms: Vec<&Channel> = store
+        .dms
+        .values()
+        .filter(|c| c.request == requests)
+        .collect();
     dms.sort_by_key(|c| std::cmp::Reverse(c.last_message_id.unwrap_or(c.id)));
     dms.into_iter()
         .map(|c| {
@@ -194,8 +207,12 @@ pub fn dm_list(store: &InstanceStore) -> Vec<TreeChannel> {
                 kind: c.kind,
                 name: dm_name(store, c),
                 depth: 0,
-                unread: !muted && store.unread(c.id),
-                mentions: store.mention_count(c.id),
+                unread: !requests && !muted && store.unread(c.id),
+                mentions: if requests {
+                    0
+                } else {
+                    store.mention_count(c.id)
+                },
                 muted,
             }
         })

@@ -62,7 +62,7 @@ default_color = "#28242e"
 # Background levels, darkest to lightest.
 [surface]
 deep = "#d6d2cd"        # dimmed window behind dialogs
-footer = "#f2eee7"      # voice and user panels at the bottom of the sidebar
+footer = "#f3efe9"      # voice and user panels at the bottom of the sidebar
 main = "#fbf9f6"        # chat and page content
 sidebar = "#f3efe9"     # sidebar, member list, settings navigation
 raised = "#f1ece5"      # inputs, composer, cards, code

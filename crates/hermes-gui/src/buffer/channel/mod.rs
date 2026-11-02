@@ -29,6 +29,8 @@ use crate::widget::{caption, label};
 pub const AT_BOTTOM: f32 = 4.0;
 /// Older history loads when the top is this close.
 const LOAD_OLDER_AT: f32 = 400.0;
+/// Width of the message list's scrollbar, which touches the pane's right edge.
+const SCROLLBAR: f32 = 6.0;
 
 /// Per-pane state of a channel buffer.
 #[derive(Debug, Clone, PartialEq)]
@@ -268,12 +270,19 @@ pub fn view<'a>(
     }
     list = list.push(Space::new().height(visible.below));
 
-    let messages = scrollable(list.width(Fill))
+    // A little room on both sides, so message highlights do not touch the sidebar or run under
+    // the scrollbar, which sits flush against the right edge.
+    let list = list.width(Fill).padding(
+        iced::Padding::ZERO
+            .left(style::GAP_S)
+            .right(style::GAP_S + SCROLLBAR),
+    );
+    let messages = scrollable(list)
         .direction(iced::widget::scrollable::Direction::Vertical(
             iced::widget::scrollable::Scrollbar::new()
-                .width(6)
-                .scroller_width(6)
-                .margin(2),
+                .width(SCROLLBAR)
+                .scroller_width(SCROLLBAR)
+                .margin(0),
         ))
         .style(move |_, st| style::scrollbar(theme, st))
         .id(state.scroll_id.clone())
@@ -282,8 +291,7 @@ pub fn view<'a>(
         .height(Fill)
         .width(Fill);
 
-    // A little room on both sides, so message highlights do not touch the sidebar.
-    let mut layers = stack![container(messages).padding([0.0, style::GAP_S])];
+    let mut layers = stack![messages];
     if !state.at_bottom() || !window.reached_end {
         layers = layers.push(
             container(
@@ -301,7 +309,8 @@ pub fn view<'a>(
             )
             .align_right(Fill)
             .align_bottom(Fill)
-            .padding(style::GAP),
+            // Clear of the scrollbar.
+            .padding(iced::Padding::new(style::GAP).right(style::GAP + SCROLLBAR)),
         );
     }
 

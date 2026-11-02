@@ -154,6 +154,7 @@ pub async fn create(
             recipients: Vec::new(),
             owner_id: None,
             last_message_id: None,
+            request: false,
         }
     };
 
@@ -202,6 +203,23 @@ fn manageable(
         .space_id
         .ok_or_else(|| perms::missing(Permissions::MANAGE_CHANNELS, "channel"))?;
     Ok((access.channel.clone(), space_id, access.perms))
+}
+
+/// Overrides are set and removed only for `@everyone`, roles below the caller's highest one and
+/// the caller's own roles (docs/DECISIONS.md 2026-11-02), so a moderator cannot lock a higher
+/// role out of a channel.
+fn check_override_role(cache: &Cache, space_id: Id, user_id: Id, role_id: Id) -> ApiResult<()> {
+    let access = perms::space(cache, space_id, user_id)?;
+    let role = access
+        .space
+        .role(role_id)
+        .ok_or_else(|| Error::not_found("role"))?;
+    if role.is_everyone() || access.outranks_role(role) || access.actor.role_ids.contains(&role_id)
+    {
+        Ok(())
+    } else {
+        Err(access.hierarchy_error("roles"))
+    }
 }
 
 /// `MANAGE_CHANNELS` in the channel.
@@ -502,13 +520,7 @@ pub async fn put_override(
         let cache = state.cache();
         let (_, space_id, have) =
             manageable(&cache, channel_id, auth.user_id, Permissions::MANAGE_ROLES)?;
-        let role_exists = cache
-            .spaces
-            .get(&space_id)
-            .is_some_and(|s| s.role(role_id).is_some());
-        if !role_exists {
-            return Err(Error::not_found("role"));
-        }
+        check_override_role(&cache, space_id, auth.user_id, role_id)?;
         if req.allow.intersects(req.deny) {
             return Err(validate::field_error(
                 "deny",
@@ -561,6 +573,7 @@ pub async fn delete_override(
         let cache = state.cache();
         let (_, space_id, _) =
             manageable(&cache, channel_id, auth.user_id, Permissions::MANAGE_ROLES)?;
+        check_override_role(&cache, space_id, auth.user_id, role_id)?;
         (space_id, Visible::of_space(&cache, space_id))
     };
     let mut tx = state.db.write.begin().await?;

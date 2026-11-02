@@ -216,6 +216,8 @@ pub struct Voice {
     pub auto_gain: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
+    /// The screen to share (its system name); empty = the primary one.
+    pub share_screen: String,
 }
 
 impl Default for Voice {
@@ -234,6 +236,7 @@ impl Default for Voice {
             auto_gain: false,
             sounds: true,
             sounds_volume: 0.6,
+            share_screen: String::new(),
         }
     }
 }

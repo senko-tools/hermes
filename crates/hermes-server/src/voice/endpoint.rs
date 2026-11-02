@@ -1,5 +1,5 @@
 //! The voice QUIC endpoint (PLAN.md 12.2): its own self-signed certificate, one task per
-//! connection, the control stream and incoming datagrams.
+//! connection, the control stream, incoming datagrams and screen share streams.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -14,7 +14,7 @@ use quinn::crypto::rustls::QuicServerConfig;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use super::{ConnId, JoinError, Link};
+use super::{ConnId, JoinError, Link, ShareError};
 use crate::config::Config;
 use crate::state::AppState;
 use crate::tls::{self, CERTS_DIR, TlsError};
@@ -24,6 +24,12 @@ pub const VOICE_CERT_NAME: &str = "voice";
 
 /// A new connection must send `auth` within this time.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// A screen share frame must arrive completely within this time.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/// Screen share frames waiting to be written to one client.
+const VIDEO_QUEUE: usize = 8;
+/// Unidirectional streams a peer may have open at once (one per share frame).
+pub const MAX_UNI_STREAMS: u32 = 8;
 
 #[derive(Debug)]
 pub enum EndpointError {
@@ -54,6 +60,7 @@ pub fn transport_config() -> quinn::TransportConfig {
             .expect("15 s fits a VarInt"),
     ));
     transport.keep_alive_interval(Some(Duration::from_millis(KEEP_ALIVE_MS)));
+    transport.max_concurrent_uni_streams(MAX_UNI_STREAMS.into());
     transport
 }
 
@@ -97,11 +104,17 @@ pub async fn serve(state: Arc<AppState>, endpoint: quinn::Endpoint) {
 
 async fn connection(state: Arc<AppState>, conn: quinn::Connection) {
     let (control, mut outbox) = mpsc::unbounded_channel();
+    let (video, video_out) = mpsc::channel(VIDEO_QUEUE);
     let conn_id = state.voice.register(Link {
         control,
         conn: conn.clone(),
+        video,
     });
+    let writer = tokio::spawn(write_video(conn.clone(), video_out));
+    let reader = tokio::spawn(read_video(state.clone(), conn_id, conn.clone()));
     let reason = run(&state, conn_id, &conn, &mut outbox).await;
+    writer.abort();
+    reader.abort();
     state.voice.unregister(&state, conn_id);
     tracing::debug!(
         "voice connection from {} ended: {reason}",
@@ -166,6 +179,38 @@ async fn run(
     };
     reader.abort();
     reason
+}
+
+/// Writes screen share frames to the client, one unidirectional stream per frame, in order.
+async fn write_video(conn: quinn::Connection, mut frames: mpsc::Receiver<bytes::Bytes>) {
+    while let Some(frame) = frames.recv().await {
+        let Ok(mut stream) = conn.open_uni().await else {
+            return;
+        };
+        if stream.write_all(&frame).await.is_err() {
+            continue;
+        }
+        let _ = stream.finish();
+    }
+}
+
+/// Reads the client's screen share frames, one stream at a time in the order they were opened
+/// (so frames stay in order), each at most [`voice::MAX_VIDEO_FRAME`] bytes.
+async fn read_video(state: Arc<AppState>, conn_id: ConnId, conn: quinn::Connection) {
+    loop {
+        let Ok(mut stream) = conn.accept_uni().await else {
+            return;
+        };
+        let read =
+            tokio::time::timeout(FRAME_TIMEOUT, stream.read_to_end(voice::MAX_VIDEO_FRAME)).await;
+        match read {
+            Ok(Ok(frame)) => state.voice.forward_video(&state, conn_id, frame),
+            // Too large, cut off or too slow: drop it.
+            _ => {
+                let _ = stream.stop(0u32.into());
+            }
+        }
+    }
 }
 
 async fn write(send: &mut quinn::SendStream, msg: &ServerControl) -> Result<(), quinn::WriteError> {
@@ -263,6 +308,35 @@ fn handle(
         ClientControl::Ping { t } => Some((ServerControl::Pong { t }, false)),
         ClientControl::Leave {} => {
             voice.leave_conn(state, conn_id);
+            None
+        }
+        ClientControl::ShareStart {} => match voice.share_start(state, conn_id) {
+            Ok(()) => None,
+            Err(ShareError::NotInRoom) => Some((
+                error(ErrorCode::BadRequest, "Join a voice room before sharing"),
+                false,
+            )),
+            Err(ShareError::NoPermission) => Some((
+                error(
+                    ErrorCode::MissingPermission,
+                    "You cannot share your screen in this channel",
+                ),
+                false,
+            )),
+        },
+        ClientControl::ShareStop {} => {
+            voice.share_stop(conn_id);
+            None
+        }
+        ClientControl::Watch {
+            participant_id,
+            watching,
+        } => {
+            voice.watch(conn_id, participant_id, watching);
+            None
+        }
+        ClientControl::RequestKeyframe { participant_id } => {
+            voice.keyframe_wanted(conn_id, participant_id);
             None
         }
     }

@@ -11,6 +11,7 @@ use hermes_client_core::audio::{FRAME, Io, VirtualIo, dsp};
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::api::{CreateInviteRequest, VoiceStatePatchRequest};
 use hermes_client_core::proto::id::Id;
+use hermes_client_core::voice::ScreenFrame;
 use hermes_client_core::{Core, CoreEvent, CoreEvents, CoreOptions, InstanceId, VoiceStatus};
 use hermes_server::config::{Config, RegistrationMode, TlsMode};
 use hermes_server::state::AppState;
@@ -506,4 +507,58 @@ async fn reconnects_after_a_lost_connection() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     eventually("bob hears alice again", || p.bob_dev.level(300) > 0.1).await;
     let _ = &mut p.bob_events;
+}
+
+#[tokio::test]
+async fn screen_shares_flow_to_watchers() {
+    let mut p = pair("share").await;
+    let (inst, general) = (p.inst.clone(), p.general);
+    let alice_id = me(&p.alice, &inst);
+    assert!(p.alice.start_screen_share().is_err(), "not in voice yet");
+    p.alice.join_voice(&inst, general).await.unwrap();
+    p.bob.join_voice(&inst, general).await.unwrap();
+    let (sink, mut frames) = tokio::sync::mpsc::channel(8);
+    p.bob.set_screen_sink(sink);
+
+    p.alice.start_screen_share().unwrap();
+    assert!(p.alice.sharing_screen());
+    eventually("bob sees the share", || {
+        p.bob.screen_sharers() == [(inst.clone(), alice_id)]
+    })
+    .await;
+    p.bob.watch_screens(&[alice_id]);
+    wait_for(&mut p.alice_events, "a keyframe request", |e| {
+        matches!(e, CoreEvent::KeyframeRequested)
+    })
+    .await;
+    let frame = |keyframe, timestamp| ScreenFrame {
+        keyframe,
+        width: 640,
+        height: 360,
+        timestamp,
+        data: vec![0, 0, 0, 1, 0x65, 1, 2, 3],
+    };
+    assert!(p.alice.send_screen_frame(frame(true, 0)));
+    let got = tokio::time::timeout(WAIT, frames.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.user, alice_id);
+    assert_eq!((got.header.width, got.header.height), (640, 360));
+    assert!(got.header.keyframe);
+    assert_eq!(got.data, [0, 0, 0, 1, 0x65, 1, 2, 3]);
+
+    // Unwatched, nothing more arrives.
+    p.bob.watch_screens(&[]);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(p.alice.send_screen_frame(frame(false, 100)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), frames.recv())
+            .await
+            .is_err()
+    );
+
+    p.alice.stop_screen_share();
+    assert!(!p.alice.send_screen_frame(frame(true, 200)), "no share");
+    eventually("the share ended", || p.bob.screen_sharers().is_empty()).await;
 }

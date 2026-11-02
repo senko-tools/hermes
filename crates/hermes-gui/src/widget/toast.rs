@@ -1,6 +1,6 @@
-//! A notification card at the top right of the window ("Created #general", errors): it drops
-//! in as it appears, floats over the content instead of pushing it down, and closes with its X
-//! (info ones also on their own after a few seconds).
+//! A notification card at the top right of the window ("Created #general", errors): it floats
+//! over the content instead of pushing it down, and closes with its X (info ones also on their
+//! own after a few seconds).
 
 use iced::widget::{Space, button, container, row, stack};
 use iced::{Alignment, Border, Element, Fill, Shadow, Vector};
@@ -13,10 +13,8 @@ use crate::widget::label;
 
 const WIDTH: f32 = 380.0;
 
-/// `t` is how far its opening animation is (0–1).
 pub fn view<'a, M: Clone + 'a>(
     status: &Status,
-    t: f32,
     on_close: M,
     fonts: &Fonts,
     theme: &'a Theme,
@@ -51,7 +49,7 @@ pub fn view<'a, M: Clone + 'a>(
                 radius: radius.into(),
             },
             shadow: Shadow {
-                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35 * t),
+                color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.35),
                 offset: Vector::new(0.0, 4.0),
                 blur_radius: 14.0,
             },
@@ -68,15 +66,14 @@ pub fn view<'a, M: Clone + 'a>(
         },
         ..container::Style::default()
     });
-    // Top right, just under the headers (clear of the composer and "Jump to present"),
-    // dropping in 12 px as it appears.
+    // Top right, just under the headers (clear of the composer and "Jump to present").
     container(stack![card, bar])
         .width(Fill)
         .height(Fill)
         .align_right(Fill)
         .align_top(Fill)
         .padding(iced::Padding {
-            top: style::HEADER + style::GAP_S + 12.0 * (t - 1.0),
+            top: style::HEADER + style::GAP_S,
             right: style::GAP_L,
             bottom: 0.0,
             left: 0.0,

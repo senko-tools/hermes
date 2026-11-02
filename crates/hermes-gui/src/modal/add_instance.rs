@@ -442,8 +442,8 @@ fn buttons<'a>(
         .into()
 }
 
-/// Parses `input`, trusts an invite's `#fp=` (section 13), probes the server and, for a trusted
-/// server, loads the invite preview.
+/// Parses `input`, trusts an invite's `#fp=` for a new host (section 13), probes the server
+/// and, for a trusted server, loads the invite preview.
 pub async fn probe(core: Core, input: String) -> Result<Probed, String> {
     let target = AddTarget::parse(&input).map_err(|e| e.to_string())?;
     let (host, invite, fingerprint) = match target {
@@ -455,7 +455,7 @@ pub async fn probe(core: Core, input: String) -> Result<Probed, String> {
         }) => (host, Some(code), fingerprint),
     };
     if let Some(fp) = fingerprint {
-        core.trust_fingerprint(&host, fp)
+        core.trust_invite_fingerprint(&host, fp)
             .map_err(|e| e.to_string())?;
     }
     let probe = core

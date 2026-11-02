@@ -87,6 +87,10 @@ pub enum Action {
     DeleteChannel,
     RenameGroup,
     LeaveGroup,
+    /// Hides a 1:1 DM until a message or call reopens it.
+    CloseDm,
+    /// Turns a message request into a normal DM.
+    AcceptRequest,
     // Pane
     SplitRight,
     SplitDown,
@@ -163,6 +167,8 @@ impl Action {
             Action::DeleteChannel => "Delete channel",
             Action::RenameGroup => "Rename group…",
             Action::LeaveGroup => "Leave group",
+            Action::CloseDm => "Close conversation",
+            Action::AcceptRequest => "Accept request",
             Action::SplitRight => "Split right",
             Action::SplitDown => "Split down",
             Action::MaximizePane => "Maximize / restore",
@@ -226,6 +232,8 @@ impl Action {
             | Action::CopyUserId
             | Action::CopyInviteLink => i::COPY,
             Action::LeaveSpace | Action::LeaveGroup => i::LOG_OUT,
+            Action::CloseDm => i::CLOSE,
+            Action::AcceptRequest => i::CHECK,
             Action::NotifyAll | Action::NotifyMentions | Action::NotifyDefault => i::BELL,
             Action::NotifyNothing | Action::Mute => i::BELL_OFF,
             Action::Unmute => i::BELL,
@@ -393,6 +401,10 @@ pub fn entries_with(
                     }
                 }
                 ChannelKind::Dm | ChannelKind::GroupDm => {
+                    if c.request {
+                        push(&mut out, [Action::AcceptRequest]);
+                        out.push(None);
+                    }
                     push(
                         &mut out,
                         [Action::MarkRead, Action::OpenInNewPane, Action::ShowPins],
@@ -407,6 +419,8 @@ pub fn entries_with(
                     push(&mut out, [Action::CopyChannelId]);
                     if c.kind == ChannelKind::GroupDm {
                         push(&mut out, [Action::LeaveGroup]);
+                    } else {
+                        push(&mut out, [Action::CloseDm]);
                     }
                 }
                 ChannelKind::Text | ChannelKind::Voice => {

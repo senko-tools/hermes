@@ -23,6 +23,7 @@ iced = { workspace = true, features = ["tokio", "advanced", "image"] }
 image = { workspace = true, features = ["png"] }
 notify.workspace = true
 notify-rust.workspace = true
+openh264.workspace = true
 rfd.workspace = true
 serde.workspace = true
 tokio.workspace = true
@@ -33,7 +34,9 @@ tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Push-to-talk key polling (PLAN.md section 21, Spike C decision).
-windows.workspace = true
+windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Screen capture for screen sharing (Windows only for now).
+xcap.workspace = true
 
 [dev-dependencies]
 # The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.

@@ -1,4 +1,8 @@
-//! Voice (PLAN.md section 12): join tokens, the room registry, forwarding rules and voice states.
+//! Voice (PLAN.md section 12): join tokens, the room registry, forwarding rules, voice states and
+//! screen shares.
+//!
+//! Screen shares (docs/DECISIONS.md 2026-11-02) live only inside a room: who shares is told on
+//! the control stream, never on the gateway, and frames go only to members who watch the sharer.
 //!
 //! The registry is one `std` mutex with short critical sections. Lock order: the registry first,
 //! then the cache. Never take the registry while holding the cache lock. Gateway events about
@@ -17,7 +21,7 @@ use hermes_proto::gateway::{ServerEvent, VoiceStateUpdate};
 use hermes_proto::id::Id;
 use hermes_proto::models::VoiceState;
 use hermes_proto::permissions::Permissions;
-use hermes_proto::voice::{self, AudioHeader, KickReason, Participant, ServerControl};
+use hermes_proto::voice::{self, AudioHeader, KickReason, Participant, ServerControl, VideoHeader};
 use tokio::sync::mpsc;
 
 use crate::gateway::bus::Audience;
@@ -26,8 +30,11 @@ use crate::time::now_ms;
 
 pub use calls::After;
 
-/// How often a speaker's `SPEAK` permission is re-checked while they send audio.
+/// How often a speaker's `SPEAK` (or a sharer's `STREAM`) permission is re-checked while they
+/// send.
 const SPEAK_RECHECK: Duration = Duration::from_secs(1);
+/// A sharer is asked for a keyframe at most this often.
+const KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 /// Rings older than this are forgotten (clients stop ringing after 30 s on their own).
 const RING_LIFETIME: Duration = Duration::from_secs(60);
 
@@ -58,6 +65,9 @@ pub struct Ticket {
 pub struct Link {
     pub control: mpsc::UnboundedSender<ServerControl>,
     pub conn: quinn::Connection,
+    /// Screen share frames to write to the client, one stream each, in order. Bounded: a slow
+    /// client loses frames instead of piling them up.
+    pub video: mpsc::Sender<Bytes>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +92,43 @@ struct Member {
     state: VoiceState,
     can_speak: bool,
     checked: Instant,
+    share: Option<Share>,
+    /// Participants whose screen share this member receives.
+    watching: HashSet<u16>,
+}
+
+/// A running screen share.
+#[derive(Debug)]
+struct Share {
+    can_stream: bool,
+    checked: Instant,
+    /// Frames in the current one-second window, for [`voice::MAX_VIDEO_FPS`].
+    window: Instant,
+    frames: u32,
+    last_keyframe_request: Option<Instant>,
+}
+
+impl Share {
+    fn new() -> Self {
+        Share {
+            can_stream: true,
+            checked: Instant::now() - SPEAK_RECHECK,
+            window: Instant::now(),
+            frames: 0,
+            last_keyframe_request: None,
+        }
+    }
+
+    /// Whether a keyframe request may go out now (and notes that one did).
+    fn keyframe_due(&mut self) -> bool {
+        let due = self
+            .last_keyframe_request
+            .is_none_or(|t| t.elapsed() >= KEYFRAME_INTERVAL);
+        if due {
+            self.last_keyframe_request = Some(Instant::now());
+        }
+        due
+    }
 }
 
 impl Member {
@@ -328,6 +375,12 @@ impl Voice {
                 user_id: m.state.user_id,
             })
             .collect();
+        let sharing = room
+            .members
+            .iter()
+            .filter(|(_, m)| m.share.is_some())
+            .map(|(&participant_id, _)| participant_id)
+            .collect();
         for member in room.members.values() {
             if let Some(conn) = conns.get(&member.conn_id) {
                 let _ = conn
@@ -355,6 +408,8 @@ impl Voice {
                 state: state_now,
                 can_speak: true,
                 checked: Instant::now() - SPEAK_RECHECK,
+                share: None,
+                watching: HashSet::new(),
             },
         );
         let conn = conns.get_mut(&conn_id).expect("checked above");
@@ -366,6 +421,7 @@ impl Voice {
             room_id: channel_id,
             bitrate: room.bitrate,
             participants,
+            sharing,
         });
 
         state.cache_mut().voice_states.insert(user_id, state_now);
@@ -634,6 +690,212 @@ impl Voice {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Screen shares
+// ---------------------------------------------------------------------------------------------
+
+/// Why a share request was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareError {
+    NotInRoom,
+    NoPermission,
+}
+
+impl Voice {
+    /// The connection's user starts sharing their screen (`STREAM` in the room's channel).
+    /// Starting twice is not an error.
+    pub fn share_start(&self, state: &AppState, conn_id: ConnId) -> Result<(), ShareError> {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let (channel_id, participant_id) = conns
+            .get(&conn_id)
+            .and_then(|c| c.room)
+            .ok_or(ShareError::NotInRoom)?;
+        let room = rooms.get_mut(&channel_id).ok_or(ShareError::NotInRoom)?;
+        let member = room
+            .members
+            .get_mut(&participant_id)
+            .ok_or(ShareError::NotInRoom)?;
+        let allowed = state
+            .cache()
+            .channel_permissions(channel_id, member.state.user_id)
+            .contains(Permissions::STREAM);
+        if !allowed {
+            return Err(ShareError::NoPermission);
+        }
+        if member.share.is_some() {
+            return Ok(());
+        }
+        member.share = Some(Share::new());
+        room.tell_others(
+            conns,
+            participant_id,
+            ServerControl::ShareStarted { participant_id },
+        );
+        Ok(())
+    }
+
+    /// The connection's user stops sharing.
+    pub fn share_stop(&self, conn_id: ConnId) {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        if let Some(room) = rooms.get_mut(&channel_id) {
+            room.stop_share(conns, participant_id);
+        }
+    }
+
+    /// Starts or stops sending `target`'s screen share to the connection; a new watcher gets a
+    /// keyframe soon.
+    pub fn watch(&self, conn_id: ConnId, target: u16, watching: bool) {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(room) = rooms.get_mut(&channel_id) else {
+            return;
+        };
+        if target == participant_id || !room.members.contains_key(&target) {
+            return;
+        }
+        if let Some(me) = room.members.get_mut(&participant_id) {
+            if watching {
+                me.watching.insert(target);
+            } else {
+                me.watching.remove(&target);
+            }
+        }
+        if watching {
+            room.request_keyframe(conns, target);
+        }
+    }
+
+    /// A watcher lost a frame of `target`'s share: ask the sharer for a keyframe.
+    pub fn keyframe_wanted(&self, conn_id: ConnId, target: u16) {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(room) = rooms.get_mut(&channel_id) else {
+            return;
+        };
+        let watches = room
+            .members
+            .get(&participant_id)
+            .is_some_and(|m| m.watching.contains(&target));
+        if watches {
+            room.request_keyframe(conns, target);
+        }
+    }
+
+    /// Forwards one screen share frame (header + H.264 access unit): dropped unless the sender
+    /// shares, still has `STREAM`, stays under [`voice::MAX_VIDEO_FPS`] and the header is valid;
+    /// otherwise sent with the sender's participant ID to every member watching them. A watcher
+    /// whose queue is full loses the frame, and the sharer is asked for a keyframe.
+    pub fn forward_video(&self, state: &AppState, conn_id: ConnId, mut frame: Vec<u8>) {
+        if frame.len() > voice::MAX_VIDEO_FRAME || VideoHeader::decode(&frame).is_err() {
+            return;
+        }
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(room) = rooms.get_mut(&channel_id) else {
+            return;
+        };
+        let Some(sender) = room.members.get_mut(&participant_id) else {
+            return;
+        };
+        let user_id = sender.state.user_id;
+        let Some(share) = sender.share.as_mut() else {
+            return;
+        };
+        if share.checked.elapsed() >= SPEAK_RECHECK {
+            share.can_stream = state
+                .cache()
+                .channel_permissions(channel_id, user_id)
+                .contains(Permissions::STREAM);
+            share.checked = Instant::now();
+        }
+        if !share.can_stream {
+            return;
+        }
+        if share.window.elapsed() >= Duration::from_secs(1) {
+            share.window = Instant::now();
+            share.frames = 0;
+        }
+        if share.frames >= voice::MAX_VIDEO_FPS {
+            return;
+        }
+        share.frames += 1;
+        voice::set_video_sender_id(&mut frame, participant_id);
+        let frame = Bytes::from(frame);
+        let mut lost = false;
+        for (&id, member) in &room.members {
+            if id == participant_id || !member.watching.contains(&participant_id) {
+                continue;
+            }
+            if let Some(conn) = conns.get(&member.conn_id)
+                && conn.link.video.try_send(frame.clone()).is_err()
+            {
+                lost = true;
+            }
+        }
+        if lost {
+            room.request_keyframe(conns, participant_id);
+        }
+    }
+}
+
+impl Room {
+    /// Sends `msg` to every member but `except`.
+    fn tell_others(&self, conns: &HashMap<ConnId, Conn>, except: u16, msg: ServerControl) {
+        for (&id, member) in &self.members {
+            if id != except
+                && let Some(conn) = conns.get(&member.conn_id)
+            {
+                let _ = conn.link.control.send(msg.clone());
+            }
+        }
+    }
+
+    /// Ends `participant_id`'s share (if any): the others are told and stop watching it.
+    fn stop_share(&mut self, conns: &HashMap<ConnId, Conn>, participant_id: u16) {
+        let Some(member) = self.members.get_mut(&participant_id) else {
+            return;
+        };
+        if member.share.take().is_none() {
+            return;
+        }
+        for member in self.members.values_mut() {
+            member.watching.remove(&participant_id);
+        }
+        self.tell_others(
+            conns,
+            participant_id,
+            ServerControl::ShareStopped { participant_id },
+        );
+    }
+
+    /// Asks a sharer for a keyframe, at most every [`KEYFRAME_INTERVAL`].
+    fn request_keyframe(&mut self, conns: &HashMap<ConnId, Conn>, sharer: u16) {
+        let Some(member) = self.members.get_mut(&sharer) else {
+            return;
+        };
+        let conn_id = member.conn_id;
+        if member.share.as_mut().is_some_and(Share::keyframe_due)
+            && let Some(conn) = conns.get(&conn_id)
+        {
+            let _ = conn.link.control.send(ServerControl::KeyframeRequested {});
+        }
+    }
+}
+
 /// Why `user_id` must leave the room of `channel_id`, if they must.
 fn kick_reason(cache: &Cache, channel_id: Id, user_id: Id) -> Option<KickReason> {
     if !cache.channels.contains_key(&channel_id) {
@@ -671,7 +933,11 @@ impl Registry {
         let Some(room) = self.rooms.get_mut(&channel_id) else {
             return;
         };
+        // Participant IDs are reused: nobody may keep watching this one.
         room.members.remove(&participant_id);
+        for member in room.members.values_mut() {
+            member.watching.remove(&participant_id);
+        }
         for member in room.members.values() {
             if let Some(other) = self.conns.get(&member.conn_id) {
                 let _ = other

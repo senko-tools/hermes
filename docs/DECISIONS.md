@@ -1371,3 +1371,95 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Animations:** menus, dialogs, the settings page and notifications animate in (iced
   `Animation`, 140–220 ms).
 - **Why:** the developer's review of the previous round.
+
+## 2026-11-02: GUI fixes after 1.0.0
+
+- **No animations:** the open animations of menus, dialogs, the settings page and
+  notifications (previous entry) are removed; everything appears at once.
+- **Voice channels open on their voice room** (a click in the sidebar, the voice panel, a
+  `<#channel>` link); the chat is the "Chat" button in the pane header. Sidebar rows keep the
+  same widget tree in every state, so the first click of a double-click is no longer lost.
+- **Footer colour:** the user and voice panels default to the sidebar colour
+  (`surface.footer` stays a theme key).
+- **Message scrollbar** touches the pane's right edge; "Jump to present" sits clear of it.
+- **Sidebar tabs (PLAN.md 15.1 deviation):** "Spaces" and "Messages" tabs under the header
+  instead of a "Direct messages" section after the spaces, which was easy to mistake for one
+  more category. Each tab lists every instance; the other tab shows a dot or the mention count
+  when something there is unread, and opening a channel (also from a notification or a call)
+  switches to its tab. The `<instance>/dms` collapse key is gone.
+- **Why:** the developer's review of 1.0.0.
+
+## 2026-11-02: Closing 1:1 DMs
+
+- **What:** `DELETE /dms/{id}` (an addition to PLAN.md section 10) closes a 1:1 DM for the
+  caller; `dm_recipients.closed` (migration 0004) remembers it. A closed DM is left out of
+  `GET /dms` and `ready`; a new message or a call ring reopens it for everyone who closed it
+  (`dm_create` before the event), and so does `POST /dms` to the same person for the caller.
+  Group DMs are still left, not closed. The GUI has "Close conversation" in a DM's menu and an
+  X on hover; the TUI has `:close`.
+- **Why:** there was no way to remove a 1:1 DM from the list.
+
+## 2026-11-02: Privacy settings and message requests
+
+- **What (additions to PLAN.md sections 7.3, 10 and 11):** each user chooses who may start DMs
+  with them: `dm_from` = everyone (default) / people in my spaces / nobody, and whether everyone
+  else gets through as a **message request** (`message_requests`, default on). Stored in
+  `users.dm_from` / `users.message_requests` and `dm_recipients.request` (migration 0005);
+  `GET`/`PATCH /users/@me/privacy`, `ready.privacy`, `privacy_update`, `POST /dms/{id}/accept`,
+  and `Channel.request` (set only in the recipient's copy).
+- **Rules:** the server's `dm_policy` still applies first. Existing 1:1 DMs are always reused, so
+  changing the setting never cuts off a conversation. A request notifies once (when it arrives);
+  its messages never notify or count as unread; calls do not ring it; no presence is shared
+  either way until it is accepted. Accepting (button, menu, `:accept`) or answering with a
+  message turns it into a normal DM. Ignoring closes it for good: its events stop and new
+  messages do not reopen it (the sender is not told). Ignoring a group request leaves the group.
+- **Clients:** GUI: Settings → Account → Privacy; requests sit under "Requests" in the Messages
+  tab with accept and ignore buttons. TUI: a Requests heading, `:accept`, `:close`,
+  `:privacy dms everyone|spaces|nobody`, `:privacy requests on|off`.
+- **Why:** the developer asked for per-user DM privacy with message requests that only notify
+  for the request itself.
+
+## 2026-11-02: Security pass after 1.0.0
+
+- **Invite fingerprints (PLAN.md section 13 deviation):** an invite's `#fp=` is trusted without
+  asking only for a host this client has never trusted. A pin replaces CA validation, so a link
+  could otherwise move the trust of a known server to an attacker's certificate.
+- **Role hierarchy for voice moderation and channel overrides (PLAN.md section 10 deviation):**
+  `PATCH /spaces/{id}/voice-states/{uid}` acts only on members below the caller's highest role
+  (your own state is always yours); channel overrides are set and removed only for `@everyone`,
+  roles below the caller's highest role and the caller's own roles.
+- **Names:** filenames and every single-line name refuse text direction overrides
+  (U+202A–202E, U+2066–2069).
+- **Clients:** links and folders open through `ShellExecuteW` on Windows (never a program by
+  name); the TUI opens only viewer file types; downloads get the Mark of the Web; a `hermes:`
+  command line ignores every other argument (`--config-dir` needs an `https://` invite link).
+- The full list is in `docs/security-review.md`.
+- **Why:** the developer asked for a security pass focused on code execution and on users acting
+  on other people's things.
+
+## 2026-11-02: Screen sharing and the smart voice room grid
+
+- **What (moved forward from the PLAN.md section 22 roadmap):** screen sharing in voice
+  channels and calls. Capture with `xcap` (Windows only for now: on Linux it would need
+  PipeWire, XCB and libclang on the build machines, and the GUI ships for Windows only), H.264
+  with `openh264` built from its bundled source (OpenH264 2.7.0); both crates were approved by
+  the developer (PLAN.md section 6 addition). H.264 rather than VP8/AV1 (section 22): it is the
+  one codec with a self-contained, real-time encoder and decoder that builds everywhere with
+  only a C++ compiler.
+- **Protocol:** control ops `share_start`, `share_stop`, `watch`, `request_keyframe`,
+  `share_started`, `share_stopped`, `keyframe_requested`, `ready.sharing`; one QUIC
+  unidirectional stream per frame with a 12-byte header (docs/protocol.md "Screen shares").
+  Shares are known only inside the room, so only people in the call see them.
+- **Permission:** new bit `STREAM` (1 << 38, "Share screen"), in `@everyone`'s and DM
+  recipients' defaults; migration 0006 adds it to existing `@everyone` roles. It is removed
+  with `CONNECT` in voice channels, like `SPEAK`.
+- **Limits:** frames ≤ 512 KiB and ≤ 30 per second; a watcher's queue holds 8 frames; the GUI
+  sends at most 1280×720 at 10 fps (1.5 Mbit/s), a keyframe at least every 5 s.
+- **GUI:** clicking a voice channel opens its voice room, a grid that picks the column count
+  making the 16:9 tiles largest for the pane. Everyone is one tile; a share fills the sharer's
+  tile with their name on a badge, and right-click is always that person's menu. Shares are
+  received only while the voice room shows in a pane. "Share screen" / "Stop sharing" in the
+  voice room's header; which screen in Settings → Voice & Audio (`voice.share_screen`). The TUI
+  ignores shares.
+- **Why:** the developer asked for screen sharing now, with one smart grid of people and
+  shares.

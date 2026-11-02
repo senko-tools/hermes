@@ -11,13 +11,14 @@ use hermes_proto::api::{
     InstanceResponse, LoginRequest, NotificationSettingRequest, OverrideRequest, RegisterRequest,
     RolePosition, SearchQuery, SearchResponse, SendMessageRequest, SessionInfo,
     TransferSpaceRequest, UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
-    UpdateRoleRequest, UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse,
-    VoiceSelfStateRequest, VoiceStatePatchRequest,
+    UpdatePrivacyRequest, UpdateRoleRequest, UpdateSpaceRequest, UserProfile, VoiceJoinRequest,
+    VoiceJoinResponse, VoiceSelfStateRequest, VoiceStatePatchRequest,
 };
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Attachment, AuditEntry, Ban, Channel, CurrentUser, Invite, Member, Message, Role, Space,
+    Attachment, AuditEntry, Ban, Channel, CurrentUser, Invite, Member, Message, PrivacySettings,
+    Role, Space,
 };
 use hermes_proto::{ApiError, ErrorBody, ErrorCode};
 use reqwest::{Method, StatusCode};
@@ -674,6 +675,27 @@ impl Rest {
     pub async fn create_dm(&self, recipient_ids: Vec<Id>) -> Result<Channel> {
         let req = CreateDmRequest { recipient_ids };
         self.call(Method::POST, "/dms", Some(&req)).await
+    }
+
+    /// Accepts a message request: it becomes a normal DM.
+    pub async fn accept_dm(&self, dm: Id) -> Result<Channel> {
+        self.call::<(), _>(Method::POST, &format!("/dms/{dm}/accept"), None)
+            .await
+    }
+
+    pub async fn privacy(&self) -> Result<PrivacySettings> {
+        self.get("/users/@me/privacy").await
+    }
+
+    pub async fn update_privacy(&self, req: &UpdatePrivacyRequest) -> Result<PrivacySettings> {
+        self.call(Method::PATCH, "/users/@me/privacy", Some(req))
+            .await
+    }
+
+    /// Closes a 1:1 DM for me: it leaves my list until a message or call reopens it.
+    pub async fn close_dm(&self, dm: Id) -> Result<()> {
+        self.empty::<()>(Method::DELETE, &format!("/dms/{dm}"), None)
+            .await
     }
 
     pub async fn add_recipient(&self, dm: Id, user: Id) -> Result<()> {

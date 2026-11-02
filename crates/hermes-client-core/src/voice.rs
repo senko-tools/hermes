@@ -1,6 +1,7 @@
 //! Voice (PLAN.md sections 12 and 14): the QUIC connection to an instance's voice server,
-//! joining, switching, leaving and reconnecting, speaking detection, per-user volume, and the
-//! audio engine (`hermes-audio`).
+//! joining, switching, leaving and reconnecting, speaking detection, per-user volume, the audio
+//! engine (`hermes-audio`), and screen share transport (encoded frames in and out; capturing
+//! and coding is the UI's job).
 //!
 //! One voice session at a time. It owns one QUIC connection, reused when switching rooms on the
 //! same instance. A lost connection is retried with a fresh `/voice/join` for the same channel,
@@ -17,7 +18,7 @@ use hermes_proto::id::Id;
 use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
 use hermes_proto::voice::{
-    self, AudioHeader, ClientControl, KickReason, Participant, ServerControl,
+    self, AudioHeader, ClientControl, KickReason, Participant, ServerControl, VideoHeader,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -33,6 +34,33 @@ pub const RECONNECT_ATTEMPTS: u32 = 5;
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(2);
+/// Own screen share frames waiting to be sent; more are dropped (the next frame should then
+/// be a keyframe).
+const SCREEN_QUEUE: usize = 4;
+/// A screen share frame must arrive completely within this time.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// One encoded frame of your own screen share.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenFrame {
+    pub keyframe: bool,
+    pub width: u16,
+    pub height: u16,
+    /// Milliseconds since the share started.
+    pub timestamp: u32,
+    /// An H.264 access unit (Annex B).
+    pub data: Vec<u8>,
+}
+
+/// A frame of someone else's screen share, for the UI's decoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteFrame {
+    pub inst: InstanceId,
+    pub user: Id,
+    pub header: VideoHeader,
+    /// The H.264 access unit.
+    pub data: Vec<u8>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiceStatus {
@@ -47,6 +75,10 @@ pub(crate) struct Voice {
     engine: Engine,
     /// The connection captured packets go to.
     link: Arc<Mutex<Option<quinn::Connection>>>,
+    /// Where own screen share frames go (the current connection's writer).
+    screen_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    /// Where others' screen share frames go (set by the UI).
+    screen_sink: Arc<Mutex<Option<mpsc::Sender<RemoteFrame>>>>,
     state: Mutex<State>,
     volumes: Mutex<UserVolumes>,
     /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
@@ -74,6 +106,12 @@ struct Session {
     control: mpsc::UnboundedSender<ClientControl>,
     participants: HashMap<u16, Id>,
     me: Option<Id>,
+    /// Others in the room sharing their screen.
+    sharing: HashSet<u16>,
+    /// Shares this client receives.
+    watching: HashSet<u16>,
+    /// My own screen share runs.
+    my_share: bool,
     status: VoiceStatus,
     connected_once: bool,
     /// A `join_voice` waiting for `ready` (or an error).
@@ -109,6 +147,8 @@ impl Voice {
         Voice {
             engine,
             link,
+            screen_out: Mutex::default(),
+            screen_sink: Arc::default(),
             state: Mutex::default(),
             volumes: Mutex::new(volumes),
             rest_state: Arc::default(),
@@ -604,6 +644,9 @@ impl Core {
                 control,
                 participants: HashMap::new(),
                 me: None,
+                sharing: HashSet::new(),
+                watching: HashSet::new(),
+                my_share: false,
                 status: VoiceStatus::Connecting,
                 connected_once: false,
                 pending: Some(pending),
@@ -724,6 +767,10 @@ impl Core {
         *self.voice().link.lock().expect("voice link") = Some(conn.clone());
         let (frames_tx, mut frames) = mpsc::channel(32);
         let reader = tokio::spawn(read_frames(recv, frames_tx));
+        let (screen_out, screen_frames) = mpsc::channel(SCREEN_QUEUE);
+        *self.voice().screen_out.lock().expect("screen out") = Some(screen_out);
+        let screen_writer = tokio::spawn(write_screen(conn.clone(), screen_frames));
+        let screen_reader = tokio::spawn(self.clone().read_screen(conn.clone(), generation));
         let mut ping = tokio::time::interval(PING_INTERVAL);
         let mut authed = false;
 
@@ -745,12 +792,31 @@ impl Core {
                         break End::Lost("control stream closed".into());
                     };
                     match msg {
-                        ServerControl::Ready { participant_id, room_id, bitrate, participants } => {
+                        ServerControl::Ready { participant_id, room_id, bitrate, participants, sharing } => {
                             authed = true;
                             *channel = room_id;
                             self.on_ready(generation, participant_id, room_id, bitrate, participants);
+                            // A new room: nothing is watched and my share (if any) has ended.
+                            self.with_session(generation, |s| {
+                                s.sharing = sharing.into_iter().collect();
+                                s.watching.clear();
+                                s.my_share = false;
+                            });
+                            self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::ParticipantJoined(p) => self.on_joined(generation, p),
+                        ServerControl::ShareStarted { participant_id } => {
+                            self.with_session(generation, |s| s.sharing.insert(participant_id));
+                            self.emit(CoreEvent::ScreenShares);
+                        }
+                        ServerControl::ShareStopped { participant_id } => {
+                            self.with_session(generation, |s| {
+                                s.sharing.remove(&participant_id);
+                                s.watching.remove(&participant_id);
+                            });
+                            self.emit(CoreEvent::ScreenShares);
+                        }
+                        ServerControl::KeyframeRequested {} => self.emit(CoreEvent::KeyframeRequested),
                         ServerControl::ParticipantLeft { participant_id } => {
                             self.on_left(generation, participant_id);
                         }
@@ -800,6 +866,9 @@ impl Core {
             }
         };
         reader.abort();
+        screen_writer.abort();
+        screen_reader.abort();
+        *self.voice().screen_out.lock().expect("screen out") = None;
         {
             let mut link = self.voice().link.lock().expect("voice link");
             if link
@@ -896,9 +965,20 @@ impl Core {
 
     fn on_left(&self, generation: u64, participant_id: u16) {
         let left = self.with_session(generation, |s| {
-            s.participants
-                .remove(&participant_id)
-                .map(|user| (s.inst.clone(), user))
+            let shared = s.sharing.remove(&participant_id);
+            s.watching.remove(&participant_id);
+            (
+                shared,
+                s.participants
+                    .remove(&participant_id)
+                    .map(|user| (s.inst.clone(), user)),
+            )
+        });
+        let left = left.map(|(shared, left)| {
+            if shared {
+                self.emit(CoreEvent::ScreenShares);
+            }
+            left
         });
         self.voice().engine.remove_participant(participant_id);
         if let Some(Some((inst, user))) = left {
@@ -978,6 +1058,194 @@ impl Core {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Screen shares
+// ---------------------------------------------------------------------------------------------
+
+impl Core {
+    /// Starts sharing my screen in my voice room; frames go in with [`Core::send_screen_frame`].
+    /// The server refuses without `STREAM` (the error arrives as [`CoreEvent::Error`]).
+    pub fn start_screen_share(&self) -> Result<()> {
+        let control = {
+            let mut state = self.voice().state();
+            let session = state
+                .session
+                .as_mut()
+                .filter(|s| s.connected_once)
+                .ok_or_else(|| CoreError::Io("Join a voice channel first".into()))?;
+            session.my_share = true;
+            session.control.clone()
+        };
+        let _ = control.send(ClientControl::ShareStart {});
+        self.emit(CoreEvent::ScreenShares);
+        Ok(())
+    }
+
+    pub fn stop_screen_share(&self) {
+        let control = {
+            let mut state = self.voice().state();
+            state.session.as_mut().filter(|s| s.my_share).map(|s| {
+                s.my_share = false;
+                s.control.clone()
+            })
+        };
+        if let Some(control) = control {
+            let _ = control.send(ClientControl::ShareStop {});
+            self.emit(CoreEvent::ScreenShares);
+        }
+    }
+
+    /// Whether my own screen share runs.
+    pub fn sharing_screen(&self) -> bool {
+        self.voice()
+            .state()
+            .session
+            .as_ref()
+            .is_some_and(|s| s.my_share)
+    }
+
+    /// The others in my voice room who share their screen.
+    pub fn screen_sharers(&self) -> Vec<(InstanceId, Id)> {
+        let state = self.voice().state();
+        let Some(s) = state.session.as_ref() else {
+            return Vec::new();
+        };
+        let mut users: Vec<(InstanceId, Id)> = s
+            .sharing
+            .iter()
+            .filter_map(|pid| s.participants.get(pid))
+            .map(|&user| (s.inst.clone(), user))
+            .collect();
+        users.sort();
+        users
+    }
+
+    /// Receives exactly these users' screen shares (others in my room); the rest are stopped.
+    pub fn watch_screens(&self, users: &[Id]) {
+        let mut state = self.voice().state();
+        let Some(s) = state.session.as_mut() else {
+            return;
+        };
+        let wanted: HashSet<u16> = s
+            .participants
+            .iter()
+            .filter(|(pid, user)| users.contains(user) && s.sharing.contains(pid))
+            .map(|(&pid, _)| pid)
+            .collect();
+        for &pid in wanted.difference(&s.watching) {
+            let _ = s.control.send(ClientControl::Watch {
+                participant_id: pid,
+                watching: true,
+            });
+        }
+        for &pid in s.watching.difference(&wanted) {
+            let _ = s.control.send(ClientControl::Watch {
+                participant_id: pid,
+                watching: false,
+            });
+        }
+        s.watching = wanted;
+    }
+
+    /// The picture of `user`'s share broke (a lost frame): ask them for a keyframe.
+    pub fn request_keyframe(&self, user: Id) {
+        let state = self.voice().state();
+        let Some(s) = state.session.as_ref() else {
+            return;
+        };
+        if let Some((&pid, _)) = s.participants.iter().find(|(_, u)| **u == user) {
+            let _ = s.control.send(ClientControl::RequestKeyframe {
+                participant_id: pid,
+            });
+        }
+    }
+
+    /// Queues one frame of my screen share. `false` when it was dropped (no share, or the
+    /// connection is behind): the next frame should be a keyframe.
+    pub fn send_screen_frame(&self, frame: ScreenFrame) -> bool {
+        if !self.sharing_screen()
+            || frame.data.len() + voice::VIDEO_HEADER_LEN > voice::MAX_VIDEO_FRAME
+        {
+            return false;
+        }
+        let Some(out) = self.voice().screen_out.lock().expect("screen out").clone() else {
+            return false;
+        };
+        let header = VideoHeader {
+            keyframe: frame.keyframe,
+            sender_id: 0,
+            width: frame.width,
+            height: frame.height,
+            timestamp: frame.timestamp,
+        };
+        let mut data = Vec::with_capacity(voice::VIDEO_HEADER_LEN + frame.data.len());
+        data.extend_from_slice(&header.encode());
+        data.extend_from_slice(&frame.data);
+        out.try_send(data).is_ok()
+    }
+
+    /// Where others' screen share frames go (the UI's decoder). Frames are dropped while it is
+    /// full.
+    pub fn set_screen_sink(&self, sink: mpsc::Sender<RemoteFrame>) {
+        *self.voice().screen_sink.lock().expect("screen sink") = Some(sink);
+    }
+
+    /// Reads screen share frames from the server, one stream at a time (in order), and hands
+    /// those of watched sharers to the sink.
+    async fn read_screen(self, conn: quinn::Connection, generation: u64) {
+        loop {
+            let Ok(mut stream) = conn.accept_uni().await else {
+                return;
+            };
+            let read =
+                tokio::time::timeout(FRAME_TIMEOUT, stream.read_to_end(voice::MAX_VIDEO_FRAME))
+                    .await;
+            let Ok(Ok(data)) = read else {
+                continue;
+            };
+            let Ok(header) = VideoHeader::decode(&data) else {
+                continue;
+            };
+            let who = self.with_session(generation, |s| {
+                s.watching
+                    .contains(&header.sender_id)
+                    .then(|| s.participants.get(&header.sender_id).copied())
+                    .flatten()
+                    .map(|user| (s.inst.clone(), user))
+            });
+            let Some(Some((inst, user))) = who else {
+                continue;
+            };
+            let sink = self
+                .voice()
+                .screen_sink
+                .lock()
+                .expect("screen sink")
+                .clone();
+            if let Some(sink) = sink {
+                let _ = sink.try_send(RemoteFrame {
+                    inst,
+                    user,
+                    header,
+                    data: data[voice::VIDEO_HEADER_LEN..].to_vec(),
+                });
+            }
+        }
+    }
+}
+
+/// Writes my screen share frames, one unidirectional stream each, in order.
+async fn write_screen(conn: quinn::Connection, mut frames: mpsc::Receiver<Vec<u8>>) {
+    while let Some(frame) = frames.recv().await {
+        let Ok(mut stream) = conn.open_uni().await else {
+            return;
+        };
+        if stream.write_all(&frame).await.is_ok() {
+            let _ = stream.finish();
+        }
+    }
+}
+
 /// Resolves the endpoint of a `/voice/join` answer and connects with the pinned certificate.
 async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connection, String> {
     let failed = |e: &dyn std::fmt::Display| format!("Voice connection failed: {e}");
@@ -1020,6 +1288,8 @@ fn transport_config() -> quinn::TransportConfig {
         transport.max_idle_timeout(Some(idle));
     }
     transport.keep_alive_interval(Some(Duration::from_millis(voice::KEEP_ALIVE_MS)));
+    // One stream per screen share frame; the server writes them one at a time.
+    transport.max_concurrent_uni_streams(8u32.into());
     transport
 }
 

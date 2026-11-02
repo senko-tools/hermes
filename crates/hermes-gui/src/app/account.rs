@@ -2,7 +2,9 @@
 //! sessions, plain config flags and debug info.
 
 use hermes_client_core::InstanceId;
-use hermes_client_core::proto::api::{ChangePasswordRequest, UpdateMeRequest};
+use hermes_client_core::proto::api::{
+    ChangePasswordRequest, UpdateMeRequest, UpdatePrivacyRequest,
+};
 use iced::Task;
 
 use super::App;
@@ -129,6 +131,26 @@ impl App {
                     r.update_me(&UpdateMeRequest {
                         avatar_id: Some(None),
                         ..UpdateMeRequest::default()
+                    })
+                    .await
+                }),
+                None => Task::none(),
+            },
+            S::DmFrom(dm_from) => match self.account_instance() {
+                Some(inst) => self.call_status(&inst, "Privacy saved", move |r| async move {
+                    r.update_privacy(&UpdatePrivacyRequest {
+                        dm_from: Some(dm_from.0),
+                        ..UpdatePrivacyRequest::default()
+                    })
+                    .await
+                }),
+                None => Task::none(),
+            },
+            S::AllowRequests(on) => match self.account_instance() {
+                Some(inst) => self.call_status(&inst, "Privacy saved", move |r| async move {
+                    r.update_privacy(&UpdatePrivacyRequest {
+                        message_requests: Some(on),
+                        ..UpdatePrivacyRequest::default()
                     })
                     .await
                 }),

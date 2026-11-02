@@ -82,6 +82,7 @@ const AUTHENTICATED: &[(&str, &str)] = &[
     ("GET", "/attachments/1000/a.png"),
     ("GET", "/dms"),
     ("POST", "/dms"),
+    ("DELETE", "/dms/1000"),
     ("PUT", "/dms/1000/recipients/1000"),
     ("DELETE", "/dms/1000/recipients/1000"),
     ("POST", "/invites/abcdefgh"),

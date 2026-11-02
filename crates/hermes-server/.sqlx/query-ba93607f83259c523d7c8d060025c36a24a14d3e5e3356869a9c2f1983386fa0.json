@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id",
+  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.dm_from, u.message_requests AS \"message_requests: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id",
   "describe": {
     "columns": [
       {
@@ -70,8 +70,30 @@
         }
       },
       {
-        "name": "avatar_id",
+        "name": "dm_from",
         "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "dm_from"
+          }
+        }
+      },
+      {
+        "name": "message_requests: bool",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "message_requests"
+          }
+        }
+      },
+      {
+        "name": "avatar_id",
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,7 +104,7 @@
       },
       {
         "name": "avatar_filename?",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -102,9 +124,11 @@
       true,
       false,
       false,
+      false,
+      false,
       true,
       true
     ]
   },
-  "hash": "ea3b2352c2ef9233ace316aaaaf235f3b9488c79d5274fa4b6eda995f6597143"
+  "hash": "ba93607f83259c523d7c8d060025c36a24a14d3e5e3356869a9c2f1983386fa0"
 }

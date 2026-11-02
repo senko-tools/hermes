@@ -73,6 +73,17 @@ impl Panes {
         }
     }
 
+    /// The channel the focused pane shows, as its chat or its voice room (what the sidebar
+    /// marks as selected).
+    pub fn focused_target(&self) -> Option<(InstanceId, Id)> {
+        match &self.focused()?.buffer {
+            Buffer::Channel { inst, channel } | Buffer::VoiceRoom { inst, channel } => {
+                Some((inst.clone(), *channel))
+            }
+            _ => None,
+        }
+    }
+
     /// Shows `buffer` in the focused pane. A channel starts at the bottom, with the divider
     /// before the messages newer than `read_marker`.
     pub fn open(&mut self, buffer: Buffer) {
@@ -349,6 +360,8 @@ pub struct Context<'a> {
     pub ui_scale_draft: Option<f64>,
     /// What closing a settings page goes back to ("#general", "Home").
     pub return_to: String,
+    /// The latest picture of each screen share I watch.
+    pub screens: &'a std::collections::HashMap<(InstanceId, Id), iced::widget::image::Handle>,
 }
 
 /// Actions from a pane header.
@@ -365,11 +378,13 @@ fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a,
         "Leave voice" => icon::HANG_UP,
         "Chat" => icon::CHAT,
         "Voice room" => icon::WAVEFORM,
+        "Share screen" => icon::MONITOR_SHARE,
+        "Stop sharing" => icon::MONITOR,
         _ => icon::PHONE,
     };
     let kind = match text {
         "Join voice" | "Start call" => 1,
-        "Leave voice" => 2,
+        "Leave voice" | "Stop sharing" => 2,
         _ => 0,
     };
     // Exactly as tall as the icon buttons beside it at any text size, so every pane header is
@@ -443,6 +458,13 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
     };
     let mut out = Vec::new();
     if core.voice_channel() == Some((inst.clone(), channel)) {
+        // Shares are seen in the voice room only by people in the call.
+        let share = if core.sharing_screen() {
+            "Stop sharing"
+        } else {
+            "Share screen"
+        };
+        out.push((share, Message::Voice(VoiceMsg::ToggleShare)));
         out.push(("Leave voice", Message::Voice(VoiceMsg::Leave)));
     } else {
         let others = {
@@ -462,7 +484,7 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
         out.push((text, Message::Voice(VoiceMsg::Join(inst.clone(), channel))));
     }
     if room {
-        out.push(("Chat", Message::Select(inst.clone(), channel)));
+        out.push(("Chat", Message::OpenChat(inst.clone(), channel)));
     } else {
         out.push((
             "Voice room",
@@ -634,7 +656,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
         }
         Buffer::Settings | Buffer::SpaceSettings { .. } => page_view(&pane.buffer, ctx),
         Buffer::VoiceRoom { inst, channel } => {
-            crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
+            crate::buffer::voice_room::view(ctx.core, inst, *channel, ctx.screens, fonts, theme)
         }
         Buffer::Results(key) => {
             let state = ctx.results.get(key).unwrap_or(ctx.default_results);

@@ -8,7 +8,7 @@ use hermes_proto::ErrorCode;
 use hermes_proto::api::{AuthResponse, LoginRequest, RegisterRequest, SessionInfo};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
-use hermes_proto::models::User;
+use hermes_proto::models::{PrivacySettings, User};
 use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
@@ -148,6 +148,7 @@ pub async fn register(
         },
         instance_admin: first_user,
         disabled: false,
+        privacy: PrivacySettings::default(),
     };
     let current = user.current_user();
     state.cache_mut().insert_user(user);

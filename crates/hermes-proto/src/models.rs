@@ -145,6 +145,11 @@ pub struct Channel {
     /// Group DM owner.
     pub owner_id: Option<Id>,
     pub last_message_id: Option<Id>,
+    /// DMs only, and only as sent to you: someone you do not accept direct messages from
+    /// started it, so it waits in your message requests until you accept it (sending a message
+    /// accepts it too). Absent (`false`) everywhere else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub request: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -406,6 +411,36 @@ pub enum NotificationLevel {
     All,
     Mentions,
     None,
+}
+
+/// Who may start a direct message with you (`PrivacySettings::dm_from`). The server's
+/// `privacy.dm_policy` applies first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DmFrom {
+    #[default]
+    Everyone,
+    /// People who share a space with you.
+    Spaces,
+    Nobody,
+}
+
+/// Your privacy settings on one instance (`GET`/`PATCH /users/@me/privacy`, `ready.privacy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivacySettings {
+    pub dm_from: DmFrom,
+    /// DMs from people `dm_from` leaves out become message requests (one notification, then
+    /// quiet until accepted) instead of being refused.
+    pub message_requests: bool,
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        PrivacySettings {
+            dm_from: DmFrom::Everyone,
+            message_requests: true,
+        }
+    }
 }
 
 /// Notification setting for one space or channel.

@@ -383,6 +383,7 @@ async fn edit_delete_pin() {
             recipients: Vec::new(),
             owner_id: None,
             last_message_id: None,
+            request: false,
         },
         vec![alice_id.parse().unwrap(), bob_id.parse().unwrap()],
     );

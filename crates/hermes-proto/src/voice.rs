@@ -1,5 +1,5 @@
-//! Voice protocol (PLAN.md section 12): the QUIC control stream messages and their framing, and
-//! the audio datagram format. No I/O.
+//! Voice protocol (PLAN.md section 12): the QUIC control stream messages and their framing, the
+//! audio datagram format and the screen share frame format. No I/O.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +45,18 @@ pub enum ClientControl {
         t: u64,
     },
     Leave {},
+    /// I start sharing my screen (`STREAM`); frames follow on unidirectional streams.
+    ShareStart {},
+    ShareStop {},
+    /// Start (or stop) receiving someone's screen share.
+    Watch {
+        participant_id: u16,
+        watching: bool,
+    },
+    /// Ask a sharer for a keyframe (a frame was lost or the picture is broken).
+    RequestKeyframe {
+        participant_id: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +75,9 @@ pub enum ServerControl {
         room_id: Id,
         bitrate: u32,
         participants: Vec<Participant>,
+        /// Those of `participants` sharing their screen.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sharing: Vec<u16>,
     },
     ParticipantJoined(Participant),
     ParticipantLeft {
@@ -90,6 +105,14 @@ pub enum ServerControl {
         code: String,
         message: String,
     },
+    ShareStarted {
+        participant_id: u16,
+    },
+    ShareStopped {
+        participant_id: u16,
+    },
+    /// Someone started watching your share or lost a frame: send a keyframe next.
+    KeyframeRequested {},
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -231,6 +254,90 @@ pub fn colon_hex(digest: &[u8]) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------------------------
+// Screen share frames
+// ---------------------------------------------------------------------------------------------
+
+pub const PACKET_TYPE_VIDEO: u8 = 2;
+pub const VIDEO_HEADER_LEN: usize = 12;
+/// Frames larger than this (header included) are dropped.
+pub const MAX_VIDEO_FRAME: usize = 512 * 1024;
+/// Largest width and height a share may have.
+pub const MAX_VIDEO_DIMENSION: u16 = 3840;
+/// A sharer sends at most this many frames per second; the server drops the rest.
+pub const MAX_VIDEO_FPS: u32 = 30;
+
+const FLAG_KEYFRAME: u8 = 1;
+
+/// The header of a screen share frame. One frame (an H.264 access unit in Annex B form) is
+/// sent per QUIC unidirectional stream: the header, then the bitstream, then the end of the
+/// stream.
+///
+/// ```text
+/// offset size field
+/// 0      1    version_and_type   high nibble = version (1), low nibble = type (2 = video)
+/// 1      1    flags              bit0 = keyframe
+/// 2      2    sender_id          participant_id (the server overwrites it)
+/// 4      2    width              pixels, even, 2..=3840
+/// 6      2    height             pixels, even, 2..=3840
+/// 8      4    timestamp          milliseconds since the share started
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoHeader {
+    pub keyframe: bool,
+    pub sender_id: u16,
+    pub width: u16,
+    pub height: u16,
+    pub timestamp: u32,
+}
+
+impl VideoHeader {
+    pub fn encode(&self) -> [u8; VIDEO_HEADER_LEN] {
+        let mut out = [0u8; VIDEO_HEADER_LEN];
+        out[0] = (PACKET_VERSION << 4) | PACKET_TYPE_VIDEO;
+        out[1] = if self.keyframe { FLAG_KEYFRAME } else { 0 };
+        out[2..4].copy_from_slice(&self.sender_id.to_be_bytes());
+        out[4..6].copy_from_slice(&self.width.to_be_bytes());
+        out[6..8].copy_from_slice(&self.height.to_be_bytes());
+        out[8..12].copy_from_slice(&self.timestamp.to_be_bytes());
+        out
+    }
+
+    /// Parses and checks a header (version, type, sizes).
+    pub fn decode(data: &[u8]) -> Result<VideoHeader, PacketError> {
+        if data.len() < VIDEO_HEADER_LEN {
+            return Err(PacketError::TooShort);
+        }
+        let version = data[0] >> 4;
+        if version != PACKET_VERSION {
+            return Err(PacketError::BadVersion(version));
+        }
+        let kind = data[0] & 0x0f;
+        if kind != PACKET_TYPE_VIDEO {
+            return Err(PacketError::UnknownType(kind));
+        }
+        let header = VideoHeader {
+            keyframe: data[1] & FLAG_KEYFRAME != 0,
+            sender_id: u16::from_be_bytes([data[2], data[3]]),
+            width: u16::from_be_bytes([data[4], data[5]]),
+            height: u16::from_be_bytes([data[6], data[7]]),
+            timestamp: u32::from_be_bytes([data[8], data[9], data[10], data[11]]),
+        };
+        let size_ok = |n: u16| (2..=MAX_VIDEO_DIMENSION).contains(&n) && n.is_multiple_of(2);
+        if !size_ok(header.width) || !size_ok(header.height) {
+            return Err(PacketError::TooLarge);
+        }
+        Ok(header)
+    }
+}
+
+/// Overwrites the sender ID of an encoded video header.
+pub fn set_video_sender_id(header: &mut [u8], sender_id: u16) {
+    if header.len() >= 4 {
+        header[2..4].copy_from_slice(&sender_id.to_be_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +434,7 @@ mod tests {
                 participant_id: 2,
                 user_id: Id(9),
             }],
+            sharing: vec![2],
         };
         let value = serde_json::to_value(&ready).unwrap();
         assert_eq!(value["d"]["participants"][0]["user_id"], "9");
@@ -356,5 +464,59 @@ mod tests {
     #[test]
     fn colon_hex_format() {
         assert_eq!(colon_hex(&[0x3f, 0xa9, 0x01]), "3F:A9:01");
+    }
+
+    #[test]
+    fn video_headers_round_trip_and_are_checked() {
+        let header = VideoHeader {
+            keyframe: true,
+            sender_id: 7,
+            width: 1280,
+            height: 720,
+            timestamp: 123_456,
+        };
+        let mut bytes = header.encode().to_vec();
+        assert_eq!(VideoHeader::decode(&bytes), Ok(header));
+        set_video_sender_id(&mut bytes, 9);
+        assert_eq!(VideoHeader::decode(&bytes).unwrap().sender_id, 9);
+        assert_eq!(
+            VideoHeader::decode(&bytes[..11]),
+            Err(PacketError::TooShort)
+        );
+        let mut audio = bytes.clone();
+        audio[0] = (PACKET_VERSION << 4) | PACKET_TYPE_AUDIO;
+        assert_eq!(
+            VideoHeader::decode(&audio),
+            Err(PacketError::UnknownType(1))
+        );
+        for (w, h) in [(0, 720), (1281, 720), (4000, 720), (1280, 0)] {
+            let bad = VideoHeader {
+                width: w,
+                height: h,
+                ..header
+            };
+            assert!(VideoHeader::decode(&bad.encode()).is_err(), "{w}x{h}");
+        }
+    }
+
+    #[test]
+    fn share_control_messages_round_trip() {
+        for msg in [
+            ClientControl::ShareStart {},
+            ClientControl::ShareStop {},
+            ClientControl::Watch {
+                participant_id: 3,
+                watching: true,
+            },
+            ClientControl::RequestKeyframe { participant_id: 3 },
+        ] {
+            let json = serde_json::to_string(&msg).unwrap();
+            assert_eq!(serde_json::from_str::<ClientControl>(&json).unwrap(), msg);
+        }
+        let ready: ServerControl = serde_json::from_str(
+            r#"{"op":"ready","d":{"participant_id":1,"room_id":"5","bitrate":64000,"participants":[]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(ready, ServerControl::Ready { sharing, .. } if sharing.is_empty()));
     }
 }

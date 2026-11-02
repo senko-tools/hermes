@@ -164,6 +164,20 @@ impl App {
                 )
             }
 
+            (Target::Channel(inst, channel), Action::AcceptRequest) => {
+                self.call_status(&inst, "Request accepted", move |r| async move {
+                    r.accept_dm(channel).await
+                })
+            }
+            (Target::Channel(inst, channel), Action::CloseDm) => {
+                self.panes.clear_where(
+                    |b| matches!(b, Buffer::Channel { inst: i, channel: c } if *i == inst && *c == channel),
+                );
+                self.call_status(&inst, "Conversation closed", move |r| async move {
+                    r.close_dm(channel).await
+                })
+            }
+
             (Target::Message(inst, channel, message), Action::Reply) => {
                 let composer = self.composers.entry((inst.clone(), channel)).or_default();
                 if composer.editing.is_some() {

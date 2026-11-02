@@ -15,6 +15,25 @@ use crate::drag::{Item, Kind};
 /// The channel shown in the main area.
 pub type Selection = (InstanceId, Id);
 
+/// The sidebar shows either the spaces or the direct messages of every instance, so DMs never
+/// look like one more channel list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Spaces,
+    Dms,
+}
+
+impl Tab {
+    /// The tab that lists a channel of `kind`.
+    pub fn of(kind: ChannelKind) -> Tab {
+        match kind {
+            ChannelKind::Dm | ChannelKind::GroupDm => Tab::Dms,
+            _ => Tab::Spaces,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     Instance {
@@ -67,11 +86,20 @@ pub enum Row {
         me: bool,
         /// Under a channel inside a category (one level deeper).
         nested: bool,
+        /// In a DM's call (under the DM, one level below the instance).
+        dm: bool,
     },
-    Dms {
+    /// "New message", the first row of an instance's DMs.
+    NewDm { inst: InstanceId },
+    /// The heading over an instance's message requests.
+    Requests { inst: InstanceId, count: usize },
+    /// A message request: open it to read, accept or ignore it from the row.
+    Request {
         inst: InstanceId,
-        collapsed: bool,
-        badge: Badge,
+        id: Id,
+        name: String,
+        group: bool,
+        selected: bool,
     },
     Dm {
         inst: InstanceId,
@@ -99,13 +127,39 @@ impl Badge {
     }
 }
 
-/// Every visible row, instances in config order. A collapsed space or category shows the sum of
-/// its channels' badges; an expanded one shows none (the channels do).
+/// The unread dot and mention count of everything under each tab (spaces, DMs), for the tab
+/// buttons.
+pub fn tab_badges(store: &Store, instances: &[InstanceId]) -> (Badge, Badge) {
+    let (mut spaces, mut dms) = (Badge::default(), Badge::default());
+    for s in instances.iter().filter_map(|inst| store.instance(inst)) {
+        for space in s.spaces.keys() {
+            for c in view::channel_tree(s, *space) {
+                spaces.add(Badge {
+                    unread: c.unread,
+                    mentions: c.mentions,
+                });
+            }
+        }
+        for dm in view::dm_list(s) {
+            dms.add(Badge {
+                unread: dm.unread,
+                mentions: dm.mentions,
+            });
+        }
+        // Waiting requests show as a dot, never as mentions.
+        dms.unread |= !view::dm_requests(s).is_empty();
+    }
+    (spaces, dms)
+}
+
+/// Every visible row of `tab`, instances in config order. A collapsed space or category shows
+/// the sum of its channels' badges; an expanded one shows none (the channels do).
 pub fn rows(
     store: &Store,
     instances: &[(InstanceId, ConnStatus)],
     collapsed: &Collapsed,
     selected: Option<&Selection>,
+    tab: Tab,
     speaking: &dyn Fn(&str, Id) -> bool,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
@@ -123,18 +177,22 @@ pub fn rows(
             continue;
         }
         let selected_here = selected.filter(|(i, _)| i == inst).map(|(_, id)| *id);
-        for space_id in s.spaces.keys() {
-            space_rows(
-                s,
-                inst,
-                *space_id,
-                collapsed,
-                selected_here,
-                speaking,
-                &mut rows,
-            );
+        match tab {
+            Tab::Spaces => {
+                for space_id in s.spaces.keys() {
+                    space_rows(
+                        s,
+                        inst,
+                        *space_id,
+                        collapsed,
+                        selected_here,
+                        speaking,
+                        &mut rows,
+                    );
+                }
+            }
+            Tab::Dms => dm_rows(s, inst, selected_here, speaking, &mut rows),
         }
-        dm_rows(s, inst, collapsed, selected_here, speaking, &mut rows);
     }
     rows
 }
@@ -267,6 +325,7 @@ fn voice_users(
             speaking: speaking(inst, v.user_id),
             me: Some(v.user_id) == me,
             nested,
+            dm: space.is_none(),
         });
     }
 }
@@ -274,31 +333,28 @@ fn voice_users(
 fn dm_rows(
     s: &InstanceStore,
     inst: &InstanceId,
-    collapsed: &Collapsed,
     selected: Option<Id>,
     speaking: &dyn Fn(&str, Id) -> bool,
     rows: &mut Vec<Row>,
 ) {
-    let dms = view::dm_list(s);
-    let dms_collapsed = collapsed.is_collapsed(&Node::Dms(inst.clone()));
-    let mut total = Badge::default();
-    if dms_collapsed {
-        for dm in &dms {
-            total.add(Badge {
-                unread: dm.unread,
-                mentions: dm.mentions,
+    rows.push(Row::NewDm { inst: inst.clone() });
+    let requests = view::dm_requests(s);
+    if !requests.is_empty() {
+        rows.push(Row::Requests {
+            inst: inst.clone(),
+            count: requests.len(),
+        });
+        for r in requests {
+            rows.push(Row::Request {
+                inst: inst.clone(),
+                id: r.id,
+                name: r.name,
+                group: r.kind == ChannelKind::GroupDm,
+                selected: selected == Some(r.id),
             });
         }
     }
-    rows.push(Row::Dms {
-        inst: inst.clone(),
-        collapsed: dms_collapsed,
-        badge: total,
-    });
-    if dms_collapsed {
-        return;
-    }
-    for dm in dms {
+    for dm in view::dm_list(s) {
         let id = dm.id;
         rows.push(Row::Dm {
             inst: inst.clone(),
@@ -357,7 +413,9 @@ mod tests {
                     "    voice {name} muted={muted} deaf={deafened}{}",
                     if *speaking { " speaking" } else { "" }
                 ),
-                Row::Dms { badge, .. } => format!("dms {badge:?}"),
+                Row::NewDm { .. } => "new dm".to_owned(),
+                Row::Requests { count, .. } => format!("requests {count}"),
+                Row::Request { name, .. } => format!("request {name}"),
                 Row::Dm {
                     name, group, badge, ..
                 } => format!("dm {name} group={group} unread={}", badge.unread),
@@ -377,6 +435,7 @@ mod tests {
             &connected(),
             &Collapsed::default(),
             Some(&selected),
+            Tab::Spaces,
             &|_, _| false,
         );
         assert_eq!(
@@ -390,11 +449,71 @@ mod tests {
                 "  Lounge unread=false @0",
                 "    voice Bobby muted=true deaf=false",
                 "memes unread=true @0",
-                "dms Badge { unread: false, mentions: 0 }",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dm_tab_lists_only_conversations() {
+        let list = rows(
+            &store(),
+            &connected(),
+            &Collapsed::default(),
+            None,
+            Tab::Dms,
+            &|_, _| false,
+        );
+        assert_eq!(
+            names(&list),
+            [
+                "instance h",
+                "new dm",
                 "dm carol group=false unread=true",
                 "dm Trio group=true unread=false",
             ]
         );
+        let (spaces, dms) = tab_badges(&store(), &["h".to_owned()]);
+        assert_eq!(
+            spaces,
+            Badge {
+                unread: true,
+                mentions: 2
+            }
+        );
+        assert_eq!(
+            dms,
+            Badge {
+                unread: true,
+                mentions: 0
+            }
+        );
+        assert_eq!(Tab::of(ChannelKind::GroupDm), Tab::Dms);
+        assert_eq!(Tab::of(ChannelKind::Voice), Tab::Spaces);
+    }
+
+    #[test]
+    fn message_requests_are_listed_apart() {
+        let mut store = store();
+        let s = store.instances.get_mut("h").unwrap();
+        let mut request = s.dms.values().next().unwrap().clone();
+        request.id = Id(99);
+        request.name = Some("Stranger".into());
+        request.request = true;
+        s.dms.insert(request.id, request);
+        let list = rows(
+            &store,
+            &connected(),
+            &Collapsed::default(),
+            None,
+            Tab::Dms,
+            &|_, _| false,
+        );
+        let shown = names(&list);
+        assert_eq!(
+            shown[..4],
+            ["instance h", "new dm", "requests 1", "request Stranger"]
+        );
+        assert_eq!(shown.iter().filter(|n| n.contains("Stranger")).count(), 1);
     }
 
     #[test]
@@ -403,8 +522,14 @@ mod tests {
         collapsed
             .toggle(&Node::Category("h".into(), Id(12)))
             .unwrap();
-        collapsed.toggle(&Node::Dms("h".into())).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
+        let list = rows(
+            &store(),
+            &connected(),
+            &collapsed,
+            None,
+            Tab::Spaces,
+            &|_, _| false,
+        );
         let shown = names(&list);
         assert!(shown.contains(&"category Games Badge { unread: false, mentions: 0 }".into()));
         assert!(
@@ -413,11 +538,16 @@ mod tests {
                 .any(|n| n.contains("chess") || n.contains("Bobby"))
         );
         assert!(shown.contains(&"memes unread=true @0".into()), "{shown:?}");
-        assert!(shown.contains(&"dms Badge { unread: true, mentions: 0 }".into()));
-        assert!(!shown.iter().any(|n| n.starts_with("dm ")));
 
         collapsed.toggle(&Node::Space("h".into(), Id(10))).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
+        let list = rows(
+            &store(),
+            &connected(),
+            &collapsed,
+            None,
+            Tab::Spaces,
+            &|_, _| false,
+        );
         assert_eq!(
             names(&list)[..2],
             [
@@ -427,7 +557,14 @@ mod tests {
         );
 
         collapsed.toggle(&Node::Instance("h".into())).unwrap();
-        let list = rows(&store(), &connected(), &collapsed, None, &|_, _| false);
+        let list = rows(
+            &store(),
+            &connected(),
+            &collapsed,
+            None,
+            Tab::Spaces,
+            &|_, _| false,
+        );
         assert_eq!(names(&list), ["instance h"]);
     }
 
@@ -462,8 +599,22 @@ mod tests {
             },
         );
         let speaking = |_: &str, user: Id| user == carol;
-        let list = rows(&store, &connected(), &Collapsed::default(), None, &speaking);
-        let shown = names(&list);
+        let mut shown = names(&rows(
+            &store,
+            &connected(),
+            &Collapsed::default(),
+            None,
+            Tab::Dms,
+            &speaking,
+        ));
+        shown.extend(names(&rows(
+            &store,
+            &connected(),
+            &Collapsed::default(),
+            None,
+            Tab::Spaces,
+            &speaking,
+        )));
         let dm = shown
             .iter()
             .position(|n| n.starts_with("dm carol"))
@@ -500,6 +651,7 @@ mod tests {
             &connected(),
             &Collapsed::default(),
             None,
+            Tab::Spaces,
             &|_, _| false,
         );
         let connected: Vec<&str> = list
@@ -537,6 +689,7 @@ mod tests {
             &[("other".into(), ConnStatus::LoggedOut)],
             &Collapsed::default(),
             None,
+            Tab::Dms,
             &|_, _| false,
         );
         assert_eq!(

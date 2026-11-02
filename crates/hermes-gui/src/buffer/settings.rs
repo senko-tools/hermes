@@ -81,6 +81,34 @@ pub enum Message {
     CopyDebugInfo,
     OpenLogs,
     OpenProjectPage,
+    /// The screens that can be shared were listed.
+    Screens(Vec<String>),
+    ShareScreen(ShareScreen),
+    /// Who may start DMs with me on the Account tab's instance.
+    DmFrom(DmFrom),
+    AllowRequests(bool),
+}
+
+/// `PrivacySettings::dm_from`, as offered in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmFrom(pub hermes_client_core::proto::models::DmFrom);
+
+impl DmFrom {
+    pub const ALL: [DmFrom; 3] = {
+        use hermes_client_core::proto::models::DmFrom as D;
+        [DmFrom(D::Everyone), DmFrom(D::Spaces), DmFrom(D::Nobody)]
+    };
+}
+
+impl fmt::Display for DmFrom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use hermes_client_core::proto::models::DmFrom as D;
+        f.write_str(match self.0 {
+            D::Everyone => "Everyone",
+            D::Spaces => "People in my spaces",
+            D::Nobody => "Nobody",
+        })
+    }
 }
 
 /// A slider-driven setting, saved on release.
@@ -230,6 +258,24 @@ pub struct VoiceView<'a> {
     pub mic_test: bool,
     /// The PTT key being typed (`None`: show the saved one).
     pub ptt_draft: Option<&'a str>,
+    /// The screens that can be shared, primary first (listed with the devices).
+    pub screens: &'a [String],
+}
+
+/// `voice.share_screen`, as offered in the settings: a screen's system name, or empty for the
+/// primary one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShareScreen(pub String);
+
+impl fmt::Display for ShareScreen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_empty() {
+            f.write_str("Primary screen")
+        } else {
+            // Windows names screens like "\\.\DISPLAY2".
+            f.write_str(self.0.trim_start_matches(['\\', '.']))
+        }
+    }
 }
 
 /// The config key and TOML value a [`Setting`] is saved as.
@@ -740,7 +786,7 @@ fn voice_tab<'a>(
             ),
             setting(
                 "Join a voice channel with",
-                "With double-click, a single click only opens the channel's chat.",
+                "With double-click, a single click only opens the channel's voice room.",
                 dropdown(
                     JoinOn::ALL,
                     Some(JoinOn(crate::voice::JoinOn::from_config(&v.join_on))),
@@ -755,6 +801,27 @@ fn voice_tab<'a>(
         fonts,
         theme,
     );
+    let mut screens = vec![ShareScreen(String::new())];
+    screens.extend(voice.screens.iter().skip(1).cloned().map(ShareScreen));
+    let screen_group = group(
+        "Screen sharing",
+        vec![setting(
+            "Screen to share",
+            "Only people in the call see it. Start and stop it with Share screen in the voice \
+             room.",
+            dropdown(
+                screens,
+                Some(ShareScreen(v.share_screen.clone())),
+                Message::ShareScreen,
+                fonts,
+                theme,
+            ),
+            fonts,
+            theme,
+        )],
+        fonts,
+        theme,
+    );
     page(
         "Voice & Audio",
         None,
@@ -764,6 +831,7 @@ fn voice_tab<'a>(
             group("Input", input_rows, fonts, theme),
             processing_group,
             sounds_group,
+            screen_group,
         ],
         fonts,
         theme,

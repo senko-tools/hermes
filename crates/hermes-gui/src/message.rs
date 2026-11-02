@@ -29,7 +29,14 @@ pub enum Message {
     /// A later launch forwarded its link (empty: just show the window).
     Forwarded(String),
     Toggle(Node),
+    /// Opens a channel in the focused pane: a voice channel's voice room, otherwise its chat.
     Select(InstanceId, Id),
+    /// Opens a channel's chat, also for a voice channel.
+    OpenChat(InstanceId, Id),
+    /// Shows the spaces or the direct messages in the sidebar.
+    SidebarTab(crate::sidebar::tree::Tab),
+    /// A new picture of someone's screen share.
+    ScreenImage(InstanceId, Id, iced::widget::image::Handle),
     /// The selected channel's first page loaded.
     ChannelOpened,
     OpenMenu(Target),
@@ -108,8 +115,6 @@ pub enum Message {
     Shortcut(crate::keybinds::Action),
     /// Nothing to do (a request whose result the gateway delivers).
     Nothing,
-    /// A frame was drawn while something animates (only asked for then).
-    Frame,
     /// Once a second while an info notification shows: it goes away after a while.
     StatusTick,
     /// An icon file was picked for a space.
