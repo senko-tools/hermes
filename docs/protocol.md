@@ -193,12 +193,16 @@ Client → server:
 | `set_state` | `{self_mute, self_deaf}` |
 | `ping` | `{t}` (echoed in `pong`) |
 | `leave` | `{}` (leave the room, keep the connection) |
+| `share_start` | `{}`: share my screen (needs `STREAM`; frames follow, see below) |
+| `share_stop` | `{}` |
+| `watch` | `{participant_id, watching}`: start or stop receiving someone's share |
+| `request_keyframe` | `{participant_id}`: a frame of their share was lost (only while watching) |
 
 Server → client:
 
 | op | d |
 |---|---|
-| `ready` | `{participant_id, room_id, bitrate, participants: [{participant_id, user_id}]}` (the others in the room) |
+| `ready` | `{participant_id, room_id, bitrate, participants: [{participant_id, user_id}], sharing?: [participant_id]}` (the others in the room; `sharing`: those of them sharing their screen, left out when empty) |
 | `participant_joined` | `{participant_id, user_id}` |
 | `participant_left` | `{participant_id}` |
 | `server_state` | `{server_mute, server_deaf}` |
@@ -207,6 +211,9 @@ Server → client:
 | `kicked` | `{reason}`: `joined_elsewhere`, `disconnected`, `channel_deleted`, `removed` |
 | `pong` | `{t}` |
 | `error` | `{code, message}` (`ErrorCode` names) |
+| `share_started` | `{participant_id}` |
+| `share_stopped` | `{participant_id}` (also implied by `participant_left`; watchers must `watch` again when it restarts) |
+| `keyframe_requested` | `{}`: send your next screen share frame as a keyframe |
 
 An invalid or expired `auth` token, or any op before `auth`, answers `error {code: "UNAUTHORIZED"}`
 and the server closes the connection. After `kicked` or `leave` the connection stays open.
@@ -228,6 +235,30 @@ QUIC datagrams, all integers big-endian, 11-byte header + one 20 ms Opus frame (
 The server drops datagrams that are malformed, larger than 1000 bytes, or from senders who are
 muted (self or server) or lack `SPEAK`, and forwards the rest to everyone else in the room who is
 not deafened. It never waits for a slow receiver.
+
+### Screen shares
+
+Who shares is told only on the control stream, never on the gateway: only people in the call
+know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
+**unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
+have at most 8 such streams open at once, and both sides read them one at a time in the order
+they were opened, so frames stay in order.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | version (high nibble, 1) and type (low nibble, 2 = video) |
+| 1 | 1 | flags: bit 0 = keyframe |
+| 2 | 2 | sender ID (the server overwrites it) |
+| 4 | 2 | width, even, 2–3840 |
+| 6 | 2 | height, even, 2–3840 |
+| 8 | 4 | milliseconds since the share started |
+
+The server drops frames over 512 KiB (header included), arriving slower than 5 s, with a bad
+header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 30
+per second, and sends the rest to the members watching the sharer. A watcher whose queue (8
+frames) is full loses the frame, and the sharer gets `keyframe_requested` (at most every
+500 ms; also when someone starts watching). The GUI sends at most 1280×720 at 10 frames per
+second, a keyframe at least every 5 s.
 
 ### DM calls
 

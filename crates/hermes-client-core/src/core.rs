@@ -82,6 +82,11 @@ pub enum CoreEvent {
     },
     /// Microphone level in dBFS, 20 times a second while [`Core::set_level_meter`] is on.
     InputLevel(f32),
+    /// Who shares their screen in your voice room changed, or your own share started or
+    /// stopped ([`Core::screen_sharers`], [`Core::sharing_screen`]).
+    ScreenShares,
+    /// Someone needs a keyframe of your screen share: encode the next frame as one.
+    KeyframeRequested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

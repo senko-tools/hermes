@@ -63,4 +63,7 @@ system were read again.
   never writes server text to the terminal outside ratatui, which drops control characters;
   links open only as `http(s)`; nothing goes through a shell; downloads never overwrite.
 - **Native decoders fed by other users:** images (Rust `image` crate, limits), Opus (libopus,
-  packets ≤ 1000 bytes, sender overwritten by the server). Keep both up to date.
+  packets ≤ 1000 bytes, sender overwritten by the server), H.264 screen shares (OpenH264 2.7.0
+  from source, frames ≤ 512 KiB and ≤ 3840×3840, decoded on their own thread, only from people
+  in your call you watch). Keep all three up to date: OpenH264 had a decoder heap overflow fixed
+  in 2.6.0 (CVE-2025-27091).

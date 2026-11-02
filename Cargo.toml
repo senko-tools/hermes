@@ -84,6 +84,11 @@ crossterm = { version = "=0.29.0", features = ["event-stream"] }
 pulldown-cmark = "=0.13.6"
 emojis = "=0.9.1"
 
+# Screen sharing (approved 2026-11-02, see docs/DECISIONS.md): capture (Windows) and H.264 built
+# from OpenH264's bundled source
+xcap = { version = "=0.9.8", default-features = false }
+openh264 = "=0.9.9"
+
 # Desktop integration
 arboard = "=3.7.0"
 rfd = "=0.17.2"  # file dialog for the GUI "+" button (PLAN.md 15.3; approved, see docs/DECISIONS.md)

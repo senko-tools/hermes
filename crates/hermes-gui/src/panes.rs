@@ -360,6 +360,8 @@ pub struct Context<'a> {
     pub ui_scale_draft: Option<f64>,
     /// What closing a settings page goes back to ("#general", "Home").
     pub return_to: String,
+    /// The latest picture of each screen share I watch.
+    pub screens: &'a std::collections::HashMap<(InstanceId, Id), iced::widget::image::Handle>,
 }
 
 /// Actions from a pane header.
@@ -376,11 +378,13 @@ fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a,
         "Leave voice" => icon::HANG_UP,
         "Chat" => icon::CHAT,
         "Voice room" => icon::WAVEFORM,
+        "Share screen" => icon::MONITOR_SHARE,
+        "Stop sharing" => icon::MONITOR,
         _ => icon::PHONE,
     };
     let kind = match text {
         "Join voice" | "Start call" => 1,
-        "Leave voice" => 2,
+        "Leave voice" | "Stop sharing" => 2,
         _ => 0,
     };
     // Exactly as tall as the icon buttons beside it at any text size, so every pane header is
@@ -454,6 +458,13 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
     };
     let mut out = Vec::new();
     if core.voice_channel() == Some((inst.clone(), channel)) {
+        // Shares are seen in the voice room only by people in the call.
+        let share = if core.sharing_screen() {
+            "Stop sharing"
+        } else {
+            "Share screen"
+        };
+        out.push((share, Message::Voice(VoiceMsg::ToggleShare)));
         out.push(("Leave voice", Message::Voice(VoiceMsg::Leave)));
     } else {
         let others = {
@@ -645,7 +656,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
         }
         Buffer::Settings | Buffer::SpaceSettings { .. } => page_view(&pane.buffer, ctx),
         Buffer::VoiceRoom { inst, channel } => {
-            crate::buffer::voice_room::view(ctx.core, inst, *channel, fonts, theme)
+            crate::buffer::voice_room::view(ctx.core, inst, *channel, ctx.screens, fonts, theme)
         }
         Buffer::Results(key) => {
             let state = ctx.results.get(key).unwrap_or(ctx.default_results);

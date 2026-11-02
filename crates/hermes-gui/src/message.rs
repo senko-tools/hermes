@@ -35,6 +35,8 @@ pub enum Message {
     OpenChat(InstanceId, Id),
     /// Shows the spaces or the direct messages in the sidebar.
     SidebarTab(crate::sidebar::tree::Tab),
+    /// A new picture of someone's screen share.
+    ScreenImage(InstanceId, Id, iced::widget::image::Handle),
     /// The selected channel's first page loaded.
     ChannelOpened,
     OpenMenu(Target),

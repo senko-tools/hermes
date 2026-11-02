@@ -636,3 +636,76 @@ async fn dm_calls_ring_and_post_messages() {
     drop(o);
     aws.recv_op("call_ring_stop").await;
 }
+
+#[tokio::test]
+async fn screen_shares_reach_only_watchers_in_the_room() {
+    let server = start("voice-share", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let (carol, _) = server.member(&owner, &space_id, "carol").await;
+    let general = server.channel_id(&space_id, "General");
+    let (mut a, a_ready) = server.voice_join(&alice, &general).await;
+    let (mut b, _) = server.voice_join(&bob, &general).await;
+    let (c, _) = server.voice_join(&carol, &general).await;
+    let alice_pid = a_ready["participant_id"].as_u64().unwrap();
+
+    // Frames before `share_start` go nowhere.
+    b.send(json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": true } }))
+        .await;
+    a.send_video(true, 0, b"early").await;
+    assert!(b.recv_video(300).await.is_none());
+
+    a.send(json!({ "op": "share_start", "d": {} })).await;
+    let started = b.recv_op("share_started").await;
+    assert_eq!(started["d"]["participant_id"], alice_pid);
+    // Bob watches (again, now that it runs): Alice is asked for a keyframe.
+    b.send(json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": true } }))
+        .await;
+    a.recv_op("keyframe_requested").await;
+    a.send_video(true, 10, b"frame one").await;
+    let (header, payload) = b.recv_video(2000).await.expect("bob watches");
+    assert_eq!(payload, b"frame one");
+    assert_eq!(
+        header.sender_id as u64, alice_pid,
+        "the server sets the sender"
+    );
+    assert!(header.keyframe);
+    // Carol does not watch: nothing for her.
+    assert!(c.recv_video(300).await.is_none());
+
+    // Someone joining later learns about the share in `ready`.
+    let (dave, _) = server.member(&owner, &space_id, "dave").await;
+    let (_d, d_ready) = server.voice_join(&dave, &general).await;
+    assert_eq!(d_ready["sharing"], json!([alice_pid]));
+
+    // Frames too large are dropped.
+    a.send_video(false, 20, &vec![0u8; voice_max_frame()]).await;
+    assert!(b.recv_video(500).await.is_none());
+
+    // Without STREAM, sharing is refused.
+    server
+        .patch(
+            &format!("/spaces/{space_id}/roles/{space_id}"),
+            Some(&owner),
+            json!({ "permissions": bits(Permissions::DEFAULT_EVERYONE - Permissions::STREAM) }),
+        )
+        .await
+        .ok();
+    b.send(json!({ "op": "share_start", "d": {} })).await;
+    let refused = b.recv_op("error").await;
+    assert_eq!(refused["d"]["code"], "MISSING_PERMISSION");
+    // A running share stops forwarding once the permission is gone (rechecked every second).
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    a.send_video(true, 30, b"after").await;
+    assert!(b.recv_video(500).await.is_none());
+
+    // Stopping tells the room.
+    a.send(json!({ "op": "share_stop", "d": {} })).await;
+    let stopped = b.recv_op("share_stopped").await;
+    assert_eq!(stopped["d"]["participant_id"], alice_pid);
+}
+
+fn voice_max_frame() -> usize {
+    hermes_proto::voice::MAX_VIDEO_FRAME
+}

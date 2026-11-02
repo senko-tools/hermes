@@ -51,6 +51,8 @@ pub enum VoiceMsg {
     AnswerCall,
     DismissCall,
     RingTick,
+    /// Start or stop sharing my screen in my voice room.
+    ToggleShare,
 }
 
 /// `voice.join_on`.
@@ -146,6 +148,22 @@ impl App {
                 });
             }
             VoiceMsg::Left => {}
+            VoiceMsg::ToggleShare => {
+                if self.capture.take().is_some() {
+                    self.core.stop_screen_share();
+                } else if let Err(err) = self.core.start_screen_share() {
+                    self.error(err.to_string());
+                } else {
+                    let screen = self.config.voice.share_screen.clone();
+                    match crate::screen::capture::Capture::start(self.core.clone(), &screen) {
+                        Ok(capture) => self.capture = Some(capture),
+                        Err(err) => {
+                            self.core.stop_screen_share();
+                            self.error(format!("Could not share the screen: {err}"));
+                        }
+                    }
+                }
+            }
             VoiceMsg::ToggleMute | VoiceMsg::GlobalMute => {
                 // Unmuting while deafened undeafens too (deafened implies muted).
                 if self.core.self_deaf() {

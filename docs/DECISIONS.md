@@ -1436,3 +1436,30 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - The full list is in `docs/security-review.md`.
 - **Why:** the developer asked for a security pass focused on code execution and on users acting
   on other people's things.
+
+## 2026-11-02: Screen sharing and the smart voice room grid
+
+- **What (moved forward from the PLAN.md section 22 roadmap):** screen sharing in voice
+  channels and calls. Capture with `xcap` (Windows only for now: on Linux it would need
+  PipeWire, XCB and libclang on the build machines, and the GUI ships for Windows only), H.264
+  with `openh264` built from its bundled source (OpenH264 2.7.0); both crates were approved by
+  the developer (PLAN.md section 6 addition). H.264 rather than VP8/AV1 (section 22): it is the
+  one codec with a self-contained, real-time encoder and decoder that builds everywhere with
+  only a C++ compiler.
+- **Protocol:** control ops `share_start`, `share_stop`, `watch`, `request_keyframe`,
+  `share_started`, `share_stopped`, `keyframe_requested`, `ready.sharing`; one QUIC
+  unidirectional stream per frame with a 12-byte header (docs/protocol.md "Screen shares").
+  Shares are known only inside the room, so only people in the call see them.
+- **Permission:** new bit `STREAM` (1 << 38, "Share screen"), in `@everyone`'s and DM
+  recipients' defaults; migration 0006 adds it to existing `@everyone` roles. It is removed
+  with `CONNECT` in voice channels, like `SPEAK`.
+- **Limits:** frames ≤ 512 KiB and ≤ 30 per second; a watcher's queue holds 8 frames; the GUI
+  sends at most 1280×720 at 10 fps (1.5 Mbit/s), a keyframe at least every 5 s.
+- **GUI:** clicking a voice channel opens its voice room, a grid that picks the column count
+  making the 16:9 tiles largest for the pane. Everyone is one tile; a share fills the sharer's
+  tile with their name on a badge, and right-click is always that person's menu. Shares are
+  received only while the voice room shows in a pane. "Share screen" / "Stop sharing" in the
+  voice room's header; which screen in Settings → Voice & Audio (`voice.share_screen`). The TUI
+  ignores shares.
+- **Why:** the developer asked for screen sharing now, with one smart grid of people and
+  shares.

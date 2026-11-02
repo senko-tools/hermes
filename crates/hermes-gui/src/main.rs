@@ -18,6 +18,7 @@ mod pane;
 mod panes;
 mod ptt;
 mod resize;
+mod screen;
 mod sidebar;
 mod single_instance;
 mod subscription;

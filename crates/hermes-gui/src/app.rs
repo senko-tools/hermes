@@ -74,6 +74,12 @@ pub struct App {
     pub status: Option<Status>,
     /// What the sidebar lists: the spaces or the direct messages.
     pub(crate) sidebar_tab: crate::sidebar::tree::Tab,
+    /// My running screen share capture.
+    pub(crate) capture: Option<crate::screen::capture::Capture>,
+    /// The screens that can be shared, primary first (listed with the audio devices).
+    pub(crate) screen_names: Vec<String>,
+    /// The latest picture of each screen share I watch.
+    pub(crate) screens: std::collections::HashMap<(InstanceId, Id), iced::widget::image::Handle>,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -187,6 +193,9 @@ impl App {
             events,
             status: None,
             sidebar_tab: crate::sidebar::tree::Tab::default(),
+            capture: None,
+            screen_names: Vec::new(),
+            screens: std::collections::HashMap::new(),
             add_instance: None,
             single_instance,
             collapsed,
@@ -272,7 +281,38 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let task = self.update_inner(message);
         self.sync_meter();
+        self.sync_screens();
         task
+    }
+
+    /// Watches the screen shares of my voice room while its voice room shows in a pane (and
+    /// the window is open), and nothing otherwise; ends my capture once my share has ended.
+    fn sync_screens(&mut self) {
+        let watched: Vec<Id> = match self.core.voice_channel() {
+            Some((inst, channel))
+                if self.window_visible
+                    && self.panes.state.iter().any(|(_, p)| {
+                        p.buffer
+                            == Buffer::VoiceRoom {
+                                inst: inst.clone(),
+                                channel,
+                            }
+                    }) =>
+            {
+                self.core
+                    .screen_sharers()
+                    .into_iter()
+                    .filter(|(i, _)| *i == inst)
+                    .map(|(_, user)| user)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        self.core.watch_screens(&watched);
+        self.screens.retain(|(_, user), _| watched.contains(user));
+        if self.capture.is_some() && !self.core.sharing_screen() {
+            self.capture = None;
+        }
     }
 
     /// Runs the level meter (and allows the mic test) only while the Voice & Audio tab shows.
@@ -300,14 +340,23 @@ impl App {
     /// Lists the audio devices in the background (it can take a moment).
     pub fn load_devices(&self) -> Task<Message> {
         let core = self.core.clone();
-        Task::perform(
+        let devices = Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || core.list_audio_devices())
                     .await
                     .unwrap_or_default()
             },
             |devices| Message::Settings(settings::Message::Devices(devices)),
-        )
+        );
+        let screens = Task::perform(
+            async {
+                tokio::task::spawn_blocking(crate::screen::capture::screens)
+                    .await
+                    .unwrap_or_default()
+            },
+            |screens| Message::Settings(settings::Message::Screens(screens)),
+        );
+        Task::batch([devices, screens])
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -370,6 +419,9 @@ impl App {
             Message::Select(inst, channel) => return self.select(inst, channel),
             Message::OpenChat(inst, channel) => return self.open_chat(inst, channel),
             Message::SidebarTab(tab) => self.sidebar_tab = tab,
+            Message::ScreenImage(inst, user, handle) => {
+                self.screens.insert((inst, user), handle);
+            }
             Message::PaneClicked(pane) => self.panes.focus = pane,
             Message::PaneDragged(event) => self.panes.on_drag(event),
             Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),
@@ -2036,6 +2088,12 @@ impl App {
             } => self.incoming_call(inst, channel, caller),
             CoreEvent::CallRingStopped { inst, channel } => self.call_ring_stopped(&inst, channel),
             CoreEvent::InputLevel(db) => self.input_level = db,
+            CoreEvent::KeyframeRequested => {
+                if let Some(capture) = &self.capture {
+                    capture.request_keyframe();
+                }
+            }
+            CoreEvent::ScreenShares => {}
             CoreEvent::VoiceStatus(_) => self.update_tray_voice(),
             CoreEvent::StoreChanged {
                 inst,
@@ -2141,6 +2199,15 @@ impl App {
             S::RefreshDevices => return self.load_devices(),
             S::Devices(devices) => {
                 self.audio_devices = Some(devices);
+                return Task::none();
+            }
+            S::Screens(screens) => {
+                self.screen_names = screens;
+                return Task::none();
+            }
+            S::ShareScreen(screen) => {
+                let value = toml::Value::String(screen.0).to_string();
+                self.persist("voice.share_screen", &value);
                 return Task::none();
             }
             S::MicTest(on) => {
@@ -2467,6 +2534,8 @@ impl App {
             subscriptions.push(subscription::single_instance(endpoint.clone()));
         }
         subscriptions.push(subscription::window_and_keys());
+        // Always on: its decoder thread is started once and lives as long as the window.
+        subscriptions.push(crate::screen::subscription(&self.core));
         if self.status.as_ref().is_some_and(|s| s.level == Level::Info) {
             subscriptions.push(
                 iced::time::every(std::time::Duration::from_secs(1)).map(|_| Message::StatusTick),
@@ -2597,6 +2666,7 @@ impl App {
                 level: self.input_level,
                 mic_test: self.mic_test,
                 ptt_draft: self.ptt_draft.as_deref(),
+                screens: &self.screen_names,
             },
             space_settings: &self.space_settings,
             default_space_settings: &self.default_space_settings,
@@ -2620,6 +2690,7 @@ impl App {
             resizing: self.resize.map(|r| r.edge),
             ui_scale_draft: self.ui_scale_draft,
             return_to,
+            screens: &self.screens,
         };
         main = main.push(self.panes.view(&ctx));
         let page = self.page.as_ref().map(|page| panes::page_view(page, &ctx));

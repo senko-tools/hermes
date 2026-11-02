@@ -342,7 +342,7 @@ async fn voice_panel_mute_volume_calls_and_leaving() {
         .into_iter()
         .map(|(text, _)| text)
         .collect();
-    assert_eq!(labels, ["Leave voice", "Chat"]);
+    assert_eq!(labels, ["Share screen", "Leave voice", "Chat"]);
     let _ = alice.app.update(Message::OpenChat(inst.clone(), room));
     assert!(matches!(
         alice.app.panes.focused().unwrap().buffer,

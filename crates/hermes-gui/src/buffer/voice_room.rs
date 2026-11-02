@@ -1,19 +1,27 @@
-//! The VoiceRoom buffer (PLAN.md section 15.1): the participants of a voice room with speaking
-//! rings and mute/deafen state. Right-click a participant for the volume menu.
+//! The VoiceRoom buffer (PLAN.md section 15.1): the people in a voice room as a grid of tiles
+//! that always uses the room best (the column count that makes the tiles largest), with
+//! speaking rings and mute/deafen state. Someone sharing their screen shows it in their own
+//! tile, and only to people in the call (docs/DECISIONS.md 2026-11-02). Right-click a tile for
+//! that person's volume menu, screen share or not.
+
+use std::collections::{HashMap, HashSet};
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::{Core, InstanceId};
-use iced::widget::{column, container, mouse_area, row, scrollable, text};
-use iced::{Alignment, Border, Color, Element, Fill, Length};
+use iced::widget::image::Handle;
+use iced::widget::{Space, column, container, image, mouse_area, responsive, row, stack, text};
+use iced::{Alignment, Border, Color, Element, Fill, Length, Size};
 
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
+use crate::widget::icon::{self, icon};
 use crate::widget::{caption, label};
 
-const AVATAR: f32 = 64.0;
-const CARD_WIDTH: f32 = 136.0;
+/// Tiles keep this aspect ratio (width / height), the shape of most screens.
+const ASPECT: f32 = 16.0 / 9.0;
+const AVATAR_MAX: f32 = 72.0;
 
 /// One participant card.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,108 +68,250 @@ pub fn participants(core: &Core, inst: &InstanceId, channel: Id) -> Vec<Particip
         .collect()
 }
 
+/// What a tile shows.
+#[derive(Debug, Clone)]
+struct Tile {
+    person: Participant,
+    /// They share their screen (known only in the call).
+    sharing: bool,
+    /// The latest picture of their share.
+    picture: Option<Handle>,
+}
+
+/// The column count and tile size that make `n` tiles of [`ASPECT`] largest in `area` with
+/// `gap` between them; on a tie, more columns (side by side reads better than stacked).
+pub fn layout(n: usize, area: Size, gap: f32) -> (usize, Size) {
+    let mut best = (1, Size::ZERO);
+    for cols in 1..=n.max(1) {
+        let rows = n.max(1).div_ceil(cols);
+        let width = (area.width - gap * (cols - 1) as f32) / cols as f32;
+        let height = (area.height - gap * (rows - 1) as f32) / rows as f32;
+        let tile_width = width.min(height * ASPECT).max(0.0);
+        if tile_width >= best.1.width {
+            best = (cols, Size::new(tile_width, tile_width / ASPECT));
+        }
+    }
+    best
+}
+
 pub fn view<'a>(
     core: &Core,
     inst: &InstanceId,
     channel: Id,
+    screens: &HashMap<(InstanceId, Id), Handle>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    // Joining and leaving are in the pane header.
+    // Joining, leaving and sharing are in the pane header.
     let people = participants(core, inst, channel);
+    let in_call = core.voice_channel() == Some((inst.clone(), channel));
+    let sharers: HashSet<Id> = if in_call {
+        core.screen_sharers()
+            .into_iter()
+            .filter(|(i, _)| i == inst)
+            .map(|(_, user)| user)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+    let me_sharing = in_call && core.sharing_screen();
     let summary = match people.len() {
         0 => "Nobody is here yet".to_owned(),
         1 => "1 person".to_owned(),
         n => format!("{n} people"),
     };
     let top = crate::widget::section_title(&summary, fonts).color(theme.text.tertiary.0);
-
-    let mut grid = row![].spacing(style::GAP);
-    for p in people {
-        grid = grid.push(card(inst, p, fonts, theme));
-    }
-    column![
-        top,
-        scrollable(grid.wrap().vertical_spacing(style::GAP))
-            .style(move |_, st| style::scrollbar(theme, st))
-            .height(Fill)
-    ]
-    .spacing(style::GAP_L)
-    .padding(style::GAP_L)
-    .into()
+    let tiles: Vec<Tile> = people
+        .into_iter()
+        .map(|person| Tile {
+            sharing: sharers.contains(&person.user) || (person.volume.is_none() && me_sharing),
+            picture: screens.get(&(inst.clone(), person.user)).cloned(),
+            person,
+        })
+        .collect();
+    let inst = inst.clone();
+    let fonts = *fonts;
+    let grid = responsive(move |size| grid(&inst, &tiles, size, &fonts, theme));
+    column![top, grid]
+        .spacing(style::GAP_L)
+        .padding(style::GAP_L)
+        .into()
 }
 
-fn card<'a>(
+fn grid<'a>(
     inst: &InstanceId,
-    p: Participant,
+    tiles: &[Tile],
+    area: Size,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
+    if tiles.is_empty() {
+        return Space::new().into();
+    }
+    let gap = style::GAP;
+    let (cols, size) = layout(tiles.len(), area, gap);
+    let mut rows = column![].spacing(gap).align_x(Alignment::Center);
+    for chunk in tiles.chunks(cols) {
+        let mut line = row![].spacing(gap);
+        for t in chunk {
+            line = line.push(tile(inst, t, size, fonts, theme));
+        }
+        rows = rows.push(line);
+    }
+    container(rows).center(Fill).into()
+}
+
+fn tile<'a>(
+    inst: &InstanceId,
+    t: &Tile,
+    size: Size,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    let p = &t.person;
     let ring = if p.speaking {
         theme.voice.speaking_ring.0
     } else {
-        Color::TRANSPARENT
+        theme.general.border.0
     };
-    let initial: String = p
-        .name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
-        .center(Length::Fixed(AVATAR))
+    let state_icon = if p.deafened {
+        Some(icon::HEADPHONES_OFF)
+    } else if p.muted || p.locally_muted {
+        Some(icon::MIC_OFF)
+    } else {
+        None
+    };
+    let mut name_row = row![label(p.name.clone(), fonts).wrapping(text::Wrapping::None)]
+        .spacing(style::GAP_XS)
+        .align_y(Alignment::Center);
+    if let Some(glyph) = state_icon {
+        name_row = name_row.push(icon(glyph, 14.0).color(theme.voice.muted.0));
+    }
+    if t.sharing {
+        name_row = name_row.push(icon(icon::MONITOR_SHARE, 14.0).color(theme.accent.base.0));
+    }
+
+    let content: Element<'a, Message> = match &t.picture {
+        // Their screen fills the tile; the name stays readable on a dark badge.
+        Some(picture) => {
+            let badge = container(name_row)
+                .padding([style::GAP_XS, style::GAP_S])
+                .style(move |_| container::Style {
+                    text_color: Some(Color::WHITE),
+                    background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                    border: Border {
+                        radius: style::radius(theme).into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                });
+            stack![
+                container(
+                    image(picture.clone())
+                        .content_fit(iced::ContentFit::Contain)
+                        .width(Fill)
+                        .height(Fill)
+                )
+                .center(Fill)
+                .style(|_| container::Style {
+                    background: Some(Color::BLACK.into()),
+                    ..container::Style::default()
+                }),
+                container(badge)
+                    .align_left(Fill)
+                    .align_bottom(Fill)
+                    .padding(style::GAP_S),
+            ]
+            .into()
+        }
+        None => {
+            let side = (size.height * 0.4).clamp(24.0, AVATAR_MAX);
+            let initial: String = p
+                .name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().collect())
+                .unwrap_or_default();
+            let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
+                .center(Length::Fixed(side))
+                .style(move |_| container::Style {
+                    text_color: Some(theme.text.primary.0),
+                    background: Some(theme.surface.hover.0.into()),
+                    border: Border {
+                        radius: (side / 2.0).into(),
+                        ..Border::default()
+                    },
+                    ..container::Style::default()
+                });
+            let mut info = column![avatar, name_row]
+                .spacing(style::GAP_S)
+                .align_x(Alignment::Center);
+            let note = if t.sharing && p.volume.is_none() {
+                Some("You are sharing your screen".to_owned())
+            } else if t.sharing {
+                Some("Loading their screen…".to_owned())
+            } else {
+                p.volume
+                    .filter(|v| (*v - 1.0).abs() > 0.001)
+                    .map(|v| format!("volume {:.0} %", v * 100.0))
+            };
+            if let Some(note) = note {
+                info = info.push(caption(note, fonts).color(theme.text.tertiary.0));
+            }
+            container(info).center(Fill).into()
+        }
+    };
+    let ring_width = if p.speaking { 2.0 } else { 1.0 };
+    let card = container(content)
+        .width(Length::Fixed(size.width))
+        .height(Length::Fixed(size.height))
+        .clip(true)
         .style(move |_| container::Style {
-            text_color: Some(theme.text.primary.0),
-            background: Some(theme.surface.hover.0.into()),
+            background: Some(theme.surface.raised.0.into()),
             border: Border {
                 color: ring,
-                width: 3.0,
-                radius: (AVATAR / 2.0).into(),
+                width: ring_width,
+                radius: style::radius_large(theme).into(),
             },
             ..container::Style::default()
         });
-    let state = if p.deafened {
-        "deafened"
-    } else if p.muted {
-        "muted"
-    } else if p.locally_muted {
-        "muted for you"
-    } else {
-        ""
-    };
-    let mut info = column![label(p.name, fonts)]
-        .spacing(2)
-        .align_x(Alignment::Center);
-    if !state.is_empty() {
-        info = info.push(caption(state, fonts).color(theme.voice.muted.0));
-    }
-    if let Some(volume) = p.volume.filter(|v| (*v - 1.0).abs() > 0.001) {
-        info = info.push(
-            caption(format!("volume {:.0} %", volume * 100.0), fonts).color(theme.text.tertiary.0),
-        );
-    }
-    let content = container(
-        column![avatar, info]
-            .spacing(style::GAP_S)
-            .align_x(Alignment::Center)
-            .width(Fill),
-    )
-    .padding(style::GAP)
-    .width(Length::Fixed(CARD_WIDTH))
-    .style(move |_| container::Style {
-        background: Some(theme.surface.raised.0.into()),
-        border: Border {
-            color: theme.general.border.0,
-            width: 1.0,
-            radius: style::radius_large(theme).into(),
-        },
-        ..container::Style::default()
-    });
-    let area = mouse_area(content);
+    // The menu is the person's, also over their screen share.
+    let area = mouse_area(card);
     if p.volume.is_some() {
         area.on_right_press(Message::Voice(VoiceMsg::UserMenu(inst.clone(), p.user)))
             .into()
     } else {
         area.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_grid_makes_tiles_as_large_as_it_can() {
+        let wide = Size::new(1600.0, 900.0);
+        // One tile fills the room.
+        let (cols, size) = layout(1, wide, 0.0);
+        assert_eq!(cols, 1);
+        assert_eq!(size, Size::new(1600.0, 900.0));
+        // Two side by side beat two stacked in a wide room...
+        assert_eq!(layout(2, wide, 0.0).0, 2);
+        // ...and stack in a tall one.
+        assert_eq!(layout(2, Size::new(600.0, 900.0), 0.0).0, 1);
+        // Four make a 2×2 grid; five a 3-column one.
+        assert_eq!(layout(4, wide, 12.0).0, 2);
+        assert_eq!(layout(5, wide, 12.0).0, 3);
+        // Tiles never overflow the room, gaps included.
+        for n in 1..=25 {
+            let (cols, size) = layout(n, wide, 12.0);
+            let rows = n.div_ceil(cols) as f32;
+            assert!(size.width * cols as f32 + 12.0 * (cols as f32 - 1.0) <= wide.width + 0.01);
+            assert!(size.height * rows + 12.0 * (rows - 1.0) <= wide.height + 0.01);
+            assert!((size.width / size.height - ASPECT).abs() < 0.01);
+        }
+        // A room too small for anything gives empty tiles instead of panicking.
+        assert_eq!(layout(3, Size::new(0.0, 0.0), 12.0).1, Size::ZERO);
     }
 }

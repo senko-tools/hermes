@@ -60,6 +60,8 @@ bitflags! {
         const DEAFEN_MEMBERS = 1 << 36;
         /// Move/disconnect users in voice.
         const MOVE_MEMBERS = 1 << 37;
+        /// Share your screen in voice.
+        const STREAM = 1 << 38;
     }
 }
 
@@ -74,7 +76,8 @@ impl Permissions {
         .union(Permissions::ADD_REACTIONS)
         .union(Permissions::CONNECT)
         .union(Permissions::SPEAK)
-        .union(Permissions::USE_VOICE_ACTIVITY);
+        .union(Permissions::USE_VOICE_ACTIVITY)
+        .union(Permissions::STREAM);
 
     /// What every recipient of a DM or group DM has.
     pub const DM_RECIPIENT: Permissions = Permissions::VIEW_CHANNEL
@@ -84,7 +87,8 @@ impl Permissions {
         .union(Permissions::ADD_REACTIONS)
         .union(Permissions::CONNECT)
         .union(Permissions::SPEAK)
-        .union(Permissions::USE_VOICE_ACTIVITY);
+        .union(Permissions::USE_VOICE_ACTIVITY)
+        .union(Permissions::STREAM);
 
     /// Applies an override: `(self & !deny) | allow`.
     pub const fn apply(self, allow: Permissions, deny: Permissions) -> Permissions {
@@ -333,6 +337,13 @@ pub const CATALOG: &[PermissionInfo] = {
             true,
         ),
         info(
+            Permissions::STREAM,
+            "Share screen",
+            "Share a screen in voice (only people in the call see it).",
+            Voice,
+            true,
+        ),
+        info(
             Permissions::MUTE_MEMBERS,
             "Mute members",
             "Mute other people in voice for everyone.",
@@ -421,7 +432,7 @@ pub fn compute(
         return Permissions::empty();
     }
     if channel.kind == ChannelKind::Voice && !p.contains(Permissions::CONNECT) {
-        p.remove(Permissions::SPEAK | Permissions::USE_VOICE_ACTIVITY);
+        p.remove(Permissions::SPEAK | Permissions::USE_VOICE_ACTIVITY | Permissions::STREAM);
     }
     p
 }
@@ -578,6 +589,7 @@ mod tests {
             (P::MUTE_MEMBERS, 35),
             (P::DEAFEN_MEMBERS, 36),
             (P::MOVE_MEMBERS, 37),
+            (P::STREAM, 38),
         ];
         for &(flag, bit) in table {
             assert_eq!(flag.bits(), 1 << bit, "{flag:?}");
@@ -599,6 +611,7 @@ mod tests {
                 | P::CONNECT
                 | P::SPEAK
                 | P::USE_VOICE_ACTIVITY
+                | P::STREAM
         );
         assert_eq!(
             P::DM_RECIPIENT,
