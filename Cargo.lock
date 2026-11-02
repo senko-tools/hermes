@@ -563,7 +563,7 @@ checksum = "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107"
 
 [[package]]
 name = "audio-loopback"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "cpal",
@@ -2969,7 +2969,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermes-audio"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "cpal",
  "hermes-proto",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-client-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "directories",
  "emojis",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-gui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arboard",
  "clap",
@@ -3037,7 +3037,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-proto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-server"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-tui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-voicebot"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "hermes-client-core",
@@ -3283,7 +3283,7 @@ dependencies = [
 
 [[package]]
 name = "iced-ui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "global-hotkey",
@@ -5940,7 +5940,7 @@ dependencies = [
 
 [[package]]
 name = "quic-echo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "clap",
  "quinn",
