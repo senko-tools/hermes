@@ -218,6 +218,10 @@ pub struct Voice {
     pub sounds_volume: f64,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
+    /// The largest size a share is sent at: `720p`, `1080p`, `1440p` or `native`.
+    pub share_resolution: String,
+    /// Frames per second a share is sent at (at most 30).
+    pub share_fps: u32,
 }
 
 impl Default for Voice {
@@ -237,6 +241,8 @@ impl Default for Voice {
             sounds: true,
             sounds_volume: 0.6,
             share_screen: String::new(),
+            share_resolution: "720p".into(),
+            share_fps: 10,
         }
     }
 }

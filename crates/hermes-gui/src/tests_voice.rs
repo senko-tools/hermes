@@ -365,10 +365,8 @@ async fn voice_panel_mute_volume_calls_and_leaving() {
 async fn voice_settings_are_applied_and_saved() {
     let mut client = Client::new();
     let app = &mut client.app;
-    let _ = app.update(Message::Voice(VoiceMsg::OpenAudioSettings));
-    assert_eq!(app.settings_tab, settings::Tab::Voice);
-    assert_eq!(app.page, Some(Buffer::Settings));
-
+    app.settings_tab = settings::Tab::Voice;
+    app.page = Some(Buffer::Settings);
     let send = |app: &mut App, m: settings::Message| {
         let _ = app.update(Message::Settings(m));
     };

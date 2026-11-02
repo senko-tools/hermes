@@ -9,7 +9,7 @@ use crate::widget::{ButtonKind, text_button};
 use crate::widget::{heading, label};
 
 pub fn view<'a, M: Clone + 'a>(
-    title: &'a str,
+    title: impl iced::widget::text::IntoFragment<'a>,
     text: &'a str,
     confirm: &'a str,
     fonts: &Fonts,

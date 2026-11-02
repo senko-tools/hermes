@@ -207,23 +207,21 @@ pub fn view<'a>(
     let line = row![container(gutter).width(Length::Fixed(GUTTER)), body];
 
     let highlight = m.mentions_me;
+    let selected = state.selected.contains(&id);
     // Jumped to, or its right-click menu is open.
     let jumped = state.highlight == Some(id) || ctx.menu_message == Some(id);
     let content = container(line)
         .padding(super::row_padding(m.grouped, m.ends_group))
         .width(Fill)
         .style(move |_| container::Style {
-            border: if jumped {
-                iced::Border {
-                    color: theme.pane.focused_border.0,
-                    width: 1.0,
-                    radius: style::radius_small(theme).into(),
-                }
-            } else {
-                iced::Border::default()
+            border: iced::Border {
+                radius: style::radius_small(theme).into(),
+                ..iced::Border::default()
             },
-            background: if jumped {
-                Some(theme.pane.focused_border.0.scale_alpha(0.15).into())
+            background: if selected {
+                Some(theme.accent.base.0.scale_alpha(0.16).into())
+            } else if jumped {
+                Some(theme.surface.hover.0.into())
             } else if highlight {
                 Some(theme.text.mention_bg.0.into())
             } else if hovered {
@@ -258,6 +256,7 @@ pub fn view<'a>(
     mouse_area(layers)
         .on_enter(Message::Hover(id, true))
         .on_exit(Message::Hover(id, false))
+        .on_press(Message::Click(id))
         .on_right_press(Message::More(id))
         .into()
 }

@@ -1463,3 +1463,54 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   ignores shares.
 - **Why:** the developer asked for screen sharing now, with one smart grid of people and
   shares.
+
+## 2026-11-02: Screen share quality settings, enlarged shares, selecting messages
+
+- **What:** `voice.share_resolution` (`720p` default, `1080p`, `1440p`, `native` = up to the
+  protocol's 3840 px) and `voice.share_fps` (10 default; 5, 10, 15 or 30 offered, at most the
+  protocol's 30) in Settings → Voice & Audio, read when a share starts. The bitrate follows the
+  size and rate (about 0.1 bit per pixel per frame, 1.5 to 8 Mbit/s), which keeps keyframes well
+  under the 512 KiB frame limit. This replaces the fixed 1280×720 at 10 fps of the screen sharing
+  entry above.
+- **Enlarged shares:** clicking a share in the voice room shows it alone in the grid's area;
+  clicking it again or Esc goes back to everyone.
+- **Selecting messages:** "Select" in a message's menu or Ctrl+click starts selecting, Shift+click
+  adds a range, and while selecting, a click toggles. Only messages I may delete can be
+  selected. A bar replaces the composer with Delete (confirmed once, one `DELETE` per message:
+  no bulk endpoint) and Cancel/Esc. The jumped-to message and the one whose menu is open lost
+  their accent border and keep a plain tint.
+- **Why:** the developer asked for these.
+
+## 2026-11-02: Faster screen sharing, Direct3D 12 by default, the share menu
+
+- **Renderer:** on Windows the GUI draws with Direct3D 12 unless `WGPU_BACKEND` is set. wgpu
+  otherwise picks Vulkan first, and an older Intel driver's Vulkan hung the window ("not
+  responding") on the developer's laptop. Without a Direct3D 12 GPU, iced falls back to its
+  software renderer.
+- **Capture:** DXGI Desktop Duplication (`screen/dxgi.rs`, through the `windows` crate with the
+  Direct3D 11/DXGI features xcap already enables: no new dependency) on the GPU the screen is
+  connected to; GDI (xcap) only if duplication is unavailable. Not xcap's own duplication
+  recorder: its thread never stops once started, hands over frames up to a frame late and only
+  looks at the default GPU. Measured on the developer's PC (1440p screen, release build):
+  12 ms per picture instead of 43 ms.
+- **Pipeline:** capturing + scaling and encoding + sending run on two threads; a picture the
+  encoder has no time for is dropped. An unchanged screen sends nothing but a repeated picture
+  when a keyframe is due. Scaling is our own area average on up to four threads
+  (`screen/scale.rs`: 9–11 ms for 1440p → 1080p, against 46 ms for `image::imageops::thumbnail`);
+  RGB → YUV uses OpenH264's SIMD conversion (2 ms instead of the per-pixel path). A line with
+  the share's numbers is logged every 10 s.
+- **NASM:** OpenH264's build quietly drops its assembly when NASM is not on `PATH` (every build
+  so far, 1.1.0 included): encoding a 1080p picture took 66 ms instead of 18 ms. The release
+  workflow installs NASM and fails if OpenH264 was built without it. Local builds need NASM on
+  `PATH` too.
+- **Watching:** shares are drawn with iced's `shader` widget (`screen/view.rs`): one set of Y/U/V
+  textures per share, overwritten in place, converted to colors on the GPU. As images, every
+  frame was a new GPU texture (and, above 2 MiB, a separate upload on iced's worker), which is
+  the prime suspect for the laptop running out of GPU memory, and every pixel was converted on
+  the CPU. iced's software renderer does not draw shares.
+- **Share menu:** the voice panel's audio settings button became Share screen; it opens a menu
+  with the screen, resolution and frame rate (saved as soon as they are picked, so the menu
+  offers the last choice) and Start sharing, as does Share screen in the voice room's header.
+  While sharing, the button stops the share. The options stay in Settings → Voice & Audio too.
+- **Why:** the developer reported the laptop hanging and running out of memory, and shares
+  that looked the same speed whatever the settings.

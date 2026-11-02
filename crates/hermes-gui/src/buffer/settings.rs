@@ -84,6 +84,8 @@ pub enum Message {
     /// The screens that can be shared were listed.
     Screens(Vec<String>),
     ShareScreen(ShareScreen),
+    ShareResolution(ShareResolution),
+    ShareFps(ShareFps),
     /// Who may start DMs with me on the Account tab's instance.
     DmFrom(DmFrom),
     AllowRequests(bool),
@@ -275,6 +277,36 @@ impl fmt::Display for ShareScreen {
             // Windows names screens like "\\.\DISPLAY2".
             f.write_str(self.0.trim_start_matches(['\\', '.']))
         }
+    }
+}
+
+/// `voice.share_resolution`, as offered in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShareResolution(pub &'static str);
+
+impl ShareResolution {
+    pub fn from_config(value: &str) -> ShareResolution {
+        let all = crate::screen::capture::RESOLUTIONS;
+        ShareResolution(all.into_iter().find(|r| *r == value).unwrap_or(all[0]))
+    }
+}
+
+impl fmt::Display for ShareResolution {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            "native" => "Full size (up to 4K)",
+            other => other,
+        })
+    }
+}
+
+/// `voice.share_fps`, as offered in the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShareFps(pub u32);
+
+impl fmt::Display for ShareFps {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} fps", self.0)
     }
 }
 
@@ -805,20 +837,50 @@ fn voice_tab<'a>(
     screens.extend(voice.screens.iter().skip(1).cloned().map(ShareScreen));
     let screen_group = group(
         "Screen sharing",
-        vec![setting(
-            "Screen to share",
-            "Only people in the call see it. Start and stop it with Share screen in the voice \
-             room.",
-            dropdown(
-                screens,
-                Some(ShareScreen(v.share_screen.clone())),
-                Message::ShareScreen,
+        vec![
+            setting(
+                "Screen to share",
+                "Only people in the call see it. Start and stop it with Share screen in the \
+                 voice room.",
+                dropdown(
+                    screens,
+                    Some(ShareScreen(v.share_screen.clone())),
+                    Message::ShareScreen,
+                    fonts,
+                    theme,
+                ),
                 fonts,
                 theme,
             ),
-            fonts,
-            theme,
-        )],
+            setting(
+                "Resolution",
+                "The largest size your screen is sent at. Larger is sharper but uses more CPU \
+                 and bandwidth. Applies the next time you share.",
+                dropdown(
+                    crate::screen::capture::RESOLUTIONS.map(ShareResolution),
+                    Some(ShareResolution::from_config(&v.share_resolution)),
+                    Message::ShareResolution,
+                    fonts,
+                    theme,
+                ),
+                fonts,
+                theme,
+            ),
+            setting(
+                "Frame rate",
+                "Frames per second. More is smoother (video, games) but uses more CPU and \
+                 bandwidth. Applies the next time you share.",
+                dropdown(
+                    crate::screen::capture::FRAME_RATES.map(ShareFps),
+                    Some(ShareFps(v.share_fps)),
+                    Message::ShareFps,
+                    fonts,
+                    theme,
+                ),
+                fonts,
+                theme,
+            ),
+        ],
         fonts,
         theme,
     );

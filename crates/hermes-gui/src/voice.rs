@@ -38,7 +38,6 @@ pub enum VoiceMsg {
     ToggleDeafen,
     /// Opens the VoiceRoom buffer of a channel in the focused pane.
     OpenRoom(InstanceId, Id),
-    OpenAudioSettings,
     /// Right-click on a participant: opens the volume menu at the cursor.
     UserMenu(InstanceId, Id),
     UserVolume(f32),
@@ -53,6 +52,13 @@ pub enum VoiceMsg {
     RingTick,
     /// Start or stop sharing my screen in my voice room.
     ToggleShare,
+    /// Opens the menu that asks which screen to share and how (at the pointer).
+    OpenShareMenu,
+    CloseShareMenu,
+    /// The share menu's Start sharing.
+    StartShare,
+    /// Shows one person's screen share alone in the voice room (`None`: everyone again).
+    EnlargeShare(Option<(InstanceId, Id)>),
 }
 
 /// `voice.join_on`.
@@ -148,14 +154,34 @@ impl App {
                 });
             }
             VoiceMsg::Left => {}
+            VoiceMsg::OpenShareMenu => {
+                self.share_menu = Some(self.cursor.get());
+                return self.load_devices();
+            }
+            VoiceMsg::CloseShareMenu => self.share_menu = None,
+            VoiceMsg::StartShare => {
+                self.share_menu = None;
+                if self.capture.is_none() {
+                    return self.on_voice(VoiceMsg::ToggleShare);
+                }
+            }
             VoiceMsg::ToggleShare => {
                 if self.capture.take().is_some() {
                     self.core.stop_screen_share();
                 } else if let Err(err) = self.core.start_screen_share() {
                     self.error(err.to_string());
                 } else {
-                    let screen = self.config.voice.share_screen.clone();
-                    match crate::screen::capture::Capture::start(self.core.clone(), &screen) {
+                    let v = &self.config.voice;
+                    let screen = v.share_screen.clone();
+                    let quality = crate::screen::capture::Quality::from_config(
+                        &v.share_resolution,
+                        v.share_fps,
+                    );
+                    match crate::screen::capture::Capture::start(
+                        self.core.clone(),
+                        &screen,
+                        quality,
+                    ) {
                         Ok(capture) => self.capture = Some(capture),
                         Err(err) => {
                             self.core.stop_screen_share();
@@ -181,11 +207,7 @@ impl App {
             VoiceMsg::OpenRoom(inst, channel) => {
                 self.panes.open(Buffer::VoiceRoom { inst, channel });
             }
-            VoiceMsg::OpenAudioSettings => {
-                self.settings_tab = settings::Tab::Voice;
-                self.page = Some(Buffer::Settings);
-                return self.load_devices();
-            }
+            VoiceMsg::EnlargeShare(share) => self.enlarged_share = share,
             VoiceMsg::UserMenu(inst, user) => {
                 let name = {
                     let store = self.core.store();
@@ -336,6 +358,103 @@ pub fn banner<'a>(
 }
 
 /// `base` with the per-user volume menu over it.
+/// The share menu: which screen, how sharp and how smooth (each choice is saved as soon as it
+/// is made, so the menu offers the last one next time), and Start sharing.
+pub fn share_overlay<'a>(
+    base: Element<'a, Message>,
+    at: Point,
+    config: &hermes_client_core::config::Voice,
+    screens: &[String],
+    window: Size,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    use crate::buffer::page::dropdown;
+    use crate::screen::capture::{FRAME_RATES, RESOLUTIONS};
+
+    let width = 280.0;
+    let height = 290.0;
+    // Above the pointer (the buttons sit at the bottom of the window).
+    let x = at.x.min(window.width - width - 4.0).max(0.0);
+    let y = (at.y - height).min(window.height - height - 4.0).max(0.0);
+    let mut options = vec![settings::ShareScreen(String::new())];
+    options.extend(screens.iter().skip(1).cloned().map(settings::ShareScreen));
+    let field = |name: &'a str, input: Element<'a, Message>| {
+        column![caption(name, fonts).color(theme.text.secondary.0), input].spacing(style::GAP_XS)
+    };
+    let card = container(
+        column![
+            strong("Share your screen", fonts),
+            field(
+                "Screen",
+                dropdown(
+                    options,
+                    Some(settings::ShareScreen(config.share_screen.clone())),
+                    |s| Message::Settings(settings::Message::ShareScreen(s)),
+                    fonts,
+                    theme,
+                )
+                .into(),
+            ),
+            field(
+                "Resolution",
+                dropdown(
+                    RESOLUTIONS.map(settings::ShareResolution),
+                    Some(settings::ShareResolution::from_config(
+                        &config.share_resolution
+                    )),
+                    |r| Message::Settings(settings::Message::ShareResolution(r)),
+                    fonts,
+                    theme,
+                )
+                .into(),
+            ),
+            field(
+                "Frame rate",
+                dropdown(
+                    FRAME_RATES.map(settings::ShareFps),
+                    Some(settings::ShareFps(config.share_fps)),
+                    |f| Message::Settings(settings::Message::ShareFps(f)),
+                    fonts,
+                    theme,
+                )
+                .into(),
+            ),
+            row![
+                iced::widget::space::horizontal(),
+                text_button("Cancel", ButtonKind::Secondary, fonts, theme)
+                    .on_press(Message::Voice(VoiceMsg::CloseShareMenu)),
+                text_button("Start sharing", ButtonKind::Primary, fonts, theme)
+                    .on_press(Message::Voice(VoiceMsg::StartShare)),
+            ]
+            .spacing(style::GAP_S),
+        ]
+        .spacing(style::GAP),
+    )
+    .padding(style::GAP)
+    .width(width)
+    .style(move |_| container::Style {
+        text_color: Some(theme.text.primary.0),
+        background: Some(theme.surface.overlay.0.into()),
+        border: Border {
+            color: theme.general.border.0,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        shadow: Shadow {
+            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 8.0,
+        },
+        ..container::Style::default()
+    });
+    let close = Message::Voice(VoiceMsg::CloseShareMenu);
+    let catcher = mouse_area(container("").width(Fill).height(Fill))
+        .on_press(close.clone())
+        .on_right_press(close);
+    stack![base, catcher, pin(iced::widget::opaque(card)).x(x).y(y)].into()
+}
+
 pub fn volume_overlay<'a>(
     base: Element<'a, Message>,
     menu: &VolumeMenu,

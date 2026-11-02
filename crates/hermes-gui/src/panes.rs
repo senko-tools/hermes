@@ -50,7 +50,29 @@ impl Panes {
         self.state.get(self.focus)
     }
 
-    /// The channel in the focused pane.
+    /// The channel view of the first pane showing `channel`.
+    pub fn channel_view_mut(&mut self, inst: &InstanceId, channel: Id) -> Option<&mut ChannelView> {
+        self.state
+            .iter_mut()
+            .find(|(_, p)| shows_channel(&p.buffer, inst, channel))
+            .map(|(_, p)| &mut p.channel)
+    }
+
+    /// The channel view of the focused pane, if it shows a channel.
+    pub fn focused_channel_view_mut(&mut self) -> Option<&mut ChannelView> {
+        let pane = self.state.get_mut(self.focus)?;
+        matches!(pane.buffer, Buffer::Channel { .. }).then_some(&mut pane.channel)
+    }
+
+    /// Ends message selection in every pane showing `channel`.
+    pub fn clear_selection(&mut self, inst: &InstanceId, channel: Id) {
+        for (_, p) in self.state.iter_mut() {
+            if shows_channel(&p.buffer, inst, channel) {
+                p.channel.clear_selection();
+            }
+        }
+    }
+
     /// The name of what the focused pane shows, for "Return to …".
     pub fn focused_title(&self, core: &Core) -> String {
         match self.focused().map(|p| &p.buffer) {
@@ -361,7 +383,9 @@ pub struct Context<'a> {
     /// What closing a settings page goes back to ("#general", "Home").
     pub return_to: String,
     /// The latest picture of each screen share I watch.
-    pub screens: &'a std::collections::HashMap<(InstanceId, Id), iced::widget::image::Handle>,
+    pub screens: &'a std::collections::HashMap<(InstanceId, Id), crate::screen::view::Share>,
+    /// The screen share shown alone in its voice room.
+    pub enlarged_share: Option<&'a (InstanceId, Id)>,
 }
 
 /// Actions from a pane header.
@@ -459,12 +483,11 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
     let mut out = Vec::new();
     if core.voice_channel() == Some((inst.clone(), channel)) {
         // Shares are seen in the voice room only by people in the call.
-        let share = if core.sharing_screen() {
-            "Stop sharing"
+        if core.sharing_screen() {
+            out.push(("Stop sharing", Message::Voice(VoiceMsg::ToggleShare)));
         } else {
-            "Share screen"
-        };
-        out.push((share, Message::Voice(VoiceMsg::ToggleShare)));
+            out.push(("Share screen", Message::Voice(VoiceMsg::OpenShareMenu)));
+        }
         out.push(("Leave voice", Message::Voice(VoiceMsg::Leave)));
     } else {
         let others = {
@@ -492,6 +515,10 @@ pub fn voice_controls(core: &Core, buffer: &Buffer) -> Vec<(&'static str, Messag
         ));
     }
     out
+}
+
+fn shows_channel(buffer: &Buffer, inst: &InstanceId, channel: Id) -> bool {
+    matches!(buffer, Buffer::Channel { inst: i, channel: c } if i == inst && *c == channel)
 }
 
 /// The header title and topic of a buffer.
@@ -656,7 +683,19 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
         }
         Buffer::Settings | Buffer::SpaceSettings { .. } => page_view(&pane.buffer, ctx),
         Buffer::VoiceRoom { inst, channel } => {
-            crate::buffer::voice_room::view(ctx.core, inst, *channel, ctx.screens, fonts, theme)
+            let enlarged = ctx
+                .enlarged_share
+                .filter(|(i, _)| i == inst)
+                .map(|(_, user)| *user);
+            crate::buffer::voice_room::view(
+                ctx.core,
+                inst,
+                *channel,
+                ctx.screens,
+                enlarged,
+                fonts,
+                theme,
+            )
         }
         Buffer::Results(key) => {
             let state = ctx.results.get(key).unwrap_or(ctx.default_results);

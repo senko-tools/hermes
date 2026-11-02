@@ -22,6 +22,8 @@ pub enum Target {
     Pane(pane_grid::Pane),
     /// A message's `⋯`: instance, channel, message.
     Message(InstanceId, Id, Id),
+    /// Messages selected together in a channel (deleted at once): instance, channel, messages.
+    Messages(InstanceId, Id, Vec<Id>),
     /// A person in a member list, a voice room or a message: instance, space (`None` in a DM),
     /// user.
     Member(InstanceId, Option<Id>, Id),
@@ -40,6 +42,7 @@ impl Target {
             | Target::Space(inst, _)
             | Target::Channel(inst, _)
             | Target::Message(inst, ..)
+            | Target::Messages(inst, ..)
             | Target::Member(inst, ..)
             | Target::Role(inst, ..)
             | Target::Invite(inst, ..)
@@ -108,6 +111,8 @@ pub enum Action {
     Pin,
     Unpin,
     DeleteMessage,
+    /// Starts selecting messages (Ctrl+click and Shift+click add more).
+    SelectMessage,
     // Member
     SendMessage,
     Mention,
@@ -183,6 +188,7 @@ impl Action {
             Action::Pin => "Pin message",
             Action::Unpin => "Unpin message",
             Action::DeleteMessage => "Delete message",
+            Action::SelectMessage => "Select",
             Action::SendMessage => "Message",
             Action::Mention => "Mention",
             Action::CopyUsername => "Copy username",
@@ -222,7 +228,7 @@ impl Action {
             Action::SpaceSettings | Action::OpenSettings => i::SETTINGS,
             Action::ChannelPermissions | Action::ManageRoles | Action::EditRole => i::SHIELD,
             Action::InvitePeople => i::ADD_USER,
-            Action::MarkSpaceRead | Action::MarkRead => i::CHECK,
+            Action::MarkSpaceRead | Action::MarkRead | Action::SelectMessage => i::CHECK,
             Action::SearchSpace => i::SEARCH,
             Action::CopySpaceId
             | Action::CopyChannelId
@@ -312,6 +318,15 @@ pub type Entries = Vec<Option<Entry>>;
 
 fn push(out: &mut Entries, actions: impl IntoIterator<Item = Action>) {
     out.extend(actions.into_iter().map(|a| Some(a.into())));
+}
+
+/// I may delete the message: my own, or anyone's with Manage Messages outside DMs.
+pub fn can_delete(s: &InstanceStore, channel: Id, message: Id) -> bool {
+    let Some(msg) = s.window(channel).and_then(|w| w.get(message)) else {
+        return false;
+    };
+    s.me_id() == Some(msg.author.id)
+        || (!s.dms.contains_key(&channel) && view::can(s, channel, Permissions::MANAGE_MESSAGES))
 }
 
 /// The entries for `target`; `status` is the instance's connection status and `s` its store.
@@ -460,6 +475,7 @@ pub fn entries_with(
             let Some(s) = s else { return out };
             let msg = s.window(*channel).and_then(|w| w.get(*message));
             let own = msg.is_some_and(|m| s.me_id() == Some(m.author.id));
+            let deletable = can_delete(s, *channel, *message);
             let manage = view::can(s, *channel, Permissions::MANAGE_MESSAGES)
                 || (s.dms.contains_key(channel));
             let pinned = msg.is_some_and(|m| m.pinned);
@@ -482,10 +498,8 @@ pub fn entries_with(
             }
             out.push(None);
             push(&mut out, [Action::CopyMessageId]);
-            let mod_delete = !s.dms.contains_key(channel)
-                && view::can(s, *channel, Permissions::MANAGE_MESSAGES);
-            if own || mod_delete {
-                push(&mut out, [Action::DeleteMessage]);
+            if deletable {
+                push(&mut out, [Action::SelectMessage, Action::DeleteMessage]);
             }
         }
         Target::Member(_, space, user) => {
@@ -530,6 +544,8 @@ pub fn entries_with(
             }
         }
         Target::Invite(..) => push(&mut out, [Action::CopyInviteLink, Action::RevokeInvite]),
+        // Selected messages have a bar of their own, not a menu.
+        Target::Messages(..) => {}
         Target::Me(inst) => {
             let current = presence.unwrap_or(PresenceStatus::Online);
             for (action, status) in [

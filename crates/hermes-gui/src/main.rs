@@ -80,6 +80,7 @@ impl Cli {
 }
 
 fn main() -> ExitCode {
+    prefer_direct3d12();
     let cli = Cli::from_args();
     let paths = match cli.config_dir {
         Some(dir) => ConfigPaths::in_dir(dir),
@@ -185,6 +186,21 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => fail(&format!("hermes: {err}")),
+    }
+}
+
+/// On Windows, draws with Direct3D 12 unless `WGPU_BACKEND` says otherwise. Left to itself, wgpu
+/// picks Vulkan first, and the Vulkan drivers of older (Intel) GPUs hang the window; Direct3D 12
+/// is the API every Windows 10/11 GPU driver is built and tested for. Without a Direct3D 12 GPU,
+/// iced falls back to drawing in software.
+fn prefer_direct3d12() {
+    #[cfg(windows)]
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: the first thing `main` does, before any other thread exists.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("WGPU_BACKEND", "dx12");
+        }
     }
 }
 

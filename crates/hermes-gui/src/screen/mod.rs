@@ -1,19 +1,24 @@
 //! Screen sharing in the voice room (docs/DECISIONS.md 2026-11-02): capturing and encoding my
 //! screen, and decoding the shares I watch, each on its own thread so the window never waits
 //! for them. `hermes-client-core` carries the encoded frames; only people in the call get them.
+//! Decoded pictures are drawn on the GPU ([`view`]).
 
 pub mod capture;
 pub mod codec;
+#[cfg(windows)]
+mod dxgi;
+mod scale;
+pub mod view;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::voice::RemoteFrame;
 use hermes_client_core::{Core, InstanceId};
 use iced::Subscription;
 use iced::futures::SinkExt;
-use iced::widget::image::Handle;
 
 use crate::message::Message;
 
@@ -48,10 +53,9 @@ fn decoded(core: Core) -> impl iced::futures::Stream<Item = Message> {
             tracing::warn!("screen share decoder: {err}");
             return;
         }
-        while let Some((inst, user, (width, height, rgba))) = decoded.recv().await {
-            let handle = Handle::from_rgba(width, height, rgba);
+        while let Some((inst, user, picture)) = decoded.recv().await {
             if output
-                .send(Message::ScreenImage(inst, user, handle))
+                .send(Message::ScreenImage(inst, user, Arc::new(picture)))
                 .await
                 .is_err()
             {

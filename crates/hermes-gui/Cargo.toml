@@ -33,8 +33,17 @@ tracing-subscriber.workspace = true
 tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Push-to-talk key polling (PLAN.md section 21, Spike C decision).
-windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+# Push-to-talk key polling (PLAN.md section 21, Spike C decision); Desktop Duplication for
+# screen sharing (the Direct3D 11 and DXGI features xcap enables already).
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 # Screen capture for screen sharing (Windows only for now).
 xcap.workspace = true
 

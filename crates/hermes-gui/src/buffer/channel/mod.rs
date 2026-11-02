@@ -8,7 +8,7 @@ pub mod markup;
 pub mod message;
 pub mod rows;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
@@ -57,6 +57,10 @@ pub struct ChannelView {
     pub jump: Option<Id>,
     /// The message jumped to, drawn highlighted.
     pub highlight: Option<Id>,
+    /// Messages selected to delete together (only ones I may delete).
+    pub selected: BTreeSet<Id>,
+    /// The message the last selecting click was on: Shift+click selects from there.
+    pub anchor: Option<Id>,
 }
 
 impl Default for ChannelView {
@@ -75,6 +79,8 @@ impl Default for ChannelView {
             revealed: HashSet::new(),
             jump: None,
             highlight: None,
+            selected: BTreeSet::new(),
+            anchor: None,
         }
     }
 }
@@ -85,6 +91,37 @@ impl ChannelView {
             read_marker,
             ..ChannelView::default()
         }
+    }
+
+    /// A click on message `id` (one of `selectable`, the loaded messages I may delete, oldest
+    /// first): Ctrl, or any click while selecting, toggles it; Shift selects the range from the
+    /// last clicked one. Without either, nothing is selected and nothing happens.
+    pub fn click(&mut self, id: Id, ctrl: bool, shift: bool, selectable: &[Id]) {
+        if !selectable.contains(&id) {
+            return;
+        }
+        let anchor = self.anchor.filter(|a| selectable.contains(a));
+        if shift && let Some(anchor) = anchor {
+            let (from, to) = (anchor.min(id), anchor.max(id));
+            self.selected.extend(
+                selectable
+                    .iter()
+                    .copied()
+                    .filter(|m| (from..=to).contains(m)),
+            );
+        } else if ctrl || shift || !self.selected.is_empty() {
+            if !self.selected.remove(&id) {
+                self.selected.insert(id);
+            }
+        } else {
+            return;
+        }
+        self.anchor = Some(id);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+        self.anchor = None;
     }
 
     pub fn at_bottom(&self) -> bool {
@@ -137,6 +174,12 @@ pub enum Message {
     JumpLoaded,
     /// Newer messages arrived after scrolling down from an old position.
     NewerLoaded,
+    /// A message was clicked: with Ctrl, or while selecting, it is (un)selected; with Shift,
+    /// everything from the last selected one is.
+    Click(Id),
+    /// Asks to delete the selected messages.
+    DeleteSelected,
+    ClearSelection,
 }
 
 /// Where to scroll to show message `target` in the middle of the viewport: the offset from the
@@ -319,7 +362,54 @@ pub fn view<'a>(
     if let Some(typing) = typing_line(ctx, s, channel) {
         layers = layers.push(typing);
     }
-    column![layers, composer(ctx, s, channel)].into()
+    let bottom = if state.selected.is_empty() {
+        composer(ctx, s, channel)
+    } else {
+        selection_bar(ctx, state.selected.len())
+    };
+    column![layers, bottom].into()
+}
+
+/// Replaces the composer while messages are selected.
+fn selection_bar<'a>(ctx: &Context<'a>, count: usize) -> Element<'a, Message> {
+    let fonts = ctx.fonts;
+    let theme = ctx.theme;
+    let what = if count == 1 {
+        "1 message selected".to_owned()
+    } else {
+        format!("{count} messages selected")
+    };
+    let bar = row![
+        label(what, fonts),
+        caption("Ctrl+click to add · Shift+click for a range", fonts).color(theme.text.tertiary.0),
+        Space::new().width(Fill),
+        text_button("Cancel", ButtonKind::Secondary, fonts, theme)
+            .on_press(Message::ClearSelection),
+        text_button("Delete", ButtonKind::Danger, fonts, theme).on_press(Message::DeleteSelected),
+    ]
+    .spacing(style::GAP)
+    .align_y(Alignment::Center);
+    container(
+        container(bar)
+            .padding([style::GAP_S, style::GAP])
+            .width(Fill)
+            .style(move |_| container::Style {
+                background: Some(theme.surface.raised.0.into()),
+                border: iced::Border {
+                    radius: style::radius(theme).into(),
+                    ..iced::Border::default()
+                },
+                ..container::Style::default()
+            }),
+    )
+    // Where the composer sits.
+    .padding(iced::Padding {
+        top: 2.0,
+        bottom: 14.0,
+        left: 16.0,
+        right: 16.0,
+    })
+    .into()
 }
 
 fn composer<'a>(ctx: &Context<'a>, s: &InstanceStore, channel: Id) -> Element<'a, Message> {
@@ -662,5 +752,33 @@ mod tests {
     fn author_color_is_the_highest_colored_role() {
         let s = crate::fixtures::store();
         assert_eq!(author_color(&s, Id(10), Id(3)), None, "only @everyone");
+    }
+
+    #[test]
+    fn clicks_select_messages() {
+        let selectable = [Id(1), Id(2), Id(4), Id(5), Id(7)];
+        let ids = |v: &ChannelView| v.selected.iter().copied().collect::<Vec<_>>();
+        let mut v = ChannelView::default();
+        v.click(Id(2), false, false, &selectable);
+        assert!(
+            v.selected.is_empty(),
+            "a plain click does not start selecting"
+        );
+        v.click(Id(2), true, false, &selectable);
+        assert_eq!(ids(&v), [Id(2)]);
+        v.click(Id(5), false, true, &selectable);
+        assert_eq!(ids(&v), [Id(2), Id(4), Id(5)], "Shift: the range");
+        v.click(Id(4), false, false, &selectable);
+        assert_eq!(ids(&v), [Id(2), Id(5)], "while selecting, a click toggles");
+        v.click(Id(3), true, false, &selectable);
+        assert_eq!(ids(&v), [Id(2), Id(5)], "not mine to delete");
+        v.click(Id(1), false, true, &selectable);
+        assert_eq!(
+            ids(&v),
+            [Id(1), Id(2), Id(4), Id(5)],
+            "back up from the anchor"
+        );
+        v.clear_selection();
+        assert!(v.selected.is_empty() && v.anchor.is_none());
     }
 }

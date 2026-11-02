@@ -1,6 +1,6 @@
 //! The voice panel at the bottom of the sidebar (PLAN.md section 15.1), shown while in voice:
-//! channel and space, connection quality, push-to-talk indicator, and mute, deafen, disconnect
-//! and audio settings buttons.
+//! channel and space, connection quality, push-to-talk indicator, and mute, deafen, screen
+//! share and disconnect buttons.
 
 use hermes_client_core::{Core, VoiceStatus, view};
 use iced::widget::{button, column, container, row};
@@ -25,6 +25,8 @@ pub struct Panel {
     pub deafened: bool,
     /// `Some(held)` in push-to-talk mode.
     pub ptt: Option<bool>,
+    /// My screen is being shared.
+    pub sharing: bool,
 }
 
 /// `None` while not in voice.
@@ -62,6 +64,7 @@ pub fn panel(core: &Core, ptt_down: bool) -> Option<Panel> {
         muted: core.self_mute() || core.self_deaf(),
         deafened: core.self_deaf(),
         ptt,
+        sharing: core.sharing_screen(),
     })
 }
 
@@ -169,11 +172,20 @@ pub fn view<'a>(
             if p.deafened { "Undeafen" } else { "Deafen" },
             VoiceMsg::ToggleDeafen
         ),
+        // Sharing asks what to share first (the menu); a running share stops right away.
         toggle(
-            icon::SETTINGS,
-            false,
-            "Audio settings",
-            VoiceMsg::OpenAudioSettings
+            icon::MONITOR_SHARE,
+            p.sharing,
+            if p.sharing {
+                "Stop sharing"
+            } else {
+                "Share screen"
+            },
+            if p.sharing {
+                VoiceMsg::ToggleShare
+            } else {
+                VoiceMsg::OpenShareMenu
+            }
         ),
         tip_at(
             button(

@@ -8,8 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::{Core, InstanceId};
-use iced::widget::image::Handle;
-use iced::widget::{Space, column, container, image, mouse_area, responsive, row, stack, text};
+use iced::widget::{Space, column, container, mouse_area, responsive, row, stack, text};
 use iced::{Alignment, Border, Color, Element, Fill, Length, Size};
 
 use crate::font::Fonts;
@@ -75,7 +74,7 @@ struct Tile {
     /// They share their screen (known only in the call).
     sharing: bool,
     /// The latest picture of their share.
-    picture: Option<Handle>,
+    picture: Option<crate::screen::view::Share>,
 }
 
 /// The column count and tile size that make `n` tiles of [`ASPECT`] largest in `area` with
@@ -98,7 +97,8 @@ pub fn view<'a>(
     core: &Core,
     inst: &InstanceId,
     channel: Id,
-    screens: &HashMap<(InstanceId, Id), Handle>,
+    screens: &HashMap<(InstanceId, Id), crate::screen::view::Share>,
+    enlarged: Option<Id>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
@@ -120,8 +120,7 @@ pub fn view<'a>(
         1 => "1 person".to_owned(),
         n => format!("{n} people"),
     };
-    let top = crate::widget::section_title(&summary, fonts).color(theme.text.tertiary.0);
-    let tiles: Vec<Tile> = people
+    let mut tiles: Vec<Tile> = people
         .into_iter()
         .map(|person| Tile {
             sharing: sharers.contains(&person.user) || (person.volume.is_none() && me_sharing),
@@ -129,9 +128,27 @@ pub fn view<'a>(
             person,
         })
         .collect();
+    // An enlarged share is the only tile, as long as it has a picture.
+    let enlarged = enlarged.and_then(|user| {
+        tiles
+            .iter()
+            .position(|t| t.person.user == user && t.picture.is_some())
+    });
+    let summary = match enlarged {
+        Some(i) => format!(
+            "{summary} · {}'s screen · click it or press Esc to see everyone",
+            tiles[i].person.name
+        ),
+        None => summary,
+    };
+    if let Some(i) = enlarged {
+        tiles = vec![tiles.swap_remove(i)];
+    }
+    let top = crate::widget::section_title(&summary, fonts).color(theme.text.tertiary.0);
     let inst = inst.clone();
     let fonts = *fonts;
-    let grid = responsive(move |size| grid(&inst, &tiles, size, &fonts, theme));
+    let enlarged = enlarged.is_some();
+    let grid = responsive(move |size| grid(&inst, &tiles, size, enlarged, &fonts, theme));
     column![top, grid]
         .spacing(style::GAP_L)
         .padding(style::GAP_L)
@@ -142,11 +159,16 @@ fn grid<'a>(
     inst: &InstanceId,
     tiles: &[Tile],
     area: Size,
+    enlarged: bool,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
     if tiles.is_empty() {
         return Space::new().into();
+    }
+    // An enlarged share takes the whole room, whatever its shape.
+    if enlarged && let [t] = tiles {
+        return tile(inst, t, area, true, fonts, theme);
     }
     let gap = style::GAP;
     let (cols, size) = layout(tiles.len(), area, gap);
@@ -154,7 +176,7 @@ fn grid<'a>(
     for chunk in tiles.chunks(cols) {
         let mut line = row![].spacing(gap);
         for t in chunk {
-            line = line.push(tile(inst, t, size, fonts, theme));
+            line = line.push(tile(inst, t, size, false, fonts, theme));
         }
         rows = rows.push(line);
     }
@@ -165,6 +187,7 @@ fn tile<'a>(
     inst: &InstanceId,
     t: &Tile,
     size: Size,
+    enlarged: bool,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
@@ -207,8 +230,7 @@ fn tile<'a>(
                 });
             stack![
                 container(
-                    image(picture.clone())
-                        .content_fit(iced::ContentFit::Contain)
+                    iced::widget::shader(picture.clone())
                         .width(Fill)
                         .height(Fill)
                 )
@@ -276,13 +298,18 @@ fn tile<'a>(
             ..container::Style::default()
         });
     // The menu is the person's, also over their screen share.
-    let area = mouse_area(card);
+    let mut area = mouse_area(card);
     if p.volume.is_some() {
-        area.on_right_press(Message::Voice(VoiceMsg::UserMenu(inst.clone(), p.user)))
-            .into()
-    } else {
-        area.into()
+        area = area.on_right_press(Message::Voice(VoiceMsg::UserMenu(inst.clone(), p.user)));
     }
+    // A click on a share enlarges it, and on the enlarged one goes back to everyone.
+    if t.picture.is_some() {
+        let target = (!enlarged).then(|| (inst.clone(), p.user));
+        area = area
+            .on_press(Message::Voice(VoiceMsg::EnlargeShare(target)))
+            .interaction(iced::mouse::Interaction::Pointer);
+    }
+    area.into()
 }
 
 #[cfg(test)]

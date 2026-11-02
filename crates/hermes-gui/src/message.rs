@@ -36,7 +36,11 @@ pub enum Message {
     /// Shows the spaces or the direct messages in the sidebar.
     SidebarTab(crate::sidebar::tree::Tab),
     /// A new picture of someone's screen share.
-    ScreenImage(InstanceId, Id, iced::widget::image::Handle),
+    ScreenImage(
+        InstanceId,
+        Id,
+        std::sync::Arc<crate::screen::codec::Picture>,
+    ),
     /// The selected channel's first page loaded.
     ChannelOpened,
     OpenMenu(Target),
@@ -87,6 +91,8 @@ pub enum Message {
     Voice(crate::voice::VoiceMsg),
     /// A key was released (push-to-talk without global polling).
     KeyReleased(Key),
+    /// Ctrl, Shift, Alt or the logo key changed (Ctrl/Shift+click selects messages).
+    Modifiers(iced::keyboard::Modifiers),
     SpaceSettings(InstanceId, Id, space_settings::Message),
     Form(form::Message),
     /// A form's request finished: close it (with a status line) or show the error in it.

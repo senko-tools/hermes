@@ -79,7 +79,9 @@ pub struct App {
     /// The screens that can be shared, primary first (listed with the audio devices).
     pub(crate) screen_names: Vec<String>,
     /// The latest picture of each screen share I watch.
-    pub(crate) screens: std::collections::HashMap<(InstanceId, Id), iced::widget::image::Handle>,
+    pub(crate) screens: std::collections::HashMap<(InstanceId, Id), crate::screen::view::Share>,
+    /// The screen share shown alone in the voice room (clicked to enlarge).
+    pub(crate) enlarged_share: Option<(InstanceId, Id)>,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -88,6 +90,8 @@ pub struct App {
     pub utc_offset: i64,
     /// The window has the keyboard focus.
     pub focused: bool,
+    /// The modifier keys held now.
+    pub(crate) modifiers: Modifiers,
     /// Thumbnails, loaded when their message is first shown.
     pub images: Images,
     /// The full-size image viewer.
@@ -125,6 +129,8 @@ pub struct App {
     pub call: Option<voice_ui::Call>,
     /// The per-user volume menu.
     pub volume_menu: Option<voice_ui::VolumeMenu>,
+    /// The open "Share your screen" menu, at the pointer.
+    pub(crate) share_menu: Option<Point>,
     /// The push-to-talk key is held.
     pub ptt_down: bool,
     /// A join in progress.
@@ -177,6 +183,7 @@ impl App {
             command_bar: None,
             utc_offset: time::local_offset_secs(),
             focused: true,
+            modifiers: Modifiers::empty(),
             images: Images::new(),
             viewer: None,
             composers: std::collections::HashMap::new(),
@@ -196,6 +203,7 @@ impl App {
             capture: None,
             screen_names: Vec::new(),
             screens: std::collections::HashMap::new(),
+            enlarged_share: None,
             add_instance: None,
             single_instance,
             collapsed,
@@ -210,6 +218,7 @@ impl App {
             new_dm: None,
             call: None,
             volume_menu: None,
+            share_menu: None,
             ptt_down: false,
             joining: None,
             headphones_hint_shown: false,
@@ -310,6 +319,13 @@ impl App {
         };
         self.core.watch_screens(&watched);
         self.screens.retain(|(_, user), _| watched.contains(user));
+        if self
+            .enlarged_share
+            .as_ref()
+            .is_some_and(|(_, user)| !watched.contains(user))
+        {
+            self.enlarged_share = None;
+        }
         if self.capture.is_some() && !self.core.sharing_screen() {
             self.capture = None;
         }
@@ -363,6 +379,7 @@ impl App {
         match message {
             Message::Core(event) => return self.on_core(event),
             Message::Voice(message) => return self.on_voice(message),
+            Message::Modifiers(modifiers) => self.modifiers = modifiers,
             Message::KeyReleased(key) => {
                 if self.ptt_matches(&key) {
                     return self.on_voice(VoiceMsg::Ptt(false));
@@ -381,7 +398,7 @@ impl App {
             }
             Message::Tray(TrayAction::Quit) => {
                 self.save_layout();
-                return iced::exit();
+                return quit();
             }
             Message::NotificationClicked(inst, channel) => {
                 let show = self.show_window();
@@ -419,9 +436,15 @@ impl App {
             Message::Select(inst, channel) => return self.select(inst, channel),
             Message::OpenChat(inst, channel) => return self.open_chat(inst, channel),
             Message::SidebarTab(tab) => self.sidebar_tab = tab,
-            Message::ScreenImage(inst, user, handle) => {
-                self.screens.insert((inst, user), handle);
-            }
+            Message::ScreenImage(inst, user, picture) => match self.screens.entry((inst, user)) {
+                std::collections::hash_map::Entry::Occupied(mut share) => {
+                    share.get_mut().update(picture);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    let share = crate::screen::view::Share::new(slot.key(), picture);
+                    slot.insert(share);
+                }
+            },
             Message::PaneClicked(pane) => self.panes.focus = pane,
             Message::PaneDragged(event) => self.panes.on_drag(event),
             Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),
@@ -442,7 +465,7 @@ impl App {
                         self.window_visible = false;
                         window::set_mode(id, window::Mode::Hidden)
                     }
-                    CloseAction::Quit => iced::exit(),
+                    CloseAction::Quit => quit(),
                 };
             }
             Message::CommandBar(message) => return self.on_command_bar(message),
@@ -557,6 +580,8 @@ impl App {
                     self.viewer = None;
                 } else if self.volume_menu.is_some() {
                     self.volume_menu = None;
+                } else if self.share_menu.is_some() {
+                    self.share_menu = None;
                 } else if self.menu.is_some() {
                     self.menu = None;
                 } else if self.command_bar.is_some() {
@@ -571,6 +596,17 @@ impl App {
                     self.add_instance = None;
                 } else if self.page.is_some() {
                     self.page = None;
+                } else if self.enlarged_share.is_some()
+                    && matches!(
+                        self.panes.focused().map(|p| &p.buffer),
+                        Some(Buffer::VoiceRoom { .. })
+                    )
+                {
+                    self.enlarged_share = None;
+                } else if let Some(view) = self.panes.focused_channel_view_mut()
+                    && !view.selected.is_empty()
+                {
+                    view.clear_selection();
                 } else {
                     return self.key_action(keybinds::Action::MarkRead);
                 }
@@ -781,6 +817,22 @@ impl App {
             channel::Message::Palette(id) => view.palette = id,
             channel::Message::More(id) => {
                 self.menu = Some((Target::Message(inst, channel, id), self.cursor.get()));
+            }
+            channel::Message::Click(id) => {
+                let selectable = selectable_messages(&self.core, &inst, channel);
+                let (ctrl, shift) = (self.modifiers.control(), self.modifiers.shift());
+                view.click(id, ctrl, shift, &selectable);
+            }
+            channel::Message::ClearSelection => view.clear_selection(),
+            channel::Message::DeleteSelected => {
+                // Only what still exists and I may still delete.
+                let selectable = selectable_messages(&self.core, &inst, channel);
+                view.selected.retain(|id| selectable.contains(id));
+                let ids: Vec<Id> = view.selected.iter().copied().collect();
+                if !ids.is_empty() {
+                    self.confirm =
+                        Some((Target::Messages(inst, channel, ids), Action::DeleteMessage));
+                }
             }
             channel::Message::Author(user) => {
                 let space = self
@@ -1593,6 +1645,39 @@ impl App {
                     },
                 );
             }
+            (Target::Message(inst, channel, message), Action::SelectMessage) => {
+                if let Some(view) = self.panes.channel_view_mut(&inst, channel) {
+                    view.clear_selection();
+                    view.selected.insert(message);
+                    view.anchor = Some(message);
+                }
+            }
+            (Target::Messages(inst, channel, messages), Action::DeleteMessage) => {
+                self.panes.clear_selection(&inst, channel);
+                return Task::perform(
+                    async move {
+                        let total = messages.len();
+                        let mut failed = 0;
+                        let mut last_error = None;
+                        for message in messages {
+                            if let Err(err) = core.delete_message(&inst, channel, message).await {
+                                failed += 1;
+                                last_error = Some(err.to_string());
+                            }
+                        }
+                        (total, failed, last_error)
+                    },
+                    |(total, failed, err)| match err {
+                        None => Message::Done(Ok(format!(
+                            "Deleted {total} message{}",
+                            if total == 1 { "" } else { "s" }
+                        ))),
+                        Some(err) => Message::Done(Err(format!(
+                            "could not delete {failed} of {total} messages: {err}"
+                        ))),
+                    },
+                );
+            }
             (Target::Message(inst, channel, message), Action::DeleteMessage) => {
                 return Task::perform(
                     async move { core.delete_message(&inst, channel, message).await },
@@ -1670,6 +1755,7 @@ impl App {
         }
         let overlay = self.viewer.is_some()
             || self.volume_menu.is_some()
+            || self.share_menu.is_some()
             || self.menu.is_some()
             || self.confirm.is_some()
             || self.new_dm.is_some()
@@ -2210,6 +2296,15 @@ impl App {
                 self.persist("voice.share_screen", &value);
                 return Task::none();
             }
+            S::ShareResolution(resolution) => {
+                let value = toml::Value::String(resolution.0.to_owned()).to_string();
+                self.persist("voice.share_resolution", &value);
+                return Task::none();
+            }
+            S::ShareFps(fps) => {
+                self.persist("voice.share_fps", &fps.0.to_string());
+                return Task::none();
+            }
             S::MicTest(on) => {
                 self.mic_test = on;
                 self.core.set_mic_test(on);
@@ -2573,7 +2668,7 @@ impl App {
             icon::icon(g, 18.0).color(theme.text.secondary.0).into()
         };
         let (lead, title) = match target {
-            Target::Pane(_) => return None,
+            Target::Pane(_) | Target::Messages(..) => return None,
             Target::Instance(inst) => (glyph(icon::SERVER), inst.clone()),
             Target::Space(inst, space) => {
                 let name = store.instance(inst)?.spaces.get(space)?.space.name.clone();
@@ -2691,6 +2786,7 @@ impl App {
             ui_scale_draft: self.ui_scale_draft,
             return_to,
             screens: &self.screens,
+            enlarged_share: self.enlarged_share.as_ref(),
         };
         main = main.push(self.panes.view(&ctx));
         let page = self.page.as_ref().map(|page| panes::page_view(page, &ctx));
@@ -2784,6 +2880,17 @@ impl App {
                 Message::CloseMenu,
             ));
         }
+        if let Some(at) = self.share_menu {
+            layers.push(voice_ui::share_overlay(
+                blank(),
+                at,
+                &self.config.voice,
+                &self.screen_names,
+                self.window_size,
+                fonts,
+                theme,
+            ));
+        }
         if let Some(menu) = &self.volume_menu {
             layers.push(voice_ui::volume_overlay(
                 blank(),
@@ -2835,8 +2942,17 @@ impl App {
                 Some(Message::NewDmMsg(new_dm::Message::Cancel)),
             ));
         }
-        if let Some((_, action)) = &self.confirm {
-            let (title, text) = confirm_text(*action);
+        if let Some((target, action)) = &self.confirm {
+            let (title, text) = match target {
+                Target::Messages(_, _, ids) if ids.len() > 1 => (
+                    format!("Delete {} messages?", ids.len()),
+                    "They are removed for everyone. This cannot be undone.",
+                ),
+                _ => {
+                    let (title, text) = confirm_text(*action);
+                    (title.to_owned(), text)
+                }
+            };
             layers.push(modal::overlay(
                 blank(),
                 confirm::view(
@@ -2931,6 +3047,32 @@ fn focus_input(id: Option<&'static str>) -> Task<Message> {
         Some(id) => operation::focus(iced::widget::Id::new(id)),
         None => Task::none(),
     }
+}
+
+/// The loaded messages of `channel` I may delete, oldest first (what can be selected).
+fn selectable_messages(core: &Core, inst: &InstanceId, channel: Id) -> Vec<Id> {
+    let store = core.store();
+    let Some(s) = store.instance(inst) else {
+        return Vec::new();
+    };
+    let Some(window) = s.window(channel) else {
+        return Vec::new();
+    };
+    window
+        .messages
+        .iter()
+        .filter(|m| !m.deleted && crate::sidebar::menu::can_delete(s, channel, m.id))
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Hides the window, then exits. Exiting tears the window's surface down before the window,
+/// and Windows paints a still-visible window white in between (a flash on close).
+fn quit() -> Task<Message> {
+    window::oldest().then(|id| match id {
+        Some(id) => window::set_mode(id, window::Mode::Hidden).chain(iced::exit()),
+        None => iced::exit(),
+    })
 }
 
 /// Loads the bundled fonts.

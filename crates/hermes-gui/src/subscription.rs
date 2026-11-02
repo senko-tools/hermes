@@ -117,6 +117,9 @@ pub fn window_and_keys() -> Subscription<Message> {
         Event::Keyboard(iced::keyboard::Event::KeyReleased { key, .. }) => {
             Some(Message::KeyReleased(key))
         }
+        Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::Modifiers(modifiers))
+        }
         Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
             Some(Message::MousePressed)
         }

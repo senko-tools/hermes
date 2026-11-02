@@ -103,9 +103,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-release
+          # `-nasm`: builds cached from before NASM was installed lack OpenH264's assembly.
+          key: windows-release-nasm
+      - name: NASM
+        # OpenH264's SIMD assembly. Without NASM its build quietly falls back to plain C, and
+        # screen sharing encodes several times slower.
+        run: |
+          choco install nasm -y --no-progress
+          echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
       - name: Build
         run: cargo build --release --locked -p hermes-server -p hermes-gui -p hermes-tui
+      - name: Check that OpenH264 has its assembly
+        run: |
+          if grep -rqs "not using any assembly" target/release/build/openh264-sys2-*/output; then
+            echo "OpenH264 was built without NASM" >&2
+            exit 1
+          fi
       - name: cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
       - name: Installer
