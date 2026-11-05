@@ -36,7 +36,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(2);
 /// Own screen share frames waiting to be sent; more are dropped (the next frame should then
 /// be a keyframe).
-const SCREEN_QUEUE: usize = 4;
+const SCREEN_QUEUE: usize = 8;
 /// A screen share frame must arrive completely within this time.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the screen share transport's numbers are logged.
@@ -1400,7 +1400,10 @@ fn transport_config() -> quinn::TransportConfig {
     }
     transport.keep_alive_interval(Some(Duration::from_millis(voice::KEEP_ALIVE_MS)));
     // One stream per screen share frame; the server writes them one at a time.
-    transport.max_concurrent_uni_streams(8u32.into());
+    transport.max_concurrent_uni_streams(32u32.into());
+    transport.stream_receive_window(voice::VIDEO_STREAM_WINDOW.into());
+    transport.receive_window(voice::VIDEO_CONNECTION_WINDOW.into());
+    transport.send_window(u64::from(voice::VIDEO_CONNECTION_WINDOW));
     transport
 }
 

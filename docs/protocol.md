@@ -1,3 +1,10 @@
+Who shares is told only on the control stream, never on the gateway: only people in the call
+know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
+**unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
+have at most 32 such streams open at once, and both sides read them one at a time in the order
+they were opened, so frames stay in order. Both ends allow 4 MiB in flight per stream and 16 MiB
+per connection.
+
 # Hermes protocol reference
 
 Human-readable reference for everything on the wire. The source of truth is the `hermes-proto`
@@ -254,12 +261,14 @@ they were opened, so frames stay in order.
 | 6 | 2 | height, even, 2–3840 |
 | 8 | 4 | milliseconds since the share started |
 
-The server drops frames over 512 KiB (header included), arriving slower than 5 s, with a bad
-header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 30
-per second, and sends the rest to the members watching the sharer. A watcher whose queue (8
-frames) is full loses the frame, and the sharer gets `keyframe_requested` (at most every
-500 ms; also when someone starts watching). The GUI sends at most 1280×720 at 10 frames per
-second, a keyframe at least every 5 s.
+The server drops frames over 2 MiB (header included), arriving slower than 5 s, with a bad
+header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 60
+per second on average (a token bucket that allows 10 frames of burst, so a sharer at exactly 60
+never loses a frame to timer jitter), and sends the rest to the members watching the sharer. A
+watcher whose queue (16 frames) is full loses the frame. After a lost frame (or a frame over the
+rate, or when someone starts watching) that watcher gets nothing from the sharer until their next
+keyframe, which the sharer is asked for with `keyframe_requested` (at most every 500 ms): frames
+before it could not be decoded anyway.
 
 ### DM calls
 

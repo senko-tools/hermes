@@ -265,12 +265,19 @@ pub fn colon_hex(digest: &[u8]) -> String {
 
 pub const PACKET_TYPE_VIDEO: u8 = 2;
 pub const VIDEO_HEADER_LEN: usize = 12;
-/// Frames larger than this (header included) are dropped.
-pub const MAX_VIDEO_FRAME: usize = 512 * 1024;
-/// Largest width and height a share may have.
+/// Frames larger than this (header included) are dropped: room for a 4K keyframe.
+pub const MAX_VIDEO_FRAME: usize = 2 * 1024 * 1024;
+/// Largest width and height a share may have (3840×2160 fits).
 pub const MAX_VIDEO_DIMENSION: u16 = 3840;
-/// A sharer sends at most this many frames per second; the server drops the rest.
-pub const MAX_VIDEO_FPS: u32 = 30;
+/// A sharer sends at most this many frames per second on average; the server drops the rest.
+pub const MAX_VIDEO_FPS: u32 = 60;
+/// How many frames a sharer may send ahead of [`MAX_VIDEO_FPS`] (timer jitter, a frame that
+/// left late followed by one on time) before the server drops any.
+pub const VIDEO_BURST: u32 = 10;
+/// QUIC flow control for screen shares, set by both ends: one stream (frame) may have two of the
+/// largest frames in flight, the connection about half a second of a 4K share.
+pub const VIDEO_STREAM_WINDOW: u32 = 2 * MAX_VIDEO_FRAME as u32;
+pub const VIDEO_CONNECTION_WINDOW: u32 = 16 * 1024 * 1024;
 
 const FLAG_KEYFRAME: u8 = 1;
 

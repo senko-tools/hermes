@@ -736,6 +736,17 @@ async fn sharers_learn_how_many_watch() {
     c.send(watch(false)).await;
     assert_eq!(count(a.recv_op("share_watchers").await), 1);
 
+    // A new watcher gets nothing before the sharer's next keyframe (it could not decode it).
+    a.send_video(false, 10, b"delta").await;
+    assert!(b.recv_video(300).await.is_none());
+    a.send_video(true, 20, b"key").await;
+    let (header, payload) = b.recv_video(2000).await.expect("the keyframe");
+    assert!(header.keyframe);
+    assert_eq!(payload, b"key");
+    a.send_video(false, 30, b"delta after").await;
+    let (_, payload) = b.recv_video(2000).await.expect("deltas after it");
+    assert_eq!(payload, b"delta after");
+
     // A watcher leaving the room counts too.
     b.send(json!({ "op": "leave", "d": {} })).await;
     assert_eq!(count(a.recv_op("share_watchers").await), 0);

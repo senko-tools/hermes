@@ -57,6 +57,12 @@ const KEYFRAME_EVERY: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const STATS_EVERY: Duration = Duration::from_secs(10);
 
+/// After the connection refused a frame, the watchers wait for a keyframe; one is made at most
+/// this often, so a congested connection does not get a keyframe (the largest frames) after
+/// every refused frame.
+#[cfg(windows)]
+const RESYNC_GAP: Duration = Duration::from_millis(500);
+
 /// While nobody watches, how often the capture thread looks whether someone started to.
 #[cfg(windows)]
 const IDLE_POLL: Duration = Duration::from_millis(100);
@@ -382,8 +388,18 @@ fn encode_loop(
     let started = Instant::now();
     let mut encoder: Option<super::codec::Encoder> = None;
     let mut last_keyframe: Option<Instant> = None;
+    // A frame was refused: nothing the watchers could decode goes out until a keyframe.
+    let mut resync = false;
     while let Ok(frame) = frames.recv() {
         let begin = Instant::now();
+        let requested = keyframe.swap(false, Ordering::Relaxed);
+        let periodic = last_keyframe.is_none_or(|t| t.elapsed() >= KEYFRAME_EVERY);
+        let resync_due = resync && last_keyframe.is_none_or(|t| t.elapsed() >= RESYNC_GAP);
+        let key = requested || periodic || resync_due;
+        if resync && !key {
+            stats.dropped.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         if encoder.is_none() {
             match super::codec::Encoder::new(frame.width, frame.height, quality.fps as f32) {
                 Ok(e) => encoder = Some(e),
@@ -394,11 +410,10 @@ fn encode_loop(
                 }
             }
         }
-        let key = keyframe.swap(false, Ordering::Relaxed)
-            || last_keyframe.is_none_or(|t| t.elapsed() >= KEYFRAME_EVERY);
         match encoder.as_mut().map(|e| e.encode(&frame, key)) {
             Some(Ok(Some((data, is_key)))) => {
                 if is_key {
+                    resync = false;
                     last_keyframe = Some(Instant::now());
                     stats.keyframes.fetch_add(1, Ordering::Relaxed);
                 }
@@ -417,7 +432,7 @@ fn encode_loop(
                 if !sent {
                     // Dropped (the connection is behind): resynchronize watchers.
                     stats.refused.fetch_add(1, Ordering::Relaxed);
-                    keyframe.store(true, Ordering::Relaxed);
+                    resync = true;
                 }
             }
             Some(Ok(None)) | None => {}
@@ -475,7 +490,12 @@ mod tests {
             (3840, 1080),
             "within the protocol's limit"
         );
-        assert_eq!(native.fps, 30, "the protocol's limit");
+        assert_eq!(native.fps, 60);
+        assert_eq!(
+            Quality::from_config("native", 120).fps,
+            60,
+            "the protocol's limit"
+        );
         assert_eq!(Quality::from_config("bogus", 10), hd);
     }
 

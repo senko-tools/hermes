@@ -1552,3 +1552,24 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   it and keeps sending as before.
 - **Why:** the developer asked for starting and stopping watching; a share nobody watches cost
   the sharer about 11 % CPU for nothing.
+
+## 2026-11-05: Screen share transport for 60 fps
+
+- **Limits:** frames up to 2 MiB (a 4K keyframe) and 60 per second. The server's rate limit is a
+  token bucket (60 per second, 10 frames of burst) instead of a fixed one-second window, which
+  dropped about 2 % of the frames of a share at exactly the limit (timer jitter put one frame too
+  many in a window). 32 streams (frames) may be open per connection, a watcher's queue holds 16
+  frames, the sharer's own 8; both ends allow 4 MiB in flight per stream and 16 MiB per
+  connection (the defaults could not hold a large keyframe).
+- **No keyframe storms:** after a lost frame (a full queue, a frame over the rate, or a new
+  watcher) the server sends that watcher nothing from the sharer until their next keyframe, which
+  it asks for (at most every 500 ms). The sharer, when its own connection refuses a frame, sends
+  nothing until a keyframe, made at most every 500 ms; the watcher's decoder asks for a keyframe
+  at most every 500 ms instead of for every frame it cannot decode. Before, every loss produced
+  another keyframe, the largest frames, on a link that was already behind.
+- **Measured (transport benchmark, one machine):** 600 of 600 frames at 60 fps and 25 or
+  40 Mbit/s, median delay 1 ms (before: 295 of 300 at 30 fps; 60 fps impossible).
+- **Not done (planned):** quinn's BBR congestion controller. Cubic kept up in the benchmark, and
+  quinn marks BBR as experimental; worth trying only if the LAN or internet numbers show the
+  sender's rate collapsing after losses.
+- **Why:** the developer asked for at least 4K at 60 fps and for smoothness first.

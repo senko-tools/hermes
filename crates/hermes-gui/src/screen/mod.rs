@@ -25,6 +25,10 @@ use crate::message::Message;
 /// Frames waiting for the decoder; more are dropped (the decoder then asks for a keyframe).
 const DECODE_QUEUE: usize = 8;
 
+/// A sharer is asked for a keyframe at most this often by this window (the server limits it too,
+/// but each request is a control message).
+const KEYFRAME_REQUEST_GAP: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// How often the decoder's numbers are logged.
 const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -123,6 +127,16 @@ fn decode_loop(
 ) {
     let mut decoders: HashMap<(InstanceId, Id), codec::Decoder> = HashMap::new();
     let mut stats: HashMap<Id, DecodeStats> = HashMap::new();
+    let mut requested: HashMap<Id, std::time::Instant> = HashMap::new();
+    let mut want_keyframe = |user: Id| {
+        let due = requested
+            .get(&user)
+            .is_none_or(|t| t.elapsed() >= KEYFRAME_REQUEST_GAP);
+        if due {
+            requested.insert(user, std::time::Instant::now());
+            core.request_keyframe(user);
+        }
+    };
     let mut stats_since = std::time::Instant::now();
     let started = std::time::Instant::now();
     while let Some(frame) = frames.blocking_recv() {
@@ -148,7 +162,7 @@ fn decode_loop(
         if !decoders.contains_key(&key) {
             // A fresh decoder can only start at a keyframe.
             if !frame.header.keyframe {
-                core.request_keyframe(frame.user);
+                want_keyframe(frame.user);
                 continue;
             }
             match codec::Decoder::new() {
@@ -184,7 +198,7 @@ fn decode_loop(
                 s.errors += 1;
                 tracing::debug!("screen share of {}: {err}", frame.user);
                 decoders.remove(&key);
-                core.request_keyframe(frame.user);
+                want_keyframe(frame.user);
             }
         }
     }
