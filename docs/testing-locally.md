@@ -100,8 +100,9 @@ Register an account in each (for example `pc` and `laptop`). The server's certif
 self-signed; the fingerprint in the link is trusted automatically.
 
 To turn up the clients' logging, set `HERMES_LOG` before starting them, for example
-`$env:HERMES_LOG = "info,hermes_gui::screen=debug"`. Client logs are in
-`<config dir>\logs\hermes.log`.
+`$env:HERMES_LOG = "info,hermes_gui::screen=debug"`. The running client logs to
+`<config dir>\logs\latest.log` (the TUI to `latest-tui.log`); earlier runs and days are in
+`<config dir>\logs\logs_old\`, crash reports in `<config dir>\logs\crash-*.log`.
 
 ## 7. Test a screen share
 

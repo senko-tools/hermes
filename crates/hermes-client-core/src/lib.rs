@@ -11,6 +11,7 @@ pub mod crash;
 pub mod files;
 pub mod gateway;
 pub mod known_hosts;
+pub mod logs;
 pub mod notify;
 pub mod rest;
 pub mod store;

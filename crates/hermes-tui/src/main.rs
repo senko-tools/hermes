@@ -120,17 +120,11 @@ fn main() -> ExitCode {
     }
 }
 
-/// Logs go to `<config dir>/logs/hermes-tui.log`; the terminal is busy with the UI.
+/// Logs go to `<config dir>/logs/latest-tui.log`, older ones to `logs/logs_old/`; the terminal
+/// is busy with the UI.
 fn init_logging(paths: &ConfigPaths) {
     let dir = paths.dir.join("logs");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("hermes-tui.log"))
-    else {
+    let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes-tui") else {
         return;
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("HERMES_LOG")

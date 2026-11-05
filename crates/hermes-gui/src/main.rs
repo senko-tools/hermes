@@ -223,18 +223,12 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Logs go to `<config dir>/logs/hermes.log` (`HERMES_LOG` sets the filter).
+/// Logs go to `<config dir>/logs/latest.log`, older ones to `logs/logs_old/` (see
+/// `hermes_client_core::logs`; `HERMES_LOG` sets the filter).
 fn init_logging(paths: &ConfigPaths) {
     let dir = paths.dir.join("logs");
     hermes_client_core::crash::install(dir.clone(), "hermes");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("hermes.log"))
-    else {
+    let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes") else {
         return;
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("HERMES_LOG")

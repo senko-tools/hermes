@@ -1633,3 +1633,16 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
 - **Options:** resolution adds `2160p`; frame rates are 15, 30 and 60 (5 and 10 removed). New
   defaults: 1080p at 60 fps (was 720p at 10).
 - **Why:** the developer asked for smoothness first, with a quick setting for clarity.
+
+## 2026-11-05: Log files by date; crash reports named by local time
+
+- **What:** the client logs to `logs/latest.log` (TUI: `logs/latest-tui.log`). At the next start,
+  or when the local day changes while it runs, that file moves to
+  `logs/logs_old/<app>-YYYY-MM-DD.log` (`-2`, `-3`, … for more runs on one day; empty logs are
+  dropped). A `hermes.log` from older versions is moved there too. Crash reports are named
+  `crash-YYYY-MM-DD-HHMMSS.log` (local time) instead of `crash-<unix ms>.log`
+  (`client-core::logs`).
+- **Retention:** rotated logs are deleted after 7 days (PLAN.md section 13); crash and freeze
+  reports in `logs/` after 30 days, which the plan does not cover.
+- **Why:** the developer asked for logs separated by date with a `latest.log`, old ones in a
+  `logs_old` folder that gets cleaned up; one ever-growing `hermes.log` mixed every run together.
