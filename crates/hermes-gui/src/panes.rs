@@ -701,6 +701,7 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                         &ctx.config.voice.share_preference,
                     ),
                 },
+                ctx.images,
                 fonts,
                 theme,
             )
@@ -845,6 +846,8 @@ pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message>
                 utc_offset: ctx.utc_offset,
                 drop_target,
                 return_to: &ctx.return_to,
+                inst: &inst,
+                images: ctx.images,
             })
             .map(move |m| Message::SpaceSettings(inst.clone(), space, m))
         }
@@ -967,13 +970,8 @@ fn member_list<'a>(ctx: &Context<'a>, inst: &InstanceId, channel: Id) -> Element
                     .color
                     .map_or(theme.text.primary.0, style::rgb)
                     .scale_alpha(if offline { 0.5 } else { 1.0 });
-                let picture = s
-                    .user(member.user_id)
-                    .and_then(|u| u.avatar.as_ref())
-                    .and_then(|a| match ctx.images.get(&(inst.clone(), a.id)) {
-                        Some(channel::message::Img::Ready(handle)) => Some(handle.clone()),
-                        _ => None,
-                    });
+                let picture =
+                    crate::widget::avatar::picture(ctx.images, inst, s.user(member.user_id));
                 let face = crate::widget::avatar::view(
                     &member.name,
                     picture.as_ref(),

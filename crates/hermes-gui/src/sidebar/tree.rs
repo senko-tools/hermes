@@ -98,6 +98,8 @@ pub enum Row {
         inst: InstanceId,
         id: Id,
         name: String,
+        /// The other person of a 1:1 conversation (their avatar).
+        peer: Option<Id>,
         group: bool,
         selected: bool,
     },
@@ -105,6 +107,8 @@ pub enum Row {
         inst: InstanceId,
         id: Id,
         name: String,
+        /// The other person of a 1:1 conversation (their avatar).
+        peer: Option<Id>,
         group: bool,
         badge: Badge,
         selected: bool,
@@ -338,6 +342,7 @@ fn dm_rows(
     rows: &mut Vec<Row>,
 ) {
     rows.push(Row::NewDm { inst: inst.clone() });
+    let peer = |id: Id| s.dms.get(&id).and_then(|c| s.dm_partner(c)).map(|u| u.id);
     let requests = view::dm_requests(s);
     if !requests.is_empty() {
         rows.push(Row::Requests {
@@ -348,6 +353,7 @@ fn dm_rows(
             rows.push(Row::Request {
                 inst: inst.clone(),
                 id: r.id,
+                peer: peer(r.id),
                 name: r.name,
                 group: r.kind == ChannelKind::GroupDm,
                 selected: selected == Some(r.id),
@@ -359,6 +365,7 @@ fn dm_rows(
         rows.push(Row::Dm {
             inst: inst.clone(),
             id,
+            peer: peer(id),
             name: dm.name,
             group: dm.kind == ChannelKind::GroupDm,
             badge: Badge {

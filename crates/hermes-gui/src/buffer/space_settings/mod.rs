@@ -261,6 +261,9 @@ pub struct Ctx<'a, 'b> {
     pub drop_target: Option<(crate::drag::Kind, Id)>,
     /// What closing the page goes back to.
     pub return_to: &'b str,
+    pub inst: &'b hermes_client_core::InstanceId,
+    /// Loaded avatars.
+    pub images: &'b crate::buffer::channel::message::Images,
 }
 
 impl Ctx<'_, '_> {

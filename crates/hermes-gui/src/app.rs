@@ -1335,26 +1335,11 @@ impl App {
         )
     }
 
-    /// Starts loading the thumbnails of a message's images that are not loaded yet.
+    /// Starts loading the thumbnails of a message's images that are not loaded yet (avatars
+    /// come from [`App::load_avatars`]).
     fn load_thumbnails(&mut self, inst: &InstanceId, channel: Id, message: Id) -> Task<Message> {
-        let avatar = if self.config.buffer.show_avatars {
-            self.core
-                .store()
-                .instance(inst)
-                .and_then(|s| {
-                    let author = s.window(channel)?.get(message)?.author.id;
-                    s.user(author)?.avatar.clone()
-                })
-                .map(|a| a.id)
-                .filter(|id| !self.images.contains_key(&(inst.clone(), *id)))
-        } else {
-            None
-        };
         if !self.config.buffer.image_previews {
-            return match avatar {
-                Some(id) => self.load_images(inst, vec![id]),
-                None => Task::none(),
-            };
+            return Task::none();
         }
         let wanted: Vec<Id> = {
             let store = self.core.store();
@@ -1370,10 +1355,44 @@ impl App {
                 .filter(|a| channel::message::is_image(a))
                 .map(|a| a.id)
                 .filter(|id| !self.images.contains_key(&(inst.clone(), *id)))
-                .chain(avatar)
                 .collect()
         };
         self.load_images(inst, wanted)
+    }
+
+    /// Starts loading the avatar of everyone the store knows whose avatar is not loaded (or
+    /// loading) yet, so every list, row and menu can show their picture. Each one is fetched
+    /// once; a changed avatar is a new attachment.
+    fn load_avatars(&mut self) -> Task<Message> {
+        let wanted: Vec<(InstanceId, Id)> = {
+            let store = self.core.store();
+            store
+                .instances
+                .iter()
+                .flat_map(|(inst, s)| {
+                    s.users
+                        .values()
+                        .chain(s.me.as_ref().map(|me| &me.user))
+                        .filter_map(|u| u.avatar.as_ref())
+                        .map(move |a| (inst.clone(), a.id))
+                })
+                .filter(|key| !self.images.contains_key(key))
+                .collect()
+        };
+        let mut by_instance: std::collections::HashMap<InstanceId, Vec<Id>> =
+            std::collections::HashMap::new();
+        for (inst, id) in wanted {
+            let ids = by_instance.entry(inst).or_default();
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        Task::batch(
+            by_instance
+                .into_iter()
+                .map(|(inst, ids)| self.load_images(&inst, ids))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Loads the thumbnails of these attachments into `images`.
@@ -2179,6 +2198,7 @@ impl App {
 
     fn on_core(&mut self, event: CoreEvent) -> Task<Message> {
         let mut task = Task::none();
+        let is_store_change = matches!(event, CoreEvent::StoreChanged { .. });
         match event {
             CoreEvent::ConfigReloaded { warnings } => {
                 self.apply_config(self.core.config());
@@ -2227,6 +2247,9 @@ impl App {
             }
             // The views read the store directly; the other events only trigger a redraw.
             _ => {}
+        }
+        if is_store_change {
+            task = Task::batch([task, self.load_avatars()]);
         }
         self.update_badge();
         task
@@ -2722,14 +2745,17 @@ impl App {
                 let s = store.instance(inst)?;
                 let author = s.window(*channel)?.get(*id)?.author.id;
                 let name = s.display_name(s.space_of(*channel), author);
+                let picture = avatar::picture(&self.images, inst, s.user(author));
                 (
-                    avatar::view(&name, None, 22.0, fonts),
+                    avatar::view(&name, picture.as_ref(), 22.0, fonts),
                     format!("Message from {name}"),
                 )
             }
             Target::Member(inst, space, user) => {
-                let name = store.instance(inst)?.display_name(*space, *user);
-                (avatar::view(&name, None, 22.0, fonts), name)
+                let s = store.instance(inst)?;
+                let name = s.display_name(*space, *user);
+                let picture = avatar::picture(&self.images, inst, s.user(*user));
+                (avatar::view(&name, picture.as_ref(), 22.0, fonts), name)
             }
             Target::Role(inst, space, role) => {
                 let name = store

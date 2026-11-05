@@ -4,6 +4,10 @@
 use iced::widget::{Space, container, image, stack, text};
 use iced::{Border, Color, Element, Length};
 
+use hermes_client_core::InstanceId;
+use hermes_client_core::proto::models::User;
+
+use crate::buffer::channel::message::{Images, Img};
 use crate::font::Fonts;
 
 /// Initial backgrounds; light enough for dark text in both themes.
@@ -16,6 +20,15 @@ const PALETTE: [Color; 6] = [
     Color::from_rgb8(0xe0, 0x8c, 0x70),
 ];
 const INITIAL_TEXT: Color = Color::from_rgb8(0x1d, 0x1c, 0x22);
+
+/// `user`'s picture, once its thumbnail is loaded (`App::load_avatars` fetches them).
+pub fn picture(images: &Images, inst: &InstanceId, user: Option<&User>) -> Option<image::Handle> {
+    let avatar = user?.avatar.as_ref()?;
+    match images.get(&(inst.clone(), avatar.id)) {
+        Some(Img::Ready(handle)) => Some(handle.clone()),
+        _ => None,
+    }
+}
 
 /// The stable color for `name`.
 pub fn color(name: &str) -> Color {

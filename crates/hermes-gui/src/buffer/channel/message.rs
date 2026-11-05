@@ -170,17 +170,14 @@ pub fn view<'a>(
     // Gutter: avatar on the first message of a group, the time on hover for the others.
     let gutter: Element<'a, Message> = if !m.grouped && ctx.config.buffer.show_avatars {
         // The user's current picture (the message keeps the one from when it was sent).
-        let picture = s
-            .user(msg.author.id)
-            .map_or(msg.author.avatar.as_ref(), |u| u.avatar.as_ref())
-            .and_then(|a| ctx.images.get(&(inst.clone(), a.id)));
-        let picture = match picture {
-            Some(Img::Ready(handle)) => Some(handle),
-            _ => None,
-        };
+        let picture = crate::widget::avatar::picture(
+            ctx.images,
+            inst,
+            Some(s.user(msg.author.id).unwrap_or(&msg.author)),
+        );
         mouse_area(crate::widget::avatar::view(
             &s.display_name(space, msg.author.id),
-            picture,
+            picture.as_ref(),
             AVATAR,
             fonts,
         ))

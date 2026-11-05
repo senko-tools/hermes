@@ -18,7 +18,7 @@ use iced::{Alignment, Border, Color, Element, Fill};
 use self::collapsed::Node;
 use self::menu::Target;
 use self::tree::{Badge, Row, Tab};
-use crate::buffer::channel::message::{Images, Img};
+use crate::buffer::channel::message::Images;
 use crate::drag::Item;
 use crate::font::Fonts;
 use crate::message::Message;
@@ -48,14 +48,27 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let join_on = JoinOn::from_config(&core.config().voice.join_on);
     let mut list = column![].spacing(2).padding([style::GAP_S, style::GAP_S]);
-    for row in rows {
-        let (element, drag) = match row {
-            Row::Channel { drag, .. } | Row::Category { drag, .. } => {
-                (row_view(row, join_on, fonts, theme, menu), drag.as_ref())
-            }
-            _ => (row_view(row, join_on, fonts, theme, menu), None),
+    {
+        // Dropped before the panels below, which read the store themselves: a second read
+        // lock on this thread can deadlock while a writer waits.
+        let store = core.store();
+        let face = |inst: &InstanceId, user: Id| {
+            avatar::picture(
+                images,
+                inst,
+                store.instance(inst).and_then(|s| s.user(user)),
+            )
         };
-        list = list.push(draggable(element, drag, drop_target, theme));
+        for row in rows {
+            let (element, drag) = match row {
+                Row::Channel { drag, .. } | Row::Category { drag, .. } => (
+                    row_view(row, join_on, fonts, theme, menu, &face),
+                    drag.as_ref(),
+                ),
+                _ => (row_view(row, join_on, fonts, theme, menu, &face), None),
+            };
+            list = list.push(draggable(element, drag, drop_target, theme));
+        }
     }
     list = list.push(Space::new().height(style::GAP_S));
     list = list.push(
@@ -183,13 +196,7 @@ fn user_panel<'a>(
         .and_then(|inst| {
             let store = core.store();
             let me = store.instance(inst)?.me.as_ref()?.user.clone();
-            let picture =
-                me.avatar
-                    .as_ref()
-                    .and_then(|a| match images.get(&(inst.clone(), a.id)) {
-                        Some(Img::Ready(handle)) => Some(handle.clone()),
-                        _ => None,
-                    });
+            let picture = avatar::picture(images, inst, Some(&me));
             Some((
                 me.name().to_owned(),
                 me.status_text.clone().unwrap_or_default(),
@@ -291,6 +298,7 @@ fn row_view<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
     menu: Option<&Target>,
+    face: &dyn Fn(&InstanceId, Id) -> Option<iced::widget::image::Handle>,
 ) -> Element<'a, Message> {
     match row {
         Row::Instance {
@@ -474,7 +482,8 @@ fn row_view<'a>(
             } else {
                 Color::TRANSPARENT
             };
-            let face = container(avatar::view(name, None, SLOT - 4.0, fonts))
+            let picture = face(inst, *user);
+            let face = container(avatar::view(name, picture.as_ref(), SLOT - 4.0, fonts))
                 .padding(2)
                 .style(move |_| container::Style {
                     border: Border {
@@ -532,6 +541,7 @@ fn row_view<'a>(
             inst,
             id,
             name,
+            peer,
             group,
             selected,
         } => {
@@ -540,7 +550,8 @@ fn row_view<'a>(
             let face: Element<'a, Message> = if *group {
                 icon(icon::USERS, 14.0).color(theme.text.secondary.0).into()
             } else {
-                avatar::view(name, None, SLOT, fonts)
+                let picture = peer.and_then(|p| face(inst, p));
+                avatar::view(name, picture.as_ref(), SLOT, fonts)
             };
             let small = |glyph: char, color: Color, message: Message| {
                 button(icon(glyph, 14.0).color(color))
@@ -613,6 +624,7 @@ fn row_view<'a>(
             inst,
             id,
             name,
+            peer,
             group,
             badge,
             selected,
@@ -633,7 +645,8 @@ fn row_view<'a>(
                     })
                     .into()
             } else {
-                avatar::view(name, None, SLOT, fonts)
+                let picture = peer.and_then(|p| face(inst, p));
+                avatar::view(name, picture.as_ref(), SLOT, fonts)
             };
             let row = item(
                 row![

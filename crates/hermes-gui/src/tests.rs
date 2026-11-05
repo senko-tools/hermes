@@ -764,3 +764,75 @@ async fn typing_anywhere_goes_into_the_message_box() {
     ));
     assert_eq!(owner.composers[&(inst, general)].text(), "hi");
 }
+
+/// Avatars load for everyone the store knows, not only for authors of messages on screen: Bob
+/// gets Alice's picture for the member list and menus although she never wrote anything.
+#[tokio::test]
+async fn avatars_load_without_messages() {
+    use hermes_client_core::proto::api::UpdateMeRequest;
+    use hermes_client_core::{CoreEvent, store::Changed};
+
+    let server = start("avatars").await;
+    let mut alice = app();
+    probe(&mut alice, &server.link).await;
+    submit(&mut alice, "alice", "correct horse").await;
+    let inst = server.host.display();
+    let space = first_space(&alice.core, &inst).await;
+
+    let file = server.dir.join("me.png");
+    image::RgbImage::from_pixel(8, 8, image::Rgb([10, 120, 200]))
+        .save(&file)
+        .unwrap();
+    let avatar = alice.core.upload(&inst, &file).await.unwrap().id;
+    alice
+        .core
+        .rest(&inst)
+        .unwrap()
+        .update_me(&UpdateMeRequest {
+            avatar_id: Some(Some(avatar)),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let invite = alice
+        .core
+        .rest(&inst)
+        .unwrap()
+        .create_invite(space, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let mut bob = app();
+    probe(
+        &mut bob,
+        &alice.core.invite_link(&inst, &invite.code).unwrap(),
+    )
+    .await;
+    submit(&mut bob, "bob", "battery staple").await;
+    first_space(&bob.core, &inst).await;
+    eventually(&bob.core, "Bob knows Alice's avatar", |s| {
+        s.instance(&inst).is_some_and(|s| {
+            s.users
+                .values()
+                .any(|u| u.avatar.as_ref().is_some_and(|a| a.id == avatar))
+        })
+    })
+    .await;
+
+    let key = (inst.clone(), avatar);
+    assert!(!bob.images.contains_key(&key));
+    let _ = bob.update(Message::Core(CoreEvent::StoreChanged {
+        inst: inst.clone(),
+        what: Changed::All,
+    }));
+    assert!(bob.images.contains_key(&key), "Alice's avatar is loading");
+    // The next change does not fetch it again.
+    let _ = bob.update(Message::Core(CoreEvent::StoreChanged {
+        inst: inst.clone(),
+        what: Changed::All,
+    }));
+    assert!(matches!(
+        bob.images.get(&key),
+        Some(crate::buffer::channel::message::Img::Loading)
+    ));
+}

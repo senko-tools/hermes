@@ -61,7 +61,13 @@ pub fn view<'a>(ctx: &Ctx<'a, '_>) -> Element<'a, Message> {
         list = list.push(
             button(
                 row![
-                    crate::widget::avatar::view(&name, None, 28.0, fonts),
+                    crate::widget::avatar::view(
+                        &name,
+                        crate::widget::avatar::picture(ctx.images, ctx.inst, Some(&m.user))
+                            .as_ref(),
+                        28.0,
+                        fonts,
+                    ),
                     column![
                         label(name.clone(), fonts).color(name_color),
                         caption(format!("@{}", m.user.username), fonts)

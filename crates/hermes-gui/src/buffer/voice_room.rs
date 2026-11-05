@@ -12,6 +12,7 @@ use hermes_client_core::{Core, InstanceId};
 use iced::widget::{Space, column, container, mouse_area, responsive, row, stack, text};
 use iced::{Alignment, Border, Color, Element, Fill, Length, Size};
 
+use crate::buffer::channel::message::{Images, Img};
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
@@ -34,6 +35,8 @@ pub struct Participant {
     /// Your volume for them (1.0 = 100 %), or `None` for yourself.
     pub volume: Option<f32>,
     pub locally_muted: bool,
+    /// Their avatar's attachment id.
+    pub avatar: Option<Id>,
 }
 
 /// The people in the room of `channel`, in join order.
@@ -63,6 +66,10 @@ pub fn participants(core: &Core, inst: &InstanceId, channel: Id) -> Vec<Particip
                 deafened: v.self_deaf || v.server_deaf,
                 volume: (!own).then(|| core.user_volume(inst, v.user_id)),
                 locally_muted: !own && core.user_muted(inst, v.user_id),
+                avatar: s
+                    .user(v.user_id)
+                    .and_then(|u| u.avatar.as_ref())
+                    .map(|a| a.id),
             }
         })
         .collect()
@@ -82,6 +89,8 @@ struct Tile {
     preference: Option<crate::screen::capture::Preference>,
     /// The latest picture of their share.
     picture: Option<crate::screen::view::Share>,
+    /// Their avatar, once loaded.
+    face: Option<iced::widget::image::Handle>,
 }
 
 /// The column count and tile size that make `n` tiles of [`ASPECT`] largest in `area` with
@@ -117,6 +126,7 @@ pub fn view<'a>(
     inst: &InstanceId,
     channel: Id,
     shares: &Shares<'_>,
+    images: &Images,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
@@ -149,6 +159,12 @@ pub fn view<'a>(
                 watchers: if own { my_watchers } else { None },
                 preference: (own && me_sharing).then_some(shares.preference),
                 picture: shares.pictures.get(&(inst.clone(), person.user)).cloned(),
+                face: person
+                    .avatar
+                    .and_then(|id| match images.get(&(inst.clone(), id)) {
+                        Some(Img::Ready(handle)) => Some(handle.clone()),
+                        _ => None,
+                    }),
                 person,
             }
         })
@@ -296,23 +312,7 @@ fn tile<'a>(
             }
             None => {
                 let side = (size.height * 0.4).clamp(24.0, AVATAR_MAX);
-                let initial: String = p
-                    .name
-                    .chars()
-                    .next()
-                    .map(|c| c.to_uppercase().collect())
-                    .unwrap_or_default();
-                let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
-                    .center(Length::Fixed(side))
-                    .style(move |_| container::Style {
-                        text_color: Some(theme.text.primary.0),
-                        background: Some(theme.surface.hover.0.into()),
-                        border: Border {
-                            radius: (side / 2.0).into(),
-                            ..Border::default()
-                        },
-                        ..container::Style::default()
-                    });
+                let avatar = crate::widget::avatar::view(&p.name, t.face.as_ref(), side, fonts);
                 let mut info = column![avatar, name_row]
                     .spacing(style::GAP_S)
                     .align_x(Alignment::Center);
