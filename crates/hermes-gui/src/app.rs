@@ -299,6 +299,10 @@ impl App {
             self.sync_meter();
             self.sync_screens();
         }
+        // Tests build the view after every message, so they also check that it does not lock
+        // the store twice (`Core::store` panics on that in debug builds).
+        #[cfg(test)]
+        drop(self.view());
         task
     }
 
@@ -2749,6 +2753,9 @@ impl App {
         let fonts = &self.fonts;
         let theme = &self.theme;
         let rows = self.sidebar_rows();
+        // Its own statement: a guard made in an argument would stay locked while the sidebar
+        // locks the store again, which can deadlock.
+        let badges = tree::tab_badges(&self.core.store(), &self.core.instance_ids());
         let sidebar = crate::sidebar::view(
             &self.core,
             &rows,
@@ -2761,7 +2768,7 @@ impl App {
             &self.images,
             self.menu.as_ref().map(|(target, _)| target),
             self.sidebar_tab,
-            tree::tab_badges(&self.core.store(), &self.core.instance_ids()),
+            badges,
         );
 
         let account_inst = self.account_instance();

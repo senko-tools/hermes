@@ -106,9 +106,13 @@ pub fn room_here(app: &App) -> bool {
 }
 
 /// The bottom line of a voice channel's or DM's message pane: who is in the room and the keys.
-pub fn room_footer(app: &App, inst: &str, channel: Id) -> Option<String> {
-    let store = app.core.store();
-    let s = store.instance(inst)?;
+/// Takes the caller's store (`s` is `inst`'s): locking it again while drawing could deadlock.
+pub fn room_footer(
+    app: &App,
+    s: &hermes_client_core::store::InstanceStore,
+    inst: &str,
+    channel: Id,
+) -> Option<String> {
     if !has_room(s.channel(channel)?.kind) {
         return None;
     }

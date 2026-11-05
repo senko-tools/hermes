@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
+use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -206,6 +207,50 @@ pub struct Store {
 impl Store {
     pub fn instance(&self, inst: &str) -> Option<&InstanceStore> {
         self.instances.get(inst)
+    }
+}
+
+/// A read lock on the [`Store`] (see [`Core::store`]).
+pub struct StoreRef<'a>(RwLockReadGuard<'a, Store>);
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Store read locks this thread holds.
+    static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+impl StoreRef<'_> {
+    fn enter() {
+        Self::check_unlocked();
+        #[cfg(debug_assertions)]
+        HELD.with(|h| h.set(h.get() + 1));
+    }
+
+    /// Panics (debug builds) when this thread already holds a store lock: locking it again
+    /// can deadlock.
+    fn check_unlocked() {
+        #[cfg(debug_assertions)]
+        HELD.with(|h| {
+            assert!(
+                h.get() == 0,
+                "the store is locked again on a thread that already holds it; this can deadlock"
+            );
+        });
+    }
+}
+
+impl Deref for StoreRef<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        &self.0
+    }
+}
+
+impl Drop for StoreRef<'_> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        HELD.with(|h| h.set(h.get() - 1));
     }
 }
 
@@ -423,12 +468,17 @@ impl Core {
         }
     }
 
-    /// Read access to every instance's state. Do not hold it across an `.await`.
-    pub fn store(&self) -> RwLockReadGuard<'_, Store> {
-        self.inner.store.read().expect("store lock")
+    /// Read access to every instance's state. Do not hold it across an `.await`, and do not
+    /// call `store()` (or anything that locks the store) while holding it: the lock lets
+    /// waiting writers go first, so a second read on the same thread waits for a writer that
+    /// waits for the first read, and the thread hangs. Debug builds panic on that instead.
+    pub fn store(&self) -> StoreRef<'_> {
+        StoreRef::enter();
+        StoreRef(self.inner.store.read().expect("store lock"))
     }
 
     fn with_store<T>(&self, inst: &str, f: impl FnOnce(&mut InstanceStore) -> T) -> Option<T> {
+        StoreRef::check_unlocked();
         let mut store = self.inner.store.write().expect("store lock");
         store.instances.get_mut(inst).map(f)
     }
