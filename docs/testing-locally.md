@@ -110,7 +110,7 @@ other. While a share runs, every step logs one line every 10 seconds:
 
 | Where | Log line starts with | Tells you |
 |---|---|---|
-| Sharer (client log) | `screen share (desktop duplication, …)` | frames captured and sent per second, capture and encode time, frames dropped by a busy encoder or refused by a full connection queue, keyframes, bitrate |
+| Sharer (client log) | `screen share (GPU, …)` or `(desktop duplication, OpenH264, …)` | frames captured and sent per second, capture and encode time, frames dropped by a busy encoder or refused by a full connection queue, keyframes, bitrate |
 | Sharer (client log) | `screen share transport (sent)` | how long frames take to leave over QUIC |
 | Server (console) | `screen share of <user>` | frames in per second, frames over the rate limit, frames queued for watchers, frames lost to a watcher's full queue, keyframe requests |
 | Watcher (client log) | `screen share transport (received)` | frames arriving per second, time on the wire, frames not handed to the decoder |
@@ -151,7 +151,13 @@ To narrow it down further:
 
   It prints frames sent, received and their delay (median, p95, p99, max).
 - **Measure the codec alone**: `cargo test -p hermes-gui --release real_screen -- --ignored --nocapture`
-  captures this PC's screen and prints the time of each step.
+  captures this PC's screen and prints the time of each step, on the CPU path and on the GPU path
+  (1080p, the screen's size and 4K, encoding and decoding).
+- **Measure a whole share on one PC**: `cargo test -p hermes-gui --release share_end_to_end -- --ignored --nocapture`
+  shares this PC's screen through a real local server to a second client and prints the frames
+  received, their spacing and the decode time (`HERMES_SHARE_RES`, `HERMES_SHARE_FPS`,
+  `HERMES_SHARE_PREF`, `HERMES_SHARE_SECS` shape it). Frames only flow while the screen changes:
+  play a video while it runs.
 
 Task Manager → Performance → GPU shows the "Video Encode" and "Video Decode" engines: with hardware
 encoding they carry the work instead of the CPU.
