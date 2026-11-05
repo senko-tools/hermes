@@ -57,6 +57,10 @@ const KEYFRAME_EVERY: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const STATS_EVERY: Duration = Duration::from_secs(10);
 
+/// While nobody watches, how often the capture thread looks whether someone started to.
+#[cfg(windows)]
+const IDLE_POLL: Duration = Duration::from_millis(100);
+
 /// A running capture; dropping it stops the threads.
 pub struct Capture {
     stop: Arc<AtomicBool>,
@@ -243,7 +247,26 @@ fn run(
     let mut last: Option<Arc<Frame>> = None;
     let mut last_sent = Instant::now();
     let mut stats_since = Instant::now();
+    let mut idle = false;
     while !stop.load(Ordering::Relaxed) && core.sharing_screen() {
+        // Nobody watches: frames would go nowhere, so nothing is captured or encoded. The
+        // duplication stays open, so the first watcher gets a picture (a keyframe) at once.
+        if core.share_watchers() == Some(0) {
+            if !idle {
+                tracing::info!("screen share: nobody is watching, capture paused");
+                idle = true;
+            }
+            std::thread::sleep(IDLE_POLL);
+            continue;
+        }
+        if idle {
+            tracing::info!("screen share: someone is watching, capture resumed");
+            idle = false;
+            keyframe.store(true, Ordering::Relaxed);
+            stats_since = Instant::now();
+            // `last` stays: if the screen did not change meanwhile, Desktop Duplication has no
+            // new picture, and the keyframe repeats the last one.
+        }
         let begin = Instant::now();
         let shot = match &mut source {
             Source::Dxgi(duplicator) => {

@@ -59,6 +59,8 @@ pub enum VoiceMsg {
     StartShare,
     /// Shows one person's screen share alone in the voice room (`None`: everyone again).
     EnlargeShare(Option<(InstanceId, Id)>),
+    /// Start (`true`) or stop watching someone's screen share.
+    WatchShare(InstanceId, Id, bool),
 }
 
 /// `voice.join_on`.
@@ -208,6 +210,17 @@ impl App {
                 self.panes.open(Buffer::VoiceRoom { inst, channel });
             }
             VoiceMsg::EnlargeShare(share) => self.enlarged_share = share,
+            VoiceMsg::WatchShare(inst, user, watch) => {
+                let share = (inst, user);
+                if watch {
+                    self.watching_shares.insert(share);
+                } else {
+                    if self.enlarged_share.as_ref() == Some(&share) {
+                        self.enlarged_share = None;
+                    }
+                    self.watching_shares.remove(&share);
+                }
+            }
             VoiceMsg::UserMenu(inst, user) => {
                 let name = {
                     let store = self.core.store();

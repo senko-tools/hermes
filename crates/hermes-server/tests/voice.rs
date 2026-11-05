@@ -706,6 +706,41 @@ async fn screen_shares_reach_only_watchers_in_the_room() {
     assert_eq!(stopped["d"]["participant_id"], alice_pid);
 }
 
+#[tokio::test]
+async fn sharers_learn_how_many_watch() {
+    let server = start("voice-share-watchers", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let (carol, _) = server.member(&owner, &space_id, "carol").await;
+    let general = server.channel_id(&space_id, "General");
+    let (mut a, a_ready) = server.voice_join(&alice, &general).await;
+    let (mut b, _) = server.voice_join(&bob, &general).await;
+    let (mut c, _) = server.voice_join(&carol, &general).await;
+    let alice_pid = a_ready["participant_id"].as_u64().unwrap();
+    let watch = |watching: bool| json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": watching } });
+    let count = |msg: serde_json::Value| msg["d"]["count"].as_u64().unwrap();
+
+    // Starting tells the sharer that nobody watches yet.
+    a.send(json!({ "op": "share_start", "d": {} })).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 0);
+    b.recv_op("share_started").await;
+    c.recv_op("share_started").await;
+
+    b.send(watch(true)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 1);
+    c.send(watch(true)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 2);
+    // Watching twice changes nothing; stopping does.
+    c.send(watch(true)).await;
+    c.send(watch(false)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 1);
+
+    // A watcher leaving the room counts too.
+    b.send(json!({ "op": "leave", "d": {} })).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 0);
+}
+
 fn voice_max_frame() -> usize {
     hermes_proto::voice::MAX_VIDEO_FRAME
 }

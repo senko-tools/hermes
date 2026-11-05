@@ -522,11 +522,13 @@ async fn screen_shares_flow_to_watchers() {
 
     p.alice.start_screen_share().unwrap();
     assert!(p.alice.sharing_screen());
+    eventually("nobody watches yet", || p.alice.share_watchers() == Some(0)).await;
     eventually("bob sees the share", || {
         p.bob.screen_sharers() == [(inst.clone(), alice_id)]
     })
     .await;
     p.bob.watch_screens(&[alice_id]);
+    eventually("bob watches", || p.alice.share_watchers() == Some(1)).await;
     wait_for(&mut p.alice_events, "a keyframe request", |e| {
         matches!(e, CoreEvent::KeyframeRequested)
     })
@@ -550,6 +552,7 @@ async fn screen_shares_flow_to_watchers() {
 
     // Unwatched, nothing more arrives.
     p.bob.watch_screens(&[]);
+    eventually("nobody watches", || p.alice.share_watchers() == Some(0)).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(p.alice.send_screen_frame(frame(false, 100)));
     assert!(
@@ -559,6 +562,7 @@ async fn screen_shares_flow_to_watchers() {
     );
 
     p.alice.stop_screen_share();
+    assert_eq!(p.alice.share_watchers(), None);
     assert!(!p.alice.send_screen_frame(frame(true, 200)), "no share");
     eventually("the share ended", || p.bob.screen_sharers().is_empty()).await;
 }

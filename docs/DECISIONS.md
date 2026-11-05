@@ -1535,3 +1535,20 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   until the next keyframe. Both are fixed in the following steps.
 - **Why:** the developer reported laggy shares that cost about 11 % CPU whether watched or not,
   and asked for a way to tell server problems from client ones.
+
+## 2026-11-05: Watching screen shares on demand
+
+- **What:** a screen share is received only by people who chose to watch it. A sharer's tile
+  shows "Sharing their screen" and a **Watch** button (a click anywhere on the tile does the same);
+  a watched share has a **Stop watching** button in its top-right corner (and on its tile while
+  it loads). The choice is forgotten when the share or the call ends; it is still only received
+  while the voice room shows in a pane and the window is open. This replaces "shares are received
+  while the voice room shows" of the 2026-11-02 entry.
+- **Protocol (addition to docs/protocol.md):** the server tells a sharer how many watch them with
+  the new control op `share_watchers {count}`, after `share_start` and whenever it changes
+  (watching, stopping, a watcher leaving). While it is 0 the GUI stops capturing and encoding
+  (Desktop Duplication stays open so a new watcher gets a picture at once); its own tile says how
+  many watch. Older clients skip the unknown op; a newer client with an older server never gets
+  it and keeps sending as before.
+- **Why:** the developer asked for starting and stopping watching; a share nobody watches cost
+  the sharer about 11 % CPU for nothing.

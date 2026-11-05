@@ -384,6 +384,8 @@ pub struct Context<'a> {
     pub return_to: String,
     /// The latest picture of each screen share I watch.
     pub screens: &'a std::collections::HashMap<(InstanceId, Id), crate::screen::view::Share>,
+    /// The screen shares I chose to watch.
+    pub watching_shares: &'a std::collections::HashSet<(InstanceId, Id)>,
     /// The screen share shown alone in its voice room.
     pub enlarged_share: Option<&'a (InstanceId, Id)>,
 }
@@ -691,8 +693,11 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                 ctx.core,
                 inst,
                 *channel,
-                ctx.screens,
-                enlarged,
+                &crate::buffer::voice_room::Shares {
+                    pictures: ctx.screens,
+                    watching: ctx.watching_shares,
+                    enlarged,
+                },
                 fonts,
                 theme,
             )

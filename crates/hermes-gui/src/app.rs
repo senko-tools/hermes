@@ -82,6 +82,9 @@ pub struct App {
     pub(crate) screens: std::collections::HashMap<(InstanceId, Id), crate::screen::view::Share>,
     /// The screen share shown alone in the voice room (clicked to enlarge).
     pub(crate) enlarged_share: Option<(InstanceId, Id)>,
+    /// The screen shares I chose to watch (forgotten when the share or my call ends). They are
+    /// received only while their voice room shows, so a hidden room costs nothing.
+    pub(crate) watching_shares: std::collections::HashSet<(InstanceId, Id)>,
     pub panes: Panes,
     pub keybinds: Keybinds,
     pub sidebar_visible: bool,
@@ -204,6 +207,7 @@ impl App {
             screen_names: Vec::new(),
             screens: std::collections::HashMap::new(),
             enlarged_share: None,
+            watching_shares: std::collections::HashSet::new(),
             add_instance: None,
             single_instance,
             collapsed,
@@ -294,9 +298,12 @@ impl App {
         task
     }
 
-    /// Watches the screen shares of my voice room while its voice room shows in a pane (and
-    /// the window is open), and nothing otherwise; ends my capture once my share has ended.
+    /// Watches the screen shares I chose in my voice room while its voice room shows in a pane
+    /// (and the window is open), and nothing otherwise; ends my capture once my share has ended.
     fn sync_screens(&mut self) {
+        // A share that ended (or a call I left) is no longer chosen.
+        let sharers = self.core.screen_sharers();
+        self.watching_shares.retain(|share| sharers.contains(share));
         let watched: Vec<Id> = match self.core.voice_channel() {
             Some((inst, channel))
                 if self.window_visible
@@ -308,10 +315,9 @@ impl App {
                             }
                     }) =>
             {
-                self.core
-                    .screen_sharers()
+                sharers
                     .into_iter()
-                    .filter(|(i, _)| *i == inst)
+                    .filter(|share| share.0 == inst && self.watching_shares.contains(share))
                     .map(|(_, user)| user)
                     .collect()
             }
@@ -2786,6 +2792,7 @@ impl App {
             ui_scale_draft: self.ui_scale_draft,
             return_to,
             screens: &self.screens,
+            watching_shares: &self.watching_shares,
             enlarged_share: self.enlarged_share.as_ref(),
         };
         main = main.push(self.panes.view(&ctx));

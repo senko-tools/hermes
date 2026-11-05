@@ -116,6 +116,9 @@ struct Session {
     watching: HashSet<u16>,
     /// My own screen share runs.
     my_share: bool,
+    /// How many watch my share (`share_watchers`); `None` until the server says, which an older
+    /// server never does: then frames are always sent.
+    my_watchers: Option<u16>,
     status: VoiceStatus,
     connected_once: bool,
     /// A `join_voice` waiting for `ready` (or an error).
@@ -651,6 +654,7 @@ impl Core {
                 sharing: HashSet::new(),
                 watching: HashSet::new(),
                 my_share: false,
+                my_watchers: None,
                 status: VoiceStatus::Connecting,
                 connected_once: false,
                 pending: Some(pending),
@@ -805,6 +809,7 @@ impl Core {
                                 s.sharing = sharing.into_iter().collect();
                                 s.watching.clear();
                                 s.my_share = false;
+                                s.my_watchers = None;
                             });
                             self.emit(CoreEvent::ScreenShares);
                         }
@@ -821,6 +826,14 @@ impl Core {
                             self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::KeyframeRequested {} => self.emit(CoreEvent::KeyframeRequested),
+                        ServerControl::ShareWatchers { count } => {
+                            self.with_session(generation, |s| {
+                                if s.my_share {
+                                    s.my_watchers = Some(count);
+                                }
+                            });
+                            self.emit(CoreEvent::ScreenShares);
+                        }
                         ServerControl::ParticipantLeft { participant_id } => {
                             self.on_left(generation, participant_id);
                         }
@@ -1078,6 +1091,7 @@ impl Core {
                 .filter(|s| s.connected_once)
                 .ok_or_else(|| CoreError::Io("Join a voice channel first".into()))?;
             session.my_share = true;
+            session.my_watchers = None;
             session.control.clone()
         };
         let _ = control.send(ClientControl::ShareStart {});
@@ -1090,6 +1104,7 @@ impl Core {
             let mut state = self.voice().state();
             state.session.as_mut().filter(|s| s.my_share).map(|s| {
                 s.my_share = false;
+                s.my_watchers = None;
                 s.control.clone()
             })
         };
@@ -1106,6 +1121,17 @@ impl Core {
             .session
             .as_ref()
             .is_some_and(|s| s.my_share)
+    }
+
+    /// How many watch my screen share; `None` while not sharing or when the server does not
+    /// tell (an older one: assume someone does).
+    pub fn share_watchers(&self) -> Option<u16> {
+        self.voice()
+            .state()
+            .session
+            .as_ref()
+            .filter(|s| s.my_share)
+            .and_then(|s| s.my_watchers)
     }
 
     /// The others in my voice room who share their screen.

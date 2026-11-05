@@ -1,8 +1,9 @@
 //! The VoiceRoom buffer (PLAN.md section 15.1): the people in a voice room as a grid of tiles
 //! that always uses the room best (the column count that makes the tiles largest), with
 //! speaking rings and mute/deafen state. Someone sharing their screen shows it in their own
-//! tile, and only to people in the call (docs/DECISIONS.md 2026-11-02). Right-click a tile for
-//! that person's volume menu, screen share or not.
+//! tile, and only to people in the call (docs/DECISIONS.md 2026-11-02), once you chose to watch
+//! it (docs/DECISIONS.md 2026-11-05). Right-click a tile for that person's volume menu, screen
+//! share or not.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,7 +17,7 @@ use crate::message::Message;
 use crate::theme::{Theme, style};
 use crate::voice::VoiceMsg;
 use crate::widget::icon::{self, icon};
-use crate::widget::{caption, label};
+use crate::widget::{ButtonKind, caption, icon_button, label, text_button, tip};
 
 /// Tiles keep this aspect ratio (width / height), the shape of most screens.
 const ASPECT: f32 = 16.0 / 9.0;
@@ -73,6 +74,10 @@ struct Tile {
     person: Participant,
     /// They share their screen (known only in the call).
     sharing: bool,
+    /// I chose to watch their share.
+    watched: bool,
+    /// For my own tile while I share: how many watch (`None`: the server does not say).
+    watchers: Option<u16>,
     /// The latest picture of their share.
     picture: Option<crate::screen::view::Share>,
 }
@@ -93,12 +98,21 @@ pub fn layout(n: usize, area: Size, gap: f32) -> (usize, Size) {
     best
 }
 
+/// The screen shares a voice room shows.
+pub struct Shares<'s> {
+    /// The latest picture of each share I watch.
+    pub pictures: &'s HashMap<(InstanceId, Id), crate::screen::view::Share>,
+    /// The shares I chose to watch.
+    pub watching: &'s HashSet<(InstanceId, Id)>,
+    /// The share shown alone.
+    pub enlarged: Option<Id>,
+}
+
 pub fn view<'a>(
     core: &Core,
     inst: &InstanceId,
     channel: Id,
-    screens: &HashMap<(InstanceId, Id), crate::screen::view::Share>,
-    enlarged: Option<Id>,
+    shares: &Shares<'_>,
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
@@ -115,6 +129,7 @@ pub fn view<'a>(
         HashSet::new()
     };
     let me_sharing = in_call && core.sharing_screen();
+    let my_watchers = core.share_watchers();
     let summary = match people.len() {
         0 => "Nobody is here yet".to_owned(),
         1 => "1 person".to_owned(),
@@ -122,14 +137,19 @@ pub fn view<'a>(
     };
     let mut tiles: Vec<Tile> = people
         .into_iter()
-        .map(|person| Tile {
-            sharing: sharers.contains(&person.user) || (person.volume.is_none() && me_sharing),
-            picture: screens.get(&(inst.clone(), person.user)).cloned(),
-            person,
+        .map(|person| {
+            let own = person.volume.is_none();
+            Tile {
+                sharing: sharers.contains(&person.user) || (own && me_sharing),
+                watched: shares.watching.contains(&(inst.clone(), person.user)),
+                watchers: if own { my_watchers } else { None },
+                picture: shares.pictures.get(&(inst.clone(), person.user)).cloned(),
+                person,
+            }
         })
         .collect();
     // An enlarged share is the only tile, as long as it has a picture.
-    let enlarged = enlarged.and_then(|user| {
+    let enlarged = shares.enlarged.and_then(|user| {
         tiles
             .iter()
             .position(|t| t.person.user == user && t.picture.is_some())
@@ -214,75 +234,116 @@ fn tile<'a>(
         name_row = name_row.push(icon(icon::MONITOR_SHARE, 14.0).color(theme.accent.base.0));
     }
 
-    let content: Element<'a, Message> = match &t.picture {
-        // Their screen fills the tile; the name stays readable on a dark badge.
-        Some(picture) => {
-            let badge = container(name_row)
-                .padding([style::GAP_XS, style::GAP_S])
-                .style(move |_| container::Style {
-                    text_color: Some(Color::WHITE),
-                    background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
-                    border: Border {
-                        radius: style::radius(theme).into(),
-                        ..Border::default()
-                    },
-                    ..container::Style::default()
-                });
-            stack![
-                container(
-                    iced::widget::shader(picture.clone())
-                        .width(Fill)
-                        .height(Fill)
-                )
-                .center(Fill)
-                .style(|_| container::Style {
-                    background: Some(Color::BLACK.into()),
-                    ..container::Style::default()
-                }),
-                container(badge)
-                    .align_left(Fill)
-                    .align_bottom(Fill)
+    let content: Element<'a, Message> =
+        match &t.picture {
+            // Their screen fills the tile; the name stays readable on a dark badge.
+            Some(picture) => {
+                let badge = container(name_row)
+                    .padding([style::GAP_XS, style::GAP_S])
+                    .style(move |_| container::Style {
+                        text_color: Some(Color::WHITE),
+                        background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                        border: Border {
+                            radius: style::radius(theme).into(),
+                            ..Border::default()
+                        },
+                        ..container::Style::default()
+                    });
+                stack![
+                    container(
+                        iced::widget::shader(picture.clone())
+                            .width(Fill)
+                            .height(Fill)
+                    )
+                    .center(Fill)
+                    .style(|_| container::Style {
+                        background: Some(Color::BLACK.into()),
+                        ..container::Style::default()
+                    }),
+                    container(badge)
+                        .align_left(Fill)
+                        .align_bottom(Fill)
+                        .padding(style::GAP_S),
+                    container(tip(
+                        container(
+                            icon_button(icon::CLOSE, false, theme).on_press(Message::Voice(
+                                VoiceMsg::WatchShare(inst.clone(), p.user, false)
+                            ))
+                        )
+                        .style(|_| container::Style {
+                            text_color: Some(Color::WHITE),
+                            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.6).into()),
+                            border: Border {
+                                radius: style::radius(theme).into(),
+                                ..Border::default()
+                            },
+                            ..container::Style::default()
+                        }),
+                        "Stop watching",
+                        fonts,
+                        theme,
+                    ))
+                    .align_right(Fill)
+                    .align_top(Fill)
                     .padding(style::GAP_S),
-            ]
-            .into()
-        }
-        None => {
-            let side = (size.height * 0.4).clamp(24.0, AVATAR_MAX);
-            let initial: String = p
-                .name
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().collect())
-                .unwrap_or_default();
-            let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
-                .center(Length::Fixed(side))
-                .style(move |_| container::Style {
-                    text_color: Some(theme.text.primary.0),
-                    background: Some(theme.surface.hover.0.into()),
-                    border: Border {
-                        radius: (side / 2.0).into(),
-                        ..Border::default()
-                    },
-                    ..container::Style::default()
-                });
-            let mut info = column![avatar, name_row]
-                .spacing(style::GAP_S)
-                .align_x(Alignment::Center);
-            let note = if t.sharing && p.volume.is_none() {
-                Some("You are sharing your screen".to_owned())
-            } else if t.sharing {
-                Some("Loading their screen…".to_owned())
-            } else {
-                p.volume
-                    .filter(|v| (*v - 1.0).abs() > 0.001)
-                    .map(|v| format!("volume {:.0} %", v * 100.0))
-            };
-            if let Some(note) = note {
-                info = info.push(caption(note, fonts).color(theme.text.tertiary.0));
+                ]
+                .into()
             }
-            container(info).center(Fill).into()
-        }
-    };
+            None => {
+                let side = (size.height * 0.4).clamp(24.0, AVATAR_MAX);
+                let initial: String = p
+                    .name
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().collect())
+                    .unwrap_or_default();
+                let avatar = container(text(initial).font(fonts.bold()).size(fonts.heading()))
+                    .center(Length::Fixed(side))
+                    .style(move |_| container::Style {
+                        text_color: Some(theme.text.primary.0),
+                        background: Some(theme.surface.hover.0.into()),
+                        border: Border {
+                            radius: (side / 2.0).into(),
+                            ..Border::default()
+                        },
+                        ..container::Style::default()
+                    });
+                let mut info = column![avatar, name_row]
+                    .spacing(style::GAP_S)
+                    .align_x(Alignment::Center);
+                let note = if t.sharing && p.volume.is_none() {
+                    Some(match t.watchers {
+                        Some(0) => "You are sharing your screen · nobody is watching".to_owned(),
+                        Some(1) => "You are sharing your screen · 1 person is watching".to_owned(),
+                        Some(n) => format!("You are sharing your screen · {n} people are watching"),
+                        None => "You are sharing your screen".to_owned(),
+                    })
+                } else if t.sharing && t.watched {
+                    Some("Loading their screen…".to_owned())
+                } else if t.sharing {
+                    Some("Sharing their screen".to_owned())
+                } else {
+                    p.volume
+                        .filter(|v| (*v - 1.0).abs() > 0.001)
+                        .map(|v| format!("volume {:.0} %", v * 100.0))
+                };
+                if let Some(note) = note {
+                    info = info.push(caption(note, fonts).color(theme.text.tertiary.0));
+                }
+                // Someone else's share is received only once I choose to watch it.
+                if t.sharing && p.volume.is_some() {
+                    let (label, kind) = if t.watched {
+                        ("Stop watching", ButtonKind::Secondary)
+                    } else {
+                        ("Watch", ButtonKind::Primary)
+                    };
+                    info = info.push(text_button(label, kind, fonts, theme).on_press(
+                        Message::Voice(VoiceMsg::WatchShare(inst.clone(), p.user, !t.watched)),
+                    ));
+                }
+                container(info).center(Fill).into()
+            }
+        };
     let ring_width = if p.speaking { 2.0 } else { 1.0 };
     let card = container(content)
         .width(Length::Fixed(size.width))
@@ -302,8 +363,17 @@ fn tile<'a>(
     if p.volume.is_some() {
         area = area.on_right_press(Message::Voice(VoiceMsg::UserMenu(inst.clone(), p.user)));
     }
-    // A click on a share enlarges it, and on the enlarged one goes back to everyone.
-    if t.picture.is_some() {
+    // A click on a share I do not watch starts watching it; on a share enlarges it, and on the
+    // enlarged one goes back to everyone.
+    if t.sharing && !t.watched && p.volume.is_some() {
+        area = area
+            .on_press(Message::Voice(VoiceMsg::WatchShare(
+                inst.clone(),
+                p.user,
+                true,
+            )))
+            .interaction(iced::mouse::Interaction::Pointer);
+    } else if t.picture.is_some() {
         let target = (!enlarged).then(|| (inst.clone(), p.user));
         area = area
             .on_press(Message::Voice(VoiceMsg::EnlargeShare(target)))

@@ -214,6 +214,7 @@ Server → client:
 | `share_started` | `{participant_id}` |
 | `share_stopped` | `{participant_id}` (also implied by `participant_left`; watchers must `watch` again when it restarts) |
 | `keyframe_requested` | `{}`: send your next screen share frame as a keyframe |
+| `share_watchers` | `{count}`: how many members watch your share; sent after `share_start` and whenever it changes. While it is 0 frames go nowhere, and clients stop capturing (clients that never receive it, from an older server, keep sending) |
 
 An invalid or expired `auth` token, or any op before `auth`, answers `error {code: "UNAUTHORIZED"}`
 and the server closes the connection. After `kicked` or `leave` the connection stays open.

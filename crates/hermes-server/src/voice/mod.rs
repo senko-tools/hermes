@@ -108,6 +108,8 @@ struct Share {
     window: Instant,
     frames: u32,
     last_keyframe_request: Option<Instant>,
+    /// The watcher count last sent to the sharer (`share_watchers`).
+    watchers: Option<u16>,
     stats: ShareStats,
 }
 
@@ -170,6 +172,7 @@ impl Share {
             window: Instant::now(),
             frames: 0,
             last_keyframe_request: None,
+            watchers: None,
             stats: ShareStats::new(),
         }
     }
@@ -788,6 +791,7 @@ impl Voice {
             participant_id,
             ServerControl::ShareStarted { participant_id },
         );
+        room.count_watchers(conns, participant_id);
         Ok(())
     }
 
@@ -824,6 +828,7 @@ impl Voice {
                 me.watching.remove(&target);
             }
         }
+        room.count_watchers(conns, target);
         if watching {
             room.request_keyframe(conns, target);
         }
@@ -959,6 +964,46 @@ impl Room {
         );
     }
 
+    /// Tells `sharer` how many members watch them, if that changed since the last time.
+    fn count_watchers(&mut self, conns: &HashMap<ConnId, Conn>, sharer: u16) {
+        let count = self
+            .members
+            .iter()
+            .filter(|(id, m)| **id != sharer && m.watching.contains(&sharer))
+            .count();
+        let count = u16::try_from(count).unwrap_or(u16::MAX);
+        let Some(member) = self.members.get_mut(&sharer) else {
+            return;
+        };
+        let conn_id = member.conn_id;
+        let Some(share) = member.share.as_mut() else {
+            return;
+        };
+        if share.watchers == Some(count) {
+            return;
+        }
+        share.watchers = Some(count);
+        if let Some(conn) = conns.get(&conn_id) {
+            let _ = conn
+                .link
+                .control
+                .send(ServerControl::ShareWatchers { count });
+        }
+    }
+
+    /// [`Room::count_watchers`] for every sharer (after someone left).
+    fn count_all_watchers(&mut self, conns: &HashMap<ConnId, Conn>) {
+        let sharers: Vec<u16> = self
+            .members
+            .iter()
+            .filter(|(_, m)| m.share.is_some())
+            .map(|(&id, _)| id)
+            .collect();
+        for sharer in sharers {
+            self.count_watchers(conns, sharer);
+        }
+    }
+
     /// Asks a sharer for a keyframe, at most every [`KEYFRAME_INTERVAL`].
     fn request_keyframe(&mut self, conns: &HashMap<ConnId, Conn>, sharer: u16) {
         let Some(member) = self.members.get_mut(&sharer) else {
@@ -1015,6 +1060,7 @@ impl Registry {
         for member in room.members.values_mut() {
             member.watching.remove(&participant_id);
         }
+        room.count_all_watchers(&self.conns);
         for member in room.members.values() {
             if let Some(other) = self.conns.get(&member.conn_id) {
                 let _ = other

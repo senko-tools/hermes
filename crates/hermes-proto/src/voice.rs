@@ -113,6 +113,11 @@ pub enum ServerControl {
     },
     /// Someone started watching your share or lost a frame: send a keyframe next.
     KeyframeRequested {},
+    /// How many members watch your share: sent after `share_start` and whenever it changes.
+    /// While it is 0, frames go nowhere, so a sharer may stop capturing and encoding.
+    ShareWatchers {
+        count: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -518,5 +523,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(ready, ServerControl::Ready { sharing, .. } if sharing.is_empty()));
+        let watchers = ServerControl::ShareWatchers { count: 2 };
+        let json = serde_json::to_string(&watchers).unwrap();
+        assert_eq!(json, r#"{"op":"share_watchers","d":{"count":2}}"#);
+        assert_eq!(
+            serde_json::from_str::<ServerControl>(&json).unwrap(),
+            watchers
+        );
     }
 }
