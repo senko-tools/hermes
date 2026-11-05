@@ -120,6 +120,10 @@ rubato = { opt-level = 3 }
 realfft = { opt-level = 3 }
 rustfft = { opt-level = 3 }
 transpose = { opt-level = 3 }
+# Screen sharing: an unoptimized H.264 encoder/decoder makes debug builds look many times slower
+# than release ones, which hides where the real time goes.
+openh264 = { opt-level = 3 }
+openh264-sys2 = { opt-level = 3 }
 
 [profile.release]
 lto = "thin"
