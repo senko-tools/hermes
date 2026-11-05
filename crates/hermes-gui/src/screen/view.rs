@@ -96,7 +96,15 @@ pub struct Pipeline {
     entries: HashMap<u64, Entry>,
     /// Shares drawn since the last trim; the others' textures are dropped.
     used: HashSet<u64>,
+    /// New pictures uploaded and the time it took, logged every [`STATS_EVERY`] while shares
+    /// are drawn: the last step between a decoded picture and the screen.
+    uploads: u32,
+    upload_us: u64,
+    stats_since: std::time::Instant,
 }
+
+/// How often the drawing numbers are logged.
+const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
 const SHADER: &str = r"
 struct Params {
@@ -235,6 +243,9 @@ impl shader::Pipeline for Pipeline {
             srgb_target: format.is_srgb(),
             entries: HashMap::new(),
             used: HashSet::new(),
+            uploads: 0,
+            upload_us: 0,
+            stats_since: std::time::Instant::now(),
         }
     }
 
@@ -260,10 +271,12 @@ impl Pipeline {
             let entry = self.entry(device, size);
             self.entries.insert(share.key, entry);
         }
+        let shares = self.entries.len();
         let Some(entry) = self.entries.get_mut(&share.key) else {
             return;
         };
         if stale || entry.version != share.version {
+            let begin = std::time::Instant::now();
             let (cw, ch) = picture.chroma_size();
             let planes = [
                 (picture.y(), size.0, size.1),
@@ -288,6 +301,21 @@ impl Pipeline {
                 );
             }
             entry.version = share.version;
+            self.uploads += 1;
+            self.upload_us += u64::try_from(begin.elapsed().as_micros()).unwrap_or(u64::MAX);
+        }
+        let elapsed = self.stats_since.elapsed();
+        if elapsed >= STATS_EVERY {
+            let secs = elapsed.as_secs_f64();
+            tracing::info!(
+                "screen shares drawn: {:.1} new pictures/s over {} share(s), {:.2} ms to upload each",
+                f64::from(self.uploads) / secs,
+                shares,
+                self.upload_us as f64 / 1000.0 / f64::from(self.uploads.max(1)),
+            );
+            self.uploads = 0;
+            self.upload_us = 0;
+            self.stats_since = std::time::Instant::now();
         }
         // Fit the picture into the widget (letterboxed), every frame: the widget can resize.
         let (sx, sy) = fit_scale(size, bounds);

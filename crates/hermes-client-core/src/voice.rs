@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hermes_audio::{AudioEvent, AudioSettings, Engine, InputMode, Io, Sound};
 use hermes_proto::api::{VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest};
@@ -39,6 +39,8 @@ const PING_INTERVAL: Duration = Duration::from_secs(2);
 const SCREEN_QUEUE: usize = 4;
 /// A screen share frame must arrive completely within this time.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the screen share transport's numbers are logged.
+const SCREEN_STATS_EVERY: Duration = Duration::from_secs(10);
 
 /// One encoded frame of your own screen share.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,8 @@ pub struct RemoteFrame {
     pub header: VideoHeader,
     /// The H.264 access unit.
     pub data: Vec<u8>,
+    /// When the frame had arrived completely (to measure how long it waits for the decoder).
+    pub received: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1193,19 +1197,24 @@ impl Core {
     /// Reads screen share frames from the server, one stream at a time (in order), and hands
     /// those of watched sharers to the sink.
     async fn read_screen(self, conn: quinn::Connection, generation: u64) {
+        let mut stats = TransportStats::new("received");
         loop {
             let Ok(mut stream) = conn.accept_uni().await else {
                 return;
             };
+            let begin = Instant::now();
             let read =
                 tokio::time::timeout(FRAME_TIMEOUT, stream.read_to_end(voice::MAX_VIDEO_FRAME))
                     .await;
             let Ok(Ok(data)) = read else {
+                stats.failed += 1;
                 continue;
             };
             let Ok(header) = VideoHeader::decode(&data) else {
+                stats.failed += 1;
                 continue;
             };
+            stats.frame(data.len(), header.keyframe, begin.elapsed());
             let who = self.with_session(generation, |s| {
                 s.watching
                     .contains(&header.sender_id)
@@ -1214,6 +1223,7 @@ impl Core {
                     .map(|user| (s.inst.clone(), user))
             });
             let Some(Some((inst, user))) = who else {
+                stats.skipped += 1;
                 continue;
             };
             let sink = self
@@ -1223,26 +1233,101 @@ impl Core {
                 .expect("screen sink")
                 .clone();
             if let Some(sink) = sink {
-                let _ = sink.try_send(RemoteFrame {
+                let frame = RemoteFrame {
                     inst,
                     user,
                     header,
                     data: data[voice::VIDEO_HEADER_LEN..].to_vec(),
-                });
+                    received: Instant::now(),
+                };
+                if sink.try_send(frame).is_err() {
+                    stats.skipped += 1;
+                }
             }
+            stats.maybe_log();
         }
+    }
+}
+
+/// The screen share transport's numbers in one direction, logged every [`SCREEN_STATS_EVERY`]
+/// while frames flow: together with the server's and the encoder's lines they show where a
+/// share loses time.
+struct TransportStats {
+    what: &'static str,
+    since: Instant,
+    frames: u32,
+    keyframes: u32,
+    bytes: u64,
+    /// Time from a frame's stream being opened (or accepted) to its last byte.
+    total: Duration,
+    slowest: Duration,
+    /// Received but not handed on (not watched, or the decoder's queue was full).
+    skipped: u32,
+    /// Streams that failed, timed out or carried an invalid header.
+    failed: u32,
+}
+
+impl TransportStats {
+    fn new(what: &'static str) -> Self {
+        TransportStats {
+            what,
+            since: Instant::now(),
+            frames: 0,
+            keyframes: 0,
+            bytes: 0,
+            total: Duration::ZERO,
+            slowest: Duration::ZERO,
+            skipped: 0,
+            failed: 0,
+        }
+    }
+
+    fn frame(&mut self, bytes: usize, keyframe: bool, took: Duration) {
+        self.frames += 1;
+        self.keyframes += u32::from(keyframe);
+        self.bytes += bytes as u64;
+        self.total += took;
+        self.slowest = self.slowest.max(took);
+    }
+
+    fn maybe_log(&mut self) {
+        let elapsed = self.since.elapsed();
+        if elapsed < SCREEN_STATS_EVERY {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        tracing::info!(
+            "screen share transport ({}): {:.1} fps ({} keyframes), {:.0} kbit/s, {:.1} ms per \
+             frame on the wire (slowest {:.1} ms), {} not handed on, {} failed",
+            self.what,
+            f64::from(self.frames) / secs,
+            self.keyframes,
+            self.bytes as f64 * 8.0 / 1000.0 / secs,
+            self.total.as_secs_f64() * 1000.0 / f64::from(self.frames.max(1)),
+            self.slowest.as_secs_f64() * 1000.0,
+            self.skipped,
+            self.failed,
+        );
+        *self = TransportStats::new(self.what);
     }
 }
 
 /// Writes my screen share frames, one unidirectional stream each, in order.
 async fn write_screen(conn: quinn::Connection, mut frames: mpsc::Receiver<Vec<u8>>) {
+    let mut stats = TransportStats::new("sent");
     while let Some(frame) = frames.recv().await {
+        let begin = Instant::now();
         let Ok(mut stream) = conn.open_uni().await else {
             return;
         };
         if stream.write_all(&frame).await.is_ok() {
             let _ = stream.finish();
+            let keyframe = VideoHeader::decode(&frame).is_ok_and(|h| h.keyframe);
+            stats.frame(frame.len(), keyframe, begin.elapsed());
+        } else {
+            stats.failed += 1;
         }
+        stats.maybe_log();
     }
 }
 

@@ -192,6 +192,9 @@ struct Stats {
     sent: AtomicU32,
     encode_us: AtomicU64,
     bytes: AtomicU64,
+    keyframes: AtomicU32,
+    /// Encoded, but the connection's queue was full (each one forces a keyframe).
+    refused: AtomicU32,
 }
 
 /// Where pictures come from: Desktop Duplication, or GDI if that is unavailable.
@@ -374,6 +377,7 @@ fn encode_loop(
             Some(Ok(Some((data, is_key)))) => {
                 if is_key {
                     last_keyframe = Some(Instant::now());
+                    stats.keyframes.fetch_add(1, Ordering::Relaxed);
                 }
                 stats.sent.fetch_add(1, Ordering::Relaxed);
                 stats.bytes.fetch_add(data.len() as u64, Ordering::Relaxed);
@@ -389,6 +393,7 @@ fn encode_loop(
                 });
                 if !sent {
                     // Dropped (the connection is behind): resynchronize watchers.
+                    stats.refused.fetch_add(1, Ordering::Relaxed);
                     keyframe.store(true, Ordering::Relaxed);
                 }
             }
@@ -406,12 +411,14 @@ fn log_stats(stats: &Stats, over: Duration, last: Option<&Frame>, quality: Quali
     let sent = stats.sent.swap(0, Ordering::Relaxed);
     let encode_us = stats.encode_us.swap(0, Ordering::Relaxed);
     let bytes = stats.bytes.swap(0, Ordering::Relaxed);
+    let keyframes = stats.keyframes.swap(0, Ordering::Relaxed);
+    let refused = stats.refused.swap(0, Ordering::Relaxed);
     let secs = over.as_secs_f64();
     let per = |us: u64, n: u32| us as f64 / 1000.0 / f64::from(n.max(1));
     let (w, h) = last.map_or((0, 0), |f| (f.width, f.height));
     tracing::info!(
         "screen share ({}, {w}x{h}, target {} fps): captured {:.1} fps ({:.1} ms each), sent \
-         {:.1} fps ({:.1} ms to encode), {dropped} dropped by a busy encoder, {:.0} kbit/s",
+         {:.1} fps ({:.1} ms to encode, {keyframes} keyframes), {dropped} dropped by a busy          encoder, {refused} refused by a full connection queue, {:.0} kbit/s",
         if dxgi { "desktop duplication" } else { "GDI" },
         quality.fps,
         f64::from(captured) / secs,

@@ -35,6 +35,8 @@ pub use calls::After;
 const SPEAK_RECHECK: Duration = Duration::from_secs(1);
 /// A sharer is asked for a keyframe at most this often.
 const KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
+/// How often a running share's numbers are logged (to tell server from client problems).
+const SHARE_STATS_EVERY: Duration = Duration::from_secs(10);
 /// Rings older than this are forgotten (clients stop ringing after 30 s on their own).
 const RING_LIFETIME: Duration = Duration::from_secs(60);
 
@@ -106,6 +108,58 @@ struct Share {
     window: Instant,
     frames: u32,
     last_keyframe_request: Option<Instant>,
+    stats: ShareStats,
+}
+
+/// What a share did since [`ShareStats::since`], logged every [`SHARE_STATS_EVERY`].
+#[derive(Debug)]
+struct ShareStats {
+    since: Instant,
+    /// Frames and bytes that arrived from the sharer.
+    frames_in: u32,
+    bytes_in: u64,
+    keyframes_in: u32,
+    /// Dropped for exceeding [`voice::MAX_VIDEO_FPS`].
+    over_rate: u32,
+    /// Copies queued for watchers, and copies lost to a watcher's full queue.
+    forwarded: u32,
+    lost: u32,
+    keyframe_requests: u32,
+}
+
+impl ShareStats {
+    fn new() -> Self {
+        ShareStats {
+            since: Instant::now(),
+            frames_in: 0,
+            bytes_in: 0,
+            keyframes_in: 0,
+            over_rate: 0,
+            forwarded: 0,
+            lost: 0,
+            keyframe_requests: 0,
+        }
+    }
+
+    /// Logs and restarts the numbers once [`SHARE_STATS_EVERY`] has passed.
+    fn maybe_log(&mut self, user_id: Id, watchers: usize) {
+        let elapsed = self.since.elapsed();
+        if elapsed < SHARE_STATS_EVERY {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        tracing::info!(
+            "screen share of {user_id}: in {:.1} fps ({} keyframes, {} over the rate limit),              {:.0} kbit/s; {watchers} watching: {} frames queued, {} lost to full queues,              {} keyframe requests",
+            f64::from(self.frames_in) / secs,
+            self.keyframes_in,
+            self.over_rate,
+            self.bytes_in as f64 * 8.0 / 1000.0 / secs,
+            self.forwarded,
+            self.lost,
+            self.keyframe_requests,
+        );
+        *self = ShareStats::new();
+    }
 }
 
 impl Share {
@@ -116,6 +170,7 @@ impl Share {
             window: Instant::now(),
             frames: 0,
             last_keyframe_request: None,
+            stats: ShareStats::new(),
         }
     }
 
@@ -126,6 +181,7 @@ impl Share {
             .is_none_or(|t| t.elapsed() >= KEYFRAME_INTERVAL);
         if due {
             self.last_keyframe_request = Some(Instant::now());
+            self.stats.keyframe_requests += 1;
         }
         due
     }
@@ -797,9 +853,12 @@ impl Voice {
     /// otherwise sent with the sender's participant ID to every member watching them. A watcher
     /// whose queue is full loses the frame, and the sharer is asked for a keyframe.
     pub fn forward_video(&self, state: &AppState, conn_id: ConnId, mut frame: Vec<u8>) {
-        if frame.len() > voice::MAX_VIDEO_FRAME || VideoHeader::decode(&frame).is_err() {
+        if frame.len() > voice::MAX_VIDEO_FRAME {
             return;
         }
+        let Ok(header) = VideoHeader::decode(&frame) else {
+            return;
+        };
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
         let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
@@ -829,25 +888,43 @@ impl Voice {
             share.window = Instant::now();
             share.frames = 0;
         }
+        share.stats.frames_in += 1;
+        share.stats.bytes_in += frame.len() as u64;
+        if header.keyframe {
+            share.stats.keyframes_in += 1;
+        }
         if share.frames >= voice::MAX_VIDEO_FPS {
+            share.stats.over_rate += 1;
             return;
         }
         share.frames += 1;
         voice::set_video_sender_id(&mut frame, participant_id);
         let frame = Bytes::from(frame);
-        let mut lost = false;
+        let (mut forwarded, mut lost, mut watchers) = (0, 0, 0);
         for (&id, member) in &room.members {
             if id == participant_id || !member.watching.contains(&participant_id) {
                 continue;
             }
-            if let Some(conn) = conns.get(&member.conn_id)
-                && conn.link.video.try_send(frame.clone()).is_err()
-            {
-                lost = true;
+            watchers += 1;
+            if let Some(conn) = conns.get(&member.conn_id) {
+                if conn.link.video.try_send(frame.clone()).is_ok() {
+                    forwarded += 1;
+                } else {
+                    lost += 1;
+                }
             }
         }
-        if lost {
+        if lost > 0 {
             room.request_keyframe(conns, participant_id);
+        }
+        if let Some(share) = room
+            .members
+            .get_mut(&participant_id)
+            .and_then(|m| m.share.as_mut())
+        {
+            share.stats.forwarded += forwarded;
+            share.stats.lost += lost;
+            share.stats.maybe_log(user_id, watchers);
         }
     }
 }

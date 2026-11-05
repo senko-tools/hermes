@@ -562,3 +562,104 @@ async fn screen_shares_flow_to_watchers() {
     assert!(!p.alice.send_screen_frame(frame(true, 200)), "no share");
     eventually("the share ended", || p.bob.screen_sharers().is_empty()).await;
 }
+
+/// Pushes a screen share's worth of data through a real local server, with no capture or codec
+/// involved, and prints what arrived and how late: if this keeps up but real shares stutter, the
+/// problem is in the clients' capture/encode/decode/draw, not the server or the transport.
+///
+/// `cargo test -p hermes-client-core --release --test voice share_transport_benchmark -- --ignored --nocapture`
+/// Shape it with `HERMES_BENCH_FPS` (default 30), `HERMES_BENCH_KBPS` (default 8000) and
+/// `HERMES_BENCH_SECS` (default 10). A keyframe (8x a delta frame) is sent every 2 seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a benchmark: run it on purpose"]
+async fn share_transport_benchmark() {
+    let env = |name: &str, default: u32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let fps = env("HERMES_BENCH_FPS", 30).max(1);
+    let kbps = env("HERMES_BENCH_KBPS", 8000);
+    let secs = env("HERMES_BENCH_SECS", 10).max(1);
+    // A second holds one keyframe per two seconds at 8x a delta frame: fps - 0.5 + 4 units.
+    let units = f64::from(fps) + 3.5;
+    let delta = (f64::from(kbps) * 1000.0 / 8.0 / units) as usize;
+    let max = hermes_client_core::proto::voice::MAX_VIDEO_FRAME
+        - hermes_client_core::proto::voice::VIDEO_HEADER_LEN;
+    let key = (delta * 8).min(max);
+
+    let mut p = pair("share-bench").await;
+    let (inst, general) = (p.inst.clone(), p.general);
+    let alice_id = me(&p.alice, &inst);
+    p.alice.join_voice(&inst, general).await.unwrap();
+    p.bob.join_voice(&inst, general).await.unwrap();
+    let (sink, mut frames) = tokio::sync::mpsc::channel(64);
+    p.bob.set_screen_sink(sink);
+    p.alice.start_screen_share().unwrap();
+    eventually("bob sees the share", || !p.bob.screen_sharers().is_empty()).await;
+    p.bob.watch_screens(&[alice_id]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    let total = fps * secs;
+    let sender = {
+        let alice = p.alice.clone();
+        tokio::spawn(async move {
+            let mut refused = 0u32;
+            let mut ticker = tokio::time::interval(Duration::from_secs(1) / fps);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            for n in 0..total {
+                ticker.tick().await;
+                let keyframe = n % (fps * 2) == 0;
+                let size = if keyframe { key } else { delta };
+                let mut data = vec![0x5a; size];
+                data[..5].copy_from_slice(&[0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }]);
+                let timestamp = u32::try_from(started.elapsed().as_millis()).unwrap();
+                if !alice.send_screen_frame(ScreenFrame {
+                    keyframe,
+                    width: 3840,
+                    height: 2160,
+                    timestamp,
+                    data,
+                }) {
+                    refused += 1;
+                }
+            }
+            refused
+        })
+    };
+
+    let mut delays = Vec::new();
+    let (mut received, mut bytes) = (0u32, 0usize);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(u64::from(secs) + 3);
+    while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, frames.recv()).await {
+        let now = u32::try_from(started.elapsed().as_millis()).unwrap();
+        delays.push(now.saturating_sub(frame.header.timestamp));
+        received += 1;
+        bytes += frame.data.len();
+        if received == total {
+            break;
+        }
+    }
+    let refused = sender.await.unwrap();
+    delays.sort_unstable();
+    let pct = |q: f64| {
+        delays
+            .get(((delays.len() as f64 - 1.0) * q) as usize)
+            .copied()
+    };
+    println!(
+        "share transport: {fps} fps target, {kbps} kbit/s target (delta {delta} B, keyframe {key} \
+         B) for {secs} s\n  sent {} (refused by the sender's queue: {refused}), received {received} \
+         ({:.1} fps, {:.0} kbit/s)\n  delay ms: median {:?}, p95 {:?}, p99 {:?}, max {:?}",
+        total - refused,
+        f64::from(received) / f64::from(secs),
+        bytes as f64 * 8.0 / 1000.0 / f64::from(secs),
+        pct(0.5),
+        pct(0.95),
+        pct(0.99),
+        delays.last(),
+    );
+    let _ = (&mut p.alice_events, &mut p.bob_events);
+}

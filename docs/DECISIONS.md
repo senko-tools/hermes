@@ -1514,3 +1514,24 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   While sharing, the button stops the share. The options stay in Settings → Voice & Audio too.
 - **Why:** the developer reported the laptop hanging and running out of memory, and shares
   that looked the same speed whatever the settings.
+
+## 2026-11-05: Measuring screen shares, testing on a local network
+
+- **What:** every hop of a screen share logs its numbers every 10 s: the sharer (capture, encode,
+  keyframes, frames refused by a full connection queue), both transport directions in
+  `hermes-client-core` (rate, bitrate, time on the wire, failures), the server (frames in, over
+  the rate limit, queued for and lost to watchers, keyframe requests), the watcher's decoder
+  (decode and waiting time, pictures the window had no time for, arrival jitter, delay drift) and
+  the drawing (new pictures reaching the GPU). `share_transport_benchmark` (ignored test in
+  `hermes-client-core`) pushes share-sized frames through a real local server without any codec.
+  `docs/testing-locally.md` describes a server and two clients on a local network and how to read
+  the numbers. OpenH264 is optimized in dev builds too, like the audio crates.
+- **First results (developer's PC, 1440p screen shared at 1080p, release build):** capture 12 ms
+  (reading the desktop back from the GPU), scaling 12 ms, YUV 2 ms, software encode 18 ms per
+  delta frame (32 ms per keyframe), software decode 12 ms: about 44 ms of CPU per frame, so the
+  current design cannot reach 60 fps, let alone 4K. The transport on one machine delivers frames in
+  1–2 ms even at 25 Mbit/s, but the server's fixed one-second rate window drops about 2 % of frames
+  at exactly 30 fps (timer jitter puts 31 frames in a window), and each drop breaks the picture
+  until the next keyframe. Both are fixed in the following steps.
+- **Why:** the developer reported laggy shares that cost about 11 % CPU whether watched or not,
+  and asked for a way to tell server problems from client ones.
