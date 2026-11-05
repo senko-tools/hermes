@@ -292,6 +292,8 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        crate::watchdog::beat();
+        let _phase = crate::watchdog::in_update();
         // New pictures of screen shares (up to 60 a second per share) change nothing else.
         let pictures_only = matches!(message, Message::ScreenImages(_));
         let task = self.update_inner(message);
@@ -2672,7 +2674,11 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let mut subscriptions = vec![subscription::window_focus()];
+        let mut subscriptions = vec![
+            subscription::window_focus(),
+            // Proof of life for the freeze watchdog while nothing else happens.
+            iced::time::every(crate::watchdog::BEAT_EVERY).map(|_| Message::Nothing),
+        ];
         if let Some(events) = &self.events {
             subscriptions.push(subscription::core_events(events.clone()));
         }
@@ -2776,6 +2782,7 @@ impl App {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        let _phase = crate::watchdog::in_view();
         let fonts = &self.fonts;
         let theme = &self.theme;
         let rows = self.sidebar_rows();

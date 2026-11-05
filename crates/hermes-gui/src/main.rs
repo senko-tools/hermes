@@ -28,6 +28,7 @@ mod tests;
 mod tests_voice;
 mod theme;
 mod voice;
+mod watchdog;
 mod widget;
 
 use std::path::PathBuf;
@@ -99,6 +100,7 @@ fn main() -> ExitCode {
         Err(err) => return fail(&format!("Invalid config: {err}")),
     };
     init_logging(&paths);
+    watchdog::start(paths.dir.join("logs"));
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }

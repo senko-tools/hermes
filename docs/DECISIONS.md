@@ -1646,3 +1646,21 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   reports in `logs/` after 30 days, which the plan does not cover.
 - **Why:** the developer asked for logs separated by date with a `latest.log`, old ones in a
   `logs_old` folder that gets cleaned up; one ever-growing `hermes.log` mixed every run together.
+
+## 2026-11-05: Freeze watchdog with minidumps
+
+- **What:** a `hermes-watchdog` thread in the GUI (`hermes-gui/src/watchdog.rs`). The UI thread
+  beats on every message, and a 2 s timer makes sure messages keep coming while idle. When no
+  beat comes for 10 s, the watchdog writes `logs/freeze-YYYY-MM-DD-HHMMSS.log` (version, system,
+  how long, whether the UI thread was in `update`, in `view` or elsewhere) and, on Windows, a
+  minidump of every thread's stack (`MiniDumpNormal | MiniDumpWithThreadInfo`) next to it. At
+  most 3 reports per run; when the UI responds again that goes to `latest.log`. A jump in the
+  watchdog's own clock (the computer slept) starts the count over.
+- **Dependency:** no new crate; the `windows` crate (PLAN.md section 6) gets the
+  `Win32_System_Diagnostics_Debug`, `Win32_System_Threading`, `Win32_Storage_FileSystem`,
+  `Win32_System_Kernel` and `Win32_System_Memory` features (the last three only because
+  `MiniDumpWriteDump`'s binding requires them). Approved by the developer.
+- **Why:** a friend's client froze while voice kept working, and left no crash log and nothing
+  in its log: a hang is not a panic. The cause found (a store read lock taken twice on the UI
+  thread) is fixed, and debug builds now panic on it (`Core::store`); the watchdog makes the next
+  unknown hang show where it is stuck.
