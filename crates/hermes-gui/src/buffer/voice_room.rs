@@ -78,6 +78,8 @@ struct Tile {
     watched: bool,
     /// For my own tile while I share: how many watch (`None`: the server does not say).
     watchers: Option<u16>,
+    /// For my own tile while I share: what the share keeps when it cannot keep up.
+    preference: Option<crate::screen::capture::Preference>,
     /// The latest picture of their share.
     picture: Option<crate::screen::view::Share>,
 }
@@ -106,6 +108,8 @@ pub struct Shares<'s> {
     pub watching: &'s HashSet<(InstanceId, Id)>,
     /// The share shown alone.
     pub enlarged: Option<Id>,
+    /// What my own share keeps when it cannot keep up (changeable on my tile while I share).
+    pub preference: crate::screen::capture::Preference,
 }
 
 pub fn view<'a>(
@@ -143,6 +147,7 @@ pub fn view<'a>(
                 sharing: sharers.contains(&person.user) || (own && me_sharing),
                 watched: shares.watching.contains(&(inst.clone(), person.user)),
                 watchers: if own { my_watchers } else { None },
+                preference: (own && me_sharing).then_some(shares.preference),
                 picture: shares.pictures.get(&(inst.clone(), person.user)).cloned(),
                 person,
             }
@@ -329,6 +334,12 @@ fn tile<'a>(
                 };
                 if let Some(note) = note {
                     info = info.push(caption(note, fonts).color(theme.text.tertiary.0));
+                }
+                // My own share's quick setting.
+                if let Some(preference) = t.preference {
+                    info = info.push(crate::voice::share_preference_picker(
+                        preference, fonts, theme,
+                    ));
                 }
                 // Someone else's share is received only once I choose to watch it.
                 if t.sharing && p.volume.is_some() {

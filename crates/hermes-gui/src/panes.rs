@@ -697,6 +697,9 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     pictures: ctx.screens,
                     watching: ctx.watching_shares,
                     enlarged,
+                    preference: crate::screen::capture::Preference::from_config(
+                        &ctx.config.voice.share_preference,
+                    ),
                 },
                 fonts,
                 theme,

@@ -495,7 +495,11 @@ async fn share_end_to_end() {
     bob.core().set_screen_sink(sink);
     alice.core().start_screen_share().unwrap();
     let quality = crate::screen::capture::Quality::from_config(&resolution, fps);
-    let _capture = crate::screen::capture::Capture::start(alice.core(), "", quality).unwrap();
+    let preference = crate::screen::capture::Preference::from_config(
+        &std::env::var("HERMES_SHARE_PREF").unwrap_or_default(),
+    );
+    let _capture =
+        crate::screen::capture::Capture::start(alice.core(), "", quality, preference).unwrap();
     let bob_core = bob.core();
     bob.until("bob sees the share", move |_| {
         !bob_core.screen_sharers().is_empty()

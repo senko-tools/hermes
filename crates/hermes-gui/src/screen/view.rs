@@ -455,6 +455,114 @@ mod tests {
         assert_eq!(fit_scale((0, 0), wide), (0.0, 0.0));
     }
 
+    /// Draws one flat-colored picture as I420 and as NV12 with the real pipeline into a small
+    /// texture and reads the pixels back: both must give the same, expected color. Skipped
+    /// where there is no GPU (or software adapter) at all.
+    #[test]
+    fn i420_and_nv12_pictures_draw_the_same_colors() {
+        use iced::futures::executor::block_on;
+        use iced::widget::shader::{Pipeline as _, Primitive as _};
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let Ok(adapter) = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            force_fallback_adapter: false,
+            ..wgpu::RequestAdapterOptions::default()
+        })) else {
+            println!("no GPU here: skipped");
+            return;
+        };
+        let (device, queue) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut pipeline = Pipeline::new(&device, &queue, format);
+
+        let (y, u, v) = (100u8, 90u8, 170u8);
+        let i420 = Picture {
+            width: 4,
+            height: 4,
+            nv12: false,
+            planes: [vec![y; 16], vec![u; 4], vec![v; 4]].concat(),
+        };
+        let nv12 = Picture {
+            width: 4,
+            height: 4,
+            nv12: true,
+            planes: [vec![y; 16], [u, v].repeat(4)].concat(),
+        };
+        let draw = |pipeline: &mut Pipeline, picture: Picture, id: u64| -> [u8; 4] {
+            let share = Share::new(&id, Arc::new(picture));
+            pipeline.prepare(&device, &queue, &share, iced::Size::new(4.0, 4.0));
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: extent(4, 4),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 4,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..wgpu::RenderPassDescriptor::default()
+                });
+                Primitive(share).draw(pipeline, &mut pass);
+            }
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(4),
+                    },
+                },
+                extent(4, 4),
+            );
+            queue.submit([encoder.finish()]);
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let data = readback.slice(..).get_mapped_range();
+            // A pixel inside (row 1, column 1).
+            let at = 256 + 4;
+            [data[at], data[at + 1], data[at + 2], data[at + 3]]
+        };
+        let a = draw(&mut pipeline, i420, 1);
+        let b = draw(&mut pipeline, nv12, 2);
+        let close =
+            |p: [u8; 4], q: [u8; 4], d: u8| p.iter().zip(q).all(|(a, b)| a.abs_diff(b) <= d);
+        assert!(close(a, b, 1), "I420 {a:?} vs NV12 {b:?}");
+        // Limited-range BT.601: (100, 90, 170) is about (165, 78, 21).
+        assert!(close(a, [165, 78, 21, 255], 2), "{a:?}");
+    }
+
     #[test]
     fn new_pictures_bump_the_version() {
         let picture = |n| {

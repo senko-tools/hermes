@@ -77,7 +77,6 @@ pub struct MfEncoder {
     /// The encoder hands out its own output samples; otherwise one of `output_size` is made.
     provides_samples: bool,
     output_size: u32,
-    size: (u32, u32),
     fps: u32,
     frames: i64,
     /// The encoder's name ("NVIDIA H.264 Encoder MFT"), for the logs.
@@ -118,8 +117,13 @@ impl MfEncoder {
         })
     }
 
-    pub fn size(&self) -> (u32, u32) {
-        self.size
+    /// Changes the bitrate of the next pictures.
+    pub fn set_bitrate(&self, bitrate: u32) {
+        if let Some(codec) = &self.codec {
+            unsafe {
+                let _ = codec.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &VARIANT::from(bitrate));
+            }
+        }
     }
 
     /// Encodes one picture (a keyframe if `keyframe`). Returns what came out: usually that
@@ -440,7 +444,6 @@ fn configure(
             credits: 0,
             provides_samples: info.dwFlags & provides != 0,
             output_size: info.cbSize,
-            size: (width, height),
             fps,
             frames: 0,
             name,

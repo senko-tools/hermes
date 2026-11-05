@@ -179,10 +179,13 @@ impl App {
                         &v.share_resolution,
                         v.share_fps,
                     );
+                    let preference =
+                        crate::screen::capture::Preference::from_config(&v.share_preference);
                     match crate::screen::capture::Capture::start(
                         self.core.clone(),
                         &screen,
                         quality,
+                        preference,
                     ) {
                         Ok(capture) => self.capture = Some(capture),
                         Err(err) => {
@@ -373,6 +376,42 @@ pub fn banner<'a>(
 /// `base` with the per-user volume menu over it.
 /// The share menu: which screen, how sharp and how smooth (each choice is saved as soon as it
 /// is made, so the menu offers the last one next time), and Start sharing.
+/// Smoothness / Mixed / Clarity side by side, the chosen one highlighted
+/// (`voice.share_preference`; a running share follows a change at once).
+pub fn preference_picker<'a, M: Clone + 'a>(
+    current: crate::screen::capture::Preference,
+    on_pick: impl Fn(crate::screen::capture::Preference) -> M,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, M> {
+    let mut choices = row![].spacing(style::GAP_XS);
+    for preference in crate::screen::capture::PREFERENCES {
+        let kind = if preference == current {
+            ButtonKind::Primary
+        } else {
+            ButtonKind::Secondary
+        };
+        choices = choices.push(
+            text_button(preference.label(), kind, fonts, theme).on_press(on_pick(preference)),
+        );
+    }
+    choices.into()
+}
+
+/// [`preference_picker`] for the app's messages.
+pub fn share_preference_picker<'a>(
+    current: crate::screen::capture::Preference,
+    fonts: &Fonts,
+    theme: &'a Theme,
+) -> Element<'a, Message> {
+    preference_picker(
+        current,
+        |p| Message::Settings(settings::Message::SharePreference(p)),
+        fonts,
+        theme,
+    )
+}
+
 pub fn share_overlay<'a>(
     base: Element<'a, Message>,
     at: Point,
@@ -385,8 +424,8 @@ pub fn share_overlay<'a>(
     use crate::buffer::page::dropdown;
     use crate::screen::capture::{FRAME_RATES, RESOLUTIONS};
 
-    let width = 280.0;
-    let height = 290.0;
+    let width = 300.0;
+    let height = 350.0;
     // Above the pointer (the buttons sit at the bottom of the window).
     let x = at.x.min(window.width - width - 4.0).max(0.0);
     let y = (at.y - height).min(window.height - height - 4.0).max(0.0);
@@ -432,6 +471,14 @@ pub fn share_overlay<'a>(
                     theme,
                 )
                 .into(),
+            ),
+            field(
+                "When it cannot keep up, keep",
+                share_preference_picker(
+                    crate::screen::capture::Preference::from_config(&config.share_preference),
+                    fonts,
+                    theme,
+                ),
             ),
             row![
                 iced::widget::space::horizontal(),

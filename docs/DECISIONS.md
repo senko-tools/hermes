@@ -1618,3 +1618,18 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   (Direct3D 11 to wgpu's Direct3D 12) would save the readback and upload; the numbers above do
   not need it yet.
 - **Why:** the developer asked for 4K at 60 fps; OpenH264 needs 18 ms or more for a 4K picture.
+
+## 2026-11-05: Smoothness, Mixed or Clarity; 60 fps and 2160p
+
+- **What:** `voice.share_preference` (`smoothness` default, `mixed`, `clarity`) says what a share
+  keeps when the connection or the computer falls behind: Smoothness keeps the frame rate and
+  lowers the bitrate, then the size (to half); Clarity keeps sharp, full-size pictures and lowers
+  the frame rate (to a quarter), and spends twice the bits on every picture; Mixed is in between.
+  Falling behind (frames my connection refuses, the server asking for keyframes again and again
+  because watchers lose frames, or encoding slower than the frame rate) steps down at most every
+  2 s; 8 calm seconds step back up. Chosen as a three-way switch in the share menu, on my own tile
+  in the voice room while I share (a running share follows at once) and in Settings → Voice &
+  Audio. The CPU fallback path ignores it.
+- **Options:** resolution adds `2160p`; frame rates are 15, 30 and 60 (5 and 10 removed). New
+  defaults: 1080p at 60 fps (was 720p at 10).
+- **Why:** the developer asked for smoothness first, with a quick setting for clarity.

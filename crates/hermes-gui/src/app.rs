@@ -2324,6 +2324,14 @@ impl App {
                 self.persist("voice.share_fps", &fps.0.to_string());
                 return Task::none();
             }
+            S::SharePreference(preference) => {
+                let value = toml::Value::String(preference.config_value().to_owned()).to_string();
+                self.persist("voice.share_preference", &value);
+                if let Some(capture) = &self.capture {
+                    capture.set_preference(preference);
+                }
+                return Task::none();
+            }
             S::MicTest(on) => {
                 self.mic_test = on;
                 self.core.set_mic_test(on);

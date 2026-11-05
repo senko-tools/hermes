@@ -86,6 +86,7 @@ pub enum Message {
     ShareScreen(ShareScreen),
     ShareResolution(ShareResolution),
     ShareFps(ShareFps),
+    SharePreference(crate::screen::capture::Preference),
     /// Who may start DMs with me on the Account tab's instance.
     DmFrom(DmFrom),
     AllowRequests(bool),
@@ -868,12 +869,27 @@ fn voice_tab<'a>(
             ),
             setting(
                 "Frame rate",
-                "Frames per second. More is smoother (video, games) but uses more CPU and \
-                 bandwidth. Applies the next time you share.",
+                "Frames per second. More is smoother (video, games) but uses more bandwidth. \
+                 Applies the next time you share.",
                 dropdown(
                     crate::screen::capture::FRAME_RATES.map(ShareFps),
                     Some(ShareFps(v.share_fps)),
                     Message::ShareFps,
+                    fonts,
+                    theme,
+                ),
+                fonts,
+                theme,
+            ),
+            setting(
+                "When it cannot keep up",
+                "What your share keeps when your connection or computer falls behind. \
+                 Smoothness keeps the frame rate and lowers sharpness, then size; Clarity keeps \
+                 sharp, full-size pictures and lowers the frame rate (and spends more bandwidth \
+                 on every picture); Mixed is in between. Also on your tile while you share.",
+                crate::voice::preference_picker(
+                    crate::screen::capture::Preference::from_config(&v.share_preference),
+                    Message::SharePreference,
                     fonts,
                     theme,
                 ),

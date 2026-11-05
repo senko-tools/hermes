@@ -6,10 +6,9 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
-use std::sync::atomic::{AtomicU32, AtomicU64};
-#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use hermes_client_core::Core;
@@ -28,9 +27,9 @@ pub struct Quality {
 }
 
 /// The resolutions offered; anything else counts as the first.
-pub const RESOLUTIONS: [&str; 4] = ["720p", "1080p", "1440p", "native"];
+pub const RESOLUTIONS: [&str; 5] = ["720p", "1080p", "1440p", "2160p", "native"];
 /// The frame rates offered.
-pub const FRAME_RATES: [u32; 4] = [5, 10, 15, 30];
+pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 
 impl Quality {
     pub fn from_config(resolution: &str, fps: u32) -> Quality {
@@ -38,6 +37,7 @@ impl Quality {
         let (max_width, max_height) = match resolution {
             "1080p" => (1920, 1080),
             "1440p" => (2560, 1440),
+            "2160p" => (3840, 2160),
             "native" => (max, max),
             _ => (1280, 720),
         };
@@ -47,6 +47,207 @@ impl Quality {
             fps: fps.clamp(1, MAX_VIDEO_FPS),
         }
     }
+}
+
+/// What a share keeps when the machine or the connection cannot keep up, and what it gives
+/// way on first (`voice.share_preference`). Clarity also spends more bits on every picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preference {
+    /// Keep the frame rate; lower the bitrate, then the size.
+    Smoothness,
+    /// Lower the bitrate a little, then the frame rate, then the size.
+    Mixed,
+    /// Keep the size and sharp pictures; lower the frame rate.
+    Clarity,
+}
+
+/// The preferences offered, in order.
+pub const PREFERENCES: [Preference; 3] = [
+    Preference::Smoothness,
+    Preference::Mixed,
+    Preference::Clarity,
+];
+
+/// One step down from the full quality: factors for the frame rate, the size and the bitrate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Step {
+    pub fps: f64,
+    pub size: f64,
+    pub bits: f64,
+}
+
+const fn step(fps: f64, size: f64, bits: f64) -> Step {
+    Step { fps, size, bits }
+}
+
+impl Preference {
+    /// Anything unknown is smoothness.
+    pub fn from_config(value: &str) -> Preference {
+        match value {
+            "clarity" => Preference::Clarity,
+            "mixed" => Preference::Mixed,
+            _ => Preference::Smoothness,
+        }
+    }
+
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Preference::Smoothness => "smoothness",
+            Preference::Mixed => "mixed",
+            Preference::Clarity => "clarity",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Preference::Smoothness => "Smoothness",
+            Preference::Mixed => "Mixed",
+            Preference::Clarity => "Clarity",
+        }
+    }
+
+    /// Bits for each picture against [`hardware_bitrate`]: clearer pictures cost more.
+    fn bits(self) -> f64 {
+        match self {
+            Preference::Smoothness => 1.0,
+            Preference::Mixed => 1.4,
+            Preference::Clarity => 2.0,
+        }
+    }
+
+    /// Full quality, then each step down while the share falls behind.
+    pub fn steps(self) -> [Step; 4] {
+        match self {
+            Preference::Smoothness => [
+                step(1.0, 1.0, 1.0),
+                step(1.0, 1.0, 0.6),
+                step(1.0, 0.75, 0.6),
+                step(1.0, 0.5, 0.6),
+            ],
+            Preference::Mixed => [
+                step(1.0, 1.0, 1.0),
+                step(1.0, 1.0, 0.7),
+                step(0.5, 1.0, 0.7),
+                step(0.5, 0.75, 0.7),
+            ],
+            Preference::Clarity => [
+                step(1.0, 1.0, 1.0),
+                step(0.5, 1.0, 1.0),
+                step(0.25, 1.0, 1.0),
+                step(0.25, 0.75, 1.0),
+            ],
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Preference::Smoothness => 0,
+            Preference::Mixed => 1,
+            Preference::Clarity => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Preference {
+        match value {
+            1 => Preference::Mixed,
+            2 => Preference::Clarity,
+            _ => Preference::Smoothness,
+        }
+    }
+}
+
+/// What the encoder is set to at a moment of a share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Target {
+    pub fps: u32,
+    pub size: (u32, u32),
+    pub bitrate: u32,
+}
+
+/// The target for a `screen`-sized picture at `quality` with `preference`, `level` steps
+/// down. The bitrate follows the configured frame rate, so fewer frames get more bits each.
+pub fn target(
+    quality: Quality,
+    preference: Preference,
+    level: usize,
+    screen: (u32, u32),
+) -> Target {
+    let steps = preference.steps();
+    let step = steps[level.min(steps.len() - 1)];
+    let (w, h) = fit(screen.0, screen.1, quality);
+    let even = |n: f64| ((n as u32) & !1).max(2);
+    let size = (
+        even(f64::from(w) * step.size),
+        even(f64::from(h) * step.size),
+    );
+    let fps = ((f64::from(quality.fps) * step.fps).round() as u32).clamp(1, quality.fps);
+    let bits =
+        f64::from(hardware_bitrate(size.0, size.1, quality.fps)) * preference.bits() * step.bits;
+    Target {
+        fps,
+        size,
+        bitrate: bits.clamp(1_000_000.0, 50_000_000.0) as u32,
+    }
+}
+
+/// A share falling behind steps down one [`Step`] at a time (at most every
+/// [`Adapt::DOWN_GAP`]); keeping up for [`Adapt::UP_AFTER`] steps it back up.
+#[derive(Debug)]
+pub struct Adapt {
+    level: usize,
+    changed: Instant,
+    calm_since: Instant,
+}
+
+impl Adapt {
+    const DOWN_GAP: Duration = Duration::from_secs(2);
+    const UP_AFTER: Duration = Duration::from_secs(8);
+    const LEVELS: usize = 4;
+
+    pub fn new(now: Instant) -> Adapt {
+        Adapt {
+            level: 0,
+            changed: now,
+            calm_since: now,
+        }
+    }
+
+    pub fn level(&self) -> usize {
+        self.level
+    }
+
+    /// The share fell behind; `true` if this steps it down.
+    pub fn behind(&mut self, now: Instant) -> bool {
+        self.calm_since = now;
+        if self.level + 1 < Self::LEVELS && now.duration_since(self.changed) >= Self::DOWN_GAP {
+            self.level += 1;
+            self.changed = now;
+            return true;
+        }
+        false
+    }
+
+    /// Nothing went wrong this frame; `true` if this steps it back up.
+    pub fn keeping_up(&mut self, now: Instant) -> bool {
+        if self.level > 0
+            && now.duration_since(self.calm_since) >= Self::UP_AFTER
+            && now.duration_since(self.changed) >= Self::UP_AFTER
+        {
+            self.level -= 1;
+            self.changed = now;
+            self.calm_since = now;
+            return true;
+        }
+        false
+    }
+}
+
+/// Settings a running share follows as they change.
+#[derive(Debug, Default)]
+struct Tuning {
+    preference: AtomicU8,
+    /// Keyframes the server asked for (watchers lost frames, or started watching).
+    requests: AtomicU32,
 }
 
 /// A keyframe at least this often, so a watcher who lost one recovers on their own.
@@ -71,6 +272,7 @@ const IDLE_POLL: Duration = Duration::from_millis(100);
 pub struct Capture {
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
+    tuning: Arc<Tuning>,
 }
 
 impl std::fmt::Debug for Capture {
@@ -82,16 +284,44 @@ impl std::fmt::Debug for Capture {
 impl Capture {
     /// Starts capturing `screen` (its system name; empty or unknown = the primary screen) and
     /// sending it through `core`, which must already share ([`Core::start_screen_share`]).
-    pub fn start(core: Core, screen: &str, quality: Quality) -> Result<Capture, String> {
+    pub fn start(
+        core: Core,
+        screen: &str,
+        quality: Quality,
+        preference: Preference,
+    ) -> Result<Capture, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let keyframe = Arc::new(AtomicBool::new(true));
-        start_thread(core, screen, quality, stop.clone(), keyframe.clone())?;
-        Ok(Capture { stop, keyframe })
+        let tuning = Arc::new(Tuning::default());
+        tuning
+            .preference
+            .store(preference.to_u8(), Ordering::Relaxed);
+        start_thread(
+            core,
+            screen,
+            quality,
+            stop.clone(),
+            keyframe.clone(),
+            tuning.clone(),
+        )?;
+        Ok(Capture {
+            stop,
+            keyframe,
+            tuning,
+        })
     }
 
-    /// The next frame is sent as a keyframe.
+    /// The server asked for a keyframe: the next frame is one.
     pub fn request_keyframe(&self) {
+        self.tuning.requests.fetch_add(1, Ordering::Relaxed);
         self.keyframe.store(true, Ordering::Relaxed);
+    }
+
+    /// Changes the preference of the running share (from its next frame).
+    pub fn set_preference(&self, preference: Preference) {
+        self.tuning
+            .preference
+            .store(preference.to_u8(), Ordering::Relaxed);
     }
 }
 
@@ -139,6 +369,7 @@ fn start_thread(
     _quality: Quality,
     _stop: Arc<AtomicBool>,
     _keyframe: Arc<AtomicBool>,
+    _tuning: Arc<Tuning>,
 ) -> Result<(), String> {
     Err("screen sharing is only available on Windows for now".into())
 }
@@ -150,6 +381,7 @@ fn start_thread(
     quality: Quality,
     stop: Arc<AtomicBool>,
     keyframe: Arc<AtomicBool>,
+    tuning: Arc<Tuning>,
 ) -> Result<(), String> {
     // A monitor cannot move between threads: the capture thread finds it and reports back.
     let screen = screen.to_owned();
@@ -159,7 +391,7 @@ fn start_thread(
         .spawn(move || match pick_monitor(&screen) {
             Ok(monitor) => {
                 let _ = found.send(Ok(()));
-                run(&core, &monitor, quality, &stop, &keyframe);
+                run(&core, &monitor, quality, &stop, &keyframe, &tuning);
             }
             Err(err) => {
                 let _ = found.send(Err(err));
@@ -223,11 +455,12 @@ fn run(
     quality: Quality,
     stop: &AtomicBool,
     keyframe: &Arc<AtomicBool>,
+    tuning: &Tuning,
 ) {
     let name = monitor.name().unwrap_or_default();
     let source = match super::dxgi::Duplicator::open(&name) {
         Ok(duplicator) if duplicator.video() => {
-            match run_hardware(core, duplicator, &name, quality, stop, keyframe) {
+            match run_hardware(core, duplicator, &name, quality, stop, keyframe, tuning) {
                 Ok(()) => return,
                 Err(err) => {
                     tracing::warn!(
@@ -250,10 +483,14 @@ fn run(
     run_software(core, monitor, quality, stop, keyframe, source);
 }
 
-/// The GPU path: Desktop Duplication hands over a picture `quality.fps` times a second at
-/// most (only when the screen changed, or the last one again when a keyframe is due), the
-/// video processor scales and converts it to NV12, and the GPU's encoder encodes it; the
-/// picture never leaves the GPU. One thread suffices: the CPU only coordinates.
+/// The GPU path: Desktop Duplication hands over a picture at most at the target frame rate
+/// (only when the screen changed, or the last one again when a keyframe is due), the video
+/// processor scales and converts it to NV12, and the GPU's encoder encodes it; the picture
+/// never leaves the GPU. One thread suffices: the CPU only coordinates.
+///
+/// The frame rate, size and bitrate follow the preference ([`target`]); falling behind (frames
+/// the connection refuses, watchers losing frames, encoding slower than the frame rate) steps
+/// them down the preference's way ([`Adapt`]), keeping up steps them back up.
 ///
 /// `Err` when the encoder cannot be set up or fails; the caller then uses the CPU path.
 #[cfg(windows)]
@@ -264,15 +501,22 @@ fn run_hardware(
     quality: Quality,
     stop: &AtomicBool,
     keyframe: &AtomicBool,
+    tuning: &Tuning,
 ) -> Result<(), String> {
     use super::gpu_convert::{GpuConvert, Nv12};
     use super::mf_encode::MfEncoder;
     use hermes_client_core::voice::ScreenFrame;
 
+    /// Keyframe requests within this window beyond the first mean watchers are losing frames.
+    const REQUESTS_WINDOW: Duration = Duration::from_secs(3);
+    /// Frames in a row encoded slower than the frame rate before the share steps down.
+    const SLOW_FRAMES: u32 = 15;
+
     let stats = Stats::default();
-    let interval = Duration::from_secs(1) / quality.fps;
-    let wait_ms = u32::try_from(interval.as_millis()).unwrap_or(100).max(1);
     let started = Instant::now();
+    let mut preference = Preference::from_u8(tuning.preference.load(Ordering::Relaxed));
+    let mut adapt = Adapt::new(started);
+    let mut current: Option<Target> = None;
     let mut convert: Option<GpuConvert> = None;
     let mut encoder: Option<MfEncoder> = None;
     let mut last: Option<Nv12> = None;
@@ -283,6 +527,9 @@ fn run_hardware(
     let mut idle = false;
     let mut next = Instant::now();
     let mut stats_since = Instant::now();
+    let mut seen_requests = tuning.requests.load(Ordering::Relaxed);
+    let mut requests: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
+    let mut slow_frames = 0u32;
     while !stop.load(Ordering::Relaxed) && core.sharing_screen() {
         if core.share_watchers() == Some(0) {
             if !idle {
@@ -298,8 +545,16 @@ fn run_hardware(
             keyframe.store(true, Ordering::Relaxed);
             stats_since = Instant::now();
         }
-        // At most `quality.fps` pictures a second: wait for this one's turn, then take the
-        // newest picture (Desktop Duplication keeps only the latest).
+        let chosen = Preference::from_u8(tuning.preference.load(Ordering::Relaxed));
+        if chosen != preference {
+            tracing::info!("screen share: preferring {}", chosen.label());
+            preference = chosen;
+            adapt = Adapt::new(Instant::now());
+        }
+
+        // At most the target's frames a second: wait for this one's turn, then take the newest
+        // picture (Desktop Duplication keeps only the latest).
+        let interval = Duration::from_secs(1) / current.map_or(quality.fps, |t| t.fps).max(1);
         let now = Instant::now();
         if next > now {
             std::thread::sleep(next - now);
@@ -310,6 +565,7 @@ fn run_hardware(
         }
 
         let begin = Instant::now();
+        let wait_ms = u32::try_from(interval.as_millis()).unwrap_or(100).max(1);
         let shot = match duplicator.next_gpu(wait_ms) {
             Ok(shot) => shot,
             Err(super::dxgi::Error::Lost) => {
@@ -326,30 +582,43 @@ fn run_hardware(
         let picture = match shot {
             Some(shot) => {
                 let input = (shot.width, shot.height);
-                let output = fit(shot.width, shot.height, quality);
+                let want = target(quality, preference, adapt.level(), input);
                 if convert
                     .as_ref()
-                    .is_none_or(|c| (c.input_size(), c.output_size()) != (input, output))
+                    .is_none_or(|c| (c.input_size(), c.output_size()) != (input, want.size))
                 {
                     convert = Some(GpuConvert::new(
                         duplicator.device(),
                         input,
-                        output,
-                        quality.fps,
+                        want.size,
+                        want.fps,
                     )?);
                 }
-                if encoder.as_ref().is_none_or(|e| e.size() != output) {
+                let same = |t: Target| (t.fps, t.size) == (want.fps, want.size);
+                if encoder.is_none() || !current.is_some_and(same) {
                     let created = MfEncoder::new(
                         duplicator.device(),
                         duplicator.luid(),
-                        output,
-                        quality.fps,
-                        hardware_bitrate(output.0, output.1, quality.fps),
+                        want.size,
+                        want.fps,
+                        want.bitrate,
                     )?;
-                    tracing::info!("screen share: encoding with {}", created.name);
+                    tracing::info!(
+                        "screen share: {}x{} at {} fps, {} kbit/s, with {}",
+                        want.size.0,
+                        want.size.1,
+                        want.fps,
+                        want.bitrate / 1000,
+                        created.name
+                    );
                     encoder = Some(created);
                     keyframe.store(true, Ordering::Relaxed);
+                } else if current.is_some_and(|t| t.bitrate != want.bitrate)
+                    && let Some(encoder) = &encoder
+                {
+                    encoder.set_bitrate(want.bitrate);
                 }
+                current = Some(want);
                 let Some(convert) = convert.as_mut() else {
                     continue;
                 };
@@ -371,6 +640,7 @@ fn run_hardware(
             }
             None => None,
         };
+        let mut behind = false;
         if let Some(picture) = picture
             && let Some(encoder) = encoder.as_mut()
         {
@@ -383,9 +653,14 @@ fn run_hardware(
             } else {
                 let encode_begin = Instant::now();
                 let encoded = encoder.encode(&picture, key)?;
-                stats
-                    .encode_us
-                    .fetch_add(micros(encode_begin.elapsed()), Ordering::Relaxed);
+                let took = encode_begin.elapsed();
+                stats.encode_us.fetch_add(micros(took), Ordering::Relaxed);
+                // The GPU cannot keep up with this frame rate and size.
+                slow_frames = if took > interval { slow_frames + 1 } else { 0 };
+                if slow_frames >= SLOW_FRAMES {
+                    slow_frames = 0;
+                    behind = true;
+                }
                 last_sent = Instant::now();
                 for (data, is_key) in encoded {
                     stats.sent.fetch_add(1, Ordering::Relaxed);
@@ -403,18 +678,56 @@ fn run_hardware(
                         data,
                     });
                     if !sent {
+                        // My connection is behind.
                         stats.refused.fetch_add(1, Ordering::Relaxed);
                         resync = true;
+                        behind = true;
                     }
                 }
             }
+        }
+        // Watchers losing frames: the server asks for keyframes again and again.
+        let now = Instant::now();
+        let total = tuning.requests.load(Ordering::Relaxed);
+        for _ in seen_requests..total {
+            requests.push_back(now);
+        }
+        seen_requests = total;
+        while requests
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > REQUESTS_WINDOW)
+        {
+            requests.pop_front();
+        }
+        if requests.len() > 2 {
+            requests.clear();
+            behind = true;
+        }
+        let changed = if behind {
+            adapt.behind(now)
+        } else {
+            adapt.keeping_up(now)
+        };
+        if changed {
+            tracing::info!(
+                "screen share: {} (level {} of {}, preferring {})",
+                if behind {
+                    "falling behind, stepping down"
+                } else {
+                    "keeping up, stepping back up"
+                },
+                adapt.level(),
+                Adapt::LEVELS - 1,
+                preference.label()
+            );
         }
         if stats_since.elapsed() >= STATS_EVERY {
             let size = last.as_ref().map_or((0, 0), |p| (p.width, p.height));
             let what = encoder
                 .as_ref()
                 .map_or("hardware".to_owned(), |e| format!("GPU, {}", e.name));
-            log_stats(&stats, stats_since.elapsed(), size, quality, &what);
+            let fps = current.map_or(quality.fps, |t| t.fps);
+            log_stats(&stats, stats_since.elapsed(), size, fps, &what);
             stats_since = Instant::now();
         }
     }
@@ -547,7 +860,7 @@ fn run_software(
                 "GDI, OpenH264"
             };
             let size = last.as_deref().map_or((0, 0), |f| (f.width, f.height));
-            log_stats(&stats, stats_since.elapsed(), size, quality, what);
+            log_stats(&stats, stats_since.elapsed(), size, quality.fps, what);
             stats_since = Instant::now();
         }
         std::thread::sleep(interval.saturating_sub(begin.elapsed()));
@@ -649,7 +962,7 @@ fn encode_loop(
 }
 
 #[cfg(windows)]
-fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), quality: Quality, what: &str) {
+fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), fps: u32, what: &str) {
     let captured = stats.captured.swap(0, Ordering::Relaxed);
     let dropped = stats.dropped.swap(0, Ordering::Relaxed);
     let capture_us = stats.capture_us.swap(0, Ordering::Relaxed);
@@ -664,7 +977,7 @@ fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), quality: Quality
         "screen share ({}, {w}x{h}, target {} fps): captured {:.1} fps ({:.1} ms each), sent \
          {:.1} fps ({:.1} ms to encode, {keyframes} keyframes), {dropped} dropped by a busy          encoder, {refused} refused by a full connection queue, {:.0} kbit/s",
         what,
-        quality.fps,
+        fps,
         f64::from(captured) / secs,
         per(capture_us, captured),
         f64::from(sent) / secs,
@@ -703,6 +1016,74 @@ mod tests {
             "the protocol's limit"
         );
         assert_eq!(Quality::from_config("bogus", 10), hd);
+    }
+
+    #[test]
+    fn preferences_give_way_differently() {
+        let q = Quality::from_config("1440p", 60);
+        let screen = (2560, 1440);
+        let full = |p| target(q, p, 0, screen);
+        // At full quality all keep size and frame rate; clearer pictures cost more bits.
+        for p in PREFERENCES {
+            assert_eq!((full(p).size, full(p).fps), ((2560, 1440), 60));
+        }
+        assert!(full(Preference::Smoothness).bitrate < full(Preference::Mixed).bitrate);
+        assert!(full(Preference::Mixed).bitrate < full(Preference::Clarity).bitrate);
+        assert_eq!(
+            full(Preference::Smoothness).bitrate,
+            hardware_bitrate(2560, 1440, 60)
+        );
+
+        // Falling behind all the way: smoothness keeps 60 fps, clarity keeps the size.
+        let worst = |p| target(q, p, 3, screen);
+        assert_eq!(worst(Preference::Smoothness).fps, 60);
+        assert_eq!(worst(Preference::Smoothness).size, (1280, 720));
+        assert_eq!(worst(Preference::Mixed).fps, 30);
+        assert_eq!(worst(Preference::Clarity).fps, 15);
+        assert_eq!(target(q, Preference::Clarity, 2, screen).size, (2560, 1440));
+        // Clarity's fewer frames keep the bits per second: more bits each.
+        assert_eq!(
+            target(q, Preference::Clarity, 1, screen).bitrate,
+            full(Preference::Clarity).bitrate
+        );
+        // Levels past the last count as the last.
+        assert_eq!(
+            target(q, Preference::Mixed, 9, screen),
+            worst(Preference::Mixed)
+        );
+
+        for p in PREFERENCES {
+            assert_eq!(Preference::from_config(p.config_value()), p);
+            assert_eq!(Preference::from_u8(p.to_u8()), p);
+        }
+        assert_eq!(Preference::from_config("bogus"), Preference::Smoothness);
+        assert_eq!(Quality::from_config("2160p", 60).max_height, 2160);
+    }
+
+    #[test]
+    fn falling_behind_steps_down_and_keeping_up_steps_back() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut adapt = Adapt::new(start);
+        // Not more often than every two seconds.
+        assert!(!adapt.behind(at(100)));
+        assert!(adapt.behind(at(2_000)));
+        assert!(!adapt.behind(at(3_000)));
+        assert!(adapt.behind(at(4_000)));
+        assert!(adapt.behind(at(6_000)));
+        assert_eq!(adapt.level(), 3);
+        assert!(!adapt.behind(at(9_000)), "no lower than the last step");
+        // Back up only after eight calm seconds, one step at a time.
+        assert!(!adapt.keeping_up(at(12_000)));
+        assert!(adapt.keeping_up(at(17_000)));
+        assert_eq!(adapt.level(), 2);
+        assert!(!adapt.keeping_up(at(20_000)));
+        assert!(adapt.keeping_up(at(25_000)));
+        // Trouble restarts the calm (and steps down no sooner than two seconds after a change).
+        assert!(!adapt.behind(at(26_000)));
+        assert!(adapt.behind(at(27_000)));
+        assert!(!adapt.keeping_up(at(34_000)));
+        assert!(adapt.keeping_up(at(35_000)));
     }
 
     /// Captures this machine's primary screen both ways, then scales, encodes and decodes it,
