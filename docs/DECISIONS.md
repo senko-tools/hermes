@@ -1573,3 +1573,27 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   quinn marks BBR as experimental; worth trying only if the LAN or internet numbers show the
   sender's rate collapsing after losses.
 - **Why:** the developer asked for at least 4K at 60 fps and for smoothness first.
+
+## 2026-11-05: Hardware screen share encoding
+
+- **What:** on Windows a share is captured, scaled, converted and encoded on the GPU: Desktop
+  Duplication into a texture of our own, the Direct3D 11 video processor scales it and converts
+  it to NV12 (limited-range BT.601, like OpenH264) in one pass (`screen/gpu_convert.rs`), and
+  the GPU's own H.264 encoder (NVENC, AMF or Quick Sync) encodes it through Media Foundation
+  (`screen/mf_encode.rs`): low-latency mode, constant bitrate, High profile, no B-frames,
+  keyframes only when asked for. The picture never comes back to the CPU. Everything goes through
+  the `windows` crate (features `Win32_Media_MediaFoundation`, `Win32_System_Com`,
+  `Win32_System_Ole`, `Win32_System_Variant`): no new dependency, Media Foundation is part of
+  Windows. The output is the same Annex B H.264 as before, so watchers (and older clients, with
+  OpenH264) decode it unchanged.
+- **Fallback:** without a GPU with video support or a hardware encoder on the screen's GPU, or
+  when it fails, the share continues on the CPU path (readback, our scaler, OpenH264).
+- **Bitrate:** about 0.07 bit per pixel per frame, 2 to 40 Mbit/s (1440p at 60 fps: 15 Mbit/s;
+  4K at 60 fps: 35 Mbit/s); the rate control buffer is half a second but at most 12 Mbit, so a
+  keyframe stays well under the 2 MiB frame limit.
+- **Measured (developer's PC, NVIDIA encoder, 1440p screen):** convert + encode per frame,
+  median: 2.8 ms at 1080p, 5.3 ms at 1440p, 7.3 ms at 4K (CPU path: about 44 ms at 1080p).
+  `real_screen_hardware_is_captured_and_encoded` and `share_end_to_end` (ignored tests) measure
+  it on any machine.
+- **Why:** the developer asked for at least 4K at 60 fps and for CPU and GPU use like Discord's;
+  the software encoder cannot do either.

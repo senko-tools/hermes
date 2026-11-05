@@ -7,6 +7,10 @@ pub mod capture;
 pub mod codec;
 #[cfg(windows)]
 mod dxgi;
+#[cfg(windows)]
+mod gpu_convert;
+#[cfg(windows)]
+mod mf_encode;
 mod scale;
 pub mod view;
 

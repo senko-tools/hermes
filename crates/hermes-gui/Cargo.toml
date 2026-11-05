@@ -34,13 +34,18 @@ tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Push-to-talk key polling (PLAN.md section 21, Spike C decision); Desktop Duplication for
-# screen sharing (the Direct3D 11 and DXGI features xcap enables already).
+# screen sharing (the Direct3D 11 and DXGI features xcap enables already); Media Foundation for
+# hardware H.264 encoding (part of Windows).
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_Variant",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }

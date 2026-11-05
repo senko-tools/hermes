@@ -436,3 +436,118 @@ async fn incoming_calls_ring_and_stop() {
     let _ = app.update(Message::Voice(VoiceMsg::RingTick));
     assert!(app.call.is_none());
 }
+
+/// A real screen share end to end on this machine: alice shares the primary screen through the
+/// real capture thread (the GPU path where there is one), a real server carries it, bob watches
+/// and decodes it. Prints what arrived and how long decoding took. The screen must change for
+/// frames to flow (play a video, or scroll something).
+///
+/// `cargo test -p hermes-gui --release share_end_to_end -- --ignored --nocapture`, shaped with
+/// `HERMES_SHARE_RES` (`1080p`, `1440p`, `native`; default `native`), `HERMES_SHARE_FPS`
+/// (default 60) and `HERMES_SHARE_SECS` (default 10).
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs a real screen; a benchmark"]
+async fn share_end_to_end() {
+    let resolution = std::env::var("HERMES_SHARE_RES").unwrap_or_else(|_| "native".into());
+    let env = |name: &str, default: u32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    };
+    let fps = env("HERMES_SHARE_FPS", 60);
+    let secs = env("HERMES_SHARE_SECS", 10);
+
+    let server = start("share-e2e").await;
+    let mut alice = Client::new();
+    let inst = alice.sign_up(&server, "alice", &server.setup_code).await;
+    let room = voice_channel(&alice.core(), &inst);
+    let space = *alice
+        .core()
+        .store()
+        .instance(&inst)
+        .unwrap()
+        .spaces
+        .keys()
+        .next()
+        .unwrap();
+    let invite = alice
+        .core()
+        .rest(&inst)
+        .unwrap()
+        .create_invite(space, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let mut bob = Client::new();
+    bob.sign_up(&server, "bob", &invite.code).await;
+    let alice_id = alice
+        .core()
+        .store()
+        .instance(&inst)
+        .unwrap()
+        .me_id()
+        .unwrap();
+    alice.join(&inst, room).await;
+    bob.join(&inst, room).await;
+
+    let (sink, mut frames) = tokio::sync::mpsc::channel(64);
+    bob.core().set_screen_sink(sink);
+    alice.core().start_screen_share().unwrap();
+    let quality = crate::screen::capture::Quality::from_config(&resolution, fps);
+    let _capture = crate::screen::capture::Capture::start(alice.core(), "", quality).unwrap();
+    let bob_core = bob.core();
+    bob.until("bob sees the share", move |_| {
+        !bob_core.screen_sharers().is_empty()
+    })
+    .await;
+    bob.core().watch_screens(&[alice_id]);
+
+    let mut decoder = crate::screen::codec::Decoder::new().unwrap();
+    let (mut received, mut keyframes, mut decoded, mut bytes) = (0u32, 0u32, 0u32, 0usize);
+    let mut decode_times = Vec::new();
+    let mut gaps = Vec::new();
+    let mut size = (0, 0);
+    let mut last_arrival: Option<std::time::Instant> = None;
+    let mut started_decoding = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(u64::from(secs));
+    while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, frames.recv()).await {
+        received += 1;
+        bytes += frame.data.len();
+        keyframes += u32::from(frame.header.keyframe);
+        if let Some(previous) = last_arrival {
+            gaps.push(frame.received.duration_since(previous));
+        }
+        last_arrival = Some(frame.received);
+        started_decoding |= frame.header.keyframe;
+        if !started_decoding {
+            continue;
+        }
+        let begin = std::time::Instant::now();
+        if let Ok(Some(picture)) = decoder.decode(&frame.data) {
+            decode_times.push(begin.elapsed());
+            decoded += 1;
+            size = (picture.width, picture.height);
+        }
+    }
+    decode_times.sort();
+    gaps.sort();
+    let pct = |v: &[Duration], q: f64| v.get(((v.len() as f64 - 1.0) * q) as usize).copied();
+    println!(
+        "share end to end ({resolution}, {fps} fps target, {}x{} decoded) over {secs} s:\n  \
+         received {received} frames ({:.1} fps, {keyframes} keyframes, {:.0} kbit/s), decoded \
+         {decoded}\n  arrival gaps: median {:?}, p95 {:?}, max {:?}\n  decode: median {:?}, p95 \
+         {:?}, max {:?}",
+        size.0,
+        size.1,
+        f64::from(received) / f64::from(secs),
+        bytes as f64 * 8.0 / 1000.0 / f64::from(secs),
+        pct(&gaps, 0.5),
+        pct(&gaps, 0.95),
+        gaps.last(),
+        pct(&decode_times, 0.5),
+        pct(&decode_times, 0.95),
+        decode_times.last(),
+    );
+    alice.core().stop_screen_share();
+}
