@@ -10,13 +10,16 @@ mod dxgi;
 #[cfg(windows)]
 mod gpu_convert;
 #[cfg(windows)]
+mod mf_decode;
+#[cfg(windows)]
 mod mf_encode;
 mod scale;
 pub mod view;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::voice::RemoteFrame;
@@ -90,45 +93,79 @@ impl Hash for Frames {
     }
 }
 
-/// Decoded pictures of the shares I watch, as [`Message::ScreenImage`].
+/// Decoded pictures of the shares I watch, as [`Message::ScreenImages`].
 pub fn subscription(core: &Core) -> Subscription<Message> {
     Subscription::run_with(Frames(core.clone()), |frames| decoded(frames.0.clone()))
 }
 
+/// The newest decoded picture of each share, waiting for the window. The decoder overwrites a
+/// picture the window has not taken yet, so a busy window gets the newest one at its own pace
+/// instead of a queue of old ones (one update of the window per batch, not per picture).
+#[derive(Default)]
+struct Latest {
+    pictures: Mutex<HashMap<(InstanceId, Id), codec::Picture>>,
+    ready: tokio::sync::Notify,
+    /// The window's side ended: the decoder stops too.
+    closed: AtomicBool,
+}
+
+impl Latest {
+    /// Puts a picture in; `false` if it replaced one the window never took.
+    fn put(&self, key: (InstanceId, Id), picture: codec::Picture) -> bool {
+        let replaced = self
+            .pictures
+            .lock()
+            .expect("latest pictures")
+            .insert(key, picture)
+            .is_some();
+        self.ready.notify_one();
+        !replaced
+    }
+
+    fn take(&self) -> Vec<((InstanceId, Id), codec::Picture)> {
+        self.pictures
+            .lock()
+            .expect("latest pictures")
+            .drain()
+            .collect()
+    }
+}
+
 fn decoded(core: Core) -> impl iced::futures::Stream<Item = Message> {
-    iced::stream::channel(4, async move |mut output| {
+    iced::stream::channel(1, async move |mut output| {
         let (sink, frames) = tokio::sync::mpsc::channel::<RemoteFrame>(DECODE_QUEUE);
         core.set_screen_sink(sink);
-        let (pictures, mut decoded) = tokio::sync::mpsc::channel(2);
+        let latest = Arc::new(Latest::default());
         let decoder_core = core.clone();
+        let decoder_latest = latest.clone();
         let spawned = std::thread::Builder::new()
             .name("hermes-screen-decode".into())
-            .spawn(move || decode_loop(&decoder_core, frames, &pictures));
+            .spawn(move || decode_loop(&decoder_core, frames, &decoder_latest));
         if let Err(err) = spawned {
             tracing::warn!("screen share decoder: {err}");
             return;
         }
-        while let Some((inst, user, picture)) = decoded.recv().await {
-            if output
-                .send(Message::ScreenImage(inst, user, Arc::new(picture)))
-                .await
-                .is_err()
-            {
+        loop {
+            latest.ready.notified().await;
+            let batch: Vec<_> = latest
+                .take()
+                .into_iter()
+                .map(|((inst, user), picture)| (inst, user, Arc::new(picture)))
+                .collect();
+            if batch.is_empty() {
+                continue;
+            }
+            if output.send(Message::ScreenImages(batch)).await.is_err() {
+                latest.closed.store(true, Ordering::Relaxed);
                 return;
             }
         }
     })
 }
 
-type Decoded = (InstanceId, Id, codec::Picture);
-
 /// Decodes frames per sharer until the sink closes. A broken picture resets that sharer's
 /// decoder and asks them for a keyframe; pictures the window has no time for are dropped.
-fn decode_loop(
-    core: &Core,
-    mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>,
-    pictures: &tokio::sync::mpsc::Sender<Decoded>,
-) {
+fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>, latest: &Latest) {
     let mut decoders: HashMap<(InstanceId, Id), codec::Decoder> = HashMap::new();
     let mut stats: HashMap<Id, DecodeStats> = HashMap::new();
     let mut requested: HashMap<Id, std::time::Instant> = HashMap::new();
@@ -144,6 +181,9 @@ fn decode_loop(
     let mut stats_since = std::time::Instant::now();
     let started = std::time::Instant::now();
     while let Some(frame) = frames.blocking_recv() {
+        if latest.closed.load(Ordering::Relaxed) {
+            return;
+        }
         if stats_since.elapsed() >= STATS_EVERY {
             let secs = stats_since.elapsed().as_secs_f64();
             for (user, s) in stats.drain() {
@@ -171,6 +211,11 @@ fn decode_loop(
             }
             match codec::Decoder::new() {
                 Ok(decoder) => {
+                    tracing::info!(
+                        "screen share of {}: decoding with {}",
+                        frame.user,
+                        decoder.kind()
+                    );
                     decoders.insert(key.clone(), decoder);
                 }
                 Err(err) => {
@@ -190,10 +235,7 @@ fn decode_loop(
         match decoded {
             Ok(Some(picture)) => {
                 s.pictures += 1;
-                if pictures.try_send((key.0, key.1, picture)).is_err() {
-                    if pictures.is_closed() {
-                        return;
-                    }
+                if !latest.put(key, picture) {
                     s.unshown += 1;
                 }
             }

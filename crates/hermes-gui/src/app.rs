@@ -292,9 +292,13 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // New pictures of screen shares (up to 60 a second per share) change nothing else.
+        let pictures_only = matches!(message, Message::ScreenImages(_));
         let task = self.update_inner(message);
-        self.sync_meter();
-        self.sync_screens();
+        if !pictures_only {
+            self.sync_meter();
+            self.sync_screens();
+        }
         task
     }
 
@@ -442,15 +446,24 @@ impl App {
             Message::Select(inst, channel) => return self.select(inst, channel),
             Message::OpenChat(inst, channel) => return self.open_chat(inst, channel),
             Message::SidebarTab(tab) => self.sidebar_tab = tab,
-            Message::ScreenImage(inst, user, picture) => match self.screens.entry((inst, user)) {
-                std::collections::hash_map::Entry::Occupied(mut share) => {
-                    share.get_mut().update(picture);
+            Message::ScreenImages(pictures) => {
+                for (inst, user, picture) in pictures {
+                    let key = (inst, user);
+                    // One decoded just before I stopped watching.
+                    if !self.watching_shares.contains(&key) {
+                        continue;
+                    }
+                    match self.screens.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(mut share) => {
+                            share.get_mut().update(picture);
+                        }
+                        std::collections::hash_map::Entry::Vacant(slot) => {
+                            let share = crate::screen::view::Share::new(slot.key(), picture);
+                            slot.insert(share);
+                        }
+                    }
                 }
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    let share = crate::screen::view::Share::new(slot.key(), picture);
-                    slot.insert(share);
-                }
-            },
+            }
             Message::PaneClicked(pane) => self.panes.focus = pane,
             Message::PaneDragged(event) => self.panes.on_drag(event),
             Message::PaneResized(event) => self.panes.state.resize(event.split, event.ratio),

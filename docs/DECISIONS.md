@@ -1597,3 +1597,24 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   it on any machine.
 - **Why:** the developer asked for at least 4K at 60 fps and for CPU and GPU use like Discord's;
   the software encoder cannot do either.
+
+## 2026-11-05: Hardware screen share decoding, fewer window updates
+
+- **What:** on Windows, watchers decode shares with Windows' own H.264 decoder through Media
+  Foundation (`screen/mf_decode.rs`), on the GPU (DXVA) given a Direct3D 11 device, else on the
+  CPU; OpenH264 stays the fallback (and the decoder everywhere else). It is kept up to date by
+  Windows Update, which matters for a decoder that parses other people's data. Its NV12 pictures
+  are drawn as they are: a Y and an interleaved U/V texture, converted in the same shader
+  (`screen/view.rs`). A decoded picture is read back through a staging texture of our own;
+  Media Foundation's own way stalled about 8 ms per picture.
+- **Measured (developer's PC, NVIDIA GPU), per picture:** 2.9 ms at 1080p, 4.7 ms at 1440p,
+  10.4 ms at 4K (OpenH264: 4.6, 8.1 and 18.5 ms).
+- **Window updates:** decoded pictures no longer each become a message. The decoder keeps the
+  newest picture of each share; the window takes them all at once when it is ready
+  (`Message::ScreenImages`), so a busy window shows the newest picture instead of working
+  through a queue, and these updates skip the voice and level meter bookkeeping that every other
+  message runs.
+- **Not done (planned as optional):** sharing the decoded texture with the renderer directly
+  (Direct3D 11 to wgpu's Direct3D 12) would save the readback and upload; the numbers above do
+  not need it yet.
+- **Why:** the developer asked for 4K at 60 fps; OpenH264 needs 18 ms or more for a 4K picture.

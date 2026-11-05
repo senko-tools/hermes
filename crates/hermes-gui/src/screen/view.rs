@@ -1,7 +1,8 @@
 //! Drawing a screen share on the GPU with iced's `shader` widget. Each share keeps one set of
-//! textures (the Y, U and V planes), overwritten in place when a new picture arrives, and the
-//! fragment shader turns YUV into colors. Showing pictures as images instead would create (and
-//! drop) a GPU texture for every frame and convert every pixel on the CPU first.
+//! textures (the Y, U and V planes for I420; the Y and the interleaved U/V plane for NV12),
+//! overwritten in place when a new picture arrives, and the fragment shader turns YUV into
+//! colors. Showing pictures as images instead would create (and drop) a GPU texture for every
+//! frame and convert every pixel on the CPU first.
 //!
 //! Without a GPU (iced's software renderer) shares are not drawn.
 
@@ -81,8 +82,10 @@ impl shader::Primitive for Primitive {
 /// The GPU side of one share.
 struct Entry {
     size: (u32, u32),
+    nv12: bool,
     version: u64,
-    planes: [wgpu::Texture; 3],
+    /// Y, U, V (I420) or Y, UV (NV12).
+    planes: Vec<wgpu::Texture>,
     params: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -110,7 +113,8 @@ const SHADER: &str = r"
 struct Params {
     scale: vec2<f32>,
     srgb: f32,
-    unused: f32,
+    // 1: U and V are interleaved in `u_plane` (NV12).
+    nv12: f32,
 };
 
 @group(0) @binding(0) var y_plane: texture_2d<f32>;
@@ -143,8 +147,13 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Varyings {
 @fragment
 fn fs_main(in: Varyings) -> @location(0) vec4<f32> {
     let y = (textureSample(y_plane, linear_sampler, in.uv).r * 255.0 - 16.0) * 1.164 / 255.0;
-    let u = (textureSample(u_plane, linear_sampler, in.uv).r * 255.0 - 128.0) / 255.0;
-    let v = (textureSample(v_plane, linear_sampler, in.uv).r * 255.0 - 128.0) / 255.0;
+    let chroma = textureSample(u_plane, linear_sampler, in.uv);
+    var raw_v = textureSample(v_plane, linear_sampler, in.uv).r;
+    if params.nv12 > 0.5 {
+        raw_v = chroma.g;
+    }
+    let u = (chroma.r * 255.0 - 128.0) / 255.0;
+    let v = (raw_v * 255.0 - 128.0) / 255.0;
     var rgb = clamp(
         vec3<f32>(y + 1.596 * v, y - 0.391 * u - 0.813 * v, y + 2.018 * u),
         vec3<f32>(0.0),
@@ -266,9 +275,12 @@ impl Pipeline {
         self.used.insert(share.key);
         let picture = &share.picture;
         let size = (picture.width, picture.height);
-        let stale = self.entries.get(&share.key).is_none_or(|e| e.size != size);
+        let stale = self
+            .entries
+            .get(&share.key)
+            .is_none_or(|e| e.size != size || e.nv12 != picture.nv12);
         if stale {
-            let entry = self.entry(device, size);
+            let entry = self.entry(device, size, picture.nv12);
             self.entries.insert(share.key, entry);
         }
         let shares = self.entries.len();
@@ -278,12 +290,18 @@ impl Pipeline {
         if stale || entry.version != share.version {
             let begin = std::time::Instant::now();
             let (cw, ch) = picture.chroma_size();
-            let planes = [
-                (picture.y(), size.0, size.1),
-                (picture.u(), cw, ch),
-                (picture.v(), cw, ch),
-            ];
-            for (texture, (data, w, h)) in entry.planes.iter().zip(planes) {
+            // Bytes per row and rows of each plane (an NV12 chroma row has two bytes a sample).
+            let planes = if picture.nv12 {
+                vec![(picture.y(), size.0, size.1), (picture.u(), cw * 2, ch)]
+            } else {
+                vec![
+                    (picture.y(), size.0, size.1),
+                    (picture.u(), cw, ch),
+                    (picture.v(), cw, ch),
+                ]
+            };
+            for (texture, (data, row, h)) in entry.planes.iter().zip(planes) {
+                let w = texture.width();
                 queue.write_texture(
                     wgpu::TexelCopyTextureInfo {
                         texture,
@@ -294,7 +312,7 @@ impl Pipeline {
                     data,
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(w),
+                        bytes_per_row: Some(row),
                         rows_per_image: Some(h),
                     },
                     extent(w, h),
@@ -320,31 +338,37 @@ impl Pipeline {
         // Fit the picture into the widget (letterboxed), every frame: the widget can resize.
         let (sx, sy) = fit_scale(size, bounds);
         let srgb = if self.srgb_target { 1.0f32 } else { 0.0 };
+        let nv12 = if picture.nv12 { 1.0f32 } else { 0.0 };
         let mut params = Vec::with_capacity(16);
-        for value in [sx, sy, srgb, 0.0] {
+        for value in [sx, sy, srgb, nv12] {
             params.extend_from_slice(&value.to_le_bytes());
         }
         queue.write_buffer(&entry.params, 0, &params);
     }
 
-    fn entry(&self, device: &wgpu::Device, (width, height): (u32, u32)) -> Entry {
-        let plane = |w: u32, h: u32| {
+    fn entry(&self, device: &wgpu::Device, (width, height): (u32, u32), nv12: bool) -> Entry {
+        let plane = |w: u32, h: u32, format| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("hermes screen share plane"),
                 size: extent(w, h),
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             })
         };
-        let planes = [
-            plane(width, height),
-            plane(width / 2, height / 2),
-            plane(width / 2, height / 2),
-        ];
+        let (r8, rg8) = (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm);
+        let planes = if nv12 {
+            vec![plane(width, height, r8), plane(width / 2, height / 2, rg8)]
+        } else {
+            vec![
+                plane(width, height, r8),
+                plane(width / 2, height / 2, r8),
+                plane(width / 2, height / 2, r8),
+            ]
+        };
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hermes screen share params"),
             size: 16,
@@ -367,9 +391,10 @@ impl Pipeline {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&views[1]),
                 },
+                // NV12 has no V plane: the U/V one is bound again (the shader ignores it).
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&views[2]),
+                    resource: wgpu::BindingResource::TextureView(&views[views.len() - 1]),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -383,6 +408,7 @@ impl Pipeline {
         });
         Entry {
             size: (width, height),
+            nv12,
             version: u64::MAX,
             planes,
             params,
@@ -435,6 +461,7 @@ mod tests {
             Arc::new(Picture {
                 width: 2,
                 height: 2,
+                nv12: false,
                 planes: vec![n; 6],
             })
         };

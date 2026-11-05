@@ -94,17 +94,20 @@ impl Encoder {
     }
 }
 
-/// A decoded picture in I420: the full-size Y plane, then the half-size U and V planes, each
-/// packed without padding. The GPU turns it into colors ([`super::view`]).
+/// A decoded picture, packed without padding: the full-size Y plane, then either the half-size
+/// U and V planes (I420, from OpenH264) or one half-size plane of interleaved U and V (NV12,
+/// from Windows' decoder). The GPU turns it into colors ([`super::view`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,
     pub height: u32,
+    /// NV12 rather than I420.
+    pub nv12: bool,
     pub planes: Vec<u8>,
 }
 
 impl Picture {
-    /// The size of the U and V planes.
+    /// The size of the U and V planes (in samples: an NV12 row holds two bytes per sample).
     pub fn chroma_size(&self) -> (u32, u32) {
         (self.width / 2, self.height / 2)
     }
@@ -113,35 +116,95 @@ impl Picture {
         &self.planes[..(self.width * self.height) as usize]
     }
 
+    /// I420: the U plane. NV12: the interleaved U/V plane.
     pub fn u(&self) -> &[u8] {
         let (w, h) = self.chroma_size();
         let start = (self.width * self.height) as usize;
-        &self.planes[start..start + (w * h) as usize]
+        let len = (w * h) as usize * if self.nv12 { 2 } else { 1 };
+        &self.planes[start..start + len]
     }
 
+    /// I420: the V plane. NV12: empty (V is interleaved with U).
     pub fn v(&self) -> &[u8] {
+        if self.nv12 {
+            return &[];
+        }
         let (w, h) = self.chroma_size();
         let start = (self.width * self.height + w * h) as usize;
         &self.planes[start..start + (w * h) as usize]
     }
 }
 
+/// Whether Windows' decoder failed to start once: then OpenH264 is used from then on.
+#[cfg(windows)]
+static MEDIA_FOUNDATION_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Decodes one person's share.
 pub struct Decoder {
-    inner: H264Decoder,
+    inner: Inner,
+}
+
+enum Inner {
+    OpenH264(H264Decoder),
+    #[cfg(windows)]
+    MediaFoundation(super::mf_decode::MfDecoder),
 }
 
 impl Decoder {
+    /// The best decoder here: on Windows its own (on the GPU where possible), else OpenH264.
     pub fn new() -> Result<Decoder, String> {
+        #[cfg(windows)]
+        {
+            use std::sync::atomic::Ordering;
+            if !MEDIA_FOUNDATION_FAILED.load(Ordering::Relaxed) {
+                match super::mf_decode::MfDecoder::new() {
+                    Ok(decoder) => {
+                        tracing::debug!(
+                            "screen share decoding with Media Foundation ({})",
+                            if decoder.hardware { "GPU" } else { "CPU" }
+                        );
+                        return Ok(Decoder {
+                            inner: Inner::MediaFoundation(decoder),
+                        });
+                    }
+                    Err(err) => {
+                        tracing::warn!("screen share decoding: {err}; using OpenH264");
+                        MEDIA_FOUNDATION_FAILED.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        Decoder::software()
+    }
+
+    /// OpenH264, on the CPU.
+    pub fn software() -> Result<Decoder, String> {
         Ok(Decoder {
-            inner: H264Decoder::new().map_err(|e| e.to_string())?,
+            inner: Inner::OpenH264(H264Decoder::new().map_err(|e| e.to_string())?),
         })
+    }
+
+    /// What decodes, for the logs.
+    pub fn kind(&self) -> &'static str {
+        match &self.inner {
+            Inner::OpenH264(_) => "OpenH264",
+            #[cfg(windows)]
+            Inner::MediaFoundation(d) if d.hardware => "Media Foundation, GPU",
+            #[cfg(windows)]
+            Inner::MediaFoundation(_) => "Media Foundation, CPU",
+        }
     }
 
     /// Decodes one access unit. `Ok(None)` while the decoder waits for more data; an error
     /// means the picture is broken until the next keyframe.
     pub fn decode(&mut self, data: &[u8]) -> Result<Option<Picture>, String> {
-        let Some(yuv) = self.inner.decode(data).map_err(|e| e.to_string())? else {
+        let decoder = match &mut self.inner {
+            Inner::OpenH264(decoder) => decoder,
+            #[cfg(windows)]
+            Inner::MediaFoundation(decoder) => return decoder.decode(data),
+        };
+        let Some(yuv) = decoder.decode(data).map_err(|e| e.to_string())? else {
             return Ok(None);
         };
         let (width, height) = yuv.dimensions();
@@ -167,6 +230,7 @@ impl Decoder {
         Ok(Some(Picture {
             width: width as u32,
             height: height as u32,
+            nv12: false,
             planes,
         }))
     }
@@ -194,7 +258,7 @@ mod tests {
         let mut encoder = Encoder::new(w, h, 10.0).unwrap();
         let (data, key) = encoder.encode(&rgba, true).unwrap().unwrap();
         assert!(key, "the first frame is a keyframe");
-        let mut decoder = Decoder::new().unwrap();
+        let mut decoder = Decoder::software().unwrap();
         let picture = decoder.decode(&data).unwrap().unwrap();
         assert_eq!((picture.width, picture.height), (64, 32));
         assert_eq!(picture.planes.len(), 64 * 32 * 3 / 2);
@@ -214,7 +278,7 @@ mod tests {
             ..rgba
         };
         let (data, _) = encoder.encode(&bgra, true).unwrap().unwrap();
-        let again = Decoder::new().unwrap().decode(&data).unwrap().unwrap();
+        let again = Decoder::software().unwrap().decode(&data).unwrap().unwrap();
         let luma2 = again.y()[16 * 64 + 32];
         assert!(luma.abs_diff(luma2) <= 3, "{luma} vs {luma2}");
 
@@ -223,9 +287,51 @@ mod tests {
         assert_eq!(bitrate(3840, 2160, 30.0), 8_000_000);
 
         // Garbage never panics.
-        let _ = Decoder::new()
-            .unwrap()
-            .decode(&[0, 0, 0, 1, 0x65, 0xff, 0x00, 0x12]);
-        let _ = Decoder::new().unwrap().decode(&[0xde, 0xad, 0xbe, 0xef]);
+        for decoder in [Decoder::software(), Decoder::new()] {
+            let mut decoder = decoder.unwrap();
+            let _ = decoder.decode(&[0, 0, 0, 1, 0x65, 0xff, 0x00, 0x12]);
+            let _ = decoder.decode(&[0xde, 0xad, 0xbe, 0xef]);
+        }
+    }
+
+    /// The best decoder here (Windows' own on Windows) decodes OpenH264's pictures to the same
+    /// colors as OpenH264.
+    #[test]
+    fn the_best_decoder_agrees_with_openh264() {
+        let (w, h) = (128u32, 96u32);
+        let mut pixels = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                pixels.extend_from_slice(&[(x * 2) as u8, (y * 2) as u8, 160, 255]);
+            }
+        }
+        let frame = Frame {
+            width: w,
+            height: h,
+            bgra: false,
+            pixels,
+        };
+        let mut encoder = Encoder::new(w, h, 30.0).unwrap();
+        let (data, _) = encoder.encode(&frame, true).unwrap().unwrap();
+        let reference = Decoder::software().unwrap().decode(&data).unwrap().unwrap();
+        let mut best = Decoder::new().unwrap();
+        println!("decoding with {}", best.kind());
+        // Some decoders want the access unit twice before the first picture comes out.
+        let picture = match best.decode(&data).unwrap() {
+            Some(picture) => picture,
+            None => best.decode(&data).unwrap().expect("a picture"),
+        };
+        assert_eq!((picture.width, picture.height), (w, h), "{}", best.kind());
+        let close = |a: &[u8], b: &[u8]| a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 2);
+        assert!(close(picture.y(), reference.y()), "{}: luma", best.kind());
+        if picture.nv12 {
+            let u: Vec<u8> = picture.u().iter().step_by(2).copied().collect();
+            let v: Vec<u8> = picture.u().iter().skip(1).step_by(2).copied().collect();
+            assert!(close(&u, reference.u()), "{}: U", best.kind());
+            assert!(close(&v, reference.v()), "{}: V", best.kind());
+        } else {
+            assert!(close(picture.u(), reference.u()));
+            assert!(close(picture.v(), reference.v()));
+        }
     }
 }

@@ -839,6 +839,33 @@ mod tests {
             for (data, _) in &frames[1..] {
                 decoder.decode(data).unwrap();
             }
+            let mut best = super::super::codec::Decoder::new().unwrap();
+            let mut times = Vec::new();
+            for (data, _) in &frames {
+                let begin = Instant::now();
+                let _ = best.decode(data).unwrap();
+                times.push(begin.elapsed());
+            }
+            times.sort();
+            println!(
+                "  {}: decode median {:?}, max {:?}",
+                best.kind(),
+                times[times.len() / 2],
+                times[times.len() - 1]
+            );
+            let mut sw = super::super::codec::Decoder::software().unwrap();
+            let mut times = Vec::new();
+            for (data, _) in &frames {
+                let begin = Instant::now();
+                let _ = sw.decode(data).unwrap();
+                times.push(begin.elapsed());
+            }
+            times.sort();
+            println!(
+                "  OpenH264: decode median {:?}, max {:?}",
+                times[times.len() / 2],
+                times[times.len() - 1]
+            );
         }
     }
 }

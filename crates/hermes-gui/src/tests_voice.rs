@@ -504,6 +504,7 @@ async fn share_end_to_end() {
     bob.core().watch_screens(&[alice_id]);
 
     let mut decoder = crate::screen::codec::Decoder::new().unwrap();
+    println!("decoding with {}", decoder.kind());
     let (mut received, mut keyframes, mut decoded, mut bytes) = (0u32, 0u32, 0u32, 0usize);
     let mut decode_times = Vec::new();
     let mut gaps = Vec::new();

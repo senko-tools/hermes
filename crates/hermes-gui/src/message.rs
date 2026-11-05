@@ -35,11 +35,13 @@ pub enum Message {
     OpenChat(InstanceId, Id),
     /// Shows the spaces or the direct messages in the sidebar.
     SidebarTab(crate::sidebar::tree::Tab),
-    /// A new picture of someone's screen share.
-    ScreenImage(
-        InstanceId,
-        Id,
-        std::sync::Arc<crate::screen::codec::Picture>,
+    /// The newest pictures of the screen shares I watch (one per share).
+    ScreenImages(
+        Vec<(
+            InstanceId,
+            Id,
+            std::sync::Arc<crate::screen::codec::Picture>,
+        )>,
     ),
     /// The selected channel's first page loaded.
     ChannelOpened,
