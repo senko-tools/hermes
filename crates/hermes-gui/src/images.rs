@@ -7,6 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, RenderImage, SharedString, div, img};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
+use hermes_client_core::proto::models::Attachment;
 use hermes_client_core::proto::models::{Status, User};
 use image::Frame;
 
@@ -30,6 +31,9 @@ pub struct Images {
 }
 
 /// Decodes image bytes for drawing. gpui wants BGRA.
+/// The size encrypted pictures are made into previews at, here on the device.
+const SEALED_PREVIEW: u32 = 800;
+
 pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Arc<RenderImage>, String> {
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let image = match max {
@@ -95,7 +99,14 @@ impl Shell {
     }
 
     /// Starts loading an attachment's thumbnail unless that was done already.
-    pub fn load_thumbnail(&mut self, inst: &InstanceId, id: Id, cx: &mut Context<Self>) {
+    pub fn load_thumbnail(
+        &mut self,
+        inst: &InstanceId,
+        attachment: &Attachment,
+        cx: &mut Context<Self>,
+    ) {
+        let id = attachment.id;
+        let attachment = attachment.clone();
         let key = (inst.clone(), id);
         if self.images.thumbs.contains_key(&key) {
             return;
@@ -106,9 +117,15 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                let bytes = rest.thumbnail(id).await.map_err(|e| e.to_string())?;
-                tokio::task::spawn_blocking(move || decode(&bytes, None))
+                // An encrypted picture has no thumbnail on the server: the server cannot see it.
+                let (bytes, max) = if attachment.sealed.is_some() {
+                    let bytes = core.download(&inst, &attachment).await;
+                    (bytes.map_err(|e| e.to_string())?, Some(SEALED_PREVIEW))
+                } else {
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    (rest.thumbnail(id).await.map_err(|e| e.to_string())?, None)
+                };
+                tokio::task::spawn_blocking(move || decode(&bytes, max))
                     .await
                     .map_err(|e| e.to_string())?
             },

@@ -156,7 +156,7 @@ impl ChatView {
 
 /// Whether an attachment is shown as an inline image.
 pub fn is_image(a: &Attachment) -> bool {
-    a.has_thumb && a.content_type.starts_with("image/")
+    (a.has_thumb || a.sealed.is_some()) && a.content_type.starts_with("image/")
 }
 
 /// The size an inline image is shown at: scaled into 400×300, never enlarged.
@@ -1106,10 +1106,21 @@ impl Shell {
         });
         let core = self.core.clone();
         let inst = key.0.clone();
+        let channel = key.1;
         let key = key.clone();
         self.run(
             cx,
-            async move { core.upload(&inst, &path).await.map_err(|e| e.to_string()) },
+            async move {
+                let picture = path.clone();
+                let size =
+                    tokio::task::spawn_blocking(move || image::image_dimensions(&picture).ok())
+                        .await
+                        .ok()
+                        .flatten();
+                core.upload_to(&inst, channel, &path, size)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
             move |this, result, _, _| {
                 if let Some(upload) = this
                     .chats
@@ -1187,9 +1198,7 @@ impl Shell {
         self.run_status(cx, async move {
             let result: Result<String, String> = async {
                 let bytes = core
-                    .rest(&inst)
-                    .map_err(|e| e.to_string())?
-                    .download(attachment.id, &attachment.filename)
+                    .download(&inst, &attachment)
                     .await
                     .map_err(|e| e.to_string())?;
                 let dir = crate::open::downloads_dir();
@@ -1218,9 +1227,7 @@ impl Shell {
             cx,
             async move {
                 let bytes = core
-                    .rest(&inst)
-                    .map_err(|e| e.to_string())?
-                    .download(attachment.id, &attachment.filename)
+                    .download(&inst, &attachment)
                     .await
                     .map_err(|e| e.to_string())?;
                 tokio::task::spawn_blocking(move || crate::images::decode(&bytes, None))
@@ -1596,6 +1603,7 @@ impl Shell {
                 }
             }))
             .child(content)
+            .children(self.render_new_devices(&key.0, key.1, cx))
             .child(bottom)
             .into_any_element()
     }
@@ -1860,7 +1868,7 @@ impl Shell {
         if let Row::Message(m) = &row
             && self.config.buffer.image_previews
         {
-            let wanted: Vec<Id> = {
+            let wanted: Vec<Attachment> = {
                 let store = self.core.store();
                 store
                     .instance(inst)
@@ -1869,13 +1877,13 @@ impl Shell {
                         msg.attachments
                             .iter()
                             .filter(|a| is_image(a))
-                            .map(|a| a.id)
+                            .cloned()
                             .collect()
                     })
                     .unwrap_or_default()
             };
-            for id in wanted {
-                self.load_thumbnail(inst, id, cx);
+            for attachment in &wanted {
+                self.load_thumbnail(inst, attachment, cx);
             }
         }
         let store = self.core.store();
@@ -1988,6 +1996,11 @@ impl Shell {
                             .text_color(theme::text_tertiary())
                             .child(time_text.clone()),
                     )
+                    .children(crate::encryption::lock_mark(
+                        msg.lock,
+                        s.channel(channel).is_some_and(|c| c.kind.is_private())
+                            && msg.kind == hermes_client_core::proto::models::MessageKind::Default,
+                    ))
                     .into_any_element(),
             );
         }

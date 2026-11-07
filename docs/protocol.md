@@ -277,3 +277,18 @@ Every DM and group DM has a room keyed by its channel ID. "Start call" = `POST /
 they join, or for everyone when the caller leaves or the room empties. Clients stop ringing after
 30 s on their own. A system message `"<name> started a call"` is posted when the room fills, and
 `"Call ended · N min"` when it empties.
+
+## End-to-end encryption
+
+See [e2ee.md](e2ee.md). On the wire: `PUT /users/@me/devices` publishes this device's public keys,
+`POST /users/devices` (`user_ids`) returns users' devices, and the gateway sends `devices_update`
+(`user_id`, `devices`). `POST` and `PATCH` of DM messages take `e2ee` (an envelope) with empty `content`, and
+messages carry it back. The voice control stream relays `voice_key` (`to` from the client, `from` from the
+server, `key` opaque). Audio and video are packet version 2.
+
+## Friends and tags
+
+`POST /users/@me/username` (`username`, `current_password`), `GET` and `POST /users/@me/friends` (`handle`),
+`PUT` and `DELETE /users/@me/friends/{id}`; `ready.relationships`, `relationship_update`, `relationship_remove`.
+Users have `discriminator` next to `username`, absent for accounts without a tag. `PATCH /admin/users/{id}` takes
+`tagless`.

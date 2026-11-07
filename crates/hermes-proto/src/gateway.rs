@@ -675,7 +675,7 @@ mod tests {
         assert_eq!(
             value,
             json!({ "op": "identify", "d": {
-                "token": "t", "protocol_version": 1,
+                "token": "t", "protocol_version": 2,
                 "client": { "name": "hermes-gui", "version": "0.1.0", "os": "windows" }
             }})
         );

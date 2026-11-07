@@ -1789,3 +1789,19 @@ Asked for by the developer.
 - **Friends:** requests by handle, stored in `relationships`. Friends see each other's presence and may always open a
   DM, whatever `dm_from` and `dm_policy` say. Blocking is not part of this.
 - **Client:** the Friends page has Online, All, Pending and People tabs. The TUI gets none of this yet.
+
+## 2026-11-07: End-to-end encryption and one desktop client
+
+Asked for by the developer.
+
+- **End-to-end encryption** of DMs, group DMs, their files and all voice, with no passwords: see `docs/e2ee.md`, which
+  also says what it does not protect. PLAN.md planned MLS for this; MLS needs clients to keep their own message
+  history, while here history lives on the server and is read on any device, so messages are sealed per device instead.
+- **New dependencies** (the request cannot be met without them): `x25519-dalek`, `ed25519-dalek`, `chacha20poly1305`,
+  `hkdf`, `zeroize`, and `base64` in the client core.
+- **Protocol version 2 and packet version 2:** clients and servers from before this refuse each other with a clear
+  message, instead of calls going silent. Update the server first.
+- **`privacy.require_dm_encryption`** is on by default: a plain DM is refused, including with attachments.
+- **hermes-gpui replaced hermes-gui,** taking its crate name and the `hermes` binary, as the developer asked. The iced
+  client, `spikes/` (throwaway Phase 0 experiments nothing used), its workflow, the `iced` and `pulldown-cmark` workspace
+  dependencies and a `data/` folder that was committed by mistake (a test database and a throwaway TLS key) are gone.

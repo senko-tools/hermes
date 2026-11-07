@@ -96,7 +96,7 @@ async fn close_codes() {
     // An unsupported protocol version.
     let mut ws = server.connect().await;
     ws.send(json!({ "op": "identify", "d": {
-        "token": owner, "protocol_version": 2,
+        "token": owner, "protocol_version": 99,
         "client": { "name": "t", "version": "0", "os": "t" },
     }}))
     .await;

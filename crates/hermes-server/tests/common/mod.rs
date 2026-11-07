@@ -406,7 +406,7 @@ impl Ws {
     pub async fn send_identify(&mut self, token: &str) {
         self.send(json!({ "op": "identify", "d": {
             "token": token,
-            "protocol_version": 1,
+            "protocol_version": hermes_proto::PROTOCOL_VERSION,
             "client": { "name": "test", "version": "0", "os": "test" },
         }}))
         .await;

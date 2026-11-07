@@ -93,6 +93,9 @@ impl Shell {
 
     /// Closes the top dialog, menu or page. `false` if none is open.
     fn close_top(&mut self) -> bool {
+        if self.keys_dialog.take().is_some() {
+            return true;
+        }
         if self.viewer.take().is_some()
             || self.volume_menu.take().is_some()
             || self.share_menu.take().is_some()

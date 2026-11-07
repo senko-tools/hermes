@@ -475,6 +475,7 @@ impl Shell {
                     .text_color(theme::text_secondary())
                     .child(place),
             );
+        let encryption = self.render_voice_encryption();
         // The connection line opens the network graph.
         let network = div()
             .id("voice-panel-network")
@@ -529,10 +530,53 @@ impl Shell {
                         .child(div().flex_1().min_w_0().child(info))
                         .child(leave),
                 )
+                .child(encryption)
                 .child(network)
                 .child(buttons)
                 .into_any_element(),
         )
+    }
+
+    /// Whether what is said here is safe, and who cannot be part of it.
+    fn render_voice_encryption(&self) -> AnyElement {
+        let state = self.core.voice_encryption();
+        let names = |users: &[Id]| {
+            let store = self.core.store();
+            let inst = self
+                .core
+                .voice_channel()
+                .map(|(i, _)| i)
+                .unwrap_or_default();
+            users
+                .iter()
+                .map(|u| {
+                    store
+                        .instance(&inst)
+                        .map_or_else(|| u.to_string(), |s| s.display_name(None, *u))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let (color, text) = match &state {
+            Some(e) if !e.no_keys.is_empty() => (
+                theme::warning(),
+                format!("Cannot hear you (old version): {}", names(&e.no_keys)),
+            ),
+            Some(e) if e.ready && e.waiting.is_empty() => {
+                (theme::text_tertiary(), "End-to-end encrypted".to_owned())
+            }
+            _ => (theme::text_tertiary(), "Securing the call…".to_owned()),
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(4.))
+            .text_size(theme::caption_size())
+            .text_color(color)
+            .child(icon(assets::LOCK, 12., color))
+            .child(div().flex_1().min_w_0().truncate().child(text))
+            .into_any_element()
     }
 
     /// The last half minute of ping, small, on the connection line.
@@ -692,7 +736,13 @@ impl Shell {
                                     .text_color(theme::text_secondary())
                                     .child(format!("Round trip (QUIC): {rtt}"))
                                     .child(format!("Packets: {total}"))
-                                    .child(format!("Server: {server}")),
+                                    .child(format!("Server: {server}"))
+                                    .children(self.core.voice_encryption().map(|e| {
+                                        format!(
+                                            "Encryption code: {} (the same for everyone here)",
+                                            e.code
+                                        )
+                                    })),
                             ),
                     ),
             )

@@ -146,6 +146,8 @@ pub struct Shell {
     pub new_dm: Option<NewDm>,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
+    /// The safety number of a conversation.
+    pub keys_dialog: Option<crate::encryption::KeysDialog>,
     /// Local UTC offset for timestamps, read once at startup.
     pub utc_offset: i64,
     pub next_upload: u64,
@@ -275,6 +277,7 @@ impl Shell {
             update: None,
             new_dm: None,
             viewer: None,
+            keys_dialog: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,
@@ -833,6 +836,20 @@ impl Shell {
             );
         }
         if let Some((inst, channel)) = self.open_channel() {
+            if self.core.channel_is_private(&inst, channel) {
+                let keys_inst = inst.clone();
+                controls.push(
+                    crate::channel::tip_button(
+                        "header-keys",
+                        assets::LOCK,
+                        "End-to-end encrypted: compare safety numbers",
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.open_keys_dialog(keys_inst.clone(), channel, cx);
+                    }))
+                    .into_any_element(),
+                );
+            }
             let (pins_inst, search_inst) = (inst.clone(), inst);
             controls.push(
                 crate::channel::tip_button("header-pins", assets::PIN, "Pinned messages")

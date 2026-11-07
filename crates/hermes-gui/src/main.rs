@@ -16,6 +16,7 @@ mod command_bar;
 mod desktop;
 mod desktop_shell;
 mod drag;
+mod encryption;
 #[cfg(test)]
 mod fixtures;
 mod form;

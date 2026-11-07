@@ -499,7 +499,9 @@ pub fn safety_number(keys: &[(Id, Vec<DeviceKeys>)]) -> String {
             .to_vec();
     }
     digest
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .take(6)
         .map(|chunk| {
             let n = u32::from(chunk[0]) << 16 | u32::from(chunk[1]) << 8 | u32::from(chunk[2]);

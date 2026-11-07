@@ -1055,6 +1055,20 @@ impl Shell {
                 group("Account", account_rows),
                 group("Privacy", privacy_rows),
                 group("Signed-in devices", device_rows),
+                group(
+                    "End-to-end encryption",
+                    vec![setting(
+                        "This device",
+                        "Direct messages, files and calls are encrypted here and only your and their \
+                         devices can read them, not the server. A device can only read what was sent \
+                         after it signed in. Its key stays on this computer.",
+                        muted(
+                            self.core.my_device_id(&inst).map_or_else(String::new, |d| {
+                                d.chars().take(16).collect::<String>()
+                            }),
+                        ),
+                    )],
+                ),
             ],
         )
     }

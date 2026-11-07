@@ -197,7 +197,8 @@ impl Shell {
                     cx,
                     async move {
                         let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let res = rest.search(&request).await.map_err(|e| e.to_string())?;
+                        let mut res = rest.search(&request).await.map_err(|e| e.to_string())?;
+                        core.open_messages(&inst, &mut res.messages).await;
                         Ok::<ResultPage, String>((
                             res.messages
                                 .into_iter()
@@ -216,7 +217,8 @@ impl Shell {
                     cx,
                     async move {
                         let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let list = rest.pins(channel).await.map_err(|e| e.to_string())?;
+                        let mut list = rest.pins(channel).await.map_err(|e| e.to_string())?;
+                        core.open_messages(&inst, &mut list).await;
                         Ok::<ResultPage, String>((
                             list.into_iter().map(|m| (inst.clone(), m)).collect(),
                             None,
@@ -239,10 +241,11 @@ impl Shell {
                         cx,
                         async move {
                             let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                            let list = rest
+                            let mut list = rest
                                 .mentions(None, MENTIONS)
                                 .await
                                 .map_err(|e| e.to_string())?;
+                            core.open_messages(&inst, &mut list).await;
                             Ok::<ResultPage, String>((
                                 list.into_iter().map(|m| (inst.clone(), m)).collect(),
                                 None,

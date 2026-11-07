@@ -36,7 +36,7 @@ tracing-subscriber.workspace = true
 tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# The same Windows APIs as the iced client: Desktop Duplication, Media Foundation and the shader
+# Windows APIs: Desktop Duplication, Media Foundation and the shader
 # compiler for screen sharing, push-to-talk polling, minidumps, and hiding the window to the tray.
 windows = { workspace = true, features = [
     "Win32_Foundation",

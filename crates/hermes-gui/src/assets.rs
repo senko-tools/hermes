@@ -39,6 +39,7 @@ pub const ARROW_LEFT: &str = "arrow-left";
 pub const ACCOUNT: &str = "account-circle";
 pub const INFO: &str = "information-outline";
 pub const LOCK: &str = "lock";
+pub const LOCK_OPEN: &str = "lock-open";
 pub const KEYBOARD: &str = "keyboard";
 pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";

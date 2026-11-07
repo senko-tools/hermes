@@ -24,5 +24,6 @@ pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use id::Id;
 pub use permissions::Permissions;
 
-/// Gateway and REST protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Gateway and REST protocol version. 2: end-to-end encryption, which clients and servers from
+/// before it cannot take part in (docs/e2ee.md).
+pub const PROTOCOL_VERSION: u32 = 2;
