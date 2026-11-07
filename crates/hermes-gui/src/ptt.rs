@@ -2,10 +2,8 @@
 //!
 //! Push-to-talk polls the key state every 10 ms with `GetAsyncKeyState` on Windows (the Spike C
 //! decision in docs/DECISIONS.md): the key keeps working in other apps and mouse buttons work.
-//! Elsewhere it only works while the window is focused (see `App::on_key`). The global mute key
+//! Elsewhere it only works while the window is focused. The global mute key
 //! uses `global-hotkey`, which takes the key away from other apps; fine for a one-shot action.
-
-use iced::Subscription;
 
 /// Windows virtual-key codes for a PTT key such as `Mouse4`, `CapsLock`, `F13`, `V` or
 /// `Ctrl+Space` (all keys of a combo must be held). `None` if a part is unknown.
@@ -53,42 +51,47 @@ fn virtual_key(name: &str) -> Option<u16> {
     Some(code)
 }
 
-/// `true` when the PTT key goes down, `false` when it is released.
+/// Polls the PTT key on a thread of its own: `keys` says what to watch (changed from settings),
+/// and every change of the key's state goes to `changes`.
 #[cfg(windows)]
-pub fn poll(keys: Vec<u16>) -> Subscription<bool> {
-    use iced::futures::SinkExt;
+pub fn poll(
+    keys: std::sync::Arc<std::sync::Mutex<Vec<u16>>>,
+    changes: tokio::sync::mpsc::UnboundedSender<bool>,
+) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 
-    Subscription::run_with(keys, |keys| {
-        let keys = keys.clone();
-        iced::stream::channel(16, async move |output| {
-            std::thread::spawn(move || {
-                use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-                let mut output = output;
-                let mut was_down = false;
-                loop {
-                    let down = keys.iter().all(|vk| {
+    let spawned = std::thread::Builder::new()
+        .name("hermes-ptt".into())
+        .spawn(move || {
+            let mut was_down = false;
+            loop {
+                let held = keys.lock().expect("ptt keys").clone();
+                let down = !held.is_empty()
+                    && held.iter().all(|vk| {
                         // SAFETY: GetAsyncKeyState has no preconditions; it only reads key state.
                         #[allow(unsafe_code)]
                         let state = unsafe { GetAsyncKeyState(i32::from(*vk)) };
                         (state as u16 & 0x8000) != 0
                     });
-                    if down != was_down {
-                        was_down = down;
-                        if iced::futures::executor::block_on(output.send(down)).is_err() {
-                            break;
-                        }
+                if down != was_down {
+                    was_down = down;
+                    if changes.send(down).is_err() {
+                        break;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-            });
-            std::future::pending::<()>().await;
-        })
-    })
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("push-to-talk: {err}");
+    }
 }
 
 #[cfg(not(windows))]
-pub fn poll(_keys: Vec<u16>) -> Subscription<bool> {
-    Subscription::none()
+pub fn poll(
+    _keys: std::sync::Arc<std::sync::Mutex<Vec<u16>>>,
+    _changes: tokio::sync::mpsc::UnboundedSender<bool>,
+) {
 }
 
 /// The registered global mute key. Must be created on the main thread (the event loop's).
@@ -131,26 +134,21 @@ impl GlobalKeys {
     }
 }
 
-/// One message per press of a registered global key.
-pub fn global_presses() -> Subscription<()> {
-    use iced::futures::SinkExt;
-
-    Subscription::run(|| {
-        iced::stream::channel(16, async |output| {
-            std::thread::spawn(move || {
-                let mut output = output;
-                let receiver = global_hotkey::GlobalHotKeyEvent::receiver();
-                while let Ok(event) = receiver.recv() {
-                    if event.state == global_hotkey::HotKeyState::Pressed
-                        && iced::futures::executor::block_on(output.send(())).is_err()
-                    {
-                        break;
-                    }
+/// Sends one message per press of a registered global key.
+pub fn global_presses(presses: tokio::sync::mpsc::UnboundedSender<()>) {
+    let spawned = std::thread::Builder::new()
+        .name("hermes-global-keys".into())
+        .spawn(move || {
+            let receiver = global_hotkey::GlobalHotKeyEvent::receiver();
+            while let Ok(event) = receiver.recv() {
+                if event.state == global_hotkey::HotKeyState::Pressed && presses.send(()).is_err() {
+                    break;
                 }
-            });
-            std::future::pending::<()>().await;
-        })
-    })
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("global keys: {err}");
+    }
 }
 
 #[cfg(test)]

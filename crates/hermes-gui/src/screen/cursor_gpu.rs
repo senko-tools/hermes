@@ -95,10 +95,16 @@ fn compile(entry: PCSTR, profile: PCSTR) -> Result<ID3DBlob, String> {
 }
 
 fn bytes(blob: &ID3DBlob) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize()) }
+    unsafe {
+        std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
+    }
 }
 
-fn blend(device: &ID3D11Device, src: D3D11_BLEND, dest: D3D11_BLEND) -> Result<ID3D11BlendState, String> {
+fn blend(
+    device: &ID3D11Device,
+    src: D3D11_BLEND,
+    dest: D3D11_BLEND,
+) -> Result<ID3D11BlendState, String> {
     let mut desc = D3D11_BLEND_DESC::default();
     desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
         BlendEnable: true.into(),
@@ -117,14 +123,22 @@ fn blend(device: &ID3D11Device, src: D3D11_BLEND, dest: D3D11_BLEND) -> Result<I
     state.ok_or_else(|| "pointer blend state".into())
 }
 
-fn upload(device: &ID3D11Device, width: u32, height: u32, pixels: &[u8]) -> Result<ID3D11ShaderResourceView, String> {
+fn upload(
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> Result<ID3D11ShaderResourceView, String> {
     let desc = D3D11_TEXTURE2D_DESC {
         Width: width,
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
         Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
         Usage: D3D11_USAGE_IMMUTABLE,
         BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
         CPUAccessFlags: 0,
@@ -193,7 +207,11 @@ impl CursorDrawer {
                 sampler: sampler.ok_or("pointer sampler")?,
                 rasterizer: rasterizer.ok_or("pointer rasterizer")?,
                 over: blend(device, D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA)?,
-                invert: blend(device, D3D11_BLEND_INV_DEST_COLOR, D3D11_BLEND_INV_SRC_COLOR)?,
+                invert: blend(
+                    device,
+                    D3D11_BLEND_INV_DEST_COLOR,
+                    D3D11_BLEND_INV_SRC_COLOR,
+                )?,
                 uploaded: None,
                 target: None,
             })

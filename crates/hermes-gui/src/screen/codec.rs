@@ -96,7 +96,7 @@ impl Encoder {
 
 /// A decoded picture, packed without padding: the full-size Y plane, then either the half-size
 /// U and V planes (I420, from OpenH264) or one half-size plane of interleaved U and V (NV12,
-/// from Windows' decoder). The GPU turns it into colors ([`super::view`]).
+/// from Windows' decoder). `super::to_bgra` turns it into colors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picture {
     pub width: u32,

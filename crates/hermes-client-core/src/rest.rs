@@ -15,6 +15,7 @@ use hermes_proto::api::{
     UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
     VoiceStatePatchRequest,
 };
+use hermes_proto::e2ee::{DeviceQuery, RegisterDeviceRequest, UserDevices};
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
 use hermes_proto::models::Relationship;
@@ -235,6 +236,20 @@ impl Rest {
 
     pub async fn update_me(&self, req: &UpdateMeRequest) -> Result<CurrentUser> {
         self.call(Method::PATCH, "/users/@me", Some(req)).await
+    }
+
+    /// Publishes this device's public keys.
+    pub async fn register_device(&self, req: &RegisterDeviceRequest) -> Result<()> {
+        self.empty(Method::PUT, "/users/@me/devices", Some(req))
+            .await
+    }
+
+    /// The devices of these users, revoked ones included.
+    pub async fn query_devices(&self, users: &[Id]) -> Result<Vec<UserDevices>> {
+        let req = DeviceQuery {
+            user_ids: users.to_vec(),
+        };
+        self.call(Method::POST, "/users/devices", Some(&req)).await
     }
 
     /// Changes my username (not my display name); needs my password.
@@ -573,14 +588,16 @@ impl Rest {
         .await
     }
 
-    pub async fn edit_message(&self, channel: Id, message: Id, content: &str) -> Result<Message> {
-        let req = EditMessageRequest {
-            content: content.into(),
-        };
+    pub async fn edit_message(
+        &self,
+        channel: Id,
+        message: Id,
+        req: &EditMessageRequest,
+    ) -> Result<Message> {
         self.call(
             Method::PATCH,
             &format!("/channels/{channel}/messages/{message}"),
-            Some(&req),
+            Some(req),
         )
         .await
     }

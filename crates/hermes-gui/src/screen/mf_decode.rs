@@ -1,7 +1,7 @@
 //! Hardware H.264 decoding with Media Foundation: Windows' own H.264 decoder (kept up to date by
 //! Windows Update), given a Direct3D 11 device so it decodes on the GPU (DXVA). Without one (no
 //! GPU with video support) it decodes on the CPU, with several threads. Either way it hands out
-//! NV12 pictures in memory, which [`super::view`] uploads and draws.
+//! NV12 pictures in memory, which `super::to_bgra` turns into images.
 //!
 //! A GPU picture is read back through a staging texture of our own: Media Foundation's own way
 //! (locking the buffer) stalls for about 8 ms per picture whatever its size, against about 1 ms

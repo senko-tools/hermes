@@ -1,48 +1,63 @@
-//! Hermes desktop client (iced), PLAN.md section 15.
+//! The Hermes desktop client, on gpui.
+//!
+//! One root view, [`shell::Shell`], owns the state; its methods live in the module of the feature
+//! they belong to. Everything async runs on a tokio runtime owned by `main` (the core needs one,
+//! and iced no longer provides it), and comes back to the UI through `Shell::run`.
 
 // No console window next to the GUI in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod app;
-mod buffer;
+mod actions;
+mod add_instance;
+mod assets;
+mod channel;
+mod collapsed;
+mod command_bar;
 mod desktop;
+mod desktop_shell;
 mod drag;
 #[cfg(test)]
 mod fixtures;
-mod font;
+mod form;
+mod friends;
+mod images;
 mod keybinds;
-mod message;
+mod keys;
+mod markup;
+mod members;
+mod menu;
+mod menu_entries;
 mod modal;
+mod new_dm;
 mod open;
-mod pane;
-mod panes;
 mod ptt;
-mod resize;
+mod results;
+mod rows;
 mod screen;
+mod settings;
+mod shell;
 mod sidebar;
 mod single_instance;
-mod subscription;
+mod space_settings;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tests_voice;
 mod theme;
+mod tree;
 mod voice;
 mod watchdog;
-mod widget;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Mutex;
 
 use clap::Parser;
+use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::{AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 use hermes_client_core::config::{ClientConfig, ConfigPaths};
 use hermes_client_core::{Core, CoreOptions};
-use iced::Task;
 
-use crate::app::App;
+use crate::shell::{Boot, Shell};
 use crate::single_instance::Endpoint;
-use crate::subscription::CoreEventsHandle;
 
 #[derive(Debug, Parser)]
 #[command(name = "hermes", version, about = "Hermes desktop client")]
@@ -81,7 +96,6 @@ impl Cli {
 }
 
 fn main() -> ExitCode {
-    prefer_direct3d12();
     let cli = Cli::from_args();
     let paths = match cli.config_dir {
         Some(dir) => ConfigPaths::in_dir(dir),
@@ -108,107 +122,89 @@ fn main() -> ExitCode {
         Ok(options) => options,
         Err(err) => return fail(&format!("Could not load known hosts: {err}")),
     };
-    let fonts = font::Fonts::from_config(&loaded.config.font);
 
-    // The tray lives on this (the event loop's) thread; without it, closing quits.
-    let tray = match desktop::tray::Tray::new() {
-        Ok(tray) => Some(tray),
-        Err(err) => {
-            tracing::warn!("no tray icon: {err}");
-            None
-        }
+    // The core spawns tokio tasks, also from the UI thread: the guard makes this thread count as
+    // inside the runtime for as long as the app runs.
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("hermes-rt")
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => return fail(&format!("Could not start the runtime: {err}")),
     };
-    // The global mute key also needs this thread (section 15.6).
-    let global_keys = match ptt::GlobalKeys::new() {
-        Ok(keys) => Some(keys),
-        Err(err) => {
-            tracing::warn!("no global keys: {err}");
-            None
-        }
-    };
-    let start_hidden = loaded.config.general.start_minimized && tray.is_some();
-    let window_icon =
-        iced::window::icon::from_rgba(desktop::tray::icon_rgba(64, false), 64, 64).ok();
+    let _guard = runtime.enter();
+    let handle = runtime.handle().clone();
+    let warning = loaded.warnings.first().cloned();
+    let loaded_start_minimized = loaded.config.general.start_minimized;
+    let (core, events) = Core::new(loaded.config, options);
+    if let Err(err) = core.watch_config() {
+        tracing::warn!("config hot reload unavailable: {err}");
+    }
+    core.start();
 
-    // `boot` runs once, inside iced's tokio runtime, which the core needs.
-    let boot_state = std::cell::RefCell::new(Some((loaded, options, cli.link, tray, global_keys)));
-    let result = iced::application(
-        move || {
-            let (loaded, options, link, tray, global_keys) =
-                boot_state.borrow_mut().take().expect("boot runs once");
-            let (core, events) = Core::new(loaded.config, options);
-            if let Err(err) = core.watch_config() {
-                tracing::warn!("config hot reload unavailable: {err}");
-            }
-            core.start();
-            let mut app = App::new(
-                core,
-                Some(CoreEventsHandle::new(events)),
-                Some(endpoint.clone()),
-            );
-            app.tray = tray;
-            app.global_keys = global_keys;
-            app.register_global_keys();
-            app.window_visible = !start_hidden;
-            if let Some(warning) = loaded.warnings.into_iter().next() {
-                app.status = Some(app::Status {
-                    text: format!("config: {warning}"),
-                    level: app::Level::Warning,
-                    since: iced::time::Instant::now(),
-                });
-            }
-            let open = match link {
-                Some(link) => app.open_link(link),
-                None => Task::none(),
+    let link = cli.link;
+    let start_minimized = loaded_start_minimized;
+    gpui_kit::application()
+        .with_assets(assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            assets::load_fonts(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            let theme = Theme::global_mut(cx);
+            theme.font_family = theme::FONT.into();
+            theme.font_size = theme::body_size();
+            cx.on_window_closed(|cx, _| cx.quit()).detach();
+
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1280.), px(800.)),
+                    cx,
+                ))),
+                window_min_size: Some(size(px(theme::WINDOW_MIN_W), px(theme::WINDOW_MIN_H))),
+                // The native title bar, which shows the space and page (`Shell::page_title`).
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Hermes".into()),
+                    appears_transparent: false,
+                    ..Default::default()
+                }),
+                ..Default::default()
             };
-            let restored = app.open_restored();
-            let update = app.check_for_update();
-            // The display's scale, for avatars (later changes arrive as `Rescaled` events).
-            let scale = iced::window::oldest().then(|id| match id {
-                Some(id) => iced::window::scale_factor(id).map(message::Message::WindowRescaled),
-                None => Task::none(),
-            });
-            (
-                app,
-                Task::batch([app::load_fonts().chain(open), restored, update, scale]),
-            )
-        },
-        App::update,
-        App::view,
-    )
-    .title(App::title)
-    .theme(App::theme)
-    .scale_factor(App::scale_factor)
-    .subscription(App::subscription)
-    .default_font(fonts.ui)
-    .window(iced::window::Settings {
-        size: iced::Size::new(1200.0, 800.0),
-        visible: !start_hidden,
-        icon: window_icon,
-        exit_on_close_request: false,
-        ..iced::window::Settings::default()
-    })
-    .run();
-
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => fail(&format!("hermes: {err}")),
-    }
-}
-
-/// On Windows, draws with Direct3D 12 unless `WGPU_BACKEND` says otherwise. Left to itself, wgpu
-/// picks Vulkan first, and the Vulkan drivers of older (Intel) GPUs hang the window; Direct3D 12
-/// is the API every Windows 10/11 GPU driver is built and tested for. Without a Direct3D 12 GPU,
-/// iced falls back to drawing in software.
-fn prefer_direct3d12() {
-    #[cfg(windows)]
-    if std::env::var_os("WGPU_BACKEND").is_none() {
-        // SAFETY: the first thing `main` does, before any other thread exists.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("WGPU_BACKEND", "dx12");
-        }
-    }
+            // The tray and the global keys live on this (the event loop's) thread.
+            let tray = match desktop::tray::Tray::new() {
+                Ok(tray) => Some(tray),
+                Err(err) => {
+                    tracing::warn!("no tray icon: {err}");
+                    None
+                }
+            };
+            let global_keys = match ptt::GlobalKeys::new() {
+                Ok(keys) => Some(keys),
+                Err(err) => {
+                    tracing::warn!("no global keys: {err}");
+                    None
+                }
+            };
+            let start_hidden = start_minimized && tray.is_some();
+            let boot = Boot {
+                tray,
+                global_keys,
+                start_hidden,
+                core,
+                events,
+                runtime: handle,
+                endpoint,
+                link,
+                warning,
+            };
+            gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| Shell::new(boot, window, cx))
+            })
+            .expect("failed to open the window");
+            cx.activate(true);
+        });
+    ExitCode::SUCCESS
 }
 
 /// `true` if another client for this config directory is running and took `link`.
@@ -239,7 +235,7 @@ fn init_logging(paths: &ConfigPaths) {
         return;
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("HERMES_LOG")
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,wgpu=warn,naga=warn"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_ansi(false)

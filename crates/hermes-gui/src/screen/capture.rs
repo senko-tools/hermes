@@ -441,6 +441,7 @@ struct Stats {
 
 /// Where pictures come from: Desktop Duplication, or GDI if that is unavailable.
 #[cfg(windows)]
+#[allow(clippy::large_enum_variant)]
 enum Source {
     Dxgi(super::dxgi::Duplicator),
     Gdi,

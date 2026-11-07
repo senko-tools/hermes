@@ -926,6 +926,8 @@ impl InstanceStore {
                 self.relationships.remove(&user_id);
                 vec![C::Relationships]
             }
+            // Handled before this: public keys are not part of the store.
+            ServerEvent::DevicesUpdate { .. } => vec![],
         }
     }
 
@@ -991,6 +993,8 @@ pub(crate) mod tests {
             reactions: vec![],
             mentions: Mentions::default(),
             nonce: None,
+            e2ee: None,
+            lock: Default::default(),
         }
     }
 

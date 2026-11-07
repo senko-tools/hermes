@@ -368,6 +368,7 @@ pub(crate) struct Inner {
     presence: Mutex<PresenceStatus>,
     watcher: Mutex<Option<::notify::RecommendedWatcher>>,
     pub(crate) voice: Voice,
+    pub(crate) accounts: crate::secure::Accounts,
 }
 
 /// The client core. Cheap to clone. Must be created inside a tokio runtime.
@@ -435,6 +436,7 @@ impl Core {
                 presence: Mutex::new(PresenceStatus::Online),
                 watcher: Mutex::new(None),
                 voice,
+                accounts: Mutex::default(),
             }),
         };
         core.spawn_ticker();
@@ -459,7 +461,11 @@ impl Core {
         let _ = self.inner.events.send(event);
     }
 
-    fn changed(&self, inst: &str, what: impl IntoIterator<Item = Changed>) {
+    pub(crate) fn tokens(&self) -> &TokenStore {
+        &self.inner.tokens
+    }
+
+    pub(crate) fn changed(&self, inst: &str, what: impl IntoIterator<Item = Changed>) {
         for what in what {
             self.emit(CoreEvent::StoreChanged {
                 inst: inst.to_owned(),
@@ -934,6 +940,7 @@ impl Core {
                         .collect();
                     self.with_store(&inst, |s| s.apply_ready(*ready));
                     self.changed(&inst, [Changed::All]);
+                    self.publish_device(&inst);
                     for space in spaces {
                         self.spawn_members(&inst, space);
                     }
@@ -950,7 +957,19 @@ impl Core {
                     }
                 }
                 GatewayEvent::Resumed => {}
-                GatewayEvent::Dispatch(event) => self.dispatch(&inst, *event),
+                GatewayEvent::Dispatch(mut event) => {
+                    match event.as_mut() {
+                        // Opened here, in order, so nothing else ever sees the sealed form.
+                        ServerEvent::MessageCreate(m) | ServerEvent::MessageUpdate(m) => {
+                            self.open_message(&inst, m).await;
+                        }
+                        ServerEvent::DevicesUpdate { user_id, devices } => {
+                            self.devices_changed(&inst, *user_id, std::mem::take(devices));
+                        }
+                        _ => {}
+                    }
+                    self.dispatch(&inst, *event);
+                }
             }
         }
     }
@@ -1118,7 +1137,8 @@ impl Core {
             HistoryAnchor::After(id) => query.after = Some(id),
             HistoryAnchor::Around(id) => query.around = Some(id),
         }
-        let page = rest.messages(channel, &query).await?;
+        let mut page = rest.messages(channel, &query).await?;
+        self.open_messages(inst, &mut page).await;
         self.with_store(inst, |s| s.merge_history(channel, anchor, page, PAGE));
         self.changed(inst, [Changed::Messages(channel)]);
         Ok(())
@@ -1232,20 +1252,63 @@ impl Core {
             let request = self.with_store(&inst, |s| {
                 s.pending_mut(channel, local_id).map(|p| {
                     p.state = PendingState::Sending;
-                    hermes_proto::api::SendMessageRequest {
-                        content: p.content.clone(),
-                        nonce: p.nonce.clone(),
-                        reply_to_id: p.reply_to,
-                        attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
-                    }
+                    (
+                        hermes_proto::api::SendMessageRequest {
+                            content: p.content.clone(),
+                            nonce: p.nonce.clone(),
+                            reply_to_id: p.reply_to,
+                            attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
+                            e2ee: None,
+                        },
+                        p.attachments.clone(),
+                    )
                 })
             });
-            let Some(Some(request)) = request else {
+            let Some(Some((mut request, attachments))) = request else {
                 continue; // discarded meanwhile
             };
             self.changed(&inst, [Changed::Messages(channel)]);
+            // What goes to a DM leaves this device sealed, or not at all.
+            if self.channel_is_private(&inst, channel) {
+                match self
+                    .seal(
+                        &inst,
+                        channel,
+                        &request.content,
+                        &attachments,
+                        request.reply_to_id,
+                    )
+                    .await
+                {
+                    Ok(envelope) => {
+                        request.content.clear();
+                        request.e2ee = Some(envelope);
+                    }
+                    Err(CoreError::Rest(err)) if err.is_network() => {
+                        handle
+                            .outbox
+                            .queue
+                            .lock()
+                            .expect("outbox")
+                            .push_front((channel, local_id));
+                        self.set_pending_state(&inst, channel, local_id, PendingState::Queued);
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    Err(err) => {
+                        self.set_pending_state(
+                            &inst,
+                            channel,
+                            local_id,
+                            PendingState::Failed(err.to_string()),
+                        );
+                        continue;
+                    }
+                }
+            }
             match handle.rest.send_message(channel, &request).await {
-                Ok(message) => {
+                Ok(mut message) => {
+                    self.open_message(&inst, &mut message).await;
                     let id = message.id;
                     self.with_store(&inst, |s| s.resolve_pending(local_id, message));
                     self.changed(
@@ -1293,10 +1356,36 @@ impl Core {
         message: Id,
         content: &str,
     ) -> Result<()> {
-        let updated = self
+        let request = if self.channel_is_private(inst, channel) {
+            let (attachments, reply_to) = {
+                let store = self.store();
+                let found = store
+                    .instance(inst)
+                    .and_then(|s| s.window(channel))
+                    .and_then(|w| w.messages.iter().find(|m| m.id == message));
+                (
+                    found.map(|m| m.attachments.clone()).unwrap_or_default(),
+                    found.and_then(|m| m.reply_to.as_ref().map(|r| r.id)),
+                )
+            };
+            let envelope = self
+                .seal(inst, channel, content, &attachments, reply_to)
+                .await?;
+            hermes_proto::api::EditMessageRequest {
+                content: String::new(),
+                e2ee: Some(envelope),
+            }
+        } else {
+            hermes_proto::api::EditMessageRequest {
+                content: content.to_owned(),
+                e2ee: None,
+            }
+        };
+        let mut updated = self
             .rest(inst)?
-            .edit_message(channel, message, content)
+            .edit_message(channel, message, &request)
             .await?;
+        self.open_message(inst, &mut updated).await;
         let changed = self.with_store(inst, |s| {
             s.apply(ServerEvent::MessageUpdate(updated), now_ms())
         });

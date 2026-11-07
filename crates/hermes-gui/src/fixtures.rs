@@ -145,7 +145,7 @@ pub fn store() -> InstanceStore {
         presences: vec![],
         notification_settings: vec![],
         dm_voice_states: vec![],
-            relationships: vec![],
+        relationships: vec![],
         privacy: Default::default(),
         voice: VoiceInfo {
             enabled: true,

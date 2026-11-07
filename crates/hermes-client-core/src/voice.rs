@@ -18,8 +18,7 @@ use hermes_proto::id::Id;
 use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
 use hermes_proto::voice::{
-    self, AudioHeader, AudioKind, ClientControl, KickReason, Participant, ServerControl,
-    VideoHeader,
+    self, AudioKind, ClientControl, KickReason, Participant, ServerControl, VideoHeader,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -28,6 +27,8 @@ use tokio::task::JoinHandle;
 use crate::address::Fingerprint;
 use crate::config;
 use crate::core::{Core, CoreError, CoreEvent, InstanceId, Result, now_ms};
+use crate::e2ee::{self, VoiceCrypto};
+use crate::secure::{self, AccountKeys, DEVICES_MAX_AGE_MS};
 use crate::volumes::UserVolumes;
 
 pub const RECONNECT_ATTEMPTS: u32 = 5;
@@ -42,6 +43,12 @@ const SCREEN_QUEUE: usize = 8;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the screen share transport's numbers are logged.
 const SCREEN_STATS_EVERY: Duration = Duration::from_secs(10);
+/// How often who is in the room is compared with who has my sender key.
+const REKEY_CHECK: Duration = Duration::from_millis(250);
+/// A new sender key goes around this long before it is used, so nobody misses packets.
+const REKEY_SWITCH: Duration = Duration::from_millis(300);
+/// How long a failed key hand-out waits before trying again.
+const REKEY_RETRY: Duration = Duration::from_secs(2);
 
 /// One encoded frame of your own screen share.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,11 +94,26 @@ pub struct VoiceLink {
     pub server: std::net::SocketAddr,
 }
 
+/// How the encryption of a voice session stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceEncryption {
+    /// My current sender key is in use and everyone in the room was given it.
+    pub ready: bool,
+    /// Those whose key has not arrived yet: I cannot hear them until it does.
+    pub waiting: Vec<Id>,
+    /// Those who cannot get my key, because they have no encryption keys (an old client).
+    pub no_keys: Vec<Id>,
+    /// The same on the screen of everyone in the room, if nobody put their own keys in between.
+    pub code: String,
+}
+
 /// The voice part of [`Core`].
 pub(crate) struct Voice {
     engine: Engine,
     /// The connection captured packets go to.
     link: Arc<Mutex<Option<quinn::Connection>>>,
+    /// The end-to-end encryption of the session's audio and video.
+    crypto: Arc<Mutex<VoiceCrypto>>,
     /// Where own screen share frames go (the current connection's writer).
     screen_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     /// Where others' screen share frames go (set by the UI).
@@ -136,6 +158,14 @@ struct Session {
     my_watchers: Option<u16>,
     status: VoiceStatus,
     connected_once: bool,
+    /// Who my current sender key went to, and the keys known then. Different from now: a new key.
+    keyed_for: Option<(Vec<(u16, Id)>, u64)>,
+    /// A key hand-out is running.
+    rekeying: bool,
+    /// Counts rooms: a hand-out from an earlier room must not touch this one.
+    key_epoch: u64,
+    /// Those in the room who could not get my key: no encryption keys of theirs are known.
+    no_keys: Vec<Id>,
     /// A `join_voice` waiting for `ready` (or an error).
     pending: Option<oneshot::Sender<std::result::Result<(), String>>>,
     task: Option<JoinHandle<()>>,
@@ -151,14 +181,20 @@ impl Voice {
         events: mpsc::UnboundedSender<AudioEvent>,
     ) -> Self {
         let link: Arc<Mutex<Option<quinn::Connection>>> = Arc::default();
+        let crypto: Arc<Mutex<VoiceCrypto>> = Arc::default();
         let engine = {
             let link = link.clone();
+            let crypto = crypto.clone();
             Engine::start(io, settings, move |event| match event {
                 AudioEvent::Packet(datagram) => {
                     let conn = link.lock().expect("voice link").clone();
                     if let Some(conn) = conn {
-                        // Never blocks; a full buffer drops the packet.
-                        let _ = conn.send_datagram(datagram.into());
+                        // Nothing leaves in clear: without a key yet, the packet is dropped.
+                        let sealed = crypto.lock().expect("voice crypto").seal_audio(&datagram);
+                        if let Some(sealed) = sealed {
+                            // Never blocks; a full buffer drops the packet.
+                            let _ = conn.send_datagram(sealed.into());
+                        }
                     }
                 }
                 other => {
@@ -169,6 +205,7 @@ impl Voice {
         Voice {
             engine,
             link,
+            crypto,
             screen_out: Mutex::default(),
             screen_sink: Arc::default(),
             state: Mutex::default(),
@@ -307,6 +344,46 @@ impl Core {
 
     pub fn stop_sounds(&self) {
         self.voice().engine.stop_sounds();
+    }
+
+    // ---- encryption -----------------------------------------------------------------------------
+
+    /// How the encryption of my voice session stands, for the voice panel.
+    pub fn voice_encryption(&self) -> Option<VoiceEncryption> {
+        let (inst, participants, no_keys, settled) = {
+            let state = self.voice().state();
+            let s = state.session.as_ref()?;
+            let settled = !s.rekeying
+                && s.keyed_for
+                    .as_ref()
+                    .is_some_and(|(targets, _)| targets.len() == s.participants.len());
+            (
+                s.inst.clone(),
+                s.participants.clone(),
+                s.no_keys.clone(),
+                settled,
+            )
+        };
+        let keys = self.account_keys(&inst)?;
+        let crypto = self.voice().crypto.lock().expect("voice crypto");
+        let ready = settled && crypto.has_key();
+        let mut waiting: Vec<Id> = participants
+            .iter()
+            .filter(|(pid, _)| !crypto.has_key_of(**pid))
+            .map(|(_, user)| *user)
+            .collect();
+        drop(crypto);
+        waiting.sort_unstable();
+        let mut users: Vec<Id> = participants.into_values().collect();
+        users.push(keys.me);
+        users.sort_unstable();
+        users.dedup();
+        Some(VoiceEncryption {
+            ready,
+            waiting,
+            no_keys,
+            code: secure::keys_of(&keys, &users).safety_number,
+        })
     }
 
     // ---- per-user volume ----------------------------------------------------------------------
@@ -687,6 +764,10 @@ impl Core {
                 my_watchers: None,
                 status: VoiceStatus::Connecting,
                 connected_once: false,
+                keyed_for: None,
+                rekeying: false,
+                key_epoch: 0,
+                no_keys: Vec::new(),
                 pending: Some(pending),
                 task: None,
             });
@@ -810,6 +891,7 @@ impl Core {
         let screen_writer = tokio::spawn(write_screen(conn.clone(), screen_frames));
         let screen_reader = tokio::spawn(self.clone().read_screen(conn.clone(), generation));
         let mut ping = tokio::time::interval(PING_INTERVAL);
+        let mut rekey = tokio::time::interval(REKEY_CHECK);
         let mut authed = false;
 
         let end = loop {
@@ -845,6 +927,9 @@ impl Core {
                             self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::ParticipantJoined(p) => self.on_joined(generation, p),
+                        ServerControl::VoiceKey { from, key } => {
+                            tokio::spawn(self.clone().receive_voice_key(generation, from, key));
+                        }
                         ServerControl::ShareStarted { participant_id } => {
                             self.with_session(generation, |s| s.sharing.insert(participant_id));
                             self.emit(CoreEvent::ScreenShares);
@@ -902,26 +987,28 @@ impl Core {
                     }
                 }
                 datagram = conn.read_datagram() => match datagram {
-                    Ok(data) => match AudioHeader::decode_any(&data) {
-                        Ok((AudioKind::Voice, header, _)) => {
-                            self.voice().engine.receive(header.sender_id, data.to_vec());
+                    // What does not open is not played: no key yet, or not from who it claims.
+                    Ok(data) => match self.voice().crypto.lock().expect("voice crypto").open_audio(&data) {
+                        Some((AudioKind::Voice, sender, plain)) => {
+                            self.voice().engine.receive(sender, plain);
                         }
                         // Only from shares I watch (the server sends no others).
-                        Ok((AudioKind::Share, header, _)) => {
+                        Some((AudioKind::Share, sender, plain)) => {
                             let watched = self
                                 .voice()
                                 .state()
                                 .session
                                 .as_ref()
-                                .is_some_and(|s| s.watching.contains(&header.sender_id));
+                                .is_some_and(|s| s.watching.contains(&sender));
                             if watched {
-                                self.voice().engine.receive_share(header.sender_id, data.to_vec());
+                                self.voice().engine.receive_share(sender, plain);
                             }
                         }
-                        Err(_) => {}
+                        None => {}
                     },
                     Err(err) => break End::Lost(err.to_string()),
                 },
+                _ = rekey.tick(), if authed => self.check_voice_keys(generation),
                 _ = ping.tick() => {
                     let _ = write(&mut send, &ClientControl::Ping { t: now_ms() as u64 }).await;
                 }
@@ -978,11 +1065,19 @@ impl Core {
                 .map(|p| (p.participant_id, p.user_id))
                 .collect();
             s.connected_once = true;
+            // A new room or connection: new participant IDs and new keys.
+            s.keyed_for = None;
+            s.rekeying = false;
+            s.key_epoch += 1;
+            s.no_keys.clear();
             if let Some(pending) = s.pending.take() {
                 let _ = pending.send(Ok(()));
             }
             s.inst.clone()
         });
+        if me.is_some() {
+            self.voice().crypto.lock().expect("voice crypto").reset();
+        }
         let Some(inst) = me else {
             return;
         };
@@ -1043,9 +1138,213 @@ impl Core {
             left
         });
         self.voice().engine.remove_participant(participant_id);
+        self.voice()
+            .crypto
+            .lock()
+            .expect("voice crypto")
+            .remove_participant(participant_id);
         if let Some(Some((inst, user))) = left {
             self.set_speaking(inst, user, false);
             self.voice().engine.play_sound(Sound::Leave);
+        }
+    }
+
+    /// Hands out a new sender key when who is in the room (or anyone's devices) changed. So someone
+    /// who leaves cannot follow what comes after, and someone who joins cannot read what came before.
+    /// Only people the gateway also shows in the room get it: a member the server invents on this
+    /// stream alone gets nothing, and one it invents on both shows up in everyone's list.
+    fn check_voice_keys(&self, generation: u64) {
+        let Some((inst, channel, epoch, participants, keyed_for)) = self
+            .with_session(generation, |s| {
+                (!s.rekeying).then(|| {
+                    (
+                        s.inst.clone(),
+                        s.channel,
+                        s.key_epoch,
+                        s.participants.clone(),
+                        s.keyed_for.clone(),
+                    )
+                })
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let Some(keys) = self.account_keys(&inst) else {
+            return;
+        };
+        let targets: Vec<(u16, Id)> = {
+            let store = self.store();
+            let Some(s) = store.instance(&inst) else {
+                return;
+            };
+            let mut targets: Vec<(u16, Id)> = participants
+                .into_iter()
+                .filter(|(_, user)| {
+                    s.voice_states
+                        .get(user)
+                        .is_some_and(|v| v.channel_id == channel)
+                })
+                .collect();
+            targets.sort_unstable();
+            targets
+        };
+        let revision = keys.directory.lock().expect("directory").revision();
+        if keyed_for.as_ref() == Some(&(targets.clone(), revision)) {
+            return;
+        }
+        self.with_session(generation, |s| s.rekeying = true);
+        tokio::spawn(
+            self.clone()
+                .hand_out_voice_key(generation, epoch, inst, channel, keys, targets),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn hand_out_voice_key(
+        self,
+        generation: u64,
+        epoch: u64,
+        inst: InstanceId,
+        channel: Id,
+        keys: Arc<AccountKeys>,
+        targets: Vec<(u16, Id)>,
+    ) {
+        let users: Vec<Id> = targets.iter().map(|(_, user)| *user).collect();
+        if let Err(err) = self
+            .fetch_devices(&inst, &keys, &users, DEVICES_MAX_AGE_MS)
+            .await
+        {
+            tracing::warn!("could not ask for the voice room's encryption keys: {err}");
+            tokio::time::sleep(REKEY_RETRY).await;
+            self.with_session(generation, |s| {
+                if s.key_epoch == epoch {
+                    s.rekeying = false;
+                }
+            });
+            return;
+        }
+        let revision = keys.directory.lock().expect("directory").revision();
+        let (key_generation, seed, first) = {
+            let mut crypto = self.voice().crypto.lock().expect("voice crypto");
+            let first = !crypto.has_key();
+            let (key_generation, seed) = crypto.new_key();
+            (key_generation, seed, first)
+        };
+        let mut no_keys = Vec::new();
+        for (participant, user) in &targets {
+            let devices = keys
+                .directory
+                .lock()
+                .expect("directory")
+                .live_devices(*user);
+            if devices.is_empty() {
+                no_keys.push(*user);
+                continue;
+            }
+            let sealed = e2ee::seal_voice_key(
+                &keys.identity,
+                channel,
+                keys.me,
+                *user,
+                &devices,
+                key_generation,
+                &seed,
+            );
+            let (Ok(sealed), control) = (
+                sealed,
+                self.with_session(generation, |s| {
+                    (s.key_epoch == epoch).then(|| s.control.clone())
+                })
+                .flatten(),
+            ) else {
+                continue;
+            };
+            let (Some(control), Ok(key)) = (control, serde_json::to_string(&sealed)) else {
+                return;
+            };
+            let _ = control.send(ClientControl::VoiceKey {
+                to: *participant,
+                key,
+            });
+        }
+        // Those already in the room get a moment to receive it; the very first key has nothing
+        // to wait for, since nobody could hear me before it anyway.
+        if !first {
+            tokio::time::sleep(REKEY_SWITCH).await;
+        }
+        let still_here = self.with_session(generation, |s| {
+            if s.key_epoch != epoch {
+                return false;
+            }
+            s.rekeying = false;
+            s.keyed_for = Some((targets, revision));
+            s.no_keys = no_keys;
+            true
+        });
+        if still_here == Some(true) {
+            self.voice()
+                .crypto
+                .lock()
+                .expect("voice crypto")
+                .use_key(key_generation, &seed);
+            self.emit(CoreEvent::ScreenShares);
+        }
+    }
+
+    /// Someone's sender key arrived: checked against the devices pinned for them.
+    async fn receive_voice_key(self, generation: u64, from: u16, key: String) {
+        let Some((inst, channel, sender, watching)) = self
+            .with_session(generation, |s| {
+                s.participants
+                    .get(&from)
+                    .map(|user| (s.inst.clone(), s.channel, *user, s.watching.contains(&from)))
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let Ok(key) = serde_json::from_str::<hermes_proto::e2ee::VoiceKey>(&key) else {
+            return;
+        };
+        let Some(keys) = self.account_keys(&inst) else {
+            return;
+        };
+        let known = keys
+            .directory
+            .lock()
+            .expect("directory")
+            .device(sender, &key.device)
+            .cloned();
+        let device = match known {
+            Some(device) => Some(device),
+            None => {
+                let _ = self.fetch_devices(&inst, &keys, &[sender], 0).await;
+                keys.directory
+                    .lock()
+                    .expect("directory")
+                    .device(sender, &key.device)
+                    .cloned()
+            }
+        };
+        let Some(device) = device else {
+            tracing::warn!("a voice key from an unknown device of user {sender} was ignored");
+            return;
+        };
+        match e2ee::open_voice_key(&keys.identity, channel, sender, keys.me, &device, &key) {
+            Ok(seed) => {
+                self.voice()
+                    .crypto
+                    .lock()
+                    .expect("voice crypto")
+                    .add_received(from, key.generation, &seed);
+                // The picture could not be read until now.
+                if watching {
+                    self.request_keyframe(sender);
+                }
+                self.emit(CoreEvent::ScreenShares);
+            }
+            Err(err) => tracing::warn!("a voice key from user {sender} was refused: {err}"),
         }
     }
 
@@ -1290,9 +1589,19 @@ impl Core {
             height: frame.height,
             timestamp: frame.timestamp,
         };
-        let mut data = Vec::with_capacity(voice::VIDEO_HEADER_LEN + frame.data.len());
-        data.extend_from_slice(&header.encode());
-        data.extend_from_slice(&frame.data);
+        let sealed = self
+            .voice()
+            .crypto
+            .lock()
+            .expect("voice crypto")
+            .seal_video(&header.encode(), &frame.data);
+        // Nothing leaves in clear.
+        let Some(data) = sealed else {
+            return false;
+        };
+        if data.len() > voice::MAX_VIDEO_FRAME {
+            return false;
+        }
         out.try_send(data).is_ok()
     }
 
@@ -1334,6 +1643,20 @@ impl Core {
                 stats.skipped += 1;
                 continue;
             };
+            // The server filled in the sender; that field is not part of what was sealed.
+            let opened = data
+                .first_chunk::<{ voice::VIDEO_HEADER_LEN }>()
+                .and_then(|clear| {
+                    self.voice()
+                        .crypto
+                        .lock()
+                        .expect("voice crypto")
+                        .open_video(header.sender_id, clear, &data[voice::VIDEO_HEADER_LEN..])
+                });
+            let Some(opened) = opened else {
+                stats.skipped += 1;
+                continue;
+            };
             let sink = self
                 .voice()
                 .screen_sink
@@ -1345,7 +1668,7 @@ impl Core {
                     inst,
                     user,
                     header,
-                    data: data[voice::VIDEO_HEADER_LEN..].to_vec(),
+                    data: opened,
                     received: Instant::now(),
                 };
                 if sink.try_send(frame).is_err() {

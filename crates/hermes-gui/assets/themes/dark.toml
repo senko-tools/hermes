@@ -96,6 +96,8 @@ mention_hover = "#221f29"
 connected_border = "#80c48c"   # the voice channel or call you are in
 connected_bg = "#80c48c1f"
 connected_hover = "#80c48c33"
+text = "#aca5a1"
+category = "#77717c"
 
 # Corner radii and the width of the row state bar, in pixels.
 [shape]

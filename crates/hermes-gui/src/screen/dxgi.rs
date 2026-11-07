@@ -294,13 +294,8 @@ impl Duplicator {
             };
             match read {
                 Ok(()) => {
-                    self.pointer.shape = Shape::convert(
-                        shape.Type,
-                        shape.Width,
-                        shape.Height,
-                        shape.Pitch,
-                        &buffer,
-                    );
+                    self.pointer.shape =
+                        Shape::convert(shape.Type, shape.Width, shape.Height, shape.Pitch, &buffer);
                     self.pointer.shape_changed = true;
                     changed |= self.pointer.visible;
                 }

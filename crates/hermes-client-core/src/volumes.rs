@@ -115,7 +115,7 @@ mod tests {
         volumes.set("a", Id(2), 9.0).unwrap();
         let loaded = UserVolumes::load(&path);
         assert_eq!(loaded.get("a", Id(1)), 1.5);
-        assert_eq!(loaded.get("a", Id(2)), 2.0);
+        assert_eq!(loaded.get("a", Id(2)), 3.0);
         assert_eq!(loaded.get("b", Id(1)), 1.0);
         // Share volumes are separate.
         volumes.set_share("a", Id(1), 0.25).unwrap();

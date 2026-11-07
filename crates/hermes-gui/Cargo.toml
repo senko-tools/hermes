@@ -1,6 +1,6 @@
 [package]
 name = "hermes-gui"
-description = "Hermes desktop client (iced)"
+description = "Hermes desktop client"
 license = "GPL-3.0-or-later"
 version.workspace = true
 edition.workspace = true
@@ -13,17 +13,20 @@ name = "hermes"
 path = "src/main.rs"
 
 [dependencies]
+hermes-audio.workspace = true
 hermes-client-core.workspace = true
 arboard.workspace = true
 clap = { workspace = true, features = ["derive"] }
 directories.workspace = true
 futures-util.workspace = true
 global-hotkey.workspace = true
-iced = { workspace = true, features = ["tokio", "advanced", "image", "svg"] }
-image = { workspace = true, features = ["png", "webp"] }
+gpui-kit.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }
 notify.workspace = true
 notify-rust.workspace = true
 openh264.workspace = true
+# The window handle, to hide the window to the tray (gpui cannot; approved 2026-11-07).
+raw-window-handle = "=0.6.2"
 rfd.workspace = true
 serde.workspace = true
 tokio.workspace = true
@@ -33,15 +36,14 @@ tracing-subscriber.workspace = true
 tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# Push-to-talk key polling (PLAN.md section 21, Spike C decision); Desktop Duplication for
-# screen sharing (the Direct3D 11 and DXGI features xcap enables already); Media Foundation for
-# hardware H.264 encoding (part of Windows); the shader compiler that draws the mouse pointer
-# into shares (part of Windows); minidumps of a frozen UI (dbghelp, part of Windows).
+# The same Windows APIs as the iced client: Desktop Duplication, Media Foundation and the shader
+# compiler for screen sharing, push-to-talk polling, minidumps, and hiding the window to the tray.
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Media_MediaFoundation",
@@ -53,15 +55,21 @@ windows = { workspace = true, features = [
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-# Screen capture for screen sharing (Windows only for now).
 xcap.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
 
 [dev-dependencies]
 # The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.
 hermes-server = { path = "../hermes-server" }
+# Headless windows for the UI tests: the gpui the kit pins, with its test platform on. Directly,
+# because the kit's own test-support feature would force taffy down in the app too.
+gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
 
 [lints]
 workspace = true

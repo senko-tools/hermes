@@ -2,6 +2,7 @@
 //! closing to the tray.
 
 pub mod tray;
+pub mod window;
 
 use hermes_client_core::config::Notifications;
 use hermes_client_core::notify::Notification;

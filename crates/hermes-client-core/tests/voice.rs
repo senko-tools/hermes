@@ -519,6 +519,19 @@ async fn screen_shares_flow_to_watchers() {
     p.bob.join_voice(&inst, general).await.unwrap();
     let (sink, mut frames) = tokio::sync::mpsc::channel(8);
     p.bob.set_screen_sink(sink);
+    // Encrypted: nothing can be read until the sender keys have gone around.
+    eventually("the keys to go around", || {
+        [&p.alice, &p.bob].iter().all(|core| {
+            core.voice_encryption()
+                .is_some_and(|e| e.ready && e.waiting.is_empty() && e.no_keys.is_empty())
+        })
+    })
+    .await;
+    assert_eq!(
+        p.alice.voice_encryption().unwrap().code,
+        p.bob.voice_encryption().unwrap().code,
+        "everyone in the room sees the same code"
+    );
 
     p.alice.start_screen_share().unwrap();
     assert!(p.alice.sharing_screen());

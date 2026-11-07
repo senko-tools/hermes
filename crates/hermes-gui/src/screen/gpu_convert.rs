@@ -4,7 +4,7 @@
 //! for the hardware encoder ([`super::mf_encode`]).
 //!
 //! The output is limited-range BT.601, what OpenH264 produces too, so watchers draw both the
-//! same way ([`super::view`]).
+//! same way (`super::to_bgra`).
 
 // Direct3D is a COM API: every call is `unsafe`.
 #![allow(unsafe_code)]
