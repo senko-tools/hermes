@@ -140,20 +140,32 @@ fn rail_icon(id: impl Into<SharedString>) -> Stateful<Div> {
         .text_size(theme::body_size())
 }
 
-/// Morphs a rail icon from round to a rounded square as it gets selected, and back.
+/// Morphs a rail icon from round to a rounded square as it gets selected, and back, while its
+/// background fades to the accent. A server's `picture` fills it, in the same shape.
 fn rail_morph(
     id: impl Into<gpui_kit::ElementId>,
     element: Stateful<Div>,
     selected: bool,
+    picture: Option<std::sync::Arc<gpui_kit::RenderImage>>,
 ) -> AnyElement {
     use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
     element
         .with_spring(
             id,
             SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected),
-            |d, phase| {
-                let t = phase.0.clamp(0., 1.2);
-                d.rounded(px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * t))
+            move |d, phase| {
+                let shape = phase.0.clamp(0., 1.2);
+                let radius = px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * shape);
+                let fade = phase.0.clamp(0., 1.);
+                d.rounded(radius)
+                    .bg(theme::mix(theme::selected(), theme::accent(), fade))
+                    .children(picture.map(|picture| {
+                        gpui_kit::img(picture)
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .rounded(radius)
+                    }))
             },
         )
         .into_any_element()
@@ -250,11 +262,6 @@ impl Shell {
         let home_badge = self.home_badge();
         let home_selected = self.selected == Selected::Home;
         let home = rail_icon("home")
-            .bg(if home_selected {
-                theme::accent()
-            } else {
-                theme::selected()
-            })
             .when(!home_selected, |d| d.hover(|d| d.bg(theme::hover())))
             .when(home_selected, |d| d.child(rail_pill()))
             .child(icon(
@@ -274,7 +281,7 @@ impl Shell {
                 this.close_pages(cx);
                 this.open_friends(cx);
             }));
-        let home = rail_morph("home-morph", home, home_selected);
+        let home = rail_morph("home-morph", home, home_selected, None);
 
         let spaces: Vec<AnyElement> = self
             .rail_spaces()
@@ -283,33 +290,36 @@ impl Shell {
                 let selected = self.selected == Selected::Space(inst.clone(), id);
                 let target = Target::Space(inst.clone(), id);
                 let inst_key = inst.clone();
+                let picture = self.space_picture(&inst, id);
                 let element = rail_icon(format!("rail-space-{inst}-{id}"))
-                    .bg(if selected {
-                        theme::accent()
-                    } else {
-                        theme::selected()
-                    })
                     .text_color(if selected {
                         theme::on_accent()
                     } else {
                         theme::text()
                     })
-                    .when(selected, |d| d.child(rail_pill()))
-                    .child(initials(&name))
-                    .children(
-                        badge_element(badge)
-                            .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
-                    )
+                    .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
+                    .when(picture.is_none(), |d| d.child(initials(&name)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_pages(cx);
                         this.select_space(inst.clone(), id, window, cx);
                     }));
                 let element = self.with_menu(element, target, cx);
-                rail_morph(
-                    SharedString::from(format!("rail-morph-{inst_key}-{id}")),
-                    element,
-                    selected,
-                )
+                // The pill and the badge go over the picture, so they come after it.
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .child(rail_morph(
+                        SharedString::from(format!("rail-morph-{inst_key}-{id}")),
+                        element,
+                        selected,
+                        picture,
+                    ))
+                    .when(selected, |d| d.child(rail_pill()))
+                    .children(
+                        badge_element(badge)
+                            .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
+                    )
+                    .into_any_element()
             })
             .collect();
 

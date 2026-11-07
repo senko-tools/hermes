@@ -63,6 +63,8 @@ impl Shell {
                         .values()
                         .chain(s.me.as_ref().map(|me| &me.user))
                         .filter_map(|u| u.avatar.as_ref())
+                        // Server icons load the same way.
+                        .chain(s.spaces.values().filter_map(|st| st.space.icon.as_ref()))
                         .map(move |a| (inst.clone(), a.id))
                 })
                 .filter(|key| !self.images.avatars.contains_key(key))
@@ -95,6 +97,23 @@ impl Shell {
                     this.images.avatars.insert(key, img);
                 },
             );
+        }
+    }
+
+    /// A server's icon, once loaded.
+    pub fn space_picture(&self, inst: &str, space: Id) -> Option<Arc<RenderImage>> {
+        let store = self.core.store();
+        let icon = store
+            .instance(inst)?
+            .spaces
+            .get(&space)?
+            .space
+            .icon
+            .as_ref()?
+            .id;
+        match self.images.avatars.get(&(inst.to_owned(), icon)) {
+            Some(Img::Ready(image)) => Some(image.clone()),
+            _ => None,
         }
     }
 

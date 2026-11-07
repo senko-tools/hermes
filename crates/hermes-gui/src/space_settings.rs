@@ -1062,13 +1062,25 @@ impl Shell {
         ];
         if editable {
             let has_icon = st.space.icon.is_some();
+            // Read from the image cache, not through the store again (it is held here).
+            let picture = st.space.icon.as_ref().and_then(|icon| {
+                match self.images.avatars.get(&(inst.clone(), icon.id)) {
+                    Some(crate::images::Img::Ready(image)) => Some(image.clone()),
+                    _ => None,
+                }
+            });
             let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
             rows.push(setting(
                 "Icon",
                 "A square PNG or JPEG works best.",
                 div()
                     .flex()
+                    .items_center()
                     .gap(px(8.))
+                    .children(
+                        picture
+                            .map(|picture| gpui_kit::img(picture).size(px(40.)).rounded(px(10.))),
+                    )
                     .child(
                         Button::new("space-icon")
                             .cursor_pointer()
