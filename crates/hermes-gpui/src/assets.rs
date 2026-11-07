@@ -6,27 +6,55 @@ use std::borrow::Cow;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, AssetSource, Result, Rgba, SharedString, Svg, px, svg};
 
-pub const FEATHER: &str = "hermes/feather.svg";
-pub const POUND: &str = "hermes/pound.svg";
-pub const VOLUME: &str = "hermes/volume-high.svg";
-pub const PLUS: &str = "hermes/plus.svg";
-pub const COG: &str = "hermes/cog.svg";
-pub const HANG_UP: &str = "hermes/phone-hangup.svg";
+include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
-const ICONS: [(&str, &[u8]); 6] = [
-    (FEATHER, include_bytes!("../assets/icons/mdi/feather.svg")),
-    (POUND, include_bytes!("../assets/icons/mdi/pound.svg")),
-    (
-        VOLUME,
-        include_bytes!("../assets/icons/mdi/volume-high.svg"),
-    ),
-    (PLUS, include_bytes!("../assets/icons/mdi/plus.svg")),
-    (COG, include_bytes!("../assets/icons/mdi/cog.svg")),
-    (
-        HANG_UP,
-        include_bytes!("../assets/icons/mdi/phone-hangup.svg"),
-    ),
-];
+pub const FEATHER: &str = "feather";
+pub const POUND: &str = "pound";
+pub const VOLUME: &str = "volume-high";
+pub const PLUS: &str = "plus";
+pub const COG: &str = "cog";
+pub const HANG_UP: &str = "phone-hangup";
+pub const AT: &str = "at";
+pub const PIN: &str = "pin";
+pub const SEARCH: &str = "magnify";
+pub const USERS: &str = "account-multiple";
+pub const REACT: &str = "emoticon-happy-outline";
+pub const REPLY: &str = "reply";
+pub const PENCIL: &str = "pencil";
+pub const MORE: &str = "dots-horizontal";
+pub const CLOSE: &str = "close";
+pub const CHEVRON_DOWN: &str = "chevron-down";
+pub const CHEVRON_RIGHT: &str = "chevron-right";
+pub const ATTACH: &str = "paperclip";
+pub const CHAT: &str = "message-outline";
+pub const PHONE: &str = "phone";
+pub const ARROW_DOWN: &str = "arrow-down";
+pub const CHECK: &str = "check";
+pub const FILE: &str = "file-outline";
+pub const DOWNLOAD: &str = "download";
+pub const DELETE: &str = "delete-outline";
+pub const MIC: &str = "microphone";
+pub const MIC_OFF: &str = "microphone-off";
+pub const HEADPHONES: &str = "headphones";
+pub const HEADPHONES_OFF: &str = "headphones-off";
+pub const MONITOR: &str = "monitor";
+pub const MONITOR_SHARE: &str = "monitor-share";
+pub const MAXIMIZE: &str = "fullscreen";
+pub const RESTORE: &str = "fullscreen-exit";
+pub const WAVEFORM: &str = "waveform";
+pub const ARROW_LEFT: &str = "arrow-left";
+pub const ACCOUNT: &str = "account-circle";
+pub const INFO: &str = "information-outline";
+pub const LOCK: &str = "lock";
+pub const KEYBOARD: &str = "keyboard";
+pub const PALETTE: &str = "palette";
+pub const SERVER: &str = "server";
+pub const SHIELD: &str = "shield-account";
+pub const BELL: &str = "bell-outline";
+pub const COPY: &str = "content-copy";
+pub const LINK: &str = "link-variant";
+pub const ADD_USER: &str = "account-plus";
+pub const MINIMIZE: &str = "minus";
 
 const FONTS: [&[u8]; 4] = [
     include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"),
@@ -57,9 +85,9 @@ pub fn load_fonts(cx: &mut App) {
         .expect("the bundled fonts load");
 }
 
-pub fn icon(path: &'static str, size: f32, color: Rgba) -> Svg {
+pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
     svg()
-        .path(path)
+        .path(SharedString::from(format!("hermes/{name}.svg")))
         .flex_shrink_0()
         .size(px(size))
         .text_color(color)

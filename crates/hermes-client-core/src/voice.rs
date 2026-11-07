@@ -75,6 +75,18 @@ pub enum VoiceStatus {
     Reconnecting { attempt: u32 },
 }
 
+/// The voice connection's numbers right now, for the network graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceLink {
+    /// QUIC's own round trip estimate.
+    pub rtt_ms: u32,
+    pub sent_bytes: u64,
+    pub received_bytes: u64,
+    pub sent_packets: u64,
+    pub lost_packets: u64,
+    pub server: std::net::SocketAddr,
+}
+
 /// The voice part of [`Core`].
 pub(crate) struct Voice {
     engine: Engine,
@@ -356,6 +368,20 @@ impl Core {
     pub fn voice_channel(&self) -> Option<(InstanceId, Id)> {
         let state = self.voice().state();
         state.session.as_ref().map(|s| (s.inst.clone(), s.channel))
+    }
+
+    /// The voice connection's numbers, while one is up.
+    pub fn voice_link(&self) -> Option<VoiceLink> {
+        let conn = self.voice().link.lock().expect("voice link").clone()?;
+        let stats = conn.stats();
+        Some(VoiceLink {
+            rtt_ms: u32::try_from(stats.path.rtt.as_millis()).unwrap_or(u32::MAX),
+            sent_bytes: stats.udp_tx.bytes,
+            received_bytes: stats.udp_rx.bytes,
+            sent_packets: stats.path.sent_packets,
+            lost_packets: stats.path.lost_packets,
+            server: conn.remote_address(),
+        })
     }
 
     pub fn voice_status(&self) -> VoiceStatus {

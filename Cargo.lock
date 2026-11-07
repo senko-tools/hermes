@@ -4379,9 +4379,29 @@ dependencies = [
 name = "hermes-gpui"
 version = "1.1.0"
 dependencies = [
+ "arboard",
+ "clap",
+ "directories",
  "embed-resource",
+ "futures-util",
+ "global-hotkey",
  "gpui-kit",
  "hermes-audio",
+ "hermes-client-core",
+ "hermes-server",
+ "image",
+ "notify",
+ "notify-rust",
+ "openh264",
+ "rfd",
+ "serde",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "tray-icon",
+ "windows 0.62.2",
+ "xcap",
 ]
 
 [[package]]

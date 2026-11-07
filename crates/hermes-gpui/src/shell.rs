@@ -1,166 +1,655 @@
-//! The root view: the icon rail, the sidebar next to it and the main panel, whose page names the
-//! window (the native title bar is the only header).
+//! The root view: the icon rail, the sidebar next to it and the main panel under its header. It
+//! owns the state; each feature's module adds its methods.
 
-use gpui_kit::component::input::{InputEvent, TextareaState};
+use std::collections::HashMap;
+use std::future::Future;
+use std::time::Duration;
+
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, Focusable as _, ListAlignment, ListState, MouseButton, Subscription, Window,
+    AnyElement, AnyWindowHandle, Context, MouseButton, Subscription, Window, WindowControlArea,
     div, px,
 };
-use hermes_audio::{AudioSettings, Engine, Io, Sound};
+use hermes_client_core::config::ClientConfig;
+use hermes_client_core::proto::id::Id;
+use hermes_client_core::proto::models::{ChannelKind, PresenceStatus, Status as UserStatus};
+use hermes_client_core::store::Changed;
+use hermes_client_core::{Core, CoreEvent, CoreEvents, InstanceId};
+use tokio::runtime::Handle;
 
-use crate::menu::{MenuTarget, OpenMenu};
-use crate::sample::{ChatId, Data, VoiceId};
-use crate::theme;
+use crate::add_instance::AddInstance;
+use crate::assets::{self, icon};
+use crate::channel::{ChatView, Viewer};
+use crate::collapsed::Collapsed;
+use crate::form::Form;
+use crate::images::Images;
+use crate::menu::OpenMenu;
+use crate::menu_entries::{Action, Target};
+use crate::new_dm::NewDm;
+use crate::single_instance::{self, Endpoint};
+use crate::{theme, watchdog};
+
+/// What `main` hands to the shell.
+pub struct Boot {
+    pub core: Core,
+    pub events: CoreEvents,
+    pub runtime: Handle,
+    pub endpoint: Endpoint,
+    pub link: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// A channel of an instance.
+pub type ChannelKey = (InstanceId, Id);
 
 /// What the main panel shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
     Friends,
-    Chat(ChatId),
-    Voice(VoiceId),
+    Chat(InstanceId, Id),
+    Voice(InstanceId, Id),
 }
 
 /// The rail's selected icon, which decides what the sidebar lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selected {
     /// The app icon: Friends, with the DMs in the sidebar.
     Home,
-    /// A space, by its position: its channels.
-    Space(usize),
+    /// A space: its channels.
+    Space(InstanceId, Id),
 }
 
+/// A line shown over the main panel until dismissed; info lines go away by themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub text: String,
+    pub level: Level,
+    /// Which status this is: a timer only clears the one it was started for.
+    pub serial: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warning,
+    Error,
+}
+
+/// How long an info line stays.
+const INFO_FOR: Duration = Duration::from_secs(5);
+
 pub struct Shell {
-    pub data: Data,
+    pub core: Core,
+    pub runtime: Handle,
+    pub window: AnyWindowHandle,
+    /// What the views show. Equal to `core.config()` except while a slider is being dragged.
+    pub config: ClientConfig,
     pub page: Page,
     pub selected: Selected,
-    /// The voice channel I am in.
-    pub in_voice: Option<VoiceId>,
-    pub composer: Entity<TextareaState>,
-    /// The message list of the open chat.
-    pub messages: ListState,
+    /// The channel last open in each space, reopened when the space is selected again.
+    pub last_channel: HashMap<(InstanceId, Id), Id>,
+    pub collapsed: Collapsed,
+    pub chats: HashMap<ChannelKey, ChatView>,
+    pub images: Images,
+    pub status: Option<Status>,
+    status_serial: u64,
     /// Where the right button went down, until it comes up.
-    pub right_pressed: Option<MenuTarget>,
+    pub right_pressed: Option<Target>,
     pub menu: Option<OpenMenu>,
+    /// A destructive menu action waiting for confirmation.
+    pub confirm: Option<(Target, Action)>,
+    pub add_instance: Option<AddInstance>,
+    pub form: Option<Form>,
+    pub new_dm: Option<NewDm>,
+    /// The full-size image viewer.
+    pub viewer: Option<Viewer>,
+    /// Local UTC offset for timestamps, read once at startup.
+    pub utc_offset: i64,
+    pub next_upload: u64,
     /// The title last given to the window.
     title: String,
-    /// Plays the UI sounds. It opens the speakers only while a sound plays, and no microphone.
-    audio: Engine,
-    _composer_events: Subscription,
+    /// Give the keyboard to the open chat's message box at the next draw.
+    pub focus_composer: bool,
+    /// The window has the keyboard focus.
+    pub focused: bool,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Shell {
-    pub fn new(data: Data, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let composer = cx.new(|cx| {
-            TextareaState::new(window, cx)
-                .auto_grow(1, 6)
-                .submit_on_enter(true)
-                .placeholder("Message")
-        });
-        let events = cx.subscribe_in(&composer, window, |this, _, event, window, cx| {
-            if let InputEvent::PressEnter { shift: false, .. } = event {
-                this.send(window, cx);
-            }
-        });
-        Self {
-            data,
+    pub fn new(boot: Boot, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let Boot {
+            core,
+            events,
+            runtime,
+            endpoint,
+            link,
+            warning,
+        } = boot;
+        let config = core.config();
+        let collapsed = core
+            .paths()
+            .map(|p| Collapsed::load(&p.dir))
+            .unwrap_or_default();
+        let shell = cx.entity().downgrade();
+        let subscriptions = vec![
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.window_activation(window.is_window_active(), cx);
+            }),
+            cx.intercept_keystrokes(move |event, window, cx| {
+                let _ = shell.update(cx, |this, cx| this.on_key(event, window, cx));
+            }),
+        ];
+        let mut this = Self {
+            core,
+            runtime,
+            window: window.window_handle(),
+            config,
             page: Page::Friends,
             selected: Selected::Home,
-            in_voice: None,
-            composer,
-            messages: ListState::new(0, ListAlignment::Bottom, px(400.)),
+            last_channel: HashMap::new(),
+            collapsed,
+            chats: HashMap::new(),
+            images: Images::default(),
+            status: None,
+            status_serial: 0,
             right_pressed: None,
             menu: None,
+            confirm: None,
+            add_instance: None,
+            form: None,
+            new_dm: None,
+            viewer: None,
+            utc_offset: hermes_client_core::time::local_offset_secs(),
+            next_upload: 0,
             title: String::new(),
-            audio: Engine::start(Io::Devices, AudioSettings::default(), |_| {}),
-            _composer_events: events,
+            focus_composer: false,
+            focused: true,
+            _subscriptions: subscriptions,
+        };
+        this.start_event_pump(events, cx);
+        this.start_link_listener(endpoint, cx);
+        this.start_heartbeat(cx);
+        if let Some(warning) = warning {
+            this.show_status(format!("config: {warning}"), Level::Warning, cx);
+        }
+        if let Some(link) = link {
+            this.open_link(link, window, cx);
+        }
+        this.load_avatars(cx);
+        this
+    }
+
+    // ---- async --------------------------------------------------------------------------------
+
+    /// Runs `work` on the tokio runtime and `then` with its result on the UI thread.
+    pub fn run<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        work: impl Future<Output = T> + Send + 'static,
+        then: impl FnOnce(&mut Shell, T, &mut Window, &mut Context<Shell>) + 'static,
+    ) {
+        let task = self.runtime.spawn(work);
+        let handle = self.window;
+        cx.spawn(async move |this, cx| {
+            let result = match task.await {
+                Ok(result) => result,
+                Err(err) => {
+                    tracing::error!("a background task failed: {err}");
+                    return;
+                }
+            };
+            let _ = cx.update_window(handle, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    let _phase = watchdog::in_update();
+                    then(this, result, window, cx);
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
+    }
+
+    /// Runs `work`; its text goes to the status line, as info or as an error.
+    pub fn run_status(
+        &self,
+        cx: &mut Context<Self>,
+        work: impl Future<Output = Result<String, String>> + Send + 'static,
+    ) {
+        self.run(cx, work, |this, result, _, cx| match result {
+            Ok(text) => this.info(text, cx),
+            Err(text) => this.error(text, cx),
+        });
+    }
+
+    /// Hands the core's events to the UI thread, all that have queued up at once.
+    fn start_event_pump(&self, mut events: CoreEvents, cx: &mut Context<Self>) {
+        let handle = self.window;
+        cx.spawn(async move |this, cx| {
+            while let Some(first) = events.recv().await {
+                let mut batch = vec![first];
+                while let Some(next) = events.try_recv() {
+                    batch.push(next);
+                }
+                let result = cx.update_window(handle, |_, window, cx| {
+                    this.update(cx, |this, cx| {
+                        let _phase = watchdog::in_update();
+                        watchdog::beat();
+                        for event in batch {
+                            this.on_core(event, window, cx);
+                        }
+                        cx.notify();
+                    })
+                });
+                if !matches!(result, Ok(Ok(()))) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Links forwarded by later launches (section 15.7).
+    fn start_link_listener(&self, endpoint: Endpoint, cx: &mut Context<Self>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        self.runtime.spawn(async move {
+            if let Err(err) = single_instance::serve(endpoint, tx).await {
+                tracing::warn!("not receiving links from later launches: {err}");
+            }
+        });
+        let handle = self.window;
+        cx.spawn(async move |this, cx| {
+            while let Some(link) = rx.recv().await {
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    this.update(cx, |this, cx| {
+                        tracing::info!(
+                            "another launch handed over {}",
+                            if link.is_empty() { "nothing" } else { "a link" }
+                        );
+                        window.activate_window();
+                        if !link.is_empty() {
+                            this.open_link(link, window, cx);
+                        }
+                        cx.notify();
+                    })
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Tells the freeze watchdog the UI thread runs, also while nothing happens.
+    fn start_heartbeat(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |_, cx| {
+            loop {
+                cx.background_executor().timer(watchdog::BEAT_EVERY).await;
+                watchdog::beat();
+            }
+        })
+        .detach();
+    }
+
+    // ---- events -------------------------------------------------------------------------------
+
+    fn on_core(&mut self, event: CoreEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            CoreEvent::ConfigReloaded { warnings } => {
+                self.config = self.core.config();
+                if let Some(warning) = warnings.into_iter().next() {
+                    self.warn(format!("config: {warning}"), cx);
+                }
+            }
+            CoreEvent::Error(text) => self.error(text, cx),
+            CoreEvent::StoreChanged { inst, what } => {
+                match what {
+                    Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
+                    Changed::All => self.everything_changed(&inst, window, cx),
+                    Changed::Spaces | Changed::Dms | Changed::Channel(_) => {
+                        self.check_page_exists(cx);
+                    }
+                    _ => {}
+                }
+                self.load_avatars(cx);
+            }
+            // The views read the store directly; the other events only trigger a redraw.
+            _ => {}
         }
     }
+
+    fn window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
+        self.focused = active;
+        self.core.set_app_focused(active);
+        if active {
+            self.mark_open_read(cx);
+        }
+        cx.notify();
+    }
+
+    /// A new `ready`: the open chat's window was dropped, so it loads again.
+    fn everything_changed(&mut self, inst: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.check_page_exists(cx);
+        if let Page::Chat(i, channel) = &self.page
+            && i == inst
+        {
+            let (i, channel) = (i.clone(), *channel);
+            self.open_chat(i, channel, window, cx);
+        }
+    }
+
+    /// Leaves a channel or space that is gone (deleted, or I left it).
+    fn check_page_exists(&mut self, cx: &mut Context<Self>) {
+        let store = self.core.store();
+        let selected_gone = match &self.selected {
+            Selected::Home => false,
+            Selected::Space(inst, space) => store
+                .instance(inst)
+                .is_some_and(|s| s.me.is_some() && !s.spaces.contains_key(space)),
+        };
+        let page_gone = match &self.page {
+            Page::Friends => false,
+            Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
+                .instance(inst)
+                .is_some_and(|s| s.me.is_some() && s.channel(*channel).is_none()),
+        };
+        drop(store);
+        if selected_gone {
+            self.selected = Selected::Home;
+        }
+        if page_gone || selected_gone {
+            self.open_friends(cx);
+        }
+    }
+
+    // ---- status line --------------------------------------------------------------------------
+
+    pub fn show_status(&mut self, text: String, level: Level, cx: &mut Context<Self>) {
+        self.status_serial += 1;
+        let serial = self.status_serial;
+        self.status = Some(Status {
+            text,
+            level,
+            serial,
+        });
+        if level == Level::Info {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(INFO_FOR).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.status.as_ref().is_some_and(|s| s.serial == serial) {
+                        this.status = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    pub fn info(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.show_status(text.into(), Level::Info, cx);
+    }
+
+    pub fn warn(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.show_status(text.into(), Level::Warning, cx);
+    }
+
+    pub fn error(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        let text = text.into();
+        tracing::warn!("{text}");
+        self.show_status(text, Level::Error, cx);
+    }
+
+    /// Puts text on the clipboard; `what` names it for the status line.
+    pub fn copy(&mut self, text: String, what: &str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        self.info(format!("{what} copied"), cx);
+    }
+
+    // ---- navigation ---------------------------------------------------------------------------
 
     pub fn open_friends(&mut self, cx: &mut Context<Self>) {
         self.selected = Selected::Home;
         self.page = Page::Friends;
+        self.update_visible_channels();
         cx.notify();
     }
 
-    /// Selects a space on the rail and opens its first text channel.
-    pub fn select_space(&mut self, space: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.selected = Selected::Space(space);
-        if let Some(id) = self.data.spaces[space].first_chat() {
-            self.open_chat(id, window, cx);
+    /// Selects a space on the rail and opens the channel last open in it, else its first text
+    /// channel.
+    pub fn select_space(
+        &mut self,
+        inst: InstanceId,
+        space: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected = Selected::Space(inst.clone(), space);
+        let channel = {
+            let store = self.core.store();
+            let s = store.instance(&inst);
+            self.last_channel
+                .get(&(inst.clone(), space))
+                .copied()
+                .filter(|c| s.is_some_and(|s| s.channel(*c).is_some()))
+                .or_else(|| {
+                    s.and_then(|s| {
+                        hermes_client_core::view::channel_tree(s, space)
+                            .into_iter()
+                            .find(|c| c.kind == ChannelKind::Text)
+                            .map(|c| c.id)
+                    })
+                })
+        };
+        if let Some(channel) = channel {
+            self.select(inst, channel, window, cx);
         }
         cx.notify();
     }
 
-    pub fn open_voice(&mut self, id: VoiceId, cx: &mut Context<Self>) {
-        self.page = Page::Voice(id);
-        cx.notify();
-    }
-
-    pub fn open_chat(&mut self, id: ChatId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.page != Page::Chat(id) {
-            self.page = Page::Chat(id);
-            self.data.mark_read(id);
-            self.messages.reset(self.data.chat(id).messages.len());
-            self.messages.scroll_to_end();
-        }
-        self.composer.focus_handle(cx).focus(window, cx);
-        cx.notify();
-    }
-
-    /// Joins the room, or leaves it when already in it.
-    pub fn toggle_voice(&mut self, id: VoiceId, cx: &mut Context<Self>) {
-        if self.in_voice == Some(id) {
-            self.in_voice = None;
-            self.audio.play_sound(Sound::Leave);
-        } else {
-            self.in_voice = Some(id);
-            self.audio.play_sound(Sound::Join);
-        }
-        cx.notify();
-    }
-
-    /// Sends what is in the composer to the open chat.
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Page::Chat(id) = self.page else { return };
-        let text = self.composer.read(cx).value().to_string();
-        if !self.data.send(id, &text) {
+    /// Opens a channel: a voice channel's voice room, otherwise its chat. The rail and sidebar
+    /// follow what was opened (a notification, a call, a link).
+    pub fn select(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (kind, space) = {
+            let store = self.core.store();
+            let s = store.instance(&inst);
+            (
+                s.and_then(|s| s.channel(channel)).map(|c| c.kind),
+                s.and_then(|s| s.space_of(channel)),
+            )
+        };
+        self.selected = match space {
+            Some(space) => {
+                self.last_channel.insert((inst.clone(), space), channel);
+                Selected::Space(inst.clone(), space)
+            }
+            None => Selected::Home,
+        };
+        if kind == Some(ChannelKind::Voice) {
+            self.page = Page::Voice(inst, channel);
+            self.update_visible_channels();
+            cx.notify();
             return;
         }
-        self.composer
-            .update(cx, |composer, cx| composer.set_value("", window, cx));
-        let added = self.data.chat(id).messages.len() - 1;
-        self.messages.splice(added..added, 1);
-        self.messages.scroll_to_end();
-        cx.notify();
+        self.open_chat(inst, channel, window, cx);
     }
 
-    /// The window's title: the current page.
-    fn page_title(&self) -> String {
-        match self.page {
-            Page::Friends => "Friends".into(),
-            Page::Chat(id) => self.data.chat(id).title(),
-            Page::Voice(id) => self.data.voice[id.0].name.clone(),
+    /// Tells the core which channel shows, for notifications and read marks.
+    pub fn update_visible_channels(&self) {
+        let visible = match &self.page {
+            Page::Chat(inst, channel) => vec![(inst.clone(), *channel)],
+            _ => Vec::new(),
+        };
+        self.core.set_visible_channels(visible);
+    }
+
+    /// The channel whose chat is open.
+    pub fn open_channel(&self) -> Option<ChannelKey> {
+        match &self.page {
+            Page::Chat(inst, channel) => Some((inst.clone(), *channel)),
+            _ => None,
         }
+    }
+
+    /// The window's title, for the taskbar: the current page.
+    fn page_title(&self) -> String {
+        let store = self.core.store();
+        match &self.page {
+            Page::Friends => "Friends".into(),
+            Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
+                .instance(inst)
+                .and_then(|s| {
+                    s.channel(*channel)
+                        .map(|c| hermes_client_core::view::channel_title(s, c))
+                })
+                .unwrap_or_else(|| "Hermes".into()),
+        }
+    }
+
+    // ---- drawing ------------------------------------------------------------------------------
+
+    /// The bar over the main panel: it drags the window and holds the page's controls and the
+    /// window buttons. It has no title: the sidebar and the content say where you are.
+    fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let window_button = |id: &'static str, name: &'static str, area, close: bool| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .w(px(46.))
+                .h_full()
+                .window_control_area(area)
+                .when(close, |d| {
+                    d.hover(|d| d.bg(theme::danger()).text_color(theme::on_accent()))
+                })
+                .when(!close, |d| d.hover(|d| d.bg(theme::hover())))
+                .child(icon(name, 16., theme::text_secondary()))
+        };
+        let maximize_icon = if window.is_maximized() {
+            assets::RESTORE
+        } else {
+            assets::MAXIMIZE
+        };
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .h(px(theme::SIDEBAR_HEADER))
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .id("header-drag")
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .children(self.render_header_controls(cx))
+            .child(
+                div()
+                    .flex()
+                    .h_full()
+                    .child(window_button(
+                        "win-min",
+                        assets::MINIMIZE,
+                        WindowControlArea::Min,
+                        false,
+                    ))
+                    .child(window_button(
+                        "win-max",
+                        maximize_icon,
+                        WindowControlArea::Max,
+                        false,
+                    ))
+                    .child(window_button(
+                        "win-close",
+                        assets::CLOSE,
+                        WindowControlArea::Close,
+                        true,
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// The page's buttons and fields in the header. (More come with search and the member list.)
+    fn render_header_controls(&self, _cx: &mut Context<Self>) -> Vec<AnyElement> {
+        Vec::new()
+    }
+
+    fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let status = self.status.as_ref()?;
+        let color = match status.level {
+            Level::Info => theme::text_secondary(),
+            Level::Warning => theme::accent(),
+            Level::Error => theme::danger(),
+        };
+        Some(
+            div()
+                .id("status-line")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(6.))
+                .bg(theme::sidebar())
+                .border_b_1()
+                .border_color(theme::border())
+                .text_size(px(theme::TEXT_SMALL))
+                .text_color(color)
+                .child(div().flex_1().min_w_0().child(status.text.clone()))
+                .child(
+                    div()
+                        .id("status-dismiss")
+                        .cursor_pointer()
+                        .child(icon(assets::CLOSE, 16., theme::text_tertiary()))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.status = None;
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+}
+
+/// My chosen presence as the status others see.
+pub fn presence_status(presence: PresenceStatus) -> UserStatus {
+    match presence {
+        PresenceStatus::Online => UserStatus::Online,
+        PresenceStatus::Idle => UserStatus::Idle,
+        PresenceStatus::Dnd => UserStatus::Dnd,
+        PresenceStatus::Invisible => UserStatus::Offline,
     }
 }
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        watchdog::beat();
+        let _phase = watchdog::in_view();
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
         }
+        if std::mem::take(&mut self.focus_composer) {
+            self.focus_open_composer(window, cx);
+        }
 
         let rail = self.render_rail(cx);
         let sidebar = self.render_sidebar(cx);
-        let main = match self.page {
+        let main = match self.page.clone() {
             Page::Friends => self.render_friends(cx).into_any_element(),
-            Page::Chat(id) => self.render_chat(id, cx).into_any_element(),
-            Page::Voice(id) => self.render_voice(id, cx).into_any_element(),
+            Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
+            Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
         };
+        let header = self.render_header(window, cx);
         div()
             .flex()
             .size_full()
@@ -186,9 +675,20 @@ impl Render for Shell {
                                 .size_range(px(180.)..px(480.))
                                 .child(sidebar),
                         )
-                        .child(resizable_panel().child(main)),
+                        .child(
+                            resizable_panel().child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .size_full()
+                                    .child(header)
+                                    .children(self.render_status(cx))
+                                    .child(div().flex_1().min_h_0().child(main)),
+                            ),
+                        ),
                 ),
             )
+            .children(self.render_modals(cx))
             .children(self.render_menu())
     }
 }

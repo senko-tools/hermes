@@ -13,11 +13,56 @@ name = "hermes-gpui"
 path = "src/main.rs"
 
 [dependencies]
-gpui-kit.workspace = true
 hermes-audio.workspace = true
+hermes-client-core.workspace = true
+arboard.workspace = true
+clap = { workspace = true, features = ["derive"] }
+directories.workspace = true
+futures-util.workspace = true
+global-hotkey.workspace = true
+gpui-kit.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }
+notify.workspace = true
+notify-rust.workspace = true
+openh264.workspace = true
+rfd.workspace = true
+serde.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tray-icon.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# The same Windows APIs as the iced client: Desktop Duplication, Media Foundation and the shader
+# compiler for screen sharing, push-to-talk polling, minidumps, and hiding the window to the tray.
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+xcap.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true
+
+[dev-dependencies]
+# The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.
+hermes-server = { path = "../hermes-server" }
 
 [lints]
 workspace = true
