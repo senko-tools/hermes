@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -114,6 +115,9 @@ pub(crate) struct Voice {
     link: Arc<Mutex<Option<quinn::Connection>>>,
     /// The end-to-end encryption of the session's audio and video.
     crypto: Arc<Mutex<VoiceCrypto>>,
+    /// Someone else is in the room. Alone, my audio is not sent: nobody would hear it (like a
+    /// screen share nobody watches).
+    listeners: Arc<AtomicBool>,
     /// Where own screen share frames go (the current connection's writer).
     screen_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     /// Where others' screen share frames go (set by the UI).
@@ -182,11 +186,16 @@ impl Voice {
     ) -> Self {
         let link: Arc<Mutex<Option<quinn::Connection>>> = Arc::default();
         let crypto: Arc<Mutex<VoiceCrypto>> = Arc::default();
+        let listeners: Arc<AtomicBool> = Arc::default();
         let engine = {
             let link = link.clone();
             let crypto = crypto.clone();
+            let listeners = listeners.clone();
             Engine::start(io, settings, move |event| match event {
                 AudioEvent::Packet(datagram) => {
+                    if !listeners.load(Ordering::Relaxed) {
+                        return;
+                    }
                     let conn = link.lock().expect("voice link").clone();
                     if let Some(conn) = conn {
                         // Nothing leaves in clear: without a key yet, the packet is dropped.
@@ -206,6 +215,7 @@ impl Voice {
             engine,
             link,
             crypto,
+            listeners,
             screen_out: Mutex::default(),
             screen_sink: Arc::default(),
             state: Mutex::default(),
@@ -685,6 +695,7 @@ impl Core {
     /// Stops a session's audio and tells the UI. The driver task ends on its own when the
     /// control sender is dropped.
     fn close_session(&self, session: Session, sound: bool) {
+        self.set_listeners(false);
         let engine = &self.voice().engine;
         engine.set_transmitting(false);
         engine.clear_participants();
@@ -1064,6 +1075,7 @@ impl Core {
                 .iter()
                 .map(|p| (p.participant_id, p.user_id))
                 .collect();
+            self.set_listeners(!s.participants.is_empty());
             s.connected_once = true;
             // A new room or connection: new participant IDs and new keys.
             s.keyed_for = None;
@@ -1103,6 +1115,15 @@ impl Core {
         );
     }
 
+    fn set_listeners(&self, any: bool) {
+        self.voice().listeners.store(any, Ordering::Relaxed);
+    }
+
+    /// Whether my audio goes out: only while someone else is in the room.
+    pub fn voice_has_listeners(&self) -> bool {
+        self.voice().listeners.load(Ordering::Relaxed)
+    }
+
     fn configure_participant(&self, inst: &str, p: &Participant) {
         let engine = &self.voice().engine;
         engine.set_volume(p.participant_id, self.user_volume(inst, p.user_id));
@@ -1112,6 +1133,7 @@ impl Core {
     fn on_joined(&self, generation: u64, p: Participant) {
         let Some(inst) = self.with_session(generation, |s| {
             s.participants.insert(p.participant_id, p.user_id);
+            self.set_listeners(true);
             s.inst.clone()
         }) else {
             return;
@@ -1124,12 +1146,9 @@ impl Core {
         let left = self.with_session(generation, |s| {
             let shared = s.sharing.remove(&participant_id);
             s.watching.remove(&participant_id);
-            (
-                shared,
-                s.participants
-                    .remove(&participant_id)
-                    .map(|user| (s.inst.clone(), user)),
-            )
+            let user = s.participants.remove(&participant_id);
+            self.set_listeners(!s.participants.is_empty());
+            (shared, user.map(|user| (s.inst.clone(), user)))
         });
         let left = left.map(|(shared, left)| {
             if shared {
