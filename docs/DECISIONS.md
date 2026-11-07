@@ -1715,8 +1715,11 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
   usable chat fit, and smaller windows only get worse.
 - **Share video:** decoded pictures become BGRA images on the decoder thread (scaled down by whole
   steps when the tile is small) and the shell frees each image it replaces with `Window::drop_image`.
-  gpui then makes a new atlas texture for most frames, which costs little. Measured over 30 s between
-  two debug clients at 1080p: GPU memory stayed at 86 MB. A patched renderer is not needed so far.
+  gpui then makes a new atlas texture for most frames, which costs little. Measured in release between
+  two clients on one PC, sharing a mostly still screen at the 1080p setting and 60 fps: a steady 60 fps with no
+  pictures dropped, 3.4 ms to decode and 7.8 ms to convert when enlarged in a maximized window (1 ms in a small
+  tile), about one CPU core, and GPU memory flat. A busy screen and slower PCs are not measured. A patched
+  renderer is not needed so far.
 - **Tray:** gpui cannot hide a window, so `desktop/window.rs` calls `ShowWindowAsync` with the window's
   own handle. Dependency `raw-window-handle =0.6.2` for that (already in the lockfile through gpui),
   approved by the developer.

@@ -51,6 +51,7 @@ PC needs a scratch server and its own config dir; see "How the window was tested
 ## Known risks
 - **Share video:** gpui's Windows `draw_surfaces` is an empty stub, so pictures are per-frame BGRA images freed
   with `drop_image`. See DECISIONS for the numbers. A debug build converts far too slowly to judge: measure release.
+  Only a mostly still screen between two clients on one PC has been measured.
 - **No software fallback:** gpui needs a D3D11 adapter. Test on the developer's laptop and over remote desktop.
 - **Unstable API:** GPUI is pre-1.0, so keep exact pins.
 - **Performance:** the expected gain has not been measured against iced.

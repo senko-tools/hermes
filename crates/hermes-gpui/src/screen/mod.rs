@@ -181,13 +181,15 @@ fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
     {
         let c_row = (row / 2).min(last_c_row);
         let (pairs, rest) = line.split_at_mut(even * 4);
-        let y_pairs = y_row[..even].chunks_exact(2);
+        let y_pairs = y_row[..even].as_chunks::<2>().0.iter();
         if p.nv12 {
             let uv = &u_plane[c_row * cw * 2..(c_row + 1) * cw * 2];
             for ((px, ys), c) in pairs
-                .chunks_exact_mut(8)
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
                 .zip(y_pairs)
-                .zip(uv.chunks_exact(2))
+                .zip(uv.as_chunks::<2>().0.iter())
             {
                 let terms = chroma(c[0], c[1]);
                 put_pixel(&mut px[..4], luma(ys[0]), terms);
@@ -197,7 +199,9 @@ fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
             let us = &u_plane[c_row * cw..(c_row + 1) * cw];
             let vs = &v_plane[c_row * cw..(c_row + 1) * cw];
             for (((px, ys), u), v) in pairs
-                .chunks_exact_mut(8)
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
                 .zip(y_pairs)
                 .zip(us.iter())
                 .zip(vs.iter())
@@ -235,7 +239,7 @@ fn skipping_to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
         let sy = row * step;
         let y_row = &y_plane[sy * w..sy * w + w];
         let c_row = (sy / 2).min(last_c_row);
-        for (col, px) in line.chunks_exact_mut(4).enumerate() {
+        for (col, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let sx = col * step;
             let cx = (sx / 2).min(cw.saturating_sub(1));
             let terms = if p.nv12 {
