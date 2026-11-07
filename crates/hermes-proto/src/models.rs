@@ -217,6 +217,9 @@ pub struct Attachment {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub has_thumb: bool,
+    /// The key of an encrypted file, from inside its message. Never on the wire.
+    #[serde(skip)]
+    pub sealed: Option<crate::e2ee::SealedFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +264,12 @@ pub struct Message {
     /// Only echoed to the author's sessions; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// The encrypted form: `content` is empty on the wire and the client opens this into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
+    /// How the client found this message. Never on the wire.
+    #[serde(skip)]
+    pub lock: crate::e2ee::MessageLock,
 }
 
 impl Message {
@@ -597,6 +606,8 @@ pub(crate) mod tests {
             reactions: vec![],
             mentions: Mentions::default(),
             nonce: None,
+            e2ee: None,
+            lock: Default::default(),
         };
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value.get("nonce").is_none());

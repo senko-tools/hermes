@@ -15,6 +15,7 @@ pub mod attachments;
 pub mod audit;
 pub mod auth;
 pub mod channels;
+pub mod devices;
 pub mod dms;
 pub mod friends;
 pub mod gateway;

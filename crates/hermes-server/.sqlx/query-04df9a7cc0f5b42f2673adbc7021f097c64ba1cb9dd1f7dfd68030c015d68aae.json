@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind\n               FROM messages_fts f JOIN messages m ON m.id = f.rowid\n               WHERE messages_fts MATCH ?1 AND m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4\n               ORDER BY m.id DESC LIMIT ?5",
+  "query": "SELECT m.id, m.channel_id, m.author_id, m.content, m.reply_to_id, m.edited_at,\n                      m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM messages m\n               WHERE m.deleted = 0 AND m.author_id != ?1 AND m.id < ?4\n                 AND m.channel_id IN (SELECT value FROM json_each(?3))\n                 AND EXISTS (\n                   SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND (\n                     (mm.kind = 'user' AND mm.target_id = ?1)\n                     OR (mm.kind = 'role' AND mm.target_id IN (SELECT value FROM json_each(?2)))\n                     OR mm.kind IN ('everyone', 'here')))\n               ORDER BY m.id DESC LIMIT ?5",
   "describe": {
     "columns": [
       {
-        "name": "id!",
+        "name": "id",
         "ordinal": 0,
         "type_info": "Integer",
         "origin": {
@@ -101,6 +101,17 @@
             "name": "kind"
           }
         }
+      },
+      {
+        "name": "e2ee",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "e2ee"
+          }
+        }
       }
     ],
     "parameters": {
@@ -115,8 +126,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "cf8655f38b15177357409cba518e68ac199789b179530ad3f256dd41f811b7e9"
+  "hash": "04df9a7cc0f5b42f2673adbc7021f097c64ba1cb9dd1f7dfd68030c015d68aae"
 }

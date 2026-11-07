@@ -57,6 +57,11 @@ pub enum ClientControl {
     RequestKeyframe {
         participant_id: u16,
     },
+    /// My sender key, sealed for participant `to` (a [`crate::e2ee::VoiceKey`] as JSON).
+    VoiceKey {
+        to: u16,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -122,6 +127,11 @@ pub enum ServerControl {
     ShareWatchers {
         count: u16,
     },
+    /// Someone's sender key, sealed for you (a [`crate::e2ee::VoiceKey`] as JSON).
+    VoiceKey {
+        from: u16,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,7 +166,9 @@ pub fn frame_len(prefix: [u8; 4]) -> Option<usize> {
 // Audio datagrams (PLAN.md 12.4)
 // ---------------------------------------------------------------------------------------------
 
-pub const PACKET_VERSION: u8 = 1;
+/// 2: the payload is end-to-end encrypted (docs/e2ee.md). Clients and servers from before that
+/// drop these, and these clients drop what those send, so nothing is ever played or sent in clear.
+pub const PACKET_VERSION: u8 = 2;
 pub const PACKET_TYPE_AUDIO: u8 = 1;
 /// The sound of a screen share: the same header as [`PACKET_TYPE_AUDIO`], stereo Opus, sent
 /// only to the share's watchers. Its `timestamp` counts 48 kHz samples since the share started,
@@ -333,7 +345,7 @@ const FLAG_KEYFRAME: u8 = 1;
 ///
 /// ```text
 /// offset size field
-/// 0      1    version_and_type   high nibble = version (1), low nibble = type (2 = video)
+/// 0      1    version_and_type   high nibble = version (2), low nibble = type (2 = video)
 /// 1      1    flags              bit0 = keyframe
 /// 2      2    sender_id          participant_id (the server overwrites it)
 /// 4      2    width              pixels, even, 2..=3840
@@ -414,7 +426,7 @@ mod tests {
         assert_eq!(packet.len(), HEADER_LEN + 3);
         assert_eq!(
             &packet[..HEADER_LEN],
-            &[0x11, 1, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0xFF, 42]
+            &[0x21, 1, 0xBE, 0xEF, 0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0xFF, 42]
         );
         let (decoded, opus) = AudioHeader::decode(&packet).unwrap();
         assert_eq!(decoded, header);
@@ -434,11 +446,11 @@ mod tests {
         assert!(AudioHeader::decode(&ok).is_ok());
         assert_eq!(AudioHeader::decode(&ok[..10]), Err(PacketError::TooShort));
         let mut bad = ok.clone();
-        bad[0] = 0x21;
-        assert_eq!(AudioHeader::decode(&bad), Err(PacketError::BadVersion(2)));
-        bad[0] = 0x12;
+        bad[0] = 0x11;
+        assert_eq!(AudioHeader::decode(&bad), Err(PacketError::BadVersion(1)));
+        bad[0] = 0x22;
         assert_eq!(AudioHeader::decode(&bad), Err(PacketError::UnknownType(2)));
-        let big = vec![0x11; MAX_DATAGRAM + 1];
+        let big = vec![0x21; MAX_DATAGRAM + 1];
         assert_eq!(AudioHeader::decode(&big), Err(PacketError::TooLarge));
         // Reserved flag bits are ignored.
         let mut flags = ok;

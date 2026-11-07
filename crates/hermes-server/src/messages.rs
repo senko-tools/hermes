@@ -13,6 +13,7 @@ use crate::db;
 use crate::db::messages::MessageRow;
 use crate::state::{AppState, Cache};
 use crate::time::SECOND_MS;
+use hermes_proto::e2ee::{Envelope, MessageLock};
 
 /// Length of [`MessageRef::excerpt`].
 pub const EXCERPT_CHARS: usize = 100;
@@ -85,8 +86,15 @@ pub async fn to_wire(
                 .map(|(_, m)| m.clone())
                 .unwrap_or_default(),
             nonce: None,
+            e2ee: e2ee_of(r.e2ee.as_deref()),
+            lock: MessageLock::Plain,
         })
         .collect())
+}
+
+/// What is stored in `messages.e2ee`. It was checked when it was stored.
+fn e2ee_of(stored: Option<&str>) -> Option<Envelope> {
+    serde_json::from_str(stored?).ok()
 }
 
 /// The form of a message broadcast to everyone who can see it: without the nonce, and with

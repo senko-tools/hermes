@@ -6,6 +6,7 @@ mod attachments;
 mod audit;
 mod auth;
 mod channels;
+pub mod devices;
 mod dms;
 mod friends;
 mod instance;
@@ -67,6 +68,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/users/@me", get(users::me).patch(users::update_me))
         .route("/users/@me/password", post(users::change_password))
         .route("/users/@me/username", post(users::change_username))
+        .route("/users/@me/devices", put(devices::register))
+        .route("/users/devices", post(devices::query))
         .route("/users/@me/friends", get(friends::list).post(friends::add))
         .route(
             "/users/@me/friends/{id}",

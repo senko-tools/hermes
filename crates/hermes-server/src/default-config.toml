@@ -46,6 +46,7 @@ login_attempts_per_minute = 5       # per IP
 
 [privacy]
 dm_policy = "shared_space"          # "shared_space" | "anyone"
+require_dm_encryption = true        # refuse DMs that are not end-to-end encrypted (old clients)
 
 [voice]
 enabled = true

@@ -776,6 +776,27 @@ impl Voice {
 // ---------------------------------------------------------------------------------------------
 
 impl Voice {
+    /// Passes a sealed sender key to one other member of the sender's room (docs/e2ee.md). It is
+    /// opaque here: the server only knows that a key went from one member to another.
+    pub fn relay_key(&self, conn_id: ConnId, to: u16, key: String) {
+        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES {
+            return;
+        }
+        let reg = self.registry();
+        let Some((channel_id, from)) = reg.conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(member) = reg.rooms.get(&channel_id).and_then(|r| r.members.get(&to)) else {
+            return;
+        };
+        if let Some(conn) = reg.conns.get(&member.conn_id) {
+            let _ = conn
+                .link
+                .control
+                .send(ServerControl::VoiceKey { from, key });
+        }
+    }
+
     /// Forwards one share audio datagram (docs/DECISIONS.md 2026-11-05): dropped unless the
     /// sender shares their screen, still has `STREAM` and stays under
     /// [`voice::MAX_SHARE_AUDIO_RATE`]; otherwise sent with the sender's participant ID to every

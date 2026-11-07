@@ -302,6 +302,11 @@ pub enum ServerEvent {
     RelationshipRemove {
         user_id: Id,
     },
+    /// Someone's device keys changed (docs/e2ee.md).
+    DevicesUpdate {
+        user_id: Id,
+        devices: Vec<crate::e2ee::DeviceKeys>,
+    },
 }
 
 impl ServerEvent {

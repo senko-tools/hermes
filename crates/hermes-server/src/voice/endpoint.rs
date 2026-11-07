@@ -342,6 +342,10 @@ fn handle(
             voice.keyframe_wanted(conn_id, participant_id);
             None
         }
+        ClientControl::VoiceKey { to, key } => {
+            voice.relay_key(conn_id, to, key);
+            None
+        }
     }
 }
 

@@ -8,8 +8,10 @@
 //! - [`gateway`]: WebSocket envelope, ops, events and close codes
 //! - [`markup`]: message markup parser
 //! - [`voice`]: voice control stream messages and audio datagrams
+//! - [`e2ee`]: end-to-end encrypted payloads, opaque to the server
 
 pub mod api;
+pub mod e2ee;
 pub mod error;
 pub mod gateway;
 pub mod id;

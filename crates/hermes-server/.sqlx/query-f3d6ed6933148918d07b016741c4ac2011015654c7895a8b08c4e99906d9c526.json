@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, channel_id, author_id, content, reply_to_id, edited_at,\n                      deleted AS \"deleted: bool\", pinned AS \"pinned: bool\", kind\n               FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC",
+  "query": "SELECT id, channel_id, author_id, content, reply_to_id, edited_at,\n                      deleted AS \"deleted: bool\", pinned AS \"pinned: bool\", kind, e2ee\n               FROM messages WHERE channel_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -101,10 +101,21 @@
             "name": "kind"
           }
         }
+      },
+      {
+        "name": "e2ee",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "e2ee"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 3
     },
     "nullable": [
       false,
@@ -115,8 +126,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "1c0abe59092dc109b830a5e89199de97f9d40e496d9b9c960bdde9cfed4c38c0"
+  "hash": "f3d6ed6933148918d07b016741c4ac2011015654c7895a8b08c4e99906d9c526"
 }

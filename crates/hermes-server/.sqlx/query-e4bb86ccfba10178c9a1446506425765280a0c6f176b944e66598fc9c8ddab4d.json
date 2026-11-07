@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, channel_id, author_id, content, reply_to_id, edited_at,\n                      deleted AS \"deleted: bool\", pinned AS \"pinned: bool\", kind\n               FROM messages WHERE channel_id = ? AND id > ? ORDER BY id LIMIT ?",
+  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM messages_fts f JOIN messages m ON m.id = f.rowid\n               WHERE messages_fts MATCH ?1 AND m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4\n               ORDER BY m.id DESC LIMIT ?5",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "id!",
         "ordinal": 0,
         "type_info": "Integer",
         "origin": {
@@ -101,10 +101,21 @@
             "name": "kind"
           }
         }
+      },
+      {
+        "name": "e2ee",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "e2ee"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 5
     },
     "nullable": [
       false,
@@ -115,8 +126,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "93ab6368ffe6f951977e8b963cd86dff7287a706a1d04b52010b7bab1353d7e5"
+  "hash": "e4bb86ccfba10178c9a1446506425765280a0c6f176b944e66598fc9c8ddab4d"
 }

@@ -443,6 +443,9 @@ pub struct SendMessageRequest {
     /// Own uploads that are not attached to a message yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<Id>,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
 }
 
 impl SendMessageRequest {
@@ -453,7 +456,11 @@ impl SendMessageRequest {
 /// `PATCH /channels/{id}/messages/{mid}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditMessageRequest {
+    #[serde(default)]
     pub content: String,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
 }
 
 /// `POST /channels/{id}/ack`.

@@ -300,6 +300,7 @@ pub async fn login(
 pub async fn logout(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<StatusCode> {
     db::auth::delete_session(&state.db.write, auth.user_id, auth.session_id).await?;
     state.gateway.revoke(&[auth.session_id]);
+    super::devices::revoke_sessions(&state, &[auth.session_id]).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -330,6 +331,7 @@ pub async fn delete_session(
 ) -> ApiResult<StatusCode> {
     if db::auth::delete_session(&state.db.write, auth.user_id, session_id).await? {
         state.gateway.revoke(&[session_id]);
+        super::devices::revoke_sessions(&state, &[session_id]).await?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(Error::not_found("session"))

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id, m.channel_id, m.author_id, m.content, m.reply_to_id, m.edited_at,\n                      m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind\n               FROM messages m\n               WHERE m.deleted = 0 AND m.author_id != ?1 AND m.id < ?4\n                 AND m.channel_id IN (SELECT value FROM json_each(?3))\n                 AND EXISTS (\n                   SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND (\n                     (mm.kind = 'user' AND mm.target_id = ?1)\n                     OR (mm.kind = 'role' AND mm.target_id IN (SELECT value FROM json_each(?2)))\n                     OR mm.kind IN ('everyone', 'here')))\n               ORDER BY m.id DESC LIMIT ?5",
+  "query": "SELECT id, channel_id, author_id, content, reply_to_id, edited_at,\n                      deleted AS \"deleted: bool\", pinned AS \"pinned: bool\", kind, e2ee\n               FROM messages WHERE channel_id = ? AND id > ? ORDER BY id LIMIT ?",
   "describe": {
     "columns": [
       {
@@ -101,10 +101,21 @@
             "name": "kind"
           }
         }
+      },
+      {
+        "name": "e2ee",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "messages",
+            "name": "e2ee"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 5
+      "Right": 3
     },
     "nullable": [
       false,
@@ -115,8 +126,9 @@
       true,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "52a05a604dd934c98686ca1ce3b1bb0b4e4a0ccda9fef8b16d5577463710ead0"
+  "hash": "a12ac1dc9a55b7aa1d612659b8a0dcbd1218a2689e446f466b061bb7bccfe4e7"
 }

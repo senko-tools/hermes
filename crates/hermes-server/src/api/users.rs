@@ -63,6 +63,7 @@ pub async fn change_password(
     let revoked = db::auth::delete_other_sessions(&mut tx, auth.user_id, auth.session_id).await?;
     tx.commit().await?;
     state.gateway.revoke(&revoked);
+    super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::debug!(user_id = %auth.user_id, revoked = revoked.len(), "password changed");
     Ok(StatusCode::NO_CONTENT)
 }

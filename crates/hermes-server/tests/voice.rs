@@ -175,10 +175,26 @@ async fn forwarding_rules() {
     assert_eq!(a.deliver(&b, 0).await, (5, Some(a_pid)));
     assert_eq!(a.recv_audio(100).await, None);
 
-    // Malformed packets are dropped.
-    a.conn.send_datagram(vec![0x21; 20].into()).unwrap();
-    a.conn.send_datagram(vec![0x11; 5].into()).unwrap();
+    // Malformed packets are dropped, and so are those of clients from before encryption.
+    a.conn.send_datagram(vec![0x11; 20].into()).unwrap();
+    a.conn.send_datagram(vec![0x21; 5].into()).unwrap();
     assert_eq!(b.recv_audio(300).await, None);
+
+    // Sealed voice keys go to the one member they are for, untouched.
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": "sealed" } }))
+        .await;
+    let key = b.recv_op("voice_key").await;
+    assert_eq!(key["d"]["from"], a_pid);
+    assert_eq!(key["d"]["key"], "sealed");
+    let huge = "x".repeat(hermes_proto::e2ee::MAX_VOICE_KEY_BYTES + 1);
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": huge } }))
+        .await;
+    a.send(json!({ "op": "voice_key", "d": { "to": 9999, "key": "nobody" } }))
+        .await;
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": "next" } }))
+        .await;
+    let key = b.recv_op("voice_key").await;
+    assert_eq!(key["d"]["key"], "next", "the oversized one was not relayed");
 
     // Self-muted senders are dropped.
     a.send(json!({ "op": "set_state", "d": { "self_mute": true, "self_deaf": false } }))

@@ -129,6 +129,7 @@ pub async fn update_user(
         );
     }
     state.gateway.revoke(&revoked);
+    super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::info!(%user_id, disabled, instance_admin, by = %auth.user_id, "admin changed a user");
     Ok(StatusCode::NO_CONTENT)
 }
