@@ -186,9 +186,23 @@ impl Shell {
 
     pub fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let home_badge = self.home_badge();
-        let home = rail_icon("home", self.selected == Selected::Home)
-            .bg(theme::app_icon_background())
-            .child(icon(assets::FEATHER, 28., theme::app_icon_feather()))
+        let home_selected = self.selected == Selected::Home;
+        let home = rail_icon("home", home_selected)
+            .bg(if home_selected {
+                theme::accent()
+            } else {
+                theme::selected()
+            })
+            .when(!home_selected, |d| d.hover(|d| d.bg(theme::hover())))
+            .child(icon(
+                assets::FEATHER,
+                28.,
+                if home_selected {
+                    theme::on_accent()
+                } else {
+                    theme::accent()
+                },
+            ))
             .children(
                 badge_element(home_badge)
                     .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
@@ -782,7 +796,7 @@ impl Shell {
             .flex_shrink_0()
             .items_center()
             .gap(px(2.))
-            .h(px(52.))
+            .h(px(theme::FOOTER_HEIGHT))
             .px(px(8.))
             .bg(theme::footer())
             .text_size(theme::small_size())

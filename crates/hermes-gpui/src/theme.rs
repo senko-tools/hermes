@@ -563,6 +563,8 @@ pub const ROW_HEIGHT: f32 = 34.0;
 pub const ROW_ICON: f32 = 20.0;
 /// The space name over its channels, and the header over the main panel next to it.
 pub const SIDEBAR_HEADER: f32 = 48.0;
+/// The user panel, and the chat input next to it.
+pub const FOOTER_HEIGHT: f32 = 52.0;
 pub const AVATAR: f32 = 40.0;
 pub const AVATAR_SMALL: f32 = 32.0;
 
@@ -689,8 +691,6 @@ colors! {
     row_connected_hover = |t| t.channel.connected_hover.0;
     scrim = |t| alpha(t.surface.deep.0, 0.7);
     scrim_strong = |t| alpha(t.surface.deep.0, 0.9);
-    app_icon_background = |_t| gpui_kit::rgb(0x46424e);
-    app_icon_feather = |_t| gpui_kit::rgb(0xe4e4ea);
 }
 
 /// The corner radii and the width of a row's state bar.
