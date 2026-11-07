@@ -1,0 +1,30 @@
+# Windows installer (PLAN.md section 18.1, Phase 7): `cargo packager --release` in this folder
+# (cargo-packager 0.11, a dev tool) builds dist/Hermes_<version>_x64-setup.exe, which the
+# release workflow renames to Hermes-Setup-<version>.exe. Installs per user (no admin
+# prompt) to %LOCALAPPDATA%\Programs\Hermes with a Start menu shortcut and an uninstaller, and
+# registers the hermes:// links so invite links open the app.
+name = "hermes"
+product-name = "Hermes"
+# Must equal the workspace version (a test checks it).
+version = "1.1.0"
+identifier = "tools.senko.hermes"
+publisher = "senko-tools"
+description = "Chat with spaces, text and voice channels, DMs and calls"
+homepage = "https://hermes.senko.tools"
+license-file = "../../LICENSE-GPL-3.0"
+category = "SocialNetworking"
+icons = ["assets/icons/hermes.ico", "assets/icons/icon-256.png"]
+formats = ["nsis"]
+out-dir = "../../dist"
+binaries-dir = "../../target/release"
+before-packaging-command = "cargo build --release -p hermes-gui -p hermes-tui"
+binaries = [
+  { path = "hermes", main = true },
+  { path = "hermes-tui", main = false },
+]
+deep-link-protocols = [{ schemes = ["hermes"] }]
+
+[nsis]
+installer-mode = "currentUser"
+installer-icon = "assets/icons/hermes.ico"
+compression = "lzma"

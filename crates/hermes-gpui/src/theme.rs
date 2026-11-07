@@ -71,6 +71,9 @@ pub fn on_accent() -> Rgba {
 pub fn speaking() -> Rgba {
     rgb(0x6fcf7f)
 }
+pub fn success_soft() -> Rgba {
+    rgba(0x6fcf7f40)
+}
 pub fn danger() -> Rgba {
     rgb(0xe06c75)
 }

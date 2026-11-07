@@ -22,7 +22,12 @@ impl Shell {
 
     /// Closes the top dialog or menu. `false` if none is open.
     fn close_top(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> bool {
-        if self.viewer.take().is_some() || self.menu.take().is_some() {
+        if self.viewer.take().is_some()
+            || self.volume_menu.take().is_some()
+            || self.share_menu.take().is_some()
+            || self.network_open.take().is_some()
+            || self.menu.take().is_some()
+        {
             return true;
         }
         if self.confirm.take().is_some() || self.form.take().is_some() {

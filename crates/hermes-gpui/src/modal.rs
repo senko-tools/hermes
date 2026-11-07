@@ -80,6 +80,9 @@ impl Shell {
         out.extend(self.render_form(cx));
         out.extend(self.render_new_dm(cx));
         out.extend(self.render_viewer(cx));
+        out.extend(self.render_network(cx));
+        out.extend(self.render_volume_menu(cx));
+        out.extend(self.render_share_menu(cx));
         out.extend(self.render_confirm(cx));
         out
     }

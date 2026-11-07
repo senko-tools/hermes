@@ -1703,3 +1703,25 @@ Replaces the layout part of the entry above; `docs/gpui-migration.md` has the cu
   from the executable's resources. Approved by the developer. `hermes-gpui` also uses `hermes-audio`.
 - **Why:** the shell looked small and compact, the dropdown looked off, mouse down felt too quick, and
   the top sidebar item sat too close to the window's edge without a title bar.
+
+## 2026-11-07: gpui client: a header again, and how share video and the tray work
+
+Developer's decisions while the client gets everything `hermes-gui` has. `hermes-gpui` replaces
+`hermes-gui` once it works, taking its crate name. Nothing else about the iced client matters until then.
+
+- **Header:** a bar over the main panel returns, without a title: it drags the window and holds the
+  page's buttons and fields and the window buttons, so the native title bar is gone again. The title
+  stays set for the taskbar. The window's minimum size is 720x480: the rail, a narrow sidebar and a
+  usable chat fit, and smaller windows only get worse.
+- **Share video:** decoded pictures become BGRA images on the decoder thread (scaled down by whole
+  steps when the tile is small) and the shell frees each image it replaces with `Window::drop_image`.
+  gpui then makes a new atlas texture for most frames, which costs little. Measured over 30 s between
+  two debug clients at 1080p: GPU memory stayed at 86 MB. A patched renderer is not needed so far.
+- **Tray:** gpui cannot hide a window, so `desktop/window.rs` calls `ShowWindowAsync` with the window's
+  own handle. Dependency `raw-window-handle =0.6.2` for that (already in the lockfile through gpui),
+  approved by the developer.
+- **Voice:** a join in progress blocks further joins (the old Join voice spam). `Core::voice_link`
+  exposes the QUIC connection's numbers for a network panel with live graphs, opened from the voice
+  panel's connection line.
+- **Friend system and split panes:** after everything else. The Friends page lists message requests
+  and people from shared spaces until then. Pane keybinds stay valid config but do nothing.

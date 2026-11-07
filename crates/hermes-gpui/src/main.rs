@@ -14,12 +14,15 @@ mod add_instance;
 mod assets;
 mod channel;
 mod collapsed;
+mod desktop;
+mod desktop_shell;
 mod drag;
 #[cfg(test)]
 mod fixtures;
 mod form;
 mod friends;
 mod images;
+mod keybinds;
 mod keys;
 mod markup;
 mod menu;
@@ -27,7 +30,9 @@ mod menu_entries;
 mod modal;
 mod new_dm;
 mod open;
+mod ptt;
 mod rows;
+mod screen;
 mod shell;
 mod sidebar;
 mod single_instance;
@@ -126,6 +131,7 @@ fn main() -> ExitCode {
     let _guard = runtime.enter();
     let handle = runtime.handle().clone();
     let warning = loaded.warnings.first().cloned();
+    let loaded_start_minimized = loaded.config.general.start_minimized;
     let (core, events) = Core::new(loaded.config, options);
     if let Err(err) = core.watch_config() {
         tracing::warn!("config hot reload unavailable: {err}");
@@ -133,6 +139,7 @@ fn main() -> ExitCode {
     core.start();
 
     let link = cli.link;
+    let start_minimized = loaded_start_minimized;
     gpui_kit::application()
         .with_assets(assets::Assets)
         .run(move |cx| {
@@ -160,7 +167,26 @@ fn main() -> ExitCode {
                 }),
                 ..Default::default()
             };
+            // The tray and the global keys live on this (the event loop's) thread.
+            let tray = match desktop::tray::Tray::new() {
+                Ok(tray) => Some(tray),
+                Err(err) => {
+                    tracing::warn!("no tray icon: {err}");
+                    None
+                }
+            };
+            let global_keys = match ptt::GlobalKeys::new() {
+                Ok(keys) => Some(keys),
+                Err(err) => {
+                    tracing::warn!("no global keys: {err}");
+                    None
+                }
+            };
+            let start_hidden = start_minimized && tray.is_some();
             let boot = Boot {
+                tray,
+                global_keys,
+                start_hidden,
                 core,
                 events,
                 runtime: handle,

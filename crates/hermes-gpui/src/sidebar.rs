@@ -493,9 +493,18 @@ impl Shell {
                     ))
                     .child(div().flex_1().min_w_0().truncate().child(name.clone()))
                     .children(badge_element(badge))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select(inst.clone(), id, window, cx);
-                    }));
+                    .on_click(cx.listener(
+                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                            this.select(inst.clone(), id, window, cx);
+                            let join_on =
+                                crate::voice::JoinOn::from_config(&this.config.voice.join_on);
+                            let joins = join_on == crate::voice::JoinOn::SingleClick
+                                || event.click_count() >= 2;
+                            if kind == ChannelKind::Voice && joins {
+                                this.join_voice(inst.clone(), id, cx);
+                            }
+                        },
+                    ));
                 let element = self.with_drag(element, drag, name, cx);
                 self.with_menu(element, target, cx).into_any_element()
             }

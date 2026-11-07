@@ -99,6 +99,10 @@ impl Shell {
                 self.open_form_profile(inst, window, cx);
             }
 
+            (Target::Channel(inst, channel), Action::JoinVoice) => {
+                self.join_voice(inst, channel, cx);
+            }
+            (Target::Me(_), Action::OpenSettings) => self.open_settings(window, cx),
             (Target::Me(_), a) if a.status().is_some() => {
                 core.set_presence(a.status().unwrap_or(PresenceStatus::Online));
             }

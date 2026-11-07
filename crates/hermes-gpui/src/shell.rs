@@ -1,15 +1,16 @@
 //! The root view: the icon rail, the sidebar next to it and the main panel under its header. It
 //! owns the state; each feature's module adds its methods.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, Context, MouseButton, Subscription, Window, WindowControlArea,
-    div, px,
+    AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
+    WindowControlArea, div, px,
 };
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
@@ -22,12 +23,16 @@ use crate::add_instance::AddInstance;
 use crate::assets::{self, icon};
 use crate::channel::{ChatView, Viewer};
 use crate::collapsed::Collapsed;
+use crate::desktop::tray::Tray;
 use crate::form::Form;
 use crate::images::Images;
 use crate::menu::OpenMenu;
 use crate::menu_entries::{Action, Target};
 use crate::new_dm::NewDm;
+use crate::ptt::GlobalKeys;
+use crate::screen::{Latest, Share, capture::Capture};
 use crate::single_instance::{self, Endpoint};
+use crate::voice::{Call, NetHistory, VolumeMenu};
 use crate::{theme, watchdog};
 
 /// What `main` hands to the shell.
@@ -38,6 +43,9 @@ pub struct Boot {
     pub endpoint: Endpoint,
     pub link: Option<String>,
     pub warning: Option<String>,
+    pub tray: Option<Tray>,
+    pub global_keys: Option<GlobalKeys>,
+    pub start_hidden: bool,
 }
 
 /// A channel of an instance.
@@ -107,6 +115,46 @@ pub struct Shell {
     /// Local UTC offset for timestamps, read once at startup.
     pub utc_offset: i64,
     pub next_upload: u64,
+    /// A join in progress: further requests wait for it.
+    pub joining: Option<ChannelKey>,
+    pub headphones_hint_shown: bool,
+    /// Microphone level in dBFS while the meter runs.
+    pub input_level: f32,
+    /// The push-to-talk key is held.
+    pub ptt_down: bool,
+    /// What the push-to-talk thread watches.
+    pub ptt_keys: Arc<Mutex<Vec<u16>>>,
+    /// A ringing incoming call (the banner).
+    pub call: Option<Call>,
+    pub volume_menu: Option<VolumeMenu>,
+    /// The voice connection's last two minutes.
+    pub net: NetHistory,
+    /// The network details are open, where they were asked for.
+    pub network_open: Option<Point<Pixels>>,
+    /// The size of the voice room's tile area, as last drawn.
+    pub room_area: Size<Pixels>,
+    /// The share menu is open, where it was asked for.
+    pub share_menu: Option<Point<Pixels>>,
+    /// The screens that can be shared, primary first.
+    pub screen_names: Vec<String>,
+    /// My running screen share capture.
+    pub capture: Option<Capture>,
+    /// The latest picture of each screen share I watch.
+    pub screens: HashMap<ChannelKey, Share>,
+    /// The screen share shown alone in the voice room (clicked to enlarge).
+    pub enlarged_share: Option<ChannelKey>,
+    /// The screen shares I chose to watch (forgotten when the share or my call ends). They are
+    /// received only while their voice room shows, so a hidden room costs nothing.
+    pub watching_shares: HashSet<ChannelKey>,
+    /// What the core was last told to receive.
+    pub watched_now: Vec<Id>,
+    pub screen_latest: Option<Arc<Latest>>,
+    pub tray: Option<Tray>,
+    pub global_keys: Option<GlobalKeys>,
+    /// The window is shown (not hidden in the tray).
+    pub window_visible: bool,
+    /// The window's scale factor, as last drawn.
+    pub scale: f32,
     /// The title last given to the window.
     title: String,
     /// Give the keyboard to the open chat's message box at the next draw.
@@ -125,6 +173,9 @@ impl Shell {
             endpoint,
             link,
             warning,
+            tray,
+            global_keys,
+            start_hidden,
         } = boot;
         let config = core.config();
         let collapsed = core
@@ -162,6 +213,28 @@ impl Shell {
             viewer: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
+            joining: None,
+            headphones_hint_shown: false,
+            input_level: -60.0,
+            ptt_down: false,
+            ptt_keys: Arc::default(),
+            call: None,
+            volume_menu: None,
+            net: NetHistory::default(),
+            network_open: None,
+            room_area: crate::voice::no_area(),
+            share_menu: None,
+            screen_names: Vec::new(),
+            capture: None,
+            screens: HashMap::new(),
+            enlarged_share: None,
+            watching_shares: HashSet::new(),
+            watched_now: Vec::new(),
+            screen_latest: None,
+            tray,
+            global_keys,
+            window_visible: !start_hidden,
+            scale: window.scale_factor(),
             title: String::new(),
             focus_composer: false,
             focused: true,
@@ -170,6 +243,9 @@ impl Shell {
         this.start_event_pump(events, cx);
         this.start_link_listener(endpoint, cx);
         this.start_heartbeat(cx);
+        this.start_net_sampler(cx);
+        this.start_screen_decoder(cx);
+        this.start_desktop(start_hidden, window, cx);
         if let Some(warning) = warning {
             this.show_status(format!("config: {warning}"), Level::Warning, cx);
         }
@@ -294,12 +370,28 @@ impl Shell {
     fn on_core(&mut self, event: CoreEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             CoreEvent::ConfigReloaded { warnings } => {
-                self.config = self.core.config();
+                self.apply_config(cx);
                 if let Some(warning) = warnings.into_iter().next() {
                     self.warn(format!("config: {warning}"), cx);
                 }
             }
             CoreEvent::Error(text) => self.error(text, cx),
+            CoreEvent::Notification { inst, notification } => {
+                self.notify(inst, notification, window, cx);
+            }
+            CoreEvent::IncomingCall {
+                inst,
+                channel,
+                caller,
+            } => self.incoming_call(inst, channel, caller, cx),
+            CoreEvent::CallRingStopped { inst, channel } => self.call_ring_stopped(&inst, channel),
+            CoreEvent::KeyframeRequested => {
+                if let Some(capture) = &self.capture {
+                    capture.request_keyframe();
+                }
+            }
+            CoreEvent::VoiceStatus(_) => self.update_tray_voice(),
+            CoreEvent::InputLevel(db) => self.input_level = db,
             CoreEvent::StoreChanged { inst, what } => {
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
@@ -312,8 +404,12 @@ impl Shell {
                 self.load_avatars(cx);
             }
             // The views read the store directly; the other events only trigger a redraw.
-            _ => {}
+            CoreEvent::InstanceStatus { .. }
+            | CoreEvent::Speaking { .. }
+            | CoreEvent::ScreenShares => {}
         }
+        self.sync_screens(window);
+        self.update_badge();
     }
 
     fn window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
@@ -398,6 +494,25 @@ impl Shell {
         tracing::warn!("{text}");
         self.show_status(text, Level::Error, cx);
     }
+
+    /// Writes a setting to `config.toml` and applies it.
+    pub fn persist(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
+        if let Err(err) = self.core.set_setting(key, value) {
+            self.error(format!("setting not saved: {err}"), cx);
+        }
+        self.apply_config(cx);
+    }
+
+    /// The config changed: everything that follows it.
+    pub fn apply_config(&mut self, cx: &mut Context<Self>) {
+        self.config = self.core.config();
+        self.update_ptt_keys();
+        self.register_global_keys(cx);
+        cx.notify();
+    }
+
+    /// Opens the settings. (Comes with the settings step.)
+    pub fn open_settings(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     /// Puts text on the clipboard; `what` names it for the status line.
     pub fn copy(&mut self, text: String, what: &str, cx: &mut Context<Self>) {
@@ -578,8 +693,11 @@ impl Shell {
     }
 
     /// The page's buttons and fields in the header. (More come with search and the member list.)
-    fn render_header_controls(&self, _cx: &mut Context<Self>) -> Vec<AnyElement> {
-        Vec::new()
+    fn render_header_controls(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        self.voice_header_button(cx)
+            .into_iter()
+            .map(|b| div().mr(px(8.)).child(b).into_any_element())
+            .collect()
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -633,6 +751,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        self.scale = window.scale_factor();
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);
@@ -682,6 +801,7 @@ impl Render for Shell {
                                     .flex_col()
                                     .size_full()
                                     .child(header)
+                                    .children(self.render_call_banner(cx))
                                     .children(self.render_status(cx))
                                     .child(div().flex_1().min_h_0().child(main)),
                             ),

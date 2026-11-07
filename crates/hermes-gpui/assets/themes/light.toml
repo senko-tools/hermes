@@ -1,0 +1,103 @@
+# Built-in light theme (PLAN.md section 15.5). Warm paper with a deep gold accent.
+
+[general]
+background = "#fbf9f6"
+border = "#e3ddd5"
+horizontal_rule = "#ebe6df"
+unread_indicator = "#1f1c24"
+scrollbar = "#cfc8bf"
+
+[text]
+primary = "#28242e"
+secondary = "#5c5560"
+tertiary = "#8f8790"
+success = "#2f8a4a"
+error = "#c8414b"
+warning = "#a86a0e"
+info = "#2f68c4"
+link = "#1f63c8"
+mention_bg = "#c47b1a24"
+code_bg = "#f1ece5"
+
+[buttons.primary]
+background = "#b86f12"
+background_hover = "#9e5e0c"
+text = "#ffffff"
+
+[buttons.secondary]
+background = "#ebe5dd"
+background_hover = "#e0d9cf"
+text = "#28242e"
+
+[buttons.danger]
+background = "#c8414b"
+background_hover = "#a9333c"
+text = "#ffffff"
+
+[sidebar]
+background = "#f3efe9"
+selected = "#e4ddd3"
+hover = "#ebe6de"
+
+[pane]
+header_bg = "#fbf9f6"
+focused_border = "#b86f12"
+
+[voice]
+speaking_ring = "#2f8a4a"
+muted = "#c8414b"
+
+[presence]
+online = "#2f8a4a"
+idle = "#c28412"
+dnd = "#c8414b"
+offline = "#8f8790"
+
+[roles]
+default_color = "#28242e"
+
+# --- Sections added later (docs/DECISIONS.md). A theme file that leaves them out gets them
+# --- from its own keys above, so older themes keep their look.
+
+# Background levels, darkest to lightest.
+[surface]
+deep = "#d6d2cd"        # dimmed window behind dialogs
+footer = "#f3efe9"      # voice and user panels at the bottom of the sidebar
+main = "#fbf9f6"        # chat and page content
+sidebar = "#f3efe9"     # sidebar, member list, settings navigation
+raised = "#f1ece5"      # inputs, composer, cards, code
+overlay = "#f3efe9"     # menus, tooltips
+hover = "#ebe6de"       # hovered rows and buttons
+
+[accent]
+base = "#b86f12"        # switches, focus lines, selected icons
+highlight = "#9e5e0c"   # hovered accent things, the space name
+muted = "#cf9f62"
+glow = "#b86f1226"      # see-through tint for selections
+focus = "#b86f12"       # border of a focused input
+
+[icons]
+default = "#5c5560"
+active = "#28242e"
+
+# Sidebar row states: the bar on the left edge, the row background, the background on hover.
+[channel]
+selected_border = "#00000000"
+selected_bg = "#e4ddd3"
+selected_hover = "#e4ddd3"
+unread_border = "#1f1c24"
+unread_bg = "#00000000"
+unread_hover = "#ebe6de"
+mention_border = "#1f1c24"
+mention_bg = "#00000000"
+mention_hover = "#ebe6de"
+connected_border = "#2f8a4a"   # the voice channel or call you are in
+connected_bg = "#2f8a4a1f"
+connected_hover = "#2f8a4a33"
+
+# Corner radii and the width of the row state bar, in pixels.
+[shape]
+radius = 6                    # buttons, inputs, menus
+row_radius = 6                # rows in lists
+radius_large = 10
+indicator_width = 3

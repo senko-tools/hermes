@@ -4393,6 +4393,7 @@ dependencies = [
  "notify",
  "notify-rust",
  "openh264",
+ "raw-window-handle",
  "rfd",
  "serde",
  "tokio",

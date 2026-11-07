@@ -25,6 +25,8 @@ image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }
 notify.workspace = true
 notify-rust.workspace = true
 openh264.workspace = true
+# The window handle, to hide the window to the tray (gpui cannot; approved 2026-11-07).
+raw-window-handle = "=0.6.2"
 rfd.workspace = true
 serde.workspace = true
 tokio.workspace = true
@@ -52,6 +54,7 @@ windows = { workspace = true, features = [
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_System_Variant",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
