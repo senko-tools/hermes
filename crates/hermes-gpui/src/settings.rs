@@ -821,7 +821,7 @@ impl Shell {
             Remote::Idle | Remote::Loading => device_rows.push(muted("Loading…")),
             Remote::Failed(err) => device_rows.push(
                 div()
-                    .text_size(theme::small_size())
+                    .text_size(theme::secondary_size())
                     .text_color(theme::danger())
                     .child(format!("Could not load: {err}"))
                     .into_any_element(),
@@ -1576,13 +1576,13 @@ impl Shell {
                             .flex_col()
                             .child(
                                 div()
-                                    .text_size(theme::text_size() + px(2.))
+                                    .text_size(theme::heading_size())
                                     .font_weight(FontWeight::MEDIUM)
                                     .child("Hermes"),
                             )
                             .child(
                                 div()
-                                    .text_size(theme::tiny_size())
+                                    .text_size(theme::caption_size())
                                     .text_color(theme::text_tertiary())
                                     .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
                             ),
@@ -1590,7 +1590,7 @@ impl Shell {
             )
             .child(
                 div()
-                    .text_size(theme::small_size())
+                    .text_size(theme::secondary_size())
                     .text_color(theme::text_secondary())
                     .child(
                         "A self-hostable chat with spaces, text and voice channels, DMs and \
@@ -1650,7 +1650,7 @@ pub fn wrap() -> gpui_kit::Div {
 
 pub fn muted(text: impl Into<SharedString>) -> AnyElement {
     div()
-        .text_size(theme::small_size())
+        .text_size(theme::secondary_size())
         .text_color(theme::text_tertiary())
         .child(text.into())
         .into_any_element()
@@ -1671,9 +1671,9 @@ pub fn nav_item(
         .gap(px(8.))
         .h(px(34.))
         .px(px(8.))
-        .rounded(px(4.))
+        .rounded(theme::row_radius())
         .cursor_pointer()
-        .text_size(theme::small_size())
+        .text_size(theme::body_size())
         .text_color(if selected {
             theme::text()
         } else {
@@ -1722,7 +1722,7 @@ pub fn frame(
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(theme::tiny_size())
+                                .text_size(theme::caption_size())
                                 .text_color(theme::text_tertiary())
                                 .child(title),
                         ),
@@ -1745,7 +1745,7 @@ pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> An
         .overflow_y_scroll()
         .child(
             div()
-                .text_size(theme::text_size() + px(4.))
+                .text_size(theme::heading_size())
                 .font_weight(FontWeight::MEDIUM)
                 .child(SharedString::from(title.to_owned())),
         )
@@ -1774,7 +1774,7 @@ pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> An
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme::tiny_size())
+                        .text_size(theme::caption_size())
                         .text_color(theme::text_tertiary())
                         .child(title.to_uppercase()),
                 )
@@ -1809,13 +1809,13 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 .gap(px(2.))
                 .child(
                     div()
-                        .text_size(theme::small_size())
+                        .text_size(theme::body_size())
                         .child(SharedString::from(name.to_owned())),
                 )
                 .when(!hint.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_size(theme::tiny_size())
+                            .text_size(theme::secondary_size())
                             .text_color(theme::text_tertiary())
                             .child(SharedString::from(hint.to_owned())),
                     )
@@ -1981,7 +1981,7 @@ fn theme_card(
             .items_center()
             .justify_center()
             .size_full()
-            .text_size(theme::tiny_size())
+            .text_size(theme::caption_size())
             .text_color(theme::danger())
             .child("not loaded"),
     };
@@ -2021,7 +2021,7 @@ fn theme_card(
                 .when(chosen, |d| {
                     d.child(
                         div()
-                            .text_size(theme::tiny_size())
+                            .text_size(theme::caption_size())
                             .text_color(theme::accent())
                             .child("in use"),
                     )
@@ -2051,7 +2051,7 @@ fn key_caps(combo: &str) -> AnyElement {
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::raised())
-                .text_size(theme::tiny_size())
+                .text_size(theme::caption_size())
                 .child(key)
         }))
         .into_any_element()

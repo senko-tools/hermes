@@ -429,7 +429,7 @@ impl Shell {
                 }
                 body.push(
                     div()
-                        .text_size(theme::tiny_size())
+                        .text_size(theme::caption_size())
                         .text_color(theme::text_tertiary())
                         .child(account.host.display())
                         .into_any_element(),
@@ -474,7 +474,7 @@ impl Shell {
                 if !can_register {
                     body.push(
                         div()
-                            .text_size(theme::tiny_size())
+                            .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
                             .child("This instance only accepts new accounts with an invite link.")
                             .into_any_element(),
@@ -519,7 +519,7 @@ fn fingerprint_line(name: &'static str, value: String) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(2.))
-        .text_size(theme::tiny_size())
+        .text_size(theme::caption_size())
         .child(div().text_color(theme::text_tertiary()).child(name))
         .child(SharedString::from(value))
         .into_any_element()
@@ -538,7 +538,7 @@ fn tab_button(
         .px(px(12.))
         .py(px(6.))
         .rounded(px(4.))
-        .text_size(theme::small_size())
+        .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected && enabled, |d| {
             d.cursor_pointer().hover(|d| d.bg(theme::hover()))

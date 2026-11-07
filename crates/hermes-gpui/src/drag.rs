@@ -45,7 +45,7 @@ impl gpui_kit::Render for Ghost {
             .rounded(crate::theme::px(4.))
             .bg(crate::theme::selected())
             .text_color(crate::theme::text())
-            .text_size(crate::theme::small_size())
+            .text_size(crate::theme::secondary_size())
             .font_family(crate::theme::font())
             .child(self.0.clone())
     }

@@ -30,7 +30,7 @@ fn bare_row(id: impl Into<SharedString>, selected: bool, height: f32) -> Statefu
         .h(px(height))
         .px(px(8.))
         .rounded(theme::row_radius())
-        .text_size(theme::text_size())
+        .text_size(theme::body_size())
         .cursor_pointer()
         .text_color(if selected {
             theme::text()
@@ -58,7 +58,7 @@ fn count_badge(count: u32) -> Div {
         .rounded(px(9.))
         .bg(theme::danger())
         .text_color(theme::on_accent())
-        .text_size(theme::tiny_size())
+        .text_size(theme::caption_size())
         .child(count.to_string())
 }
 
@@ -134,7 +134,7 @@ fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .size(px(theme::RAIL_ICON))
         .rounded(px(if selected { 14. } else { theme::RAIL_ICON / 2. }))
         .cursor_pointer()
-        .text_size(theme::text_size())
+        .text_size(theme::body_size())
 }
 
 /// The two letters on a space's rail icon.
@@ -317,7 +317,7 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::hover()))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_size(theme::text_size())
+                    .text_size(theme::body_size())
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(icon(assets::CHEVRON_DOWN, 18., theme::text_secondary()))
                     .on_click(cx.listener(
@@ -366,7 +366,7 @@ impl Shell {
             let id = SharedString::from(format!("notice-{inst}"));
             let target = Target::Instance(inst.clone());
             let element = row(id, false, theme::ROW_HEIGHT)
-                .text_size(theme::small_size())
+                .text_size(theme::secondary_size())
                 .text_color(if logged_out {
                     theme::accent()
                 } else {
@@ -490,7 +490,7 @@ impl Shell {
                     .h(px(28.))
                     .mt(px(10.))
                     .cursor_pointer()
-                    .text_size(theme::tiny_size())
+                    .text_size(theme::caption_size())
                     .text_color(theme::text_tertiary())
                     .hover(|d| d.text_color(theme::text_secondary()))
                     .child(icon(
@@ -600,7 +600,7 @@ impl Shell {
                 inst, channel, user, name, muted, deafened, speaking, me, nested, dm, cx,
             ),
             Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
-                .text_size(theme::small_size())
+                .text_size(theme::body_size())
                 .child(icon(assets::PLUS, 18., theme::text_tertiary()))
                 .child(if many {
                     format!("New message on {inst}")
@@ -799,7 +799,7 @@ impl Shell {
             .h(px(theme::FOOTER_HEIGHT))
             .px(px(8.))
             .bg(theme::footer())
-            .text_size(theme::small_size())
+            .text_size(theme::body_size())
             .child(me)
             .children(self.render_me_buttons(cx))
     }
@@ -814,7 +814,7 @@ fn section_heading_owned(text: String) -> AnyElement {
         .flex_shrink_0()
         .px(px(8.))
         .py(px(6.))
-        .text_size(theme::tiny_size())
+        .text_size(theme::caption_size())
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()

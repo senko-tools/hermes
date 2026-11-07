@@ -149,7 +149,7 @@ impl Default for Font {
         Font {
             family: "JetBrainsMono Nerd Font".into(),
             mono_family: "JetBrainsMono Nerd Font".into(),
-            size: 13,
+            size: 11,
             ui_scale: 1.0,
         }
     }

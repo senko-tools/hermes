@@ -319,7 +319,7 @@ impl Shell {
                         .gap(px(8.))
                         .child(
                             div()
-                                .text_size(theme::text_size())
+                                .text_size(theme::body_size())
                                 .font_weight(FontWeight::MEDIUM)
                                 .child(title),
                         )
@@ -328,7 +328,7 @@ impl Shell {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_size(theme::tiny_size())
+                                .text_size(theme::caption_size())
                                 .text_color(theme::text_tertiary())
                                 .child(scope),
                         )
@@ -346,7 +346,7 @@ impl Shell {
         let mut list: Vec<AnyElement> = Vec::new();
         let muted = |text: String| {
             div()
-                .text_size(theme::small_size())
+                .text_size(theme::secondary_size())
                 .text_color(theme::text_tertiary())
                 .child(text)
                 .into_any_element()
@@ -362,7 +362,7 @@ impl Shell {
             Remote::Loading => list.push(muted("Loading…".to_owned())),
             Remote::Failed(err) => list.push(
                 div()
-                    .text_size(theme::small_size())
+                    .text_size(theme::secondary_size())
                     .text_color(theme::danger())
                     .child(format!("Could not load: {err}"))
                     .into_any_element(),
@@ -522,25 +522,25 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
                 .gap(px(8.))
                 .child(
                     div()
-                        .text_size(theme::small_size())
+                        .text_size(theme::secondary_size())
                         .font_weight(FontWeight::BOLD)
                         .child(SharedString::from(author)),
                 )
                 .child(
                     div()
                         .flex_1()
-                        .text_size(theme::tiny_size())
+                        .text_size(theme::caption_size())
                         .text_color(theme::text_tertiary())
                         .child(when),
                 )
                 .child(
                     div()
-                        .text_size(theme::tiny_size())
+                        .text_size(theme::caption_size())
                         .text_color(theme::text_secondary())
                         .child(place),
                 ),
         )
-        .child(div().text_size(theme::small_size()).child(text))
+        .child(div().text_size(theme::secondary_size()).child(text))
         .into_any_element()
 }
 

@@ -1105,7 +1105,7 @@ impl Shell {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(theme::small_size())
+                                .text_size(theme::secondary_size())
                                 .text_color(theme::warning())
                                 .child("You have unsaved changes."),
                         )
@@ -1236,7 +1236,7 @@ impl Shell {
                     .child(div().flex_1().min_w_0().truncate().child(role.name.clone()))
                     .child(
                         div()
-                            .text_size(theme::tiny_size())
+                            .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
                             .child(count.to_string()),
                     )
@@ -1295,7 +1295,7 @@ impl Shell {
         if !editable {
             col.push(
                 div()
-                    .text_size(theme::tiny_size())
+                    .text_size(theme::caption_size())
                     .text_color(theme::warning())
                     .child(
                         "You can only edit roles below your own highest role, with Manage roles.",
@@ -1662,7 +1662,7 @@ impl Shell {
                     .child(
                         div()
                             .flex_1()
-                            .text_size(theme::small_size())
+                            .text_size(theme::secondary_size())
                             .child(format!("Overrides for {role_name}")),
                     )
                     .when(edit_overrides && ov.is_some(), |d| {
@@ -1764,7 +1764,7 @@ impl Shell {
                             .child(
                                 div()
                                     .truncate()
-                                    .text_size(theme::tiny_size())
+                                    .text_size(theme::caption_size())
                                     .text_color(theme::text_tertiary())
                                     .child(format!("@{}", m.user.username)),
                             ),
@@ -2153,7 +2153,7 @@ impl Shell {
                             .child(
                                 div()
                                     .font_family(theme::mono_font())
-                                    .text_size(theme::small_size())
+                                    .text_size(theme::secondary_size())
                                     .child(invite.code.clone()),
                             )
                             .child(muted(format!("{uses} · {expires} · by {creator}"))),
@@ -2223,7 +2223,7 @@ impl Shell {
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .child(div().text_size(theme::small_size()).child(format!(
+                            .child(div().text_size(theme::secondary_size()).child(format!(
                                 "{} (@{})",
                                 ban.user.name(),
                                 ban.user.username
@@ -2296,7 +2296,7 @@ impl Shell {
                                 div()
                                     .flex_shrink_0()
                                     .w(px(130.))
-                                    .text_size(theme::tiny_size())
+                                    .text_size(theme::caption_size())
                                     .text_color(theme::text_tertiary())
                                     .child(time::format(
                                         entry.created_at,
@@ -2304,7 +2304,7 @@ impl Shell {
                                         self.utc_offset,
                                     )),
                             )
-                            .child(div().text_size(theme::small_size()).child(text)),
+                            .child(div().text_size(theme::secondary_size()).child(text)),
                     )
                     .when(!details.is_empty(), |d| {
                         d.child(div().pl(px(138.)).child(muted(details)))
@@ -2360,7 +2360,7 @@ impl Shell {
 
 fn strong(text: String) -> AnyElement {
     div()
-        .text_size(theme::text_size())
+        .text_size(theme::body_size())
         .font_weight(FontWeight::MEDIUM)
         .child(text)
         .into_any_element()
@@ -2377,7 +2377,7 @@ fn list_row(id: String, selected: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
         .px(px(8.))
         .rounded(px(4.))
         .cursor_pointer()
-        .text_size(theme::small_size())
+        .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
 }
@@ -2402,7 +2402,7 @@ fn side_list(title: &str, actions: Option<AnyElement>, rows: Vec<AnyElement>) ->
                     div()
                         .flex_1()
                         .px(px(4.))
-                        .text_size(theme::tiny_size())
+                        .text_size(theme::caption_size())
                         .text_color(theme::text_tertiary())
                         .child(title.to_uppercase()),
                 )
@@ -2453,7 +2453,7 @@ fn hint_panel(title: &'static str, text: &'static str) -> AnyElement {
         .p(px(24.))
         .child(
             div()
-                .text_size(theme::small_size())
+                .text_size(theme::secondary_size())
                 .text_color(theme::text_secondary())
                 .child(title),
         )

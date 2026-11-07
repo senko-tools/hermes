@@ -15,7 +15,7 @@ fn heading(text: String) -> AnyElement {
     div()
         .mt(px(20.))
         .mb(px(6.))
-        .text_size(theme::tiny_size())
+        .text_size(theme::caption_size())
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()
@@ -109,7 +109,7 @@ impl Shell {
             content.push(
                 div()
                     .mt(px(20.))
-                    .text_size(theme::text_size())
+                    .text_size(theme::body_size())
                     .text_color(theme::text_tertiary())
                     .child("Nobody here yet. Add an instance to get started.")
                     .into_any_element(),
@@ -165,11 +165,11 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(theme::text_size()).child(name))
+                    .child(div().text_size(theme::body_size()).child(name))
                     .child(
                         div()
                             .truncate()
-                            .text_size(theme::small_size())
+                            .text_size(theme::secondary_size())
                             .text_color(theme::text_tertiary())
                             .child(detail),
                     ),

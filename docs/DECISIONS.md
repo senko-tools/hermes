@@ -1741,3 +1741,7 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
 ## 2026-11-07: window tests for hermes-gpui
 **What changed:** `hermes-gpui` has a new dev-dependency, `gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }`, the gpui the kit already pins with its test platform on. `the_mouse_wheel_over_a_chat_does_not_panic` runs the real `Shell` in a headless window against a real server.
 **Why:** the wheel crash came from a borrow only a real event dispatch shows. The test fails with the same panic when the fix is taken out. The kit's own `test-support` feature would be simpler, but it mentions the optional `gpui-fast`, which makes Cargo resolve it and would force `taffy` from 0.15.1 down to 0.15.0 in the app. Tests that use real I/O need `cx.executor().allow_parking()`.
+
+## 2026-11-07: smaller default text and named sizes
+**What changed:** `font.size` now defaults to 11, which `hermes-gpui` draws at 14 px, with secondary text at 13 and captions at 12. Before, it was 13 (16 px, chosen to be close to Discord). Text uses four roles (`heading_size`, `body_size`, `secondary_size`, `caption_size`) instead of three sizes with one-off additions.
+**Why:** the developer tried the client, found the default too big and the sizes inconsistent, and chose 14 px. A saved `font.size` is not touched. The default lives in `hermes-client-core`, so a new iced install would start at 11 px; that client is on its way out.

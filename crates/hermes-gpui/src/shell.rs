@@ -783,7 +783,7 @@ impl Shell {
             .rounded(px(4.))
             .cursor_pointer()
             .bg(crate::theme::raised())
-            .text_size(crate::theme::tiny_size())
+            .text_size(crate::theme::caption_size())
             .text_color(theme::text_tertiary())
             .child(icon(assets::SEARCH, 14., theme::text_tertiary()))
             .child(div().flex_1().truncate().child("Find anything"))
@@ -872,7 +872,7 @@ impl Shell {
                 .bg(theme::sidebar())
                 .border_b_1()
                 .border_color(theme::border())
-                .text_size(theme::small_size())
+                .text_size(theme::secondary_size())
                 .text_color(color)
                 .child(div().flex_1().min_w_0().child(status.text.clone()))
                 .child(
@@ -970,7 +970,7 @@ impl Shell {
                 .py(px(6.))
                 .bg(theme::accent_soft())
                 .cursor_pointer()
-                .text_size(crate::theme::small_size())
+                .text_size(crate::theme::secondary_size())
                 .child(div().flex_1().child(format!(
                     "Hermes {} is available: click to open it",
                     update.version
@@ -1151,7 +1151,7 @@ impl Render for Shell {
             .font_family(crate::theme::font())
             .bg(theme::background())
             .text_color(theme::text())
-            .text_size(crate::theme::text_size())
+            .text_size(crate::theme::body_size())
             // After any element has seen the release: it bubbles from them up to here.
             .on_mouse_up(
                 MouseButton::Right,

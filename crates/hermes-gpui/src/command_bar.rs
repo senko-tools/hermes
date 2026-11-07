@@ -173,12 +173,12 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(theme::small_size())
+                            .text_size(theme::secondary_size())
                             .child(entry.label.clone()),
                     )
                     .child(
                         div()
-                            .text_size(theme::tiny_size())
+                            .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
                             .child(entry.detail.clone()),
                     )

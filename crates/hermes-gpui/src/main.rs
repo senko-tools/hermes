@@ -153,7 +153,7 @@ fn main() -> ExitCode {
             Theme::change(ThemeMode::Dark, None, cx);
             let theme = Theme::global_mut(cx);
             theme.font_family = theme::FONT.into();
-            theme.font_size = theme::text_size();
+            theme.font_size = theme::body_size();
             cx.on_window_closed(|cx, _| cx.quit()).detach();
 
             let options = WindowOptions {

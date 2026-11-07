@@ -546,8 +546,7 @@ pub fn alpha(color: Rgba, scale: f32) -> Rgba {
 
 /// The family everything is drawn with unless `font.family` says otherwise.
 pub const FONT: &str = "JetBrainsMono Nerd Font";
-/// `font.size` and the text size drawn differ by this: its default of 13 is the iced client's, and
-/// this client draws that at 16 px, close to Discord's.
+/// `font.size` and the body text size drawn differ by this: the default of 11 draws at 14 px.
 const FONT_SIZE_OFFSET: f32 = 3.0;
 pub const MIN_SCALE: f64 = 0.75;
 pub const MAX_SCALE: f64 = 2.0;
@@ -629,15 +628,21 @@ pub fn mono_font() -> SharedString {
     with(|a| a.mono.clone())
 }
 
-/// The sizes of text.
-pub fn text_size() -> Pixels {
+/// Page and dialog titles.
+pub fn heading_size() -> Pixels {
+    with(|a| gpui_kit::px((a.text + 4.0) * a.scale))
+}
+/// What is read: messages, row labels, setting names, inputs and buttons.
+pub fn body_size() -> Pixels {
     with(|a| gpui_kit::px(a.text * a.scale))
 }
-pub fn small_size() -> Pixels {
-    with(|a| gpui_kit::px((a.text - 2.0).max(8.0) * a.scale))
+/// What explains the body: hints, descriptions, notes.
+pub fn secondary_size() -> Pixels {
+    with(|a| gpui_kit::px((a.text - 1.0).max(8.0) * a.scale))
 }
-pub fn tiny_size() -> Pixels {
-    with(|a| gpui_kit::px((a.text - 4.0).max(8.0) * a.scale))
+/// The smallest: section headings, timestamps, badges.
+pub fn caption_size() -> Pixels {
+    with(|a| gpui_kit::px((a.text - 2.0).max(8.0) * a.scale))
 }
 
 macro_rules! colors {
@@ -745,7 +750,7 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     });
     let theme = KitTheme::global_mut(cx);
     theme.font_family = font();
-    theme.font_size = text_size();
+    theme.font_size = body_size();
     theme.mono_font_family = mono_font();
     theme.background = background().into();
     theme.foreground = text().into();

@@ -884,14 +884,14 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
     let hint_line = |hint: &str| {
         (!hint.is_empty()).then(|| {
             div()
-                .text_size(theme::tiny_size())
+                .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
                 .child(SharedString::from(hint.to_owned()))
         })
     };
     let name_line = |name: &str| {
         div()
-            .text_size(theme::small_size())
+            .text_size(theme::secondary_size())
             .text_color(theme::text_secondary())
             .child(SharedString::from(name.to_owned()))
     };
@@ -917,7 +917,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                     .py(px(5.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_size(theme::small_size())
+                    .text_size(theme::secondary_size())
                     .when(chosen, |d| {
                         d.bg(theme::accent()).text_color(theme::on_accent())
                     })

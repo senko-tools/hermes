@@ -13,7 +13,7 @@ use crate::theme::{self, px};
 /// A heading for a dialog.
 pub fn heading(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(theme::text_size() + theme::px(2.))
+        .text_size(theme::heading_size())
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .child(text.into())
 }
@@ -21,7 +21,7 @@ pub fn heading(text: impl Into<SharedString>) -> Div {
 /// A paragraph for a dialog, in the secondary colour.
 pub fn paragraph(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(theme::small_size())
+        .text_size(theme::secondary_size())
         .text_color(theme::text_secondary())
         .child(text.into())
 }
@@ -29,7 +29,7 @@ pub fn paragraph(text: impl Into<SharedString>) -> Div {
 /// An error line for a dialog.
 pub fn error_line(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(theme::small_size())
+        .text_size(theme::secondary_size())
         .text_color(theme::danger())
         .child(text.into())
 }

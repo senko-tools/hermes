@@ -17,8 +17,9 @@ PC needs a scratch server and its own config dir; see "How the window was tested
   `tokio::spawn`. `Shell::run(cx, work, then)` runs `work` on tokio and `then` on the UI thread, with the window.
 - **Copied from `hermes-gui` without UI:** `tree`, `rows`, `markup`, `menu_entries`, `collapsed`,
   `single_instance`, `watchdog`, `open`, `desktop/`, `screen/` (capture and codecs), `keybinds`, `ptt`.
-- **Sizes:** use `theme::px`, never gpui's `px`: it applies the UI scale. Text sizes are `theme::text_size()`,
-  `small_size()` and `tiny_size()`. `font.size` draws 3 px larger than its value (13 means 16 px).
+- **Sizes:** use `theme::px`, never gpui's `px`: it applies the UI scale. Text sizes are the roles
+  `theme::heading_size()`, `body_size()`, `secondary_size()` and `caption_size()`. `font.size` draws 3 px larger than
+  its value (the default 11 means 14 px).
 - **Colours:** `theme::*()` functions read the active theme, a thread-local, so they work anywhere.
   `theme::apply_to_kit` colours the kit's widgets; kit buttons read `button_primary` etc., not `primary`.
 - **Dialogs** are the shell's own (`modal::dialog`), since the kit's rebuild from a closure without our state.
@@ -28,7 +29,7 @@ PC needs a scratch server and its own config dir; see "How the window was tested
   `context_menu` (it opens on press); use `Shell::with_menu` in `src/menu.rs`. Left clicks: `on_click`.
   Exceptions: drags and placing the text cursor start on press, and the kit's menus close on press
   when clicking outside them.
-- **Look:** sizes like Discord's (16 px text, 34 px rows, 40 px avatars, 240 px sidebar, 72 px rail).
+- **Look:** sizes like Discord's (34 px rows, 40 px avatars, 240 px sidebar, 72 px rail).
   JetBrainsMono Nerd Font and Material icons, as in `hermes-gui`.
 - **Header:** a bar over the main panel, without a title: it drags the window and holds the page's buttons and
   fields and the window buttons. The native title bar is off; the window title stays set for the taskbar.
