@@ -2,9 +2,11 @@
 //! Chat, Voice & Audio, Notifications, Keybinds and About. Every change is written to
 //! `config.toml`.
 
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
@@ -92,13 +94,61 @@ enum SliderKind {
     SoundsVolume,
 }
 
+/// A choice of the audio device dropdowns; `value` is what the config stores.
+#[derive(Clone)]
+struct DeviceChoice {
+    value: String,
+    name: SharedString,
+}
+
+impl SelectItem for DeviceChoice {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
+}
+
+/// The choices for the device saved as `current`: the system default, what is plugged in, and the
+/// saved device even when it is not there, so the dropdown says what is really set.
+fn device_choices(names: &[String], current: &str) -> (Vec<DeviceChoice>, usize) {
+    let current = if current.is_empty() {
+        "default"
+    } else {
+        current
+    };
+    let mut choices = vec![DeviceChoice {
+        value: "default".to_owned(),
+        name: "System default".into(),
+    }];
+    choices.extend(names.iter().map(|name| DeviceChoice {
+        value: name.clone(),
+        name: name.clone().into(),
+    }));
+    if !choices.iter().any(|c| c.value == current) {
+        choices.push(DeviceChoice {
+            value: current.to_owned(),
+            name: format!("{current} (not connected)").into(),
+        });
+    }
+    let selected = choices
+        .iter()
+        .position(|c| c.value == current)
+        .unwrap_or_default();
+    (choices, selected)
+}
+
 /// The controls of the settings page that hold state of their own.
 pub struct SettingsPage {
     pub tab: Tab,
     pub account_inst: Option<InstanceId>,
     pub sessions: Remote<Vec<SessionInfo>>,
-    /// Audio devices, listed when the Voice & Audio tab opens.
-    pub devices: Option<AudioDevices>,
+    /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
+    device_selects: Option<DeviceSelects>,
     pub mic_test: bool,
     font: Entity<InputState>,
     mono_font: Entity<InputState>,
@@ -106,6 +156,12 @@ pub struct SettingsPage {
     ptt_key: Entity<InputState>,
     sliders: Vec<(SliderKind, Entity<SliderState>)>,
     _events: Vec<Subscription>,
+}
+
+struct DeviceSelects {
+    input: Entity<SelectState<Vec<DeviceChoice>>>,
+    output: Entity<SelectState<Vec<DeviceChoice>>>,
+    _events: [Subscription; 2],
 }
 
 impl Shell {
@@ -259,7 +315,7 @@ impl Shell {
             tab: self.settings_tab,
             account_inst: None,
             sessions: Remote::Idle,
-            devices: None,
+            device_selects: None,
             mic_test: false,
             font: font_input,
             mono_font: mono_input,
@@ -346,13 +402,52 @@ impl Shell {
                     .await
                     .unwrap_or_default()
             },
-            |this, devices, _, _| {
+            |this, devices, window, cx| {
+                let selects = this.device_selects(&devices, window, cx);
                 if let Some(page) = &mut this.settings {
-                    page.devices = Some(devices);
+                    page.device_selects = Some(selects);
                 }
             },
         );
         self.load_screens(cx);
+    }
+
+    fn device_selects(
+        &self,
+        devices: &AudioDevices,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> DeviceSelects {
+        let voice = &self.config.voice;
+        let mut select = |names: &[String], current: &str, input: bool| {
+            let (choices, selected) = device_choices(names, current);
+            let state =
+                cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+            let events = cx.subscribe(
+                &state,
+                move |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                    let SelectEvent::Confirm(Some(value)) = event else {
+                        return;
+                    };
+                    let value = value.clone();
+                    this.change_voice(cx, move |voice| {
+                        if input {
+                            voice.input_device = value;
+                        } else {
+                            voice.output_device = value;
+                        }
+                    });
+                },
+            );
+            (state, events)
+        };
+        let (input, input_events) = select(&devices.inputs, &voice.input_device, true);
+        let (output, output_events) = select(&devices.outputs, &voice.output_device, false);
+        DeviceSelects {
+            input,
+            output,
+            _events: [input_events, output_events],
+        }
     }
 
     fn slider_moved(&mut self, kind: SliderKind, value: f32, cx: &mut Context<Self>) {
@@ -713,6 +808,7 @@ impl Shell {
             "Profile",
             &hint,
             Button::new("account-profile")
+                .cursor_pointer()
                 .primary()
                 .label("Edit profile…")
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -733,6 +829,7 @@ impl Shell {
                 .gap(px(8.))
                 .child(
                     Button::new("account-avatar")
+                        .cursor_pointer()
                         .label(if has_avatar { "Change…" } else { "Upload…" })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_avatar(pick_inst.clone(), cx);
@@ -741,6 +838,7 @@ impl Shell {
                 .when(has_avatar, |d| {
                     d.child(
                         Button::new("account-avatar-remove")
+                            .cursor_pointer()
                             .label("Remove")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.call_status(
@@ -764,6 +862,7 @@ impl Shell {
             "Password",
             "Changing it signs out your other devices.",
             Button::new("account-password")
+                .cursor_pointer()
                 .label("Change password…")
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_form_password(password_inst.clone(), window, cx);
@@ -803,6 +902,7 @@ impl Shell {
                  request, and they stay quiet until you accept. Off: they cannot message you \
                  at all.",
                 Switch::new("allow-requests")
+                    .cursor_pointer()
                     .checked(privacy.message_requests)
                     .on_click(cx.listener(|this, on: &bool, _, cx| {
                         this.set_privacy(
@@ -834,6 +934,7 @@ impl Shell {
                         muted("This device")
                     } else {
                         Button::new(SharedString::from(format!("session-{id}")))
+                            .cursor_pointer()
                             .label("Sign out")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.revoke_sessions(vec![id], cx);
@@ -856,6 +957,7 @@ impl Shell {
         if !others.is_empty() {
             device_rows.push(
                 Button::new("sessions-others")
+                    .cursor_pointer()
                     .danger()
                     .label("Sign out all others")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -878,7 +980,7 @@ impl Shell {
     fn slider(&self, page: &SettingsPage, kind: SliderKind) -> AnyElement {
         page.sliders.iter().find(|(k, _)| *k == kind).map_or_else(
             || div().into_any_element(),
-            |(_, state)| Slider::new(state).into_any_element(),
+            |(_, state)| Slider::new(state).cursor_pointer().into_any_element(),
         )
     }
 
@@ -902,6 +1004,7 @@ impl Shell {
                 .gap(px(8.))
                 .child(
                     Button::new("themes-folder")
+                        .cursor_pointer()
                         .small()
                         .label("Open themes folder")
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -919,6 +1022,7 @@ impl Shell {
                 )
                 .child(
                     Button::new("themes-copy")
+                        .cursor_pointer()
                         .small()
                         .label("Copy current theme")
                         .on_click(cx.listener(|this, _, _, cx| match this.copy_theme(cx) {
@@ -1015,6 +1119,7 @@ impl Shell {
                         config.sidebar.width, config.sidebar.member_list_width
                     ),
                     Button::new("reset-widths")
+                        .cursor_pointer()
                         .label("Reset")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.persist("sidebar.width", "240", cx);
@@ -1042,6 +1147,7 @@ impl Shell {
             name,
             hint,
             Switch::new(SharedString::from(key))
+                .cursor_pointer()
                 .checked(on)
                 .on_click(cx.listener(move |this, on: &bool, _, cx| {
                     this.persist(key, if *on { "true" } else { "false" }, cx);
@@ -1119,63 +1225,23 @@ impl Shell {
 
     fn tab_voice(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let v = &self.config.voice;
-        let device_chips =
-            |names: Vec<String>, current: &str, input: bool, cx: &mut Context<Self>| {
-                let mut all = vec![("default".to_owned(), "System default".to_owned())];
-                all.extend(names.into_iter().map(|n| (n.clone(), n)));
-                let current = if current.is_empty() {
-                    "default"
-                } else {
-                    current
-                }
-                .to_owned();
-                wrap().children(all.into_iter().enumerate().map(move |(n, (value, name))| {
-                    let chosen = value == current;
-                    chip(
-                        (
-                            if input {
-                                "input-device"
-                            } else {
-                                "output-device"
-                            },
-                            n,
-                        ),
-                        name,
-                        chosen,
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let value = value.clone();
-                        this.change_voice(cx, move |voice| {
-                            if input {
-                                voice.input_device = value;
-                            } else {
-                                voice.output_device = value;
-                            }
-                        });
-                    }))
-                }))
-            };
-        let (inputs, outputs) = page
-            .devices
-            .as_ref()
-            .map_or_else(Default::default, |d| (d.inputs.clone(), d.outputs.clone()));
+        let device_select = |state: Option<&Entity<SelectState<Vec<DeviceChoice>>>>| {
+            state.map_or_else(
+                || muted("Listing devices…"),
+                |state| Select::new(state).cursor_pointer().into_any_element(),
+            )
+        };
+        let selects = page.device_selects.as_ref();
         let devices = group(
             "Devices",
             vec![
-                setting(
-                    "Microphone",
-                    "",
-                    device_chips(inputs, &v.input_device, true, cx),
-                ),
-                setting(
-                    "Speakers",
-                    "",
-                    device_chips(outputs, &v.output_device, false, cx),
-                ),
+                setting("Microphone", "", device_select(selects.map(|s| &s.input))),
+                setting("Speakers", "", device_select(selects.map(|s| &s.output))),
                 setting(
                     "Device list",
                     "Plugged in a headset? List the devices again.",
                     Button::new("devices-refresh")
+                        .cursor_pointer()
                         .label("Refresh devices")
                         .on_click(cx.listener(|this, _, _, cx| this.load_devices(cx))),
                 ),
@@ -1269,6 +1335,7 @@ impl Shell {
             "Mic test",
             "Hear your processed microphone (use headphones).",
             Button::new("mic-test")
+                .cursor_pointer()
                 .label(if mic_test { "Stop test" } else { "Start test" })
                 .when(mic_test, |b| b.danger())
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1284,6 +1351,7 @@ impl Shell {
                             set: fn(&mut hermes_client_core::config::Voice, bool),
                             cx: &mut Context<Self>| {
             Switch::new(id)
+                .cursor_pointer()
                 .checked(on)
                 .on_click(cx.listener(move |this, on: &bool, _, cx| {
                     let on = *on;
@@ -1604,6 +1672,7 @@ impl Shell {
                     .gap(px(8.))
                     .child(
                         Button::new("about-debug")
+                            .cursor_pointer()
                             .label("Copy debug info")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let text = this.debug_info();
@@ -1612,6 +1681,7 @@ impl Shell {
                     )
                     .child(
                         Button::new("about-logs")
+                            .cursor_pointer()
                             .label("Open the logs folder")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(paths) = this.core.paths() {
@@ -1626,13 +1696,16 @@ impl Shell {
                                 }
                             })),
                     )
-                    .child(Button::new("about-project").label("Project page").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            if let Err(err) = crate::open::url(env!("CARGO_PKG_REPOSITORY")) {
-                                this.error(format!("could not open the browser: {err}"), cx);
-                            }
-                        }),
-                    )),
+                    .child(
+                        Button::new("about-project")
+                            .cursor_pointer()
+                            .label("Project page")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Err(err) = crate::open::url(env!("CARGO_PKG_REPOSITORY")) {
+                                    this.error(format!("could not open the browser: {err}"), cx);
+                                }
+                            })),
+                    ),
             )
             .into_any_element()
     }

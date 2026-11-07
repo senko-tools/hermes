@@ -302,46 +302,53 @@ impl Shell {
         };
         let state = &page.list;
         let refresh_key = key.clone();
-        let header =
-            div()
-                .flex()
-                .flex_col()
-                .flex_shrink_0()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(10.))
-                .border_b_1()
-                .border_color(theme::border())
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .text_size(theme::body_size())
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(theme::caption_size())
-                                .text_color(theme::text_tertiary())
-                                .child(scope),
-                        )
-                        .child(Button::new("results-refresh").label("Refresh").on_click(
-                            cx.listener(move |this, _, _, cx| {
+        let header = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(8.))
+            .px(px(16.))
+            .py(px(10.))
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(theme::body_size())
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(scope),
+                    )
+                    .child(
+                        Button::new("results-refresh")
+                            .cursor_pointer()
+                            .label("Refresh")
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 this.load_results(refresh_key.clone(), false, cx);
-                            }),
-                        ))
-                        .child(Button::new("results-close").label("Close").on_click(
-                            cx.listener(|this, _, window, cx| this.close_results(window, cx)),
-                        )),
-                )
-                .children(page.input.as_ref().map(|input| Input::new(input).large()));
+                            })),
+                    )
+                    .child(
+                        Button::new("results-close")
+                            .cursor_pointer()
+                            .label("Close")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_results(window, cx)),
+                            ),
+                    ),
+            )
+            .children(page.input.as_ref().map(|input| Input::new(input).large()));
 
         let mut list: Vec<AnyElement> = Vec::new();
         let muted = |text: String| {
@@ -389,6 +396,7 @@ impl Shell {
                     let more_key = key.clone();
                     list.push(
                         Button::new("results-more")
+                            .cursor_pointer()
                             .label(if state.loading_more {
                                 "Loading…"
                             } else {

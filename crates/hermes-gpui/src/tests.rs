@@ -15,6 +15,7 @@ use hermes_server::state::AppState;
 use tokio::sync::Notify;
 
 use crate::add_instance::{self, Account, Probed, Tab};
+use crate::menu_entries::Target;
 use crate::rows::{self, Row};
 
 struct Server {
@@ -274,7 +275,7 @@ async fn rows_follow_history_sends_and_deletes() {
 /// gpui keeps a list's state mutably borrowed while it calls the scroll handler. Reading the list
 /// from there panicked, which on Windows aborted the client at the first wheel notch.
 #[gpui::test]
-fn the_mouse_wheel_over_a_chat_does_not_panic(cx: &mut gpui_kit::TestAppContext) {
+fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::component::{Theme, ThemeMode};
     use gpui_kit::{
         AppContext as _, Modifiers, ScrollDelta, ScrollEvent, VisualTestContext, WindowOptions,
@@ -292,7 +293,7 @@ fn the_mouse_wheel_over_a_chat_does_not_panic(cx: &mut gpui_kit::TestAppContext)
     let mut config = ClientConfig::default();
     config.general.check_for_updates = false;
     let (core, events) = Core::new(config, CoreOptions::in_memory("hermes-gui"));
-    let (server, inst, channel) = runtime.block_on(async {
+    let (server, inst, space, channel) = runtime.block_on(async {
         let server = start("wheel").await;
         let probed = add_instance::probe(core.clone(), server.link.clone())
             .await
@@ -337,7 +338,7 @@ fn the_mouse_wheel_over_a_chat_does_not_panic(cx: &mut gpui_kit::TestAppContext)
                 .is_some_and(|w| w.pending.is_empty() && !w.messages.is_empty())
         })
         .await;
-        (server, inst, channel)
+        (server, inst, space.space.id, channel)
     });
 
     let boot = crate::shell::Boot {
@@ -398,6 +399,29 @@ fn the_mouse_wheel_over_a_chat_does_not_panic(cx: &mut gpui_kit::TestAppContext)
             position,
             delta: ScrollDelta::Lines(point(0.0, lines)),
             ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+
+    // Each kind of menu opens and draws, submenus included.
+    let targets = [
+        Target::Space(inst.clone(), space),
+        Target::Channel(inst.clone(), channel),
+        Target::Me(Some(inst.clone())),
+        Target::Me(None),
+    ];
+    for target in targets {
+        visual.update(|window, cx| {
+            shell.update(cx, |this, cx| {
+                this.open_menu(target, position, window, cx);
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+            shell.update(cx, |this, cx| {
+                assert!(this.menu.is_some());
+                this.menu = None;
+                cx.notify();
+            });
         });
         visual.run_until_parked();
     }

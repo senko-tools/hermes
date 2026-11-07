@@ -195,6 +195,36 @@ impl Action {
         }
     }
 
+    /// The submenu this action goes into when others of the group are next to it.
+    fn group(self) -> Option<&'static str> {
+        match self {
+            Action::NotifyAll
+            | Action::NotifyMentions
+            | Action::NotifyNothing
+            | Action::NotifyDefault
+            | Action::Mute
+            | Action::Unmute => Some("Notifications"),
+            Action::CreateChannel | Action::CreateCategory => Some("Create"),
+            Action::SetOnline | Action::SetIdle | Action::SetDnd | Action::SetInvisible => {
+                Some("Status")
+            }
+            _ => None,
+        }
+    }
+
+    /// The label inside the action's submenu, which already says what it is about.
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Action::NotifyAll => "All messages",
+            Action::NotifyMentions => "Only @mentions",
+            Action::NotifyNothing => "Nothing",
+            Action::NotifyDefault => "Like the space",
+            Action::CreateChannel => "Channel…",
+            Action::CreateCategory => "Category…",
+            other => other.label(),
+        }
+    }
+
     /// The status a status entry sets, for its colored dot.
     pub fn status(self) -> Option<hermes_client_core::proto::models::PresenceStatus> {
         use hermes_client_core::proto::models::PresenceStatus as P;
@@ -491,6 +521,58 @@ pub fn entries_with(
     clean
 }
 
+/// A line of a menu after grouping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Grouped {
+    Entry(Entry),
+    Separator,
+    Submenu {
+        label: &'static str,
+        entries: Entries,
+    },
+}
+
+/// Puts neighbouring entries of a group into a submenu. A lone entry stays as it is: a category's
+/// menu only has "Create channel", and a submenu of one is an extra step for nothing. Mute gets a
+/// separator of its own, since it is not one of the levels above it.
+pub fn grouped(entries: &[Option<Entry>]) -> Vec<Grouped> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < entries.len() {
+        let Some(entry) = entries[i] else {
+            out.push(Grouped::Separator);
+            i += 1;
+            continue;
+        };
+        let Some(label) = entry.action.group() else {
+            out.push(Grouped::Entry(entry));
+            i += 1;
+            continue;
+        };
+        let members: Vec<Entry> = entries[i..]
+            .iter()
+            .map_while(|e| e.filter(|e| e.action.group() == Some(label)))
+            .collect();
+        i += members.len();
+        if let [only] = members.as_slice() {
+            out.push(Grouped::Entry(*only));
+            continue;
+        }
+        let mut inside = Entries::new();
+        for member in members {
+            if matches!(member.action, Action::Mute | Action::Unmute) && !inside.is_empty() {
+                inside.push(None);
+            }
+            inside.push(Some(member));
+        }
+        out.push(Grouped::Submenu {
+            label,
+            entries: inside,
+        });
+    }
+    out
+}
+
 /// Notification level and mute entries for a space, a DM or a space channel. `fallback` is the
 /// level used without a setting: `None` for a space channel (it follows its space, and gets a
 /// "like the space" entry).
@@ -528,6 +610,41 @@ mod tests {
 
     fn actions(entries: &Entries) -> Vec<Action> {
         entries.iter().flatten().map(|e| e.action).collect()
+    }
+
+    #[test]
+    fn neighbours_of_a_group_share_a_submenu() {
+        let entry = |action: Action| Some(Entry::from(action));
+        let lines = grouped(&[
+            entry(Action::MarkRead),
+            None,
+            entry(Action::NotifyAll),
+            entry(Action::NotifyNothing),
+            entry(Action::Mute),
+            None,
+            entry(Action::CreateChannel),
+            entry(Action::EditChannel),
+        ]);
+        assert_eq!(
+            lines,
+            [
+                Grouped::Entry(Action::MarkRead.into()),
+                Grouped::Separator,
+                Grouped::Submenu {
+                    label: "Notifications",
+                    entries: vec![
+                        entry(Action::NotifyAll),
+                        entry(Action::NotifyNothing),
+                        None,
+                        entry(Action::Mute),
+                    ],
+                },
+                Grouped::Separator,
+                Grouped::Entry(Action::CreateChannel.into()),
+                Grouped::Entry(Action::EditChannel.into()),
+            ],
+            "a lone group member stays a plain entry"
+        );
     }
 
     #[test]

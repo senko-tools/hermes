@@ -112,6 +112,7 @@ impl Shell {
                         .gap(px(8.))
                         .child(
                             Button::new("new-dm-cancel")
+                                .cursor_pointer()
                                 .large()
                                 .label("Cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -121,10 +122,12 @@ impl Shell {
                         )
                         .child(
                             Button::new("new-dm-go")
+                                .cursor_pointer()
                                 .large()
                                 .primary()
                                 .label(if state.busy { "Please wait…" } else { "Open" })
                                 .disabled(state.busy)
+                                .when(state.busy, |b| b.cursor_default())
                                 .on_click(cx.listener(|this, _, _, cx| this.submit_new_dm(cx))),
                         ),
                 ),

@@ -1542,6 +1542,7 @@ impl Shell {
                     d.child(
                         div().absolute().bottom(px(12.)).right(px(16.)).child(
                             Button::new("jump-present")
+                                .cursor_pointer()
                                 .primary()
                                 .label("Jump to present")
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1649,6 +1650,7 @@ impl Shell {
             )
             .child(
                 Button::new("selection-cancel")
+                    .cursor_pointer()
                     .label("Cancel")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(view) = this.chats.get_mut(&cancel_key) {
@@ -1659,6 +1661,7 @@ impl Shell {
             )
             .child(
                 Button::new("selection-delete")
+                    .cursor_pointer()
                     .danger()
                     .label("Delete")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -2562,6 +2565,7 @@ impl Shell {
                     )
                     .child(
                         Button::new(("pending-retry", local_id as usize))
+                            .cursor_pointer()
                             .small()
                             .label("Retry")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2574,6 +2578,7 @@ impl Shell {
                     )
                     .child(
                         Button::new(("pending-discard", local_id as usize))
+                            .cursor_pointer()
                             .small()
                             .danger()
                             .label("Delete")

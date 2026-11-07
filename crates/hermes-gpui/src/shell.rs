@@ -776,7 +776,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(6.))
-            .w(px(180.))
+            .w(px(210.))
             .h(px(28.))
             .px(px(8.))
             .mr(px(8.))

@@ -322,6 +322,7 @@ impl Shell {
         let dialog_state = self.add_instance.as_ref()?;
         let busy = dialog_state.busy;
         let cancel = Button::new("add-cancel")
+            .cursor_pointer()
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
@@ -329,6 +330,7 @@ impl Shell {
                 cx.notify();
             }));
         let back = Button::new("add-back")
+            .cursor_pointer()
             .large()
             .label("Back")
             .on_click(cx.listener(|this, _, window, cx| this.add_instance_back(window, cx)));
@@ -347,10 +349,12 @@ impl Shell {
                         .map(|e| error_line(e).into_any_element()),
                 );
                 let go = Button::new("add-go")
+                    .cursor_pointer()
                     .large()
                     .primary()
                     .label(if busy { "Connecting…" } else { "Continue" })
                     .disabled(busy)
+                    .when(busy, |b| b.cursor_default())
                     .on_click(cx.listener(|this, _, _, cx| this.submit_address(cx)));
                 body.push(
                     buttons
@@ -402,6 +406,7 @@ impl Shell {
                         .map(|e| error_line(e).into_any_element()),
                 );
                 let trust = Button::new("add-trust")
+                    .cursor_pointer()
                     .large()
                     .label(if changed.is_some() {
                         "Trust the new one"
@@ -487,6 +492,7 @@ impl Shell {
                         .map(|e| error_line(e).into_any_element()),
                 );
                 let go = Button::new("add-submit")
+                    .cursor_pointer()
                     .large()
                     .primary()
                     .label(match (busy, tab) {
@@ -495,6 +501,7 @@ impl Shell {
                         (false, Tab::Register) => "Create account",
                     })
                     .disabled(busy)
+                    .when(busy, |b| b.cursor_default())
                     .on_click(cx.listener(|this, _, _, cx| this.submit_account(cx)));
                 body.push(
                     buttons

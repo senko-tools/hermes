@@ -1067,6 +1067,7 @@ impl Shell {
                     .gap(px(8.))
                     .child(
                         Button::new("space-icon")
+                            .cursor_pointer()
                             .label(if has_icon {
                                 "Change icon…"
                             } else {
@@ -1079,6 +1080,7 @@ impl Shell {
                     .when(has_icon, |d| {
                         d.child(
                             Button::new("space-icon-remove")
+                                .cursor_pointer()
                                 .label("Remove icon")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     let req = UpdateSpaceRequest {
@@ -1111,6 +1113,7 @@ impl Shell {
                         )
                         .child(
                             Button::new("space-save")
+                                .cursor_pointer()
                                 .primary()
                                 .label("Save changes")
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1140,6 +1143,7 @@ impl Shell {
                 plural(channels)
             ),
             Button::new("space-copy-id")
+                .cursor_pointer()
                 .label("Copy space ID")
                 .on_click(
                     cx.listener(move |this, _, _, cx| this.copy(space.to_string(), "Space ID", cx)),
@@ -1151,6 +1155,7 @@ impl Shell {
                 "Invite people",
                 "Creates a link that works for 7 days and copies it.",
                 Button::new("space-invite")
+                    .cursor_pointer()
                     .primary()
                     .label("Copy invite link")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1170,6 +1175,7 @@ impl Shell {
                 "Deletes every channel and message for everyone. This cannot be undone. To keep \
                  the space, give it to someone else from the Members tab first.",
                 Button::new("space-delete")
+                    .cursor_pointer()
                     .danger()
                     .label("Delete space")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1185,6 +1191,7 @@ impl Shell {
                 "Leave space",
                 "You will need a new invite to come back.",
                 Button::new("space-leave")
+                    .cursor_pointer()
                     .danger()
                     .label("Leave space")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1360,8 +1367,10 @@ impl Shell {
                 "Show separately",
                 "Members with this role get their own group in the member list.",
                 Switch::new("role-hoist")
+                    .cursor_pointer()
                     .checked(draft.hoist)
                     .disabled(!editable)
+                    .when(!editable, |b| b.cursor_default())
                     .on_click(cx.listener(|this, on: &bool, _, cx| {
                         if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
                             d.hoist = *on;
@@ -1373,8 +1382,10 @@ impl Shell {
                 "Mentionable",
                 "Anyone can @mention this role.",
                 Switch::new("role-mention")
+                    .cursor_pointer()
                     .checked(draft.mentionable)
                     .disabled(!editable)
+                    .when(!editable, |b| b.cursor_default())
                     .on_click(cx.listener(|this, on: &bool, _, cx| {
                         if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
                             d.mentionable = *on;
@@ -1395,8 +1406,10 @@ impl Shell {
                         info.name,
                         info.description,
                         Switch::new(SharedString::from(format!("perm-{}", info.name)))
+                            .cursor_pointer()
                             .checked(on)
                             .disabled(!grantable)
+                            .when(!grantable, |b| b.cursor_default())
                             .on_click(cx.listener(move |this, value: &bool, _, cx| {
                                 if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
                                     d.permissions.set(flag, *value);
@@ -1422,16 +1435,19 @@ impl Shell {
             buttons = buttons
                 .child(
                     Button::new("role-up")
+                        .cursor_pointer()
                         .label("Move up")
                         .on_click(cx.listener(move |this, _, _, cx| this.move_role(id, -1, cx))),
                 )
                 .child(
                     Button::new("role-down")
+                        .cursor_pointer()
                         .label("Move down")
                         .on_click(cx.listener(move |this, _, _, cx| this.move_role(id, 1, cx))),
                 )
                 .child(
                     Button::new("role-delete")
+                        .cursor_pointer()
                         .danger()
                         .label("Delete role")
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1443,18 +1459,25 @@ impl Shell {
         }
         buttons = buttons.child(div().flex_1());
         if editable && dirty {
-            buttons = buttons
-                .child(Button::new("role-reset").label("Reset").on_click(
-                    cx.listener(move |this, _, window, cx| this.select_role(id, window, cx)),
-                ))
-                .when(valid, |d| {
-                    d.child(
-                        Button::new("role-save")
-                            .primary()
-                            .label("Save changes")
-                            .on_click(cx.listener(|this, _, _, cx| this.save_role(cx))),
+            buttons =
+                buttons
+                    .child(
+                        Button::new("role-reset")
+                            .cursor_pointer()
+                            .label("Reset")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_role(id, window, cx)
+                            })),
                     )
-                });
+                    .when(valid, |d| {
+                        d.child(
+                            Button::new("role-save")
+                                .cursor_pointer()
+                                .primary()
+                                .label("Save changes")
+                                .on_click(cx.listener(|this, _, _, cx| this.save_role(cx))),
+                        )
+                    });
         }
         col.push(buttons.into_any_element());
         detail_panel(col)
@@ -1579,20 +1602,34 @@ impl Shell {
                     .gap(px(8.))
                     .child(
                         Button::new("channel-edit")
+                            .cursor_pointer()
                             .label("Edit…")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
                             })),
                     )
-                    .child(Button::new("channel-up").label("Move up").on_click(
-                        cx.listener(move |this, _, _, cx| this.move_channel_step(id, -1, cx)),
-                    ))
-                    .child(Button::new("channel-down").label("Move down").on_click(
-                        cx.listener(move |this, _, _, cx| this.move_channel_step(id, 1, cx)),
-                    ))
+                    .child(
+                        Button::new("channel-up")
+                            .cursor_pointer()
+                            .label("Move up")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.move_channel_step(id, -1, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("channel-down")
+                            .cursor_pointer()
+                            .label("Move down")
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.move_channel_step(id, 1, cx)
+                                }),
+                            ),
+                    )
                     .when(category, |d| {
                         d.child(
                             Button::new("channel-here")
+                                .cursor_pointer()
                                 .label("+ Channel here")
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_form_create_channel(
@@ -1607,6 +1644,7 @@ impl Shell {
                     })
                     .child(
                         Button::new("channel-delete")
+                            .cursor_pointer()
                             .danger()
                             .label(if category {
                                 "Delete category"
@@ -1668,6 +1706,7 @@ impl Shell {
                     .when(edit_overrides && ov.is_some(), |d| {
                         d.child(
                             Button::new("override-clear")
+                                .cursor_pointer()
                                 .label("Remove override")
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.call_status(
@@ -1854,6 +1893,7 @@ impl Shell {
                 .when(!me, |d| {
                     d.child(
                         Button::new("member-dm")
+                            .cursor_pointer()
                             .primary()
                             .label("Message")
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1865,6 +1905,7 @@ impl Shell {
                 .when(nick, |d| {
                     d.child(
                         Button::new("member-nick")
+                            .cursor_pointer()
                             .label("Change nickname…")
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_form_nickname(nick_inst.clone(), space, user, window, cx);
@@ -1883,9 +1924,11 @@ impl Shell {
                 let may = view::can_manage_role(s, space, role.id) && (me || above || is_owner);
                 let id = role.id;
                 Checkbox::new(SharedString::from(format!("member-role-{id}")))
+                    .cursor_pointer()
                     .label(SharedString::from(role.name.clone()))
                     .checked(has)
                     .disabled(!may)
+                    .when(!may, |b| b.cursor_default())
                     .on_click(cx.listener(move |this, on: &bool, _, cx| {
                         this.set_member_role(user, id, *on, cx);
                     }))
@@ -1921,6 +1964,7 @@ impl Shell {
                 .when(can(Permissions::MUTE_MEMBERS), |d| {
                     d.child(
                         Button::new("member-mute")
+                            .cursor_pointer()
                             .label(if server_mute {
                                 "Server unmute"
                             } else {
@@ -1946,6 +1990,7 @@ impl Shell {
                 .when(can(Permissions::DEAFEN_MEMBERS), |d| {
                     d.child(
                         Button::new("member-deafen")
+                            .cursor_pointer()
                             .label(if server_deaf {
                                 "Server undeafen"
                             } else {
@@ -1971,6 +2016,7 @@ impl Shell {
                 .when(can(Permissions::MOVE_MEMBERS), |d| {
                     d.child(
                         Button::new("member-disconnect")
+                            .cursor_pointer()
                             .danger()
                             .label("Disconnect")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2001,6 +2047,7 @@ impl Shell {
                 "Kick",
                 "Removes them from the space; they can come back with a new invite.",
                 Button::new("member-kick")
+                    .cursor_pointer()
                     .danger()
                     .label("Kick")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -2015,6 +2062,7 @@ impl Shell {
                 "Ban",
                 "Removes them and keeps them out.",
                 Button::new("member-ban")
+                    .cursor_pointer()
                     .danger()
                     .label("Ban…")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -2028,6 +2076,7 @@ impl Shell {
                 "Makes them the owner of the space. You keep your roles but can no longer delete \
                  the space.",
                 Button::new("member-transfer")
+                    .cursor_pointer()
                     .danger()
                     .label("Transfer…")
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -2064,6 +2113,7 @@ impl Shell {
                 .child(muted(text))
                 .child(
                     Button::new("list-refresh")
+                        .cursor_pointer()
                         .label("Refresh")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if let Some(tab) = this.open_page().map(|p| p.tab) {
@@ -2091,6 +2141,7 @@ impl Shell {
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             rows.push(
                 Button::new("invite-create")
+                    .cursor_pointer()
                     .primary()
                     .label("Create invite…")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -2158,15 +2209,19 @@ impl Shell {
                             )
                             .child(muted(format!("{uses} · {expires} · by {creator}"))),
                     )
-                    .child(Button::new(("invite-copy", n)).label("Copy link").on_click(
-                        cx.listener(move |this, _, _, cx| {
-                            if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
-                                this.copy(link, "Invite link", cx);
-                            }
-                        }),
-                    ))
+                    .child(
+                        Button::new(("invite-copy", n))
+                            .cursor_pointer()
+                            .label("Copy link")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
+                                    this.copy(link, "Invite link", cx);
+                                }
+                            })),
+                    )
                     .child(
                         Button::new(("invite-revoke", n))
+                            .cursor_pointer()
                             .danger()
                             .label("Revoke")
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -2235,6 +2290,7 @@ impl Shell {
                     )
                     .child(
                         Button::new(SharedString::from(format!("unban-{user}")))
+                            .cursor_pointer()
                             .label("Unban")
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 let core = this.core.clone();
@@ -2263,6 +2319,7 @@ impl Shell {
     fn tab_audit(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
         let mut rows: Vec<AnyElement> = vec![
             Button::new("audit-refresh")
+                .cursor_pointer()
                 .label("Refresh")
                 .on_click(cx.listener(|this, _, _, cx| this.set_space_tab(Tab::Audit, true, cx)))
                 .into_any_element(),
@@ -2316,6 +2373,7 @@ impl Shell {
             let before = list.and_then(|l| l.last()).map(|e| e.id);
             rows.push(
                 Button::new("audit-more")
+                    .cursor_pointer()
                     .label("Load older entries")
                     .on_click(cx.listener(move |this, _, _, cx| this.load_audit(before, cx)))
                     .into_any_element(),

@@ -358,12 +358,14 @@ impl Shell {
                 )
                 .child(
                     Button::new("call-join")
+                        .cursor_pointer()
                         .primary()
                         .label("Join")
                         .on_click(cx.listener(|this, _, window, cx| this.answer_call(window, cx))),
                 )
                 .child(
                     Button::new("call-dismiss")
+                        .cursor_pointer()
                         .label("Dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.stop_ringing();
@@ -1220,11 +1222,16 @@ impl Shell {
                                     .child(menu.name.clone()),
                             )
                             .child(level("Volume", menu.volume))
-                            .child(Slider::new(&menu.volume_slider))
+                            .child(Slider::new(&menu.volume_slider).cursor_pointer())
                             .children(menu.share_volume.map(|v| level("Stream volume", v)))
-                            .children(menu.share_slider.as_ref().map(Slider::new))
+                            .children(
+                                menu.share_slider
+                                    .as_ref()
+                                    .map(|s| Slider::new(s).cursor_pointer()),
+                            )
                             .child(
                                 Checkbox::new("volume-mute")
+                                    .cursor_pointer()
                                     .label("Mute for me")
                                     .checked(menu.muted)
                                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -1399,14 +1406,18 @@ impl Shell {
                                     .flex()
                                     .justify_end()
                                     .gap(px(8.))
-                                    .child(Button::new("share-cancel").label("Cancel").on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.share_menu = None;
-                                            cx.notify();
-                                        }),
-                                    ))
+                                    .child(
+                                        Button::new("share-cancel")
+                                            .cursor_pointer()
+                                            .label("Cancel")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.share_menu = None;
+                                                cx.notify();
+                                            })),
+                                    )
                                     .child(
                                         Button::new("share-start")
+                                            .cursor_pointer()
                                             .primary()
                                             .label("Start sharing")
                                             .on_click(cx.listener(|this, _, _, cx| {
@@ -1454,6 +1465,7 @@ impl Shell {
         };
         Some(
             Button::new("header-voice")
+                .cursor_pointer()
                 .label(label)
                 .when(!here, |b| b.primary())
                 .when(here, |b| b.danger())

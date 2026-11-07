@@ -845,6 +845,7 @@ impl Shell {
             content.push(error_line(error.clone()).into_any_element());
         }
         let cancel = Button::new("form-cancel")
+            .cursor_pointer()
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
@@ -857,9 +858,11 @@ impl Shell {
             form.submit
         };
         let submit = Button::new("form-submit")
+            .cursor_pointer()
             .large()
             .label(label)
             .disabled(form.busy)
+            .when(form.busy, |b| b.cursor_default())
             .when(form.danger, |b| b.danger())
             .when(!form.danger, |b| b.primary())
             .on_click(cx.listener(|this, _, window, cx| this.submit_form(window, cx)));
@@ -943,6 +946,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
         Field::Check { label, hint, value } => column
             .child(
                 Checkbox::new(SharedString::from(format!("form-check-{i}")))
+                    .cursor_pointer()
                     .label(SharedString::from(label.clone()))
                     .checked(*value)
                     .on_click(cx.listener(move |this, checked: &bool, _, cx| {

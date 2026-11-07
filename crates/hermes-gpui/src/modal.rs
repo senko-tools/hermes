@@ -92,12 +92,14 @@ impl Shell {
         let (target, action) = self.confirm.as_ref()?;
         let text = self.confirm_text(target, *action);
         let cancel = Button::new("confirm-cancel")
+            .cursor_pointer()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
                 this.confirm = None;
                 cx.notify();
             }));
         let ok = Button::new("confirm-ok")
+            .cursor_pointer()
             .label(action.label())
             .danger()
             .on_click(cx.listener(|this, _, window, cx| {
