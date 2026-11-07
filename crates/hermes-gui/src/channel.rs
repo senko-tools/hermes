@@ -860,13 +860,14 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let content = self
-            .core
-            .store()
-            .instance(&key.0)
-            .and_then(|s| s.window(key.1))
-            .and_then(|w| w.get(message))
-            .map(|m| m.content.clone());
+        // Mentions are edited as typed: `@bob`, not `<@3>`.
+        let content = {
+            let store = self.core.store();
+            store.instance(&key.0).and_then(|s| {
+                let content = &s.window(key.1)?.get(message)?.content;
+                Some(view::readable_mentions(s, key.1, content))
+            })
+        };
         let Some(content) = content else { return };
         if let Some(view) = self.chats.get_mut(key) {
             view.reply_to = None;
@@ -931,7 +932,16 @@ impl Shell {
             return;
         };
         let text = view.input.read(cx).value().trim_end().to_owned();
+        // `@bob` and `#general` as typed become real mentions.
+        let resolve = |this: &Self, text: String| {
+            let store = this.core.store();
+            match store.instance(&inst) {
+                Some(s) => view::resolve_mentions(s, channel, &text),
+                None => text,
+            }
+        };
         if let Some(message) = view.editing {
+            let text = resolve(self, text);
             if text.trim().is_empty() {
                 self.error("A message cannot be empty; delete it instead.", cx);
                 return;
@@ -979,6 +989,7 @@ impl Shell {
         }
         self.set_composer_text(&key, "", window, cx);
         if let Some(content) = command.message_text() {
+            let content = resolve(self, content);
             let draft = Draft {
                 content,
                 reply_to,

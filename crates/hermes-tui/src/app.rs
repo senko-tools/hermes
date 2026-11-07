@@ -1157,7 +1157,14 @@ impl App {
         let Some((inst, channel)) = self.current.clone() else {
             return;
         };
-        let text = self.input.text().to_owned();
+        // Completed mentions are typed text (`@bob`): they become markup here.
+        let text = {
+            let store = self.core.store();
+            match store.instance(&inst) {
+                Some(s) => view::resolve_mentions(s, channel, self.input.text()),
+                None => self.input.text().to_owned(),
+            }
+        };
         if let Some(message) = self.editing.take() {
             self.input.clear();
             self.mode = Mode::Normal;

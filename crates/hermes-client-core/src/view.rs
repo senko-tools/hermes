@@ -473,12 +473,118 @@ pub fn plain_text(store: &InstanceStore, space: Option<Id>, content: &str, max: 
     }
 }
 
+/// What can be mentioned in a channel, as typed: `@name`, `@name#1234`, `@role`, `#channel`,
+/// with the markup each stands for. A plain `@name` is only there when one person has that name.
+fn mention_names(store: &InstanceStore, channel: Id) -> Vec<(String, String)> {
+    let space = store.space_of(channel);
+    let state = space.and_then(|s| store.spaces.get(&s));
+    let mut users: Vec<hermes_proto::models::User> = match state {
+        Some(state) => state.members.values().map(|m| m.user.clone()).collect(),
+        None => store
+            .channel(channel)
+            .map(|c| c.recipients.clone())
+            .unwrap_or_default(),
+    };
+    if let Some(me) = &store.me {
+        if !users.iter().any(|u| u.id == me.user.id) {
+            users.push(me.user.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for user in &users {
+        let id = user.id;
+        out.push((format!("@{}", user.handle()), format!("<@{id}>")));
+        let same = users
+            .iter()
+            .filter(|u| u.username.eq_ignore_ascii_case(&user.username))
+            .count();
+        if same == 1 && user.discriminator.is_some() {
+            out.push((format!("@{}", user.username), format!("<@{id}>")));
+        }
+    }
+    if let Some(state) = state {
+        for role in state.roles.iter().filter(|r| !r.is_everyone()) {
+            out.push((format!("@{}", role.name), format!("<@&{}>", role.id)));
+        }
+        for c in state
+            .channels
+            .values()
+            .filter(|c| c.kind == ChannelKind::Text)
+        {
+            if let Some(name) = &c.name {
+                out.push((format!("#{name}"), format!("<#{}>", c.id)));
+            }
+        }
+    }
+    // Longest first: `@bob#1234` before `@bob`, `@Mods team` before `@Mods`.
+    out.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    out
+}
+
+/// Turns typed mentions into markup before sending: `@bob` into `<@3>`, `#general` into
+/// `<#11>`. Not inside code, not in the middle of a word (an email), and only whole names.
+pub fn resolve_mentions(store: &InstanceStore, channel: Id, text: &str) -> String {
+    let names = mention_names(store, channel);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut previous: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        // Code is copied as it is: ```blocks``` and `spans`.
+        if c == '`' {
+            let fence = if rest.starts_with("```") { "```" } else { "`" };
+            let end = rest[fence.len()..]
+                .find(fence)
+                .map_or(rest.len(), |i| i + 2 * fence.len());
+            out.push_str(&rest[..end]);
+            previous = rest[..end].chars().last();
+            rest = &rest[end..];
+            continue;
+        }
+        let at_start = previous.is_none_or(|p| !p.is_alphanumeric() && p != '_');
+        if (c == '@' || c == '#') && at_start {
+            let found = names.iter().find(|(name, _)| {
+                rest.len() >= name.len()
+                    && rest.is_char_boundary(name.len())
+                    && rest[..name.len()].eq_ignore_ascii_case(name)
+                    && rest[name.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|n| !n.is_alphanumeric() && n != '_' && n != '#')
+            });
+            if let Some((name, markup)) = found {
+                out.push_str(markup);
+                previous = name.chars().last();
+                rest = &rest[name.len()..];
+                continue;
+            }
+        }
+        out.push(c);
+        previous = Some(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// The other way, for editing a sent message: `<@3>` back into `@bob`.
+pub fn readable_mentions(store: &InstanceStore, channel: Id, text: &str) -> String {
+    let names = mention_names(store, channel);
+    let mut out = text.to_owned();
+    // The shortest name of each markup: `@bob` rather than `@bob#1234` where that is enough.
+    let mut seen = std::collections::HashSet::new();
+    for (name, markup) in names.iter().rev() {
+        if seen.insert(markup) {
+            out = out.replace(markup.as_str(), name);
+        }
+    }
+    out
+}
+
 /// One autocomplete suggestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
     /// Shown in the popup.
     pub label: String,
-    /// Replaces the typed token (e.g. `<@123> `).
+    /// Replaces the typed token (e.g. `@bob `); [`resolve_mentions`] turns it into markup.
     pub insert: String,
 }
 
@@ -520,12 +626,20 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     })
                     .unwrap_or_default(),
             };
+            let names = mention_names(store, channel);
             for (id, username, display) in users {
                 let key = format!("{username} {display}");
+                // The shortest typed form that stands for them alone.
+                let markup = format!("<@{id}>");
+                let typed = names
+                    .iter()
+                    .rev()
+                    .find(|(_, m)| *m == markup)
+                    .map_or_else(|| format!("@{username}"), |(name, _)| name.clone());
                 push(
                     &key,
                     format!("@{display} ({username})"),
-                    format!("<@{id}> "),
+                    format!("{typed} "),
                 );
             }
             if let Some(state) = space.and_then(|s| store.spaces.get(&s)) {
@@ -533,7 +647,7 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     push(
                         &role.name,
                         format!("@{} (role)", role.name),
-                        format!("<@&{}> ", role.id),
+                        format!("@{} ", role.name),
                     );
                 }
             }
@@ -546,7 +660,7 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     .filter(|c| c.kind == ChannelKind::Text)
                 {
                     let name = c.name.clone().unwrap_or_default();
-                    push(&name, format!("#{name}"), format!("<#{}> ", c.id));
+                    push(&name, format!("#{name}"), format!("#{name} "));
                 }
             }
         }
@@ -842,8 +956,8 @@ mod tests {
             }],
         );
         let at = complete(&s, Id(11), "@al", 5);
-        assert_eq!(at[0].insert, "<@2> ");
-        assert_eq!(complete(&s, Id(11), "#gen", 5)[0].insert, "<#11> ");
+        assert_eq!(at[0].insert, "@alice ");
+        assert_eq!(complete(&s, Id(11), "#gen", 5)[0].insert, "#general ");
         assert!(
             complete(&s, Id(11), ":smi", 5)
                 .iter()
@@ -851,5 +965,41 @@ mod tests {
         );
         assert_eq!(complete(&s, Id(11), "/shr", 5)[0].insert, "/shrug ");
         assert_eq!(search_emoji("thumbsup", 1)[0].0, "👍");
+    }
+
+    #[test]
+    fn typed_mentions_become_markup_and_back() {
+        let mut s = store();
+        let tagged = |id: u64, name: &str, tag: &str| hermes_proto::models::User {
+            discriminator: Some(tag.into()),
+            ..user(id, name)
+        };
+        let member = |user| Member {
+            space_id: Id(10),
+            user,
+            nickname: None,
+            role_ids: vec![],
+            joined_at: 0,
+        };
+        s.set_members(
+            Id(10),
+            vec![
+                member(user(2, "alice")),
+                member(tagged(3, "bob", "1234")),
+                member(tagged(4, "bob", "5678")),
+                member(tagged(5, "carol", "1111")),
+            ],
+        );
+        let typed = "hi @Alice, mail a@alice.com `@alice` #general @bob#5678 @bob @carol @alicex";
+        let sent = resolve_mentions(&s, Id(11), typed);
+        assert_eq!(
+            sent, "hi <@2>, mail a@alice.com `@alice` <#11> <@4> @bob <@5> @alicex",
+            "two bobs need their tag; a word that only starts with a name stays"
+        );
+        assert_eq!(
+            readable_mentions(&s, Id(11), "<@2> <@4> <@5> <#11>"),
+            "@alice @bob#5678 @carol #general"
+        );
+        assert_eq!(complete(&s, Id(11), "@car", 5)[0].insert, "@carol ");
     }
 }
