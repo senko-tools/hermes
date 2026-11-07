@@ -330,8 +330,15 @@ impl Shell {
         let list = ListState::new(0, ListAlignment::Bottom, px(600.));
         list.set_follow_mode(gpui_kit::FollowMode::Tail);
         let scroll_key = key.clone();
-        list.set_scroll_handler(cx.listener(move |this, event: &ListScrollEvent, _, cx| {
-            this.chat_scrolled(&scroll_key, event, cx);
+        list.set_scroll_handler(cx.listener(move |_, event: &ListScrollEvent, window, cx| {
+            // gpui keeps the list's state mutably borrowed while it calls this handler, so reading
+            // the list here panics. Deferred work runs once the event has been dispatched.
+            let near_top = event.visible_range.start < LOAD_OLDER_WITHIN;
+            let at_end = event.visible_range.end >= event.count;
+            let key = scroll_key.clone();
+            cx.defer_in(window, move |this, _, cx| {
+                this.chat_scrolled(&key, near_top, at_end, cx);
+            });
         }));
         let placeholder = {
             let store = self.core.store();
@@ -492,12 +499,16 @@ impl Shell {
         }
     }
 
-    fn chat_scrolled(&mut self, key: &ChannelKey, event: &ListScrollEvent, cx: &mut Context<Self>) {
+    fn chat_scrolled(
+        &mut self,
+        key: &ChannelKey,
+        near_top: bool,
+        at_end: bool,
+        cx: &mut Context<Self>,
+    ) {
         let Some(view) = self.chats.get(key) else {
             return;
         };
-        let near_top = event.visible_range.start < LOAD_OLDER_WITHIN;
-        let at_end = event.visible_range.end >= event.count;
         if near_top && !view.loading_older {
             self.load_older(key, cx);
         }
