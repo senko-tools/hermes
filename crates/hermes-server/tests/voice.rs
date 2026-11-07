@@ -175,10 +175,26 @@ async fn forwarding_rules() {
     assert_eq!(a.deliver(&b, 0).await, (5, Some(a_pid)));
     assert_eq!(a.recv_audio(100).await, None);
 
-    // Malformed packets are dropped.
-    a.conn.send_datagram(vec![0x21; 20].into()).unwrap();
-    a.conn.send_datagram(vec![0x11; 5].into()).unwrap();
+    // Malformed packets are dropped, and so are those of clients from before encryption.
+    a.conn.send_datagram(vec![0x11; 20].into()).unwrap();
+    a.conn.send_datagram(vec![0x21; 5].into()).unwrap();
     assert_eq!(b.recv_audio(300).await, None);
+
+    // Sealed voice keys go to the one member they are for, untouched.
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": "sealed" } }))
+        .await;
+    let key = b.recv_op("voice_key").await;
+    assert_eq!(key["d"]["from"], a_pid);
+    assert_eq!(key["d"]["key"], "sealed");
+    let huge = "x".repeat(hermes_proto::e2ee::MAX_VOICE_KEY_BYTES + 1);
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": huge } }))
+        .await;
+    a.send(json!({ "op": "voice_key", "d": { "to": 9999, "key": "nobody" } }))
+        .await;
+    a.send(json!({ "op": "voice_key", "d": { "to": b_ready["participant_id"], "key": "next" } }))
+        .await;
+    let key = b.recv_op("voice_key").await;
+    assert_eq!(key["d"]["key"], "next", "the oversized one was not relayed");
 
     // Self-muted senders are dropped.
     a.send(json!({ "op": "set_state", "d": { "self_mute": true, "self_deaf": false } }))
@@ -704,6 +720,123 @@ async fn screen_shares_reach_only_watchers_in_the_room() {
     a.send(json!({ "op": "share_stop", "d": {} })).await;
     let stopped = b.recv_op("share_stopped").await;
     assert_eq!(stopped["d"]["participant_id"], alice_pid);
+}
+
+#[tokio::test]
+async fn share_audio_reaches_only_watchers() {
+    use hermes_proto::voice::AudioKind;
+
+    let server = start("voice-share-audio", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let (carol, _) = server.member(&owner, &space_id, "carol").await;
+    let general = server.channel_id(&space_id, "General");
+    let (mut a, a_ready) = server.voice_join(&alice, &general).await;
+    let (mut b, b_ready) = server.voice_join(&bob, &general).await;
+    let (c, _) = server.voice_join(&carol, &general).await;
+    let alice_pid = a_ready["participant_id"].as_u64().unwrap() as u16;
+    assert_eq!(
+        b_ready["share_audio"], true,
+        "the server forwards share audio"
+    );
+    let watch = json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": true } });
+
+    // Not sharing: dropped, even for someone who asked to watch.
+    b.send(watch.clone()).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    a.send_share_audio(1);
+    assert!(b.recv_kinds(300).await.is_empty());
+
+    a.send(json!({ "op": "share_start", "d": {} })).await;
+    b.recv_op("share_started").await;
+    b.send(watch).await;
+    a.recv_op("keyframe_requested").await;
+    for seq in 2..5 {
+        a.send_share_audio(seq);
+    }
+    let got = b.recv_kinds(300).await;
+    assert_eq!(got, vec![(AudioKind::Share, alice_pid); 3], "Bob watches");
+    assert!(c.recv_kinds(300).await.is_empty(), "Carol does not watch");
+
+    // A muted microphone does not mute the share's sound.
+    a.send(json!({ "op": "set_state", "d": { "self_mute": true, "self_deaf": false } }))
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    a.send_share_audio(5);
+    assert_eq!(b.recv_kinds(300).await.len(), 1);
+
+    // A deafened watcher hears nothing.
+    b.send(json!({ "op": "set_state", "d": { "self_mute": false, "self_deaf": true } }))
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    a.send_share_audio(6);
+    assert!(b.recv_kinds(300).await.is_empty());
+    b.send(json!({ "op": "set_state", "d": { "self_mute": false, "self_deaf": false } }))
+        .await;
+
+    // Over the rate, the rest are dropped.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for seq in 100..140 {
+        a.send_share_audio(seq);
+    }
+    let got = b.recv_kinds(300).await.len();
+    assert!(
+        (10..=14).contains(&got),
+        "{got} of 40 sent at once got through"
+    );
+
+    // After the share stops, nothing.
+    a.send(json!({ "op": "share_stop", "d": {} })).await;
+    b.recv_op("share_stopped").await;
+    a.send_share_audio(200);
+    assert!(b.recv_kinds(300).await.is_empty());
+}
+
+#[tokio::test]
+async fn sharers_learn_how_many_watch() {
+    let server = start("voice-share-watchers", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let (carol, _) = server.member(&owner, &space_id, "carol").await;
+    let general = server.channel_id(&space_id, "General");
+    let (mut a, a_ready) = server.voice_join(&alice, &general).await;
+    let (mut b, _) = server.voice_join(&bob, &general).await;
+    let (mut c, _) = server.voice_join(&carol, &general).await;
+    let alice_pid = a_ready["participant_id"].as_u64().unwrap();
+    let watch = |watching: bool| json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": watching } });
+    let count = |msg: serde_json::Value| msg["d"]["count"].as_u64().unwrap();
+
+    // Starting tells the sharer that nobody watches yet.
+    a.send(json!({ "op": "share_start", "d": {} })).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 0);
+    b.recv_op("share_started").await;
+    c.recv_op("share_started").await;
+
+    b.send(watch(true)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 1);
+    c.send(watch(true)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 2);
+    // Watching twice changes nothing; stopping does.
+    c.send(watch(true)).await;
+    c.send(watch(false)).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 1);
+
+    // A new watcher gets nothing before the sharer's next keyframe (it could not decode it).
+    a.send_video(false, 10, b"delta").await;
+    assert!(b.recv_video(300).await.is_none());
+    a.send_video(true, 20, b"key").await;
+    let (header, payload) = b.recv_video(2000).await.expect("the keyframe");
+    assert!(header.keyframe);
+    assert_eq!(payload, b"key");
+    a.send_video(false, 30, b"delta after").await;
+    let (_, payload) = b.recv_video(2000).await.expect("deltas after it");
+    assert_eq!(payload, b"delta after");
+
+    // A watcher leaving the room counts too.
+    b.send(json!({ "op": "leave", "d": {} })).await;
+    assert_eq!(count(a.recv_op("share_watchers").await), 0);
 }
 
 fn voice_max_frame() -> usize {

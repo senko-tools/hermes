@@ -187,6 +187,7 @@ Account problems are fixed on the server (with the install script, prefix these 
 | `hermes-server user reset-password alice` | prints a new password for `alice` and signs her out everywhere |
 | `hermes-server user set-admin alice true` | makes `alice` an instance admin (`false` takes it away) |
 | `hermes-server user disable alice` / `enable alice` | blocks or unblocks an account |
+| `hermes-server user set-tagless alice#1234 true` | lets the account go without a `#1234` tag (`false` gives it one again) |
 | `hermes-server invite create` | a new invite link (also a new owner link if nobody has registered yet) |
 | `hermes-server check-config` | checks the config file and prints what is used |
 | `hermes-server version` | the installed version |

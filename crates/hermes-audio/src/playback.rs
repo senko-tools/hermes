@@ -1,15 +1,16 @@
 //! The playback pipeline before the output ring buffer (PLAN.md 12.5 "Playback"): one jitter
-//! buffer and decoder per remote participant, per-user volume and mute, the mixer with UI sounds,
-//! output volume, and resampling to the device rate.
+//! buffer and decoder per remote participant, per-user volume and mute, the sound of the screen
+//! shares I watch (stereo, one stream per sharer), the mixer with UI sounds, output volume, and
+//! resampling to the device rate. The output is stereo.
 
 use std::collections::HashMap;
 
-use hermes_proto::voice::AudioHeader;
+use hermes_proto::voice::{AudioHeader, AudioKind};
 
-use crate::codec::Decoder;
-use crate::dsp::MonoResampler;
+use crate::codec::{Decoder, StereoDecoder};
+use crate::dsp::Resampler;
 use crate::jitter::{JitterBuffer, Pop};
-use crate::mixer::Mixer;
+use crate::mixer::{Mixer, STEREO_FRAME, to_mono};
 use crate::sounds::{Sound, SoundPlayer};
 use crate::{FRAME, SAMPLE_RATE};
 
@@ -49,6 +50,36 @@ impl Remote {
     }
 }
 
+/// The sound of one participant's screen share.
+struct ShareRemote {
+    jitter: JitterBuffer,
+    decoder: StereoDecoder,
+    frame: [f32; STEREO_FRAME],
+    volume: f32,
+}
+
+impl ShareRemote {
+    fn new(volume: f32) -> Self {
+        ShareRemote {
+            jitter: JitterBuffer::default(),
+            decoder: StereoDecoder::default(),
+            frame: [0.0; STEREO_FRAME],
+            volume,
+        }
+    }
+
+    /// Decodes the next frame; `false` when there is nothing to play.
+    fn render(&mut self) -> bool {
+        match self.jitter.pop() {
+            Pop::Packet(packet) => self.decoder.decode(&packet, &mut self.frame),
+            Pop::Lost { fec: Some(next) } => self.decoder.decode_fec(&next, &mut self.frame),
+            Pop::Lost { fec: None } => self.decoder.conceal(&mut self.frame),
+            Pop::Idle => return false,
+        }
+        true
+    }
+}
+
 /// Receive statistics of all participants.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PlaybackStats {
@@ -59,6 +90,8 @@ pub struct PlaybackStats {
 
 pub struct Playback {
     remotes: HashMap<u16, Remote>,
+    /// Screen share sound, by sharer.
+    shares: HashMap<u16, ShareRemote>,
     mixer: Mixer,
     sounds: SoundPlayer,
     pub output_volume: f32,
@@ -66,9 +99,10 @@ pub struct Playback {
     pub sounds_enabled: bool,
     /// Deafened: participants are not played (sounds still are).
     pub deafened: bool,
-    resampler: MonoResampler,
+    resampler: Resampler,
     at48: Vec<f32>,
     out: Vec<f32>,
+    mono: [f32; FRAME],
     played_frames: u64,
 }
 
@@ -76,15 +110,17 @@ impl Playback {
     pub fn new(output_rate: u32) -> Self {
         Playback {
             remotes: HashMap::new(),
+            shares: HashMap::new(),
             mixer: Mixer::default(),
             sounds: SoundPlayer::default(),
             output_volume: 1.0,
             sounds_volume: 0.6,
             sounds_enabled: true,
             deafened: false,
-            resampler: MonoResampler::new(SAMPLE_RATE, output_rate),
-            at48: Vec::with_capacity(FRAME * 2),
-            out: Vec::with_capacity(FRAME * 4),
+            resampler: Resampler::interleaved(SAMPLE_RATE, output_rate, 2),
+            at48: Vec::with_capacity(STEREO_FRAME * 2),
+            out: Vec::with_capacity(STEREO_FRAME * 4),
+            mono: [0.0; FRAME],
             played_frames: 0,
         }
     }
@@ -110,12 +146,51 @@ impl Playback {
         );
     }
 
+    /// Adds a received share audio datagram from `participant`'s screen share (created on
+    /// first use at `default_volume`).
+    pub fn push_share(
+        &mut self,
+        participant: u16,
+        datagram: &[u8],
+        now_ms: f64,
+        default_volume: f32,
+    ) {
+        let Ok((AudioKind::Share, header, opus)) = AudioHeader::decode_any(datagram) else {
+            return;
+        };
+        self.shares
+            .entry(participant)
+            .or_insert_with(|| ShareRemote::new(default_volume))
+            .jitter
+            .push(
+                header.sequence,
+                header.timestamp,
+                header.voice_active,
+                opus.to_vec(),
+                now_ms,
+            );
+    }
+
+    /// The volume of `participant`'s screen share sound, 0–2 (200 %).
+    pub fn set_share_volume(&mut self, participant: u16, volume: f32) {
+        if let Some(share) = self.shares.get_mut(&participant) {
+            share.volume = volume;
+        }
+    }
+
+    /// Forgets `participant`'s screen share sound (the share stopped, or I stopped watching).
+    pub fn remove_share(&mut self, participant: u16) {
+        self.shares.remove(&participant);
+    }
+
     pub fn remove(&mut self, participant: u16) {
         self.remotes.remove(&participant);
+        self.shares.remove(&participant);
     }
 
     pub fn clear(&mut self) {
         self.remotes.clear();
+        self.shares.clear();
     }
 
     /// Per-user volume, 0–2 (200 %).
@@ -145,7 +220,7 @@ impl Playback {
 
     /// Whether anything is (or may soon be) audible.
     pub fn is_active(&self) -> bool {
-        self.sounds.is_playing() || !self.remotes.is_empty()
+        self.sounds.is_playing() || !self.remotes.is_empty() || !self.shares.is_empty()
     }
 
     /// Whether `participant` sent voiced packets within the last 250 ms.
@@ -168,8 +243,8 @@ impl Playback {
         }
     }
 
-    /// Mixes the next 20 ms at 48 kHz.
-    pub fn render_48k(&mut self) -> &[f32; FRAME] {
+    /// Mixes the next 20 ms at 48 kHz, stereo interleaved.
+    pub fn render_48k_stereo(&mut self) -> &[f32; STEREO_FRAME] {
         self.mixer.clear();
         for remote in self.remotes.values_mut() {
             // Always pop, so buffers keep moving while muted or deafened.
@@ -180,14 +255,26 @@ impl Playback {
                 }
             }
         }
+        for share in self.shares.values_mut() {
+            if share.render() && !self.deafened {
+                self.mixer.add_share(&share.frame, share.volume);
+            }
+        }
         let sounds = self.sounds.next(FRAME);
         self.mixer.add_sound(sounds);
         self.mixer.finish(self.output_volume)
     }
 
-    /// Mixes the next 20 ms and returns it at the output rate (mono).
+    /// Mixes the next 20 ms at 48 kHz, both sides averaged (for mono outputs).
+    pub fn render_48k(&mut self) -> &[f32; FRAME] {
+        let stereo = *self.render_48k_stereo();
+        to_mono(&stereo, &mut self.mono);
+        &self.mono
+    }
+
+    /// Mixes the next 20 ms and returns it at the output rate (stereo interleaved).
     pub fn render(&mut self) -> &[f32] {
-        let frame = *self.render_48k();
+        let frame = *self.render_48k_stereo();
         self.at48.extend_from_slice(&frame);
         self.out.clear();
         self.resampler.process(&mut self.at48, &mut self.out);
@@ -265,6 +352,71 @@ mod tests {
         assert!((quiet / normal - 0.25).abs() < 0.05);
     }
 
+    /// Share audio packets of a stereo tone: loud on the left, quiet on the right.
+    fn share_packets(n: usize) -> Vec<Vec<u8>> {
+        let mut encoder = crate::codec::ShareEncoder::default();
+        (0..n)
+            .map(|i| {
+                let mut frame = [0.0; STEREO_FRAME];
+                for (j, pair) in frame.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                    let t = (i * FRAME + j) as f32 / 48_000.0;
+                    let s = (2.0 * std::f32::consts::PI * 330.0 * t).sin();
+                    *pair = [0.4 * s, 0.05 * s];
+                }
+                let opus = encoder.encode(&frame).unwrap().to_vec();
+                AudioHeader {
+                    voice_active: true,
+                    sender_id: 0,
+                    timestamp: (i * FRAME) as u32,
+                    sequence: i as u16,
+                    audio_level: 10,
+                }
+                .encode_as(AudioKind::Share, &opus)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plays_share_audio_in_stereo_alongside_voices() {
+        let packets = share_packets(30);
+        let render = |configure: &dyn Fn(&mut Playback)| {
+            let mut playback = Playback::new(48_000);
+            configure(&mut playback);
+            let mut out = Vec::new();
+            for (i, p) in packets.iter().enumerate() {
+                playback.push_share(5, p, i as f64 * 20.0, 1.0);
+                // A voice datagram is not share audio, and the other way round.
+                playback.push(5, p, i as f64 * 20.0, 1.0);
+                out.extend_from_slice(playback.render_48k_stereo());
+            }
+            let left: Vec<f32> = out[STEREO_FRAME * 10..]
+                .iter()
+                .step_by(2)
+                .copied()
+                .collect();
+            let right: Vec<f32> = out[STEREO_FRAME * 10..]
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .copied()
+                .collect();
+            (dsp::rms(&left), dsp::rms(&right))
+        };
+        let (l, r) = render(&|_| {});
+        assert!(l > 0.2 && r < 0.08 && r > 0.01, "{l} {r}");
+        let (half, _) = render(&|p| {
+            p.push_share(5, &packets[0], 0.0, 1.0);
+            p.set_share_volume(5, 0.5);
+        });
+        assert!((half / l - 0.5).abs() < 0.1, "{l} {half}");
+        assert_eq!(render(&|p| p.deafened = true), (0.0, 0.0));
+        let (mut playback, packet) = (Playback::new(48_000), &packets[0]);
+        playback.push_share(5, packet, 0.0, 1.0);
+        assert!(playback.is_active());
+        playback.remove_share(5);
+        assert!(!playback.is_active());
+    }
+
     #[test]
     fn sounds_play_without_participants_and_resample() {
         let mut playback = Playback::new(44_100);
@@ -274,9 +426,10 @@ mod tests {
         for _ in 0..20 {
             out.extend_from_slice(playback.render());
         }
-        // Audible (the UI sounds are soft on purpose).
+        // Audible (the UI sounds are soft on purpose), on both sides.
         assert!(dsp::rms(&out) > 0.02, "{}", dsp::rms(&out));
-        assert!(out.len() > 44_100 * 380 / 1000, "{}", out.len());
+        assert!(out.len() / 2 > 44_100 * 380 / 1000, "{}", out.len());
+        assert_eq!(out[1000], out[1001]);
         assert!(!playback.is_active());
         playback.sounds_enabled = false;
         playback.play_sound(Sound::Join);

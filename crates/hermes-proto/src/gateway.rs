@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::Id;
 use crate::models::{
     Channel, CurrentUser, Member, Message, NotificationSetting, Presence, PresenceStatus,
-    PrivacySettings, ReadState, Role, Space, User, VoiceState,
+    PrivacySettings, ReadState, Relationship, Role, Space, User, VoiceState,
 };
 
 pub use crate::PROTOCOL_VERSION;
@@ -162,6 +162,9 @@ pub struct Ready {
     /// Your privacy settings.
     #[serde(default)]
     pub privacy: PrivacySettings,
+    /// Your friends and friend requests.
+    #[serde(default)]
+    pub relationships: Vec<Relationship>,
     pub voice: VoiceInfo,
     pub instance: InstanceInfo,
 }
@@ -293,6 +296,17 @@ pub enum ServerEvent {
     },
     /// Own sessions only.
     PrivacyUpdate(PrivacySettings),
+    /// A friend request or friend, new or changed, as I see it. Own sessions only.
+    RelationshipUpdate(Relationship),
+    /// Removed, declined or taken back. Own sessions only.
+    RelationshipRemove {
+        user_id: Id,
+    },
+    /// Someone's device keys changed (docs/e2ee.md).
+    DevicesUpdate {
+        user_id: Id,
+        devices: Vec<crate::e2ee::DeviceKeys>,
+    },
 }
 
 impl ServerEvent {
@@ -622,6 +636,7 @@ mod tests {
             presences: vec![],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            relationships: vec![],
             privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,
@@ -660,7 +675,7 @@ mod tests {
         assert_eq!(
             value,
             json!({ "op": "identify", "d": {
-                "token": "t", "protocol_version": 1,
+                "token": "t", "protocol_version": 2,
                 "client": { "name": "hermes-gui", "version": "0.1.0", "os": "windows" }
             }})
         );

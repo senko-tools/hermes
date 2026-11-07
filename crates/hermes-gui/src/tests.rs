@@ -1,20 +1,22 @@
-//! End-to-end: the add-instance dialog against a real `hermes-server`: invite link with a
-//! fingerprint → create the owner account; plain address → trust on first use → sign in; a space
-//! invite shows its preview; a changed certificate shows the warning.
+//! End-to-end against a real `hermes-server`, without a window: the add-instance steps (invite link
+//! with a fingerprint → create the owner account; plain address → trust on first use → sign in; a
+//! changed certificate shows the warning) and the message rows following the store.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use hermes_client_core::address::{Fingerprint, HostPort};
+use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::{CreateInviteRequest, RegistrationMode as Registration};
-use hermes_client_core::{CertStatus, Core, CoreOptions};
+use hermes_client_core::proto::id::Id;
+use hermes_client_core::{CertStatus, Core, CoreEvents, CoreOptions, Draft};
 use hermes_server::config::{Config, RegistrationMode, TlsMode};
 use hermes_server::state::AppState;
 use tokio::sync::Notify;
 
-use crate::app::{App, Level};
-use crate::message::Message;
-use crate::modal::add_instance::{self, Step, Tab};
+use crate::add_instance::{self, Account, Probed, Tab};
+use crate::menu_entries::Target;
+use crate::rows::{self, Row};
 
 struct Server {
     link: String,
@@ -71,696 +73,356 @@ async fn start(name: &str) -> Server {
     }
 }
 
-fn app() -> App {
-    let (core, _events) = Core::new(Default::default(), CoreOptions::in_memory("hermes-gui"));
-    App::new(core, None, None)
+fn client() -> (Core, CoreEvents) {
+    Core::new(
+        ClientConfig::default(),
+        CoreOptions::in_memory("hermes-gui"),
+    )
 }
 
-fn dialog(app: &App) -> &add_instance::AddInstance {
-    app.add_instance.as_ref().expect("dialog open")
-}
-
-fn send(app: &mut App, message: add_instance::Message) {
-    let _ = app.update(Message::AddInstance(message));
-}
-
-/// Opens the dialog with `input` and runs the probe the dialog would start.
-async fn probe(app: &mut App, input: &str) {
-    let _ = app.update(Message::OpenAddInstance);
-    send(app, add_instance::Message::Address(input.to_owned()));
-    send(app, add_instance::Message::SubmitAddress);
-    assert!(dialog(app).busy);
-    let result = add_instance::probe(app.core.clone(), input.to_owned()).await;
-    send(app, add_instance::Message::Probed(result));
-    assert!(!dialog(app).busy);
-}
-
-/// Fills the account step and runs the sign-in or registration the dialog would start.
-async fn submit(app: &mut App, username: &str, password: &str) {
-    send(app, add_instance::Message::Username(username.to_owned()));
-    send(app, add_instance::Message::Password(password.to_owned()));
-    send(app, add_instance::Message::Submit);
-    let Step::Account(account) = &dialog(app).step else {
-        panic!("not on the account step: {:?}", dialog(app));
-    };
-    assert!(dialog(app).busy, "{:?}", dialog(app).error);
-    let result = add_instance::submit(app.core.clone(), (**account).clone()).await;
-    send(app, add_instance::Message::Done(result));
-}
-
-fn account(app: &App) -> &add_instance::Account {
-    match &dialog(app).step {
-        Step::Account(account) => account,
-        other => panic!("not on the account step: {other:?}"),
+fn account(probed: &Probed, tab: Tab, username: &str) -> Account {
+    Account {
+        host: probed.probe.host.clone(),
+        name: probed.probe.info.name.clone(),
+        description: probed.probe.info.description.clone(),
+        registration: probed.probe.info.registration_mode,
+        invite: probed.invite.clone(),
+        preview: probed.preview.clone(),
+        tab,
+        username: username.to_owned(),
+        password: "correct horse battery".to_owned(),
     }
 }
 
-async fn first_space(core: &Core, inst: &str) -> hermes_client_core::proto::id::Id {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    loop {
-        if let Some(id) = core
-            .store()
-            .instance(inst)
-            .and_then(|s| s.spaces.keys().next().copied())
-        {
-            return id;
+/// Waits until the store of `inst` says so.
+async fn eventually(core: &Core, what: &str, f: impl Fn(&hermes_client_core::Store) -> bool) {
+    for _ in 0..200 {
+        if f(&core.store()) {
+            return;
         }
-        assert!(tokio::time::Instant::now() < deadline, "no space arrived");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
+    panic!("never happened: {what}");
 }
 
 #[tokio::test]
 async fn invite_link_creates_the_account_then_others_sign_in_and_join() {
-    let server = start("add-instance").await;
+    let server = start("invite").await;
+    let (owner, _events) = client();
 
-    // The owner clicks the setup invite link: its #fp= is trusted without asking.
-    let mut owner = app();
-    probe(&mut owner, &server.link).await;
-    let step = account(&owner);
-    assert_eq!(step.name, "Friends");
-    assert_eq!(step.description, "Our place");
-    assert_eq!(
-        step.tab,
-        Tab::Register,
-        "invite links start on Create account"
-    );
-    submit(&mut owner, "Alice", "correct horse").await;
-    assert!(owner.add_instance.is_none(), "dialog closes");
-    let inst = server.host.display();
-    assert_eq!(owner.core.instance_ids(), std::slice::from_ref(&inst));
-    assert_eq!(owner.status.as_ref().unwrap().level, Level::Info);
-    assert_eq!(
-        owner.core.config().instance(&inst).unwrap().username,
-        "alice"
-    );
-
-    // A friend types the plain address: no fingerprint, so the dialog asks.
-    let mut friend = app();
-    probe(&mut friend, &server.host.display()).await;
-    match &dialog(&friend).step {
-        Step::Fingerprint { probe, .. } => assert_eq!(probe.cert, CertStatus::Unknown),
-        other => panic!("expected the fingerprint step: {other:?}"),
-    }
-    send(&mut friend, add_instance::Message::Trust);
-    let step = account(&friend);
-    assert_eq!(step.tab, Tab::SignIn);
-    assert!(!step.can_register(), "invite_only without an invite");
-    send(&mut friend, add_instance::Message::Tab(Tab::Register));
-    assert_eq!(
-        account(&friend).tab,
-        Tab::SignIn,
-        "Create account stays disabled"
-    );
-
-    // Wrong password: the error shows in the dialog, which stays open.
-    submit(&mut friend, "alice", "wrong").await;
-    assert!(dialog(&friend).error.is_some());
-    assert!(!dialog(&friend).busy);
-    submit(&mut friend, "alice", "correct horse").await;
-    assert!(friend.add_instance.is_none(), "{:?}", friend.add_instance);
-    assert_eq!(friend.core.instance_ids(), std::slice::from_ref(&inst));
-
-    // A space invite shows the space before the account step.
-    let space = first_space(&owner.core, &inst).await;
-    let invite = owner
-        .core
-        .rest(&inst)
-        .unwrap()
-        .create_invite(space, &CreateInviteRequest::default())
+    // The link carries the fingerprint, so there is nothing to ask.
+    let probed = add_instance::probe(owner.clone(), server.link.clone())
         .await
         .unwrap();
-    let link = owner.core.invite_link(&inst, &invite.code).unwrap();
-    assert!(link.contains("#fp="), "{link}");
-    let mut bob = app();
-    probe(&mut bob, &link).await;
-    let step = account(&bob);
-    let preview = step
-        .preview
-        .as_ref()
-        .and_then(|p| p.space.as_ref())
+    assert_eq!(probed.probe.cert, CertStatus::Pinned);
+    assert_eq!(probed.probe.info.name, "Friends");
+    let inst = add_instance::submit(owner.clone(), account(&probed, Tab::Register, "alice"))
+        .await
         .unwrap();
-    assert_eq!(preview.id, space);
-    assert_eq!(preview.member_count, 1);
-    assert_eq!(step.tab, Tab::Register);
-    submit(&mut bob, "bob", "battery staple").await;
-    assert!(bob.add_instance.is_none());
-    let bob_space = first_space(&bob.core, &inst).await;
-    assert_eq!(bob_space, space, "bob joined the invite's space");
+    eventually(&owner, "the owner is signed in", |s| {
+        s.instance(&inst).is_some_and(|s| s.me.is_some())
+    })
+    .await;
+
+    let rest = owner.rest(&inst).unwrap();
+    let space = rest.create_space("Hangout").await.unwrap();
+    let invite = rest
+        .create_invite(space.space.id, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let link = owner.invite_link(&inst, &invite.code).unwrap();
+
+    // Someone else, on a server they do not know yet: the link's fingerprint is enough, and it
+    // shows what they are invited to.
+    let (guest, _guest_events) = client();
+    let probed = add_instance::probe(guest.clone(), link).await.unwrap();
+    assert_eq!(
+        probed.probe.info.registration_mode,
+        Registration::InviteOnly
+    );
+    let preview = probed.preview.clone().expect("an invite preview");
+    assert_eq!(preview.space.expect("its space").name, "Hangout");
+    let guest_inst = add_instance::submit(guest.clone(), account(&probed, Tab::Register, "bob"))
+        .await
+        .unwrap();
+    eventually(&guest, "the guest sees the space", |s| {
+        s.instance(&guest_inst)
+            .is_some_and(|s| s.spaces.contains_key(&space.space.id))
+    })
+    .await;
+
+    // A wrong password is an error for the dialog, not a panic.
+    let (third, _third_events) = client();
+    let probed = add_instance::probe(third.clone(), server.host.display())
+        .await
+        .unwrap();
+    assert_eq!(probed.probe.cert, CertStatus::Unknown, "trust on first use");
+    third
+        .trust_fingerprint(&probed.probe.host, probed.probe.fingerprint)
+        .unwrap();
+    let mut wrong = account(&probed, Tab::SignIn, "bob");
+    wrong.password = "not it".into();
+    assert!(add_instance::submit(third.clone(), wrong).await.is_err());
 }
 
 #[tokio::test]
 async fn changed_certificate_shows_the_warning() {
-    let server = start("changed-cert").await;
-    let mut app = app();
-    let other = Fingerprint([7; 32]);
-    app.core.trust_fingerprint(&server.host, other).unwrap();
-    probe(&mut app, &server.host.display()).await;
-    match &dialog(&app).step {
-        Step::Fingerprint { probe, .. } => {
-            assert_eq!(probe.cert, CertStatus::Changed { pinned: other });
-        }
-        other => panic!("expected the warning: {other:?}"),
-    }
-    // Back returns to the address, with it filled in.
-    send(&mut app, add_instance::Message::Back);
-    assert_eq!(
-        dialog(&app).step,
-        Step::Address {
-            input: server.host.display()
-        }
-    );
-    send(&mut app, add_instance::Message::Cancel);
-    assert!(app.add_instance.is_none());
+    let server = start("changed").await;
+    let (core, _events) = client();
+    let pinned = Fingerprint::parse(&format!("sha256:{}", "00".repeat(32))).unwrap();
+    core.trust_fingerprint(&server.host, pinned).unwrap();
+    let probed = add_instance::probe(core.clone(), server.host.display())
+        .await
+        .unwrap();
+    assert_eq!(probed.probe.cert, CertStatus::Changed { pinned });
 }
 
 #[tokio::test]
 async fn bad_address_is_an_error_in_the_dialog() {
-    let mut app = app();
-    probe(&mut app, "not a host:99999").await;
-    assert!(matches!(dialog(&app).step, Step::Address { .. }));
-    assert!(dialog(&app).error.is_some());
-}
-
-#[test]
-fn account_rules() {
-    let base = add_instance::Account {
-        host: HostPort::parse("example.com").unwrap(),
-        name: "x".into(),
-        description: String::new(),
-        registration: Registration::InviteOnly,
-        invite: None,
-        preview: None,
-        tab: Tab::Register,
-        username: "ab".into(),
-        password: "pw".into(),
-    };
-    assert!(!base.can_register());
-    let with_invite = add_instance::Account {
-        invite: Some("code".into()),
-        ..base.clone()
-    };
-    assert!(with_invite.can_register());
-    let open = add_instance::Account {
-        registration: Registration::Open,
-        ..base.clone()
-    };
-    assert!(open.can_register());
-
-    assert!(base.validate().is_ok());
-    for bad in ["a", "with space", "ünï", &"x".repeat(33)] {
-        let account = add_instance::Account {
-            username: bad.to_owned(),
-            ..base.clone()
-        };
-        assert!(account.validate().is_err(), "{bad}");
-    }
-    let sign_in = add_instance::Account {
-        username: "Any Name".into(),
-        tab: Tab::SignIn,
-        ..base.clone()
-    };
+    let (core, _events) = client();
     assert!(
-        sign_in.validate().is_ok(),
-        "sign in leaves names to the server"
+        add_instance::probe(core.clone(), "not an address at all".into())
+            .await
+            .is_err()
     );
-    let empty = add_instance::Account {
-        password: String::new(),
-        ..base
-    };
-    assert!(empty.validate().is_err());
+    assert!(
+        add_instance::probe(core, "127.0.0.1:1".into())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
-async fn menus_confirm_destructive_actions_and_escape_closes() {
-    use crate::sidebar::menu::{Action, Target};
-    use hermes_client_core::proto::id::Id;
-
-    let mut app = app();
-    let space = Target::Space("h".into(), Id(10));
-    let _ = app.update(Message::OpenMenu(space.clone()));
-    assert!(app.menu.is_some());
-    let _ = app.update(Message::Escape);
-    assert!(app.menu.is_none());
-
-    // Destructive entries ask first; the menu closes either way.
-    let _ = app.update(Message::OpenMenu(space.clone()));
-    let _ = app.update(Message::Menu(space.clone(), Action::LeaveSpace));
-    assert!(app.menu.is_none());
-    assert_eq!(app.confirm, Some((space.clone(), Action::LeaveSpace)));
-    let _ = app.update(Message::Escape);
-    assert!(app.confirm.is_none());
-
-    // Copying reports what was copied.
-    let _ = app.update(Message::Menu(
-        Target::Channel("h".into(), Id(11)),
-        Action::CopyChannelId,
-    ));
-    assert_eq!(app.status.as_ref().unwrap().text, "Channel ID copied");
-    assert!(app.confirm.is_none());
-}
-
-/// Waits until `f` holds for the core's store.
-async fn eventually(core: &Core, what: &str, f: impl Fn(&hermes_client_core::Store) -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while !f(&core.store()) {
-        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-#[tokio::test]
-async fn channel_buffer_rows_follow_history_reads_and_deletes() {
-    use crate::buffer::Buffer;
-    use crate::buffer::channel::rows::{self, Row};
-    use hermes_client_core::Draft;
-
-    let server = start("channel-buffer").await;
-    let mut alice = app();
-    probe(&mut alice, &server.link).await;
-    submit(&mut alice, "alice", "correct horse").await;
-    let inst = server.host.display();
-    let space = first_space(&alice.core, &inst).await;
-    let general = alice.core.store().instance(&inst).unwrap().spaces[&space]
+async fn rows_follow_history_sends_and_deletes() {
+    let server = start("rows").await;
+    let (core, _events) = client();
+    let probed = add_instance::probe(core.clone(), server.link.clone())
+        .await
+        .unwrap();
+    let inst = add_instance::submit(core.clone(), account(&probed, Tab::Register, "alice"))
+        .await
+        .unwrap();
+    eventually(&core, "signed in", |s| {
+        s.instance(&inst).is_some_and(|s| s.me.is_some())
+    })
+    .await;
+    let rest = core.rest(&inst).unwrap();
+    let space = rest.create_space("Hangout").await.unwrap();
+    let channel: Id = space
         .channels
-        .values()
-        .find(|c| c.name.as_deref() == Some("general"))
-        .unwrap()
-        .id;
-    let invite = alice
-        .core
-        .rest(&inst)
-        .unwrap()
-        .create_invite(space, &CreateInviteRequest::default())
-        .await
-        .unwrap();
-    let mut bob = app();
-    probe(
-        &mut bob,
-        &alice.core.invite_link(&inst, &invite.code).unwrap(),
-    )
-    .await;
-    submit(&mut bob, "bob", "battery staple").await;
-    first_space(&bob.core, &inst).await;
-
-    let send = |text: &str| {
-        bob.core
-            .send_message(
-                &inst,
-                general,
-                Draft {
-                    content: text.into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-    };
-    send("first");
-    eventually(&alice.core, "alice sees the first message", |s| {
-        s.instance(&inst)
-            .and_then(|s| s.channel(general))
-            .is_some_and(|c| c.last_message_id.is_some())
-    })
-    .await;
-    let first = alice
-        .core
-        .store()
-        .instance(&inst)
-        .unwrap()
-        .channel(general)
-        .unwrap()
-        .last_message_id
-        .unwrap();
-    // Alice reads up to the first message, then Bob writes two more.
-    alice.core.mark_read(&inst, general, first);
-    eventually(&alice.core, "the read marker", |s| {
-        s.instance(&inst)
-            .and_then(|s| s.read_states.get(&general))
-            .is_some_and(|r| r.last_read_id == first)
-    })
-    .await;
-    send("second");
-    send("third");
-    eventually(&alice.core, "three messages", |s| {
-        s.instance(&inst)
-            .and_then(|s| s.channel(general))
-            .and_then(|c| c.last_message_id)
-            .is_some_and(|l| l > first)
-    })
-    .await;
-
-    // Alice opens #general: the divider sits before "second".
-    let _ = alice.update(Message::Select(inst.clone(), general));
-    assert_eq!(
-        alice.panes.focused().unwrap().buffer,
-        Buffer::Channel {
-            inst: inst.clone(),
-            channel: general
-        }
-    );
-    assert_eq!(
-        alice.panes.focused().unwrap().channel.read_marker,
-        Some(first)
-    );
-    alice.core.open_channel(&inst, general).await.unwrap();
-    let build = |app: &App| {
-        let store = app.core.store();
-        let s = store.instance(&inst).unwrap();
-        let window = s.window(general).unwrap();
-        let rows = rows::build(
-            s,
-            window,
-            &rows::Options {
-                group_minutes: 7,
-                utc_offset: 0,
-                read_marker: app.panes.focused().unwrap().channel.read_marker,
-            },
-        );
-        rows.iter()
-            .map(|r| match r {
-                Row::NewMessages => "new".to_owned(),
-                Row::Message(m) => window.get(m.id).unwrap().content.clone(),
-                _ => String::new(),
-            })
-            .filter(|t| !t.is_empty() && !t.contains("joined"))
-            .collect::<Vec<_>>()
-    };
-    let shown = build(&alice);
-    let tail: Vec<&str> = shown
         .iter()
-        .rev()
-        .take(4)
-        .rev()
-        .map(String::as_str)
-        .collect();
-    assert_eq!(tail, ["first", "new", "second", "third"], "{shown:?}");
-
-    // Bob deletes "third": it disappears from Alice's list.
-    let third = {
-        let store = alice.core.store();
-        let w = store.instance(&inst).unwrap().window(general).unwrap();
-        w.messages.iter().find(|m| m.content == "third").unwrap().id
-    };
-    bob.core
-        .delete_message(&inst, general, third)
-        .await
-        .unwrap();
-    eventually(&alice.core, "the delete", |s| {
+        .find(|c| c.kind.has_messages())
+        .expect("a text channel")
+        .id;
+    eventually(&core, "the channel arrives", |s| {
         s.instance(&inst)
-            .and_then(|s| s.window(general))
-            .and_then(|w| w.get(third))
+            .is_some_and(|s| s.channel(channel).is_some())
+    })
+    .await;
+    core.open_channel(&inst, channel).await.unwrap();
+
+    let options = rows::Options {
+        group_minutes: 7,
+        utc_offset: 0,
+        read_marker: None,
+    };
+    let messages = |core: &Core| -> Vec<Row> {
+        let store = core.store();
+        let s = store.instance(&inst).unwrap();
+        rows::build(s, s.window(channel).unwrap(), &options)
+            .into_iter()
+            .filter(|r| matches!(r, Row::Message(_) | Row::Pending(_)))
+            .collect()
+    };
+    assert!(messages(&core).is_empty());
+
+    for text in ["one", "two"] {
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                content: text.into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(messages(&core).len(), 2, "pending ones show right away");
+    eventually(&core, "both are sent", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.window(channel))
+            .is_some_and(|w| w.pending.is_empty() && w.messages.len() >= 2)
+    })
+    .await;
+    let rows = messages(&core);
+    let [Row::Message(first), Row::Message(second)] = rows.as_slice() else {
+        panic!("two messages: {rows:?}");
+    };
+    assert!(!first.grouped);
+    assert!(second.grouped, "the same author, right after");
+
+    core.delete_message(&inst, channel, first.id).await.unwrap();
+    eventually(&core, "the delete arrives", |s| {
+        s.instance(&inst)
+            .and_then(|s| s.window(channel))
+            .and_then(|w| w.get(first.id))
             .is_some_and(|m| m.deleted)
     })
     .await;
-    assert!(!build(&alice).contains(&"third".to_owned()));
-
-    // A reaction toggles: the chip is "mine" (highlighted) after adding, gone after removing.
-    let second = {
-        let store = alice.core.store();
-        let w = store.instance(&inst).unwrap().window(general).unwrap();
-        w.messages
-            .iter()
-            .find(|m| m.content == "second")
-            .unwrap()
-            .id
-    };
-    let reactions = |app: &App| {
-        app.core
-            .store()
-            .instance(&inst)
-            .and_then(|s| s.window(general))
-            .and_then(|w| w.get(second))
-            .map(|m| m.reactions.clone())
-            .unwrap_or_default()
-    };
-    alice
-        .core
-        .react(&inst, general, second, "👍")
-        .await
-        .unwrap();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while !reactions(&alice)
-        .iter()
-        .any(|r| r.emoji == "👍" && r.me && r.count == 1)
-    {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{:?}",
-            reactions(&alice)
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    alice
-        .core
-        .unreact(&inst, general, second, "👍")
-        .await
-        .unwrap();
-    while !reactions(&alice).is_empty() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "{:?}",
-            reactions(&alice)
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    assert_eq!(messages(&core).len(), 1, "deleted messages are left out");
 }
 
-#[tokio::test]
-async fn input_box_completes_sends_attaches_replies_and_edits() {
-    use crate::buffer::channel::{self, input};
-    use hermes_client_core::proto::id::Id;
-    use iced::widget::text_editor::{Action as EditorAction, Motion};
+/// gpui keeps a list's state mutably borrowed while it calls the scroll handler. Reading the list
+/// from there panicked, which on Windows aborted the client at the first wheel notch.
+#[gpui::test]
+fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    use gpui_kit::{
+        AppContext as _, Modifiers, ScrollDelta, ScrollEvent, VisualTestContext, WindowOptions,
+        point, px,
+    };
 
-    let server = start("input-box").await;
-    let mut alice = app();
-    probe(&mut alice, &server.link).await;
-    submit(&mut alice, "alice", "correct horse").await;
-    let inst = server.host.display();
-    let space = first_space(&alice.core, &inst).await;
-    let general = alice.core.store().instance(&inst).unwrap().spaces[&space]
-        .channels
-        .values()
-        .find(|c| c.name.as_deref() == Some("general"))
-        .unwrap()
-        .id;
-    let invite = alice
-        .core
-        .rest(&inst)
-        .unwrap()
-        .create_invite(space, &CreateInviteRequest::default())
-        .await
+    // The real server and tokio wake the window's tasks from other threads.
+    cx.executor().allow_parking();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    let mut bob = app();
-    probe(
-        &mut bob,
-        &alice.core.invite_link(&inst, &invite.code).unwrap(),
-    )
-    .await;
-    submit(&mut bob, "bob", "battery staple").await;
-    first_space(&bob.core, &inst).await;
-    let bob_id = bob.core.store().instance(&inst).unwrap().me_id().unwrap();
-    eventually(&alice.core, "alice knows bob", |s| {
-        s.instance(&inst)
-            .is_some_and(|s| s.users.contains_key(&bob_id))
-    })
-    .await;
-
-    let _ = alice.update(Message::Select(inst.clone(), general));
-    alice.core.open_channel(&inst, general).await.unwrap();
-    let pane = alice.panes.focus;
-    let input_msg = |app: &mut App, m: input::Message| {
-        let _ = app.update(Message::Channel(pane, channel::Message::Input(m)));
-    };
-    fn composer<'a>(app: &'a App, inst: &str, general: Id) -> &'a input::Composer {
-        app.composers.get(&(inst.to_owned(), general)).unwrap()
-    }
-
-    // Typing "@bo" offers Bob; accepting inserts his ID form.
-    alice
-        .composers
-        .get_mut(&(inst.clone(), general))
-        .unwrap()
-        .set_text("hi @bo");
-    input_msg(
-        &mut alice,
-        input::Message::Edit(EditorAction::Move(Motion::DocumentEnd)),
-    );
-    assert!(
-        composer(&alice, &inst, general)
-            .suggestions
-            .iter()
-            .any(|s| s.insert == format!("<@{bob_id}> ")),
-        "{:?}",
-        composer(&alice, &inst, general).suggestions
-    );
-    input_msg(&mut alice, input::Message::Accept(usize::MAX));
-    assert!(
-        composer(&alice, &inst, general)
-            .content
-            .text()
-            .starts_with(&format!("hi <@{bob_id}> ")),
-        "the insert ends with a space to keep typing"
-    );
-
-    // A file is attached: it must finish uploading before sending.
-    let file = std::env::temp_dir().join(format!("hermes-gui-{}-note.txt", std::process::id()));
-    std::fs::write(&file, b"remember the snacks").unwrap();
-    let _ = alice.update(Message::FilesPicked(
-        inst.clone(),
-        general,
-        vec![file.clone()],
-    ));
-    let local = composer(&alice, &inst, general).uploads[0].local;
-    input_msg(&mut alice, input::Message::Submit);
-    assert!(
-        !composer(&alice, &inst, general).is_empty(),
-        "not sent while uploading"
-    );
-    let uploaded = alice
-        .core
-        .upload(&inst, &file)
-        .await
-        .map_err(|e| e.to_string());
-    let _ = alice.update(Message::Uploaded(inst.clone(), general, local, uploaded));
-    input_msg(&mut alice, input::Message::Submit);
-    assert!(composer(&alice, &inst, general).is_empty());
-    assert!(composer(&alice, &inst, general).uploads.is_empty());
-
-    let first = loop {
-        let found = bob
-            .core
-            .rest(&inst)
-            .unwrap()
-            .messages(general, &Default::default())
+    // As in `main`: the core spawns tokio tasks from the UI thread.
+    let _guard = runtime.enter();
+    let mut config = ClientConfig::default();
+    config.general.check_for_updates = false;
+    let (core, events) = Core::new(config, CoreOptions::in_memory("hermes-gui"));
+    let (server, inst, space, channel) = runtime.block_on(async {
+        let server = start("wheel").await;
+        let probed = add_instance::probe(core.clone(), server.link.clone())
             .await
-            .unwrap()
-            .into_iter()
-            .find(|m| m.author.username == "alice" && !m.attachments.is_empty());
-        if let Some(m) = found {
-            break m;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(first.content, format!("hi <@{bob_id}>"));
-    assert_eq!(first.mentions.users, [bob_id]);
-    assert_eq!(
-        first.attachments[0].filename,
-        file.file_name().unwrap().to_string_lossy()
-    );
-
-    // Reply mode: the next message replies to the first; Escape-like Cancel leaves the mode.
-    eventually(&alice.core, "alice's own message", |s| {
-        s.instance(&inst)
-            .and_then(|s| s.window(general))
-            .is_some_and(|w| w.get(first.id).is_some())
-    })
-    .await;
-    let reply = Message::Menu(
-        crate::sidebar::menu::Target::Message(inst.clone(), general, first.id),
-        crate::sidebar::menu::Action::Reply,
-    );
-    let _ = alice.update(reply.clone());
-    assert_eq!(composer(&alice, &inst, general).reply_to, Some(first.id));
-    input_msg(&mut alice, input::Message::Cancel);
-    assert_eq!(composer(&alice, &inst, general).reply_to, None);
-    let _ = alice.update(reply);
-    alice
-        .composers
-        .get_mut(&(inst.clone(), general))
-        .unwrap()
-        .set_text("/shrug sure");
-    input_msg(&mut alice, input::Message::Submit);
-    let reply = loop {
-        let found = bob
-            .core
-            .rest(&inst)
-            .unwrap()
-            .messages(general, &Default::default())
+            .unwrap();
+        let inst = add_instance::submit(core.clone(), account(&probed, Tab::Register, "alice"))
             .await
-            .unwrap()
-            .into_iter()
-            .find(|m| m.reply_to.is_some());
-        if let Some(m) = found {
-            break m;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(reply.reply_to.unwrap().id, first.id);
-    assert!(reply.content.starts_with("sure "), "{}", reply.content);
-
-    // Up in an empty box edits my last message.
-    eventually(&alice.core, "the reply", |s| {
-        s.instance(&inst)
-            .and_then(|s| s.window(general))
-            .is_some_and(|w| w.get(reply.id).is_some())
-    })
-    .await;
-    input_msg(&mut alice, input::Message::EditLast);
-    assert_eq!(composer(&alice, &inst, general).editing, Some(reply.id));
-    assert_eq!(composer(&alice, &inst, general).text(), reply.content);
-    input_msg(&mut alice, input::Message::Cancel);
-    assert_eq!(composer(&alice, &inst, general).editing, None);
-    assert!(composer(&alice, &inst, general).is_empty());
-
-    // Drafts stay with their channel.
-    alice
-        .composers
-        .get_mut(&(inst.clone(), general))
-        .unwrap()
-        .set_text("unfinished");
-    let _ = alice.update(Message::OpenSettings);
-    let _ = alice.update(Message::Select(inst.clone(), general));
-    assert_eq!(composer(&alice, &inst, general).text(), "unfinished");
-    let _ = std::fs::remove_file(&file);
-}
-
-#[tokio::test]
-async fn typing_anywhere_goes_into_the_message_box() {
-    use iced::keyboard::{self, Key, Modifiers};
-
-    const ANY: keyboard::key::Physical =
-        keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
-    let server = start("type-to-focus").await;
-    let mut owner = app();
-    probe(&mut owner, &server.link).await;
-    submit(&mut owner, "alice", "correct horse").await;
-    let inst = server.host.display();
-    let space = first_space(&owner.core, &inst).await;
-    let general = owner
-        .core
-        .store()
-        .instance(&inst)
-        .and_then(|s| {
-            s.spaces[&space]
-                .channels
-                .values()
-                .find(|c| c.name.as_deref() == Some("general"))
-                .map(|c| c.id)
+            .unwrap();
+        eventually(&core, "signed in", |s| {
+            s.instance(&inst).is_some_and(|s| s.me.is_some())
         })
-        .expect("#general");
-    let _ = owner.update(Message::Select(inst.clone(), general));
-    let typed = |app: &mut App, c: &str, captured| {
-        let _ = app.update(Message::Key(
-            Key::Character(c.into()),
-            ANY,
-            Modifiers::empty(),
-            captured,
-        ));
+        .await;
+        let space = core
+            .rest(&inst)
+            .unwrap()
+            .create_space("Hangout")
+            .await
+            .unwrap();
+        let channel: Id = space
+            .channels
+            .iter()
+            .find(|c| c.kind.has_messages())
+            .expect("a text channel")
+            .id;
+        eventually(&core, "the channel arrives", |s| {
+            s.instance(&inst)
+                .is_some_and(|s| s.channel(channel).is_some())
+        })
+        .await;
+        core.open_channel(&inst, channel).await.unwrap();
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                content: "hello".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+        eventually(&core, "the message is sent", |s| {
+            s.instance(&inst)
+                .and_then(|s| s.window(channel))
+                .is_some_and(|w| w.pending.is_empty() && !w.messages.is_empty())
+        })
+        .await;
+        (server, inst, space.space.id, channel)
+    });
+
+    let boot = crate::shell::Boot {
+        core,
+        events,
+        runtime: runtime.handle().clone(),
+        endpoint: crate::single_instance::Endpoint::for_config_dir(&server.dir.join("client")),
+        link: None,
+        warning: None,
+        tray: None,
+        global_keys: None,
+        start_hidden: false,
     };
-    typed(&mut owner, "h", false);
-    typed(&mut owner, "i", false);
-    typed(&mut owner, "x", true);
-    assert_eq!(
-        owner.composers[&(inst.clone(), general)].text(),
-        "hi",
-        "keys the box already took are not typed twice"
-    );
-    // Ctrl+letters are shortcuts, not text.
-    let _ = owner.update(Message::Key(
-        Key::Character("k".into()),
-        ANY,
-        Modifiers::CTRL,
-        false,
-    ));
-    assert_eq!(owner.composers[&(inst, general)].text(), "hi");
+    let (window, shell) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            cx.new(|cx| crate::shell::Shell::new(boot, window, cx))
+        })
+        .unwrap()
+    });
+    let mut visual = VisualTestContext::from_window(window, cx);
+    let key = (inst.clone(), channel);
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            this.open_chat(inst.clone(), channel, window, cx);
+        });
+    });
+    for _ in 0..200 {
+        visual.run_until_parked();
+        let ready = visual.update(|_, cx| {
+            shell
+                .read(cx)
+                .chats
+                .get(&key)
+                .is_some_and(|view| !view.rows.is_empty())
+        });
+        if ready {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Read marking only looks at the list while the window has the focus.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, _| this.focused = true);
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let position = point(px(700.), px(300.));
+    visual.simulate_mouse_move(position, None, Modifiers::none());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    for lines in [1.0, -1.0] {
+        visual.simulate_event(ScrollEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0.0, lines)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+
+    // Each kind of menu opens and draws, submenus included.
+    let targets = [
+        Target::Space(inst.clone(), space),
+        Target::Channel(inst.clone(), channel),
+        Target::Me(Some(inst.clone())),
+        Target::Me(None),
+    ];
+    for target in targets {
+        visual.update(|window, cx| {
+            shell.update(cx, |this, cx| {
+                this.open_menu(target, position, window, cx);
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+            shell.update(cx, |this, cx| {
+                assert!(this.menu.is_some());
+                this.menu = None;
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+    }
 }

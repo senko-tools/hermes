@@ -177,10 +177,22 @@ impl Default for LimitsConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacyConfig {
     pub dm_policy: DmPolicy,
+    /// Refuse direct messages that are not end-to-end encrypted, so a client from before
+    /// encryption gets an error instead of leaking what it sends.
+    pub require_dm_encryption: bool,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        PrivacyConfig {
+            dm_policy: DmPolicy::default(),
+            require_dm_encryption: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

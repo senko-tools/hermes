@@ -2,7 +2,7 @@
 
 A self-hostable, open-source chat platform for friend groups and small communities: spaces with text and
 voice channels, private messages (1:1 and group) and voice calls. Written entirely in Rust, with a
-single-binary server, an [iced](https://github.com/iced-rs/iced) desktop client and a
+single-binary server, a [gpui](https://www.gpui.rs) desktop client and a
 [ratatui](https://github.com/ratatui/ratatui) terminal client.
 
 > **Status:** 1.0. Text chat, DMs and group DMs, voice channels and calls, roles and permissions,
@@ -29,11 +29,12 @@ The full specification and build plan is [`PLAN.md`](PLAN.md). Deviations from i
 | [`hermes-server`](crates/hermes-server) | Server binary and library | AGPL-3.0-or-later |
 | [`hermes-audio`](crates/hermes-audio) | Audio engine (capture, playback, Opus, jitter buffer, mixer) | GPL-3.0-or-later |
 | [`hermes-client-core`](crates/hermes-client-core) | Connection, REST and gateway client, state store, voice transport | GPL-3.0-or-later |
-| [`hermes-gui`](crates/hermes-gui) | iced desktop client | GPL-3.0-or-later |
+| [`hermes-gui`](crates/hermes-gui) | Desktop client (gpui) | GPL-3.0-or-later |
 | [`hermes-tui`](crates/hermes-tui) | ratatui terminal client | GPL-3.0-or-later |
 | [`hermes-voicebot`](crates/hermes-voicebot) | Dev tools: headless voice client, `hermes-loadtest` | GPL-3.0-or-later |
 
-Phase 0 experiments live in [`spikes/`](spikes) (standalone binaries, not used by the real crates).
+Direct messages and voice are end-to-end encrypted; [docs/e2ee.md](docs/e2ee.md) says how, and what that does and
+does not protect.
 
 ## Building
 

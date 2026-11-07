@@ -1463,3 +1463,345 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   ignores shares.
 - **Why:** the developer asked for screen sharing now, with one smart grid of people and
   shares.
+
+## 2026-11-02: Screen share quality settings, enlarged shares, selecting messages
+
+- **What:** `voice.share_resolution` (`720p` default, `1080p`, `1440p`, `native` = up to the
+  protocol's 3840 px) and `voice.share_fps` (10 default; 5, 10, 15 or 30 offered, at most the
+  protocol's 30) in Settings → Voice & Audio, read when a share starts. The bitrate follows the
+  size and rate (about 0.1 bit per pixel per frame, 1.5 to 8 Mbit/s), which keeps keyframes well
+  under the 512 KiB frame limit. This replaces the fixed 1280×720 at 10 fps of the screen sharing
+  entry above.
+- **Enlarged shares:** clicking a share in the voice room shows it alone in the grid's area;
+  clicking it again or Esc goes back to everyone.
+- **Selecting messages:** "Select" in a message's menu or Ctrl+click starts selecting, Shift+click
+  adds a range, and while selecting, a click toggles. Only messages I may delete can be
+  selected. A bar replaces the composer with Delete (confirmed once, one `DELETE` per message:
+  no bulk endpoint) and Cancel/Esc. The jumped-to message and the one whose menu is open lost
+  their accent border and keep a plain tint.
+- **Why:** the developer asked for these.
+
+## 2026-11-02: Faster screen sharing, Direct3D 12 by default, the share menu
+
+- **Renderer:** on Windows the GUI draws with Direct3D 12 unless `WGPU_BACKEND` is set. wgpu
+  otherwise picks Vulkan first, and an older Intel driver's Vulkan hung the window ("not
+  responding") on the developer's laptop. Without a Direct3D 12 GPU, iced falls back to its
+  software renderer.
+- **Capture:** DXGI Desktop Duplication (`screen/dxgi.rs`, through the `windows` crate with the
+  Direct3D 11/DXGI features xcap already enables: no new dependency) on the GPU the screen is
+  connected to; GDI (xcap) only if duplication is unavailable. Not xcap's own duplication
+  recorder: its thread never stops once started, hands over frames up to a frame late and only
+  looks at the default GPU. Measured on the developer's PC (1440p screen, release build):
+  12 ms per picture instead of 43 ms.
+- **Pipeline:** capturing + scaling and encoding + sending run on two threads; a picture the
+  encoder has no time for is dropped. An unchanged screen sends nothing but a repeated picture
+  when a keyframe is due. Scaling is our own area average on up to four threads
+  (`screen/scale.rs`: 9–11 ms for 1440p → 1080p, against 46 ms for `image::imageops::thumbnail`);
+  RGB → YUV uses OpenH264's SIMD conversion (2 ms instead of the per-pixel path). A line with
+  the share's numbers is logged every 10 s.
+- **NASM:** OpenH264's build quietly drops its assembly when NASM is not on `PATH` (every build
+  so far, 1.1.0 included): encoding a 1080p picture took 66 ms instead of 18 ms. The release
+  workflow installs NASM and fails if OpenH264 was built without it. Local builds need NASM on
+  `PATH` too.
+- **Watching:** shares are drawn with iced's `shader` widget (`screen/view.rs`): one set of Y/U/V
+  textures per share, overwritten in place, converted to colors on the GPU. As images, every
+  frame was a new GPU texture (and, above 2 MiB, a separate upload on iced's worker), which is
+  the prime suspect for the laptop running out of GPU memory, and every pixel was converted on
+  the CPU. iced's software renderer does not draw shares.
+- **Share menu:** the voice panel's audio settings button became Share screen; it opens a menu
+  with the screen, resolution and frame rate (saved as soon as they are picked, so the menu
+  offers the last choice) and Start sharing, as does Share screen in the voice room's header.
+  While sharing, the button stops the share. The options stay in Settings → Voice & Audio too.
+- **Why:** the developer reported the laptop hanging and running out of memory, and shares
+  that looked the same speed whatever the settings.
+
+## 2026-11-05: Measuring screen shares, testing on a local network
+
+- **What:** every hop of a screen share logs its numbers every 10 s: the sharer (capture, encode,
+  keyframes, frames refused by a full connection queue), both transport directions in
+  `hermes-client-core` (rate, bitrate, time on the wire, failures), the server (frames in, over
+  the rate limit, queued for and lost to watchers, keyframe requests), the watcher's decoder
+  (decode and waiting time, pictures the window had no time for, arrival jitter, delay drift) and
+  the drawing (new pictures reaching the GPU). `share_transport_benchmark` (ignored test in
+  `hermes-client-core`) pushes share-sized frames through a real local server without any codec.
+  `docs/testing-locally.md` describes a server and two clients on a local network and how to read
+  the numbers. OpenH264 is optimized in dev builds too, like the audio crates.
+- **First results (developer's PC, 1440p screen shared at 1080p, release build):** capture 12 ms
+  (reading the desktop back from the GPU), scaling 12 ms, YUV 2 ms, software encode 18 ms per
+  delta frame (32 ms per keyframe), software decode 12 ms: about 44 ms of CPU per frame, so the
+  current design cannot reach 60 fps, let alone 4K. The transport on one machine delivers frames in
+  1–2 ms even at 25 Mbit/s, but the server's fixed one-second rate window drops about 2 % of frames
+  at exactly 30 fps (timer jitter puts 31 frames in a window), and each drop breaks the picture
+  until the next keyframe. Both are fixed in the following steps.
+- **Why:** the developer reported laggy shares that cost about 11 % CPU whether watched or not,
+  and asked for a way to tell server problems from client ones.
+
+## 2026-11-05: Watching screen shares on demand
+
+- **What:** a screen share is received only by people who chose to watch it. A sharer's tile
+  shows "Sharing their screen" and a **Watch** button (a click anywhere on the tile does the same);
+  a watched share has a **Stop watching** button in its top-right corner (and on its tile while
+  it loads). The choice is forgotten when the share or the call ends; it is still only received
+  while the voice room shows in a pane and the window is open. This replaces "shares are received
+  while the voice room shows" of the 2026-11-02 entry.
+- **Protocol (addition to docs/protocol.md):** the server tells a sharer how many watch them with
+  the new control op `share_watchers {count}`, after `share_start` and whenever it changes
+  (watching, stopping, a watcher leaving). While it is 0 the GUI stops capturing and encoding
+  (Desktop Duplication stays open so a new watcher gets a picture at once); its own tile says how
+  many watch. Older clients skip the unknown op; a newer client with an older server never gets
+  it and keeps sending as before.
+- **Why:** the developer asked for starting and stopping watching; a share nobody watches cost
+  the sharer about 11 % CPU for nothing.
+
+## 2026-11-05: Screen share transport for 60 fps
+
+- **Limits:** frames up to 2 MiB (a 4K keyframe) and 60 per second. The server's rate limit is a
+  token bucket (60 per second, 10 frames of burst) instead of a fixed one-second window, which
+  dropped about 2 % of the frames of a share at exactly the limit (timer jitter put one frame too
+  many in a window). 32 streams (frames) may be open per connection, a watcher's queue holds 16
+  frames, the sharer's own 8; both ends allow 4 MiB in flight per stream and 16 MiB per
+  connection (the defaults could not hold a large keyframe).
+- **No keyframe storms:** after a lost frame (a full queue, a frame over the rate, or a new
+  watcher) the server sends that watcher nothing from the sharer until their next keyframe, which
+  it asks for (at most every 500 ms). The sharer, when its own connection refuses a frame, sends
+  nothing until a keyframe, made at most every 500 ms; the watcher's decoder asks for a keyframe
+  at most every 500 ms instead of for every frame it cannot decode. Before, every loss produced
+  another keyframe, the largest frames, on a link that was already behind.
+- **Measured (transport benchmark, one machine):** 600 of 600 frames at 60 fps and 25 or
+  40 Mbit/s, median delay 1 ms (before: 295 of 300 at 30 fps; 60 fps impossible).
+- **Not done (planned):** quinn's BBR congestion controller. Cubic kept up in the benchmark, and
+  quinn marks BBR as experimental; worth trying only if the LAN or internet numbers show the
+  sender's rate collapsing after losses.
+- **Why:** the developer asked for at least 4K at 60 fps and for smoothness first.
+
+## 2026-11-05: Hardware screen share encoding
+
+- **What:** on Windows a share is captured, scaled, converted and encoded on the GPU: Desktop
+  Duplication into a texture of our own, the Direct3D 11 video processor scales it and converts
+  it to NV12 (limited-range BT.601, like OpenH264) in one pass (`screen/gpu_convert.rs`), and
+  the GPU's own H.264 encoder (NVENC, AMF or Quick Sync) encodes it through Media Foundation
+  (`screen/mf_encode.rs`): low-latency mode, constant bitrate, High profile, no B-frames,
+  keyframes only when asked for. The picture never comes back to the CPU. Everything goes through
+  the `windows` crate (features `Win32_Media_MediaFoundation`, `Win32_System_Com`,
+  `Win32_System_Ole`, `Win32_System_Variant`): no new dependency, Media Foundation is part of
+  Windows. The output is the same Annex B H.264 as before, so watchers (and older clients, with
+  OpenH264) decode it unchanged.
+- **Fallback:** without a GPU with video support or a hardware encoder on the screen's GPU, or
+  when it fails, the share continues on the CPU path (readback, our scaler, OpenH264).
+- **Bitrate:** about 0.07 bit per pixel per frame, 2 to 40 Mbit/s (1440p at 60 fps: 15 Mbit/s;
+  4K at 60 fps: 35 Mbit/s); the rate control buffer is half a second but at most 12 Mbit, so a
+  keyframe stays well under the 2 MiB frame limit.
+- **Measured (developer's PC, NVIDIA encoder, 1440p screen):** convert + encode per frame,
+  median: 2.8 ms at 1080p, 5.3 ms at 1440p, 7.3 ms at 4K (CPU path: about 44 ms at 1080p).
+  `real_screen_hardware_is_captured_and_encoded` and `share_end_to_end` (ignored tests) measure
+  it on any machine.
+- **Why:** the developer asked for at least 4K at 60 fps and for CPU and GPU use like Discord's;
+  the software encoder cannot do either.
+
+## 2026-11-05: Hardware screen share decoding, fewer window updates
+
+- **What:** on Windows, watchers decode shares with Windows' own H.264 decoder through Media
+  Foundation (`screen/mf_decode.rs`), on the GPU (DXVA) given a Direct3D 11 device, else on the
+  CPU; OpenH264 stays the fallback (and the decoder everywhere else). It is kept up to date by
+  Windows Update, which matters for a decoder that parses other people's data. Its NV12 pictures
+  are drawn as they are: a Y and an interleaved U/V texture, converted in the same shader
+  (`screen/view.rs`). A decoded picture is read back through a staging texture of our own;
+  Media Foundation's own way stalled about 8 ms per picture.
+- **Measured (developer's PC, NVIDIA GPU), per picture:** 2.9 ms at 1080p, 4.7 ms at 1440p,
+  10.4 ms at 4K (OpenH264: 4.6, 8.1 and 18.5 ms).
+- **Window updates:** decoded pictures no longer each become a message. The decoder keeps the
+  newest picture of each share; the window takes them all at once when it is ready
+  (`Message::ScreenImages`), so a busy window shows the newest picture instead of working
+  through a queue, and these updates skip the voice and level meter bookkeeping that every other
+  message runs.
+- **Not done (planned as optional):** sharing the decoded texture with the renderer directly
+  (Direct3D 11 to wgpu's Direct3D 12) would save the readback and upload; the numbers above do
+  not need it yet.
+- **Why:** the developer asked for 4K at 60 fps; OpenH264 needs 18 ms or more for a 4K picture.
+
+## 2026-11-05: Smoothness, Mixed or Clarity; 60 fps and 2160p
+
+- **What:** `voice.share_preference` (`smoothness` default, `mixed`, `clarity`) says what a share
+  keeps when the connection or the computer falls behind: Smoothness keeps the frame rate and
+  lowers the bitrate, then the size (to half); Clarity keeps sharp, full-size pictures and lowers
+  the frame rate (to a quarter), and spends twice the bits on every picture; Mixed is in between.
+  Falling behind (frames my connection refuses, the server asking for keyframes again and again
+  because watchers lose frames, or encoding slower than the frame rate) steps down at most every
+  2 s; 8 calm seconds step back up. Chosen as a three-way switch in the share menu, on my own tile
+  in the voice room while I share (a running share follows at once) and in Settings → Voice &
+  Audio. The CPU fallback path ignores it.
+- **Options:** resolution adds `2160p`; frame rates are 15, 30 and 60 (5 and 10 removed). New
+  defaults: 1080p at 60 fps (was 720p at 10).
+- **Why:** the developer asked for smoothness first, with a quick setting for clarity.
+
+## 2026-11-05: Log files by date; crash reports named by local time
+
+- **What:** the client logs to `logs/latest.log` (TUI: `logs/latest-tui.log`). At the next start,
+  or when the local day changes while it runs, that file moves to
+  `logs/logs_old/<app>-YYYY-MM-DD.log` (`-2`, `-3`, … for more runs on one day; empty logs are
+  dropped). A `hermes.log` from older versions is moved there too. Crash reports are named
+  `crash-YYYY-MM-DD-HHMMSS.log` (local time) instead of `crash-<unix ms>.log`
+  (`client-core::logs`).
+- **Retention:** rotated logs are deleted after 7 days (PLAN.md section 13); crash and freeze
+  reports in `logs/` after 30 days, which the plan does not cover.
+- **Why:** the developer asked for logs separated by date with a `latest.log`, old ones in a
+  `logs_old` folder that gets cleaned up; one ever-growing `hermes.log` mixed every run together.
+
+## 2026-11-05: Freeze watchdog with minidumps
+
+- **What:** a `hermes-watchdog` thread in the GUI (`hermes-gui/src/watchdog.rs`). The UI thread
+  beats on every message, and a 2 s timer makes sure messages keep coming while idle. When no
+  beat comes for 10 s, the watchdog writes `logs/freeze-YYYY-MM-DD-HHMMSS.log` (version, system,
+  how long, whether the UI thread was in `update`, in `view` or elsewhere) and, on Windows, a
+  minidump of every thread's stack (`MiniDumpNormal | MiniDumpWithThreadInfo`) next to it. At
+  most 3 reports per run; when the UI responds again that goes to `latest.log`. A jump in the
+  watchdog's own clock (the computer slept) starts the count over.
+- **Dependency:** no new crate; the `windows` crate (PLAN.md section 6) gets the
+  `Win32_System_Diagnostics_Debug`, `Win32_System_Threading`, `Win32_Storage_FileSystem`,
+  `Win32_System_Kernel` and `Win32_System_Memory` features (the last three only because
+  `MiniDumpWriteDump`'s binding requires them). Approved by the developer.
+- **Why:** a friend's client froze while voice kept working, and left no crash log and nothing
+  in its log: a hang is not a panic. The cause found (a store read lock taken twice on the UI
+  thread) is fixed, and debug builds now panic on it (`Core::store`); the watchdog makes the next
+  unknown hang show where it is stuck.
+
+## 2026-11-07: The desktop client moves from iced to gpui
+
+- **What:** the developer decided to replace iced with gpui, which changes PLAN.md sections 6 and 15.
+  The new client grows in `crates/hermes-gpui` (binary `hermes-gpui`); `crates/hermes-gui` stays
+  untouched until the new client replaces it, then it and `spikes/iced-ui` are removed. So far the new
+  crate is a layout shell on sample data.
+- **Dependency:** `gpui-kit =0.9.0` (Apache-2.0), which pins GPUI as `gpui-pre =0.3.11` and adds the
+  widgets gpui lacks (text areas, menus, dialogs, resizable panels). Not the `gpui` crate: its last
+  release is 0.2.2 from October 2025. Approved by the developer. CI's Linux job gets the system
+  libraries gpui needs.
+- **Layout changes** (replacing section 15.1 in the new client): no native title bar, the sidebar
+  reaches the top of the window and a 32 px bar over the main panel holds the window buttons and drag
+  area. Friends is the sidebar's top item and its page holds message requests, DMs, group DMs and
+  people, replacing the Spaces | Messages tabs. Instances are hidden from the sidebar unless none is
+  saved, and are added from the menu of the sidebar's empty space or from settings. A real friend
+  system (requests stored on the server) was chosen and is still to be built.
+- **Why:** the developer expects better performance and a safer long-term bet, with Discord's CTO
+  announcing a GPUI desktop client in November 2026.
+- **Known gaps:** on Windows, gpui's surface drawing is an empty stub, so screen-share video has no
+  built-in path other than per-frame images (see the 2026-11 screen share entries for why those were
+  dropped), and probably needs a patched renderer. gpui's Windows renderer has no software fallback at
+  runtime, while iced's has. GPUI is pre-1.0 with no stable API, hence the exact pin. The performance
+  gain has not been measured.
+
+## 2026-11-07: gpui client layout, second pass after the developer tried it
+
+Replaces the layout part of the entry above; `docs/gpui-migration.md` has the current summary.
+
+- **What:** the native Windows title bar returns, titled with the current page, and the in-app bar is
+  gone. A Discord-like icon rail replaces the spaces dropdown: its top icon is the app icon and opens
+  Friends, with DMs in the sidebar and requests and people in the main panel. Sizes follow Discord's.
+  The font, Material icons, sounds and app icon come from the iced client.
+- **Mouse up:** every click acts on release. The kit's `context_menu` opens on press, so `menu.rs` has
+  our own. Drags and placing the text cursor still start on press, and the kit's menus close on press.
+- **Dependency:** `embed-resource =3.0.12` as a build dependency, because gpui reads the window icon
+  from the executable's resources. Approved by the developer. `hermes-gpui` also uses `hermes-audio`.
+- **Why:** the shell looked small and compact, the dropdown looked off, mouse down felt too quick, and
+  the top sidebar item sat too close to the window's edge without a title bar.
+
+## 2026-11-07: gpui client: a header again, and how share video and the tray work
+
+Developer's decisions while the client gets everything `hermes-gui` has. `hermes-gpui` replaces
+`hermes-gui` once it works, taking its crate name. Nothing else about the iced client matters until then.
+
+- **Header:** a bar over the main panel returns, without a title: it drags the window and holds the
+  page's buttons and fields and the window buttons, so the native title bar is gone again. The title
+  stays set for the taskbar. The window's minimum size is 720x480: the rail, a narrow sidebar and a
+  usable chat fit, and smaller windows only get worse.
+- **Share video:** decoded pictures become BGRA images on the decoder thread (scaled down by whole
+  steps when the tile is small) and the shell frees each image it replaces with `Window::drop_image`.
+  gpui then makes a new atlas texture for most frames, which costs little. Measured in release between
+  two clients on one PC, sharing a mostly still screen at the 1080p setting and 60 fps: a steady 60 fps with no
+  pictures dropped, 3.4 ms to decode and 7.8 ms to convert when enlarged in a maximized window (1 ms in a small
+  tile), about one CPU core, and GPU memory flat. A busy screen and slower PCs are not measured. A patched
+  renderer is not needed so far.
+- **Tray:** gpui cannot hide a window, so `desktop/window.rs` calls `ShowWindowAsync` with the window's
+  own handle. Dependency `raw-window-handle =0.6.2` for that (already in the lockfile through gpui),
+  approved by the developer.
+- **Voice:** a join in progress blocks further joins (the old Join voice spam). `Core::voice_link`
+  exposes the QUIC connection's numbers for a network panel with live graphs, opened from the voice
+  panel's connection line.
+- **Friend system and split panes:** after everything else. The Friends page lists message requests
+  and people from shared spaces until then. Pane keybinds stay valid config but do nothing.
+- **Sizes and fonts:** `font.size` draws 3 px larger than its value, so the iced default of 13 means the 16 px
+  the developer asked for. The UI scale goes through `theme::px` and the window's rem size, since gpui has no scale
+  of its own.
+- **Choices as chips:** settings with a few choices are rows of buttons instead of dropdowns.
+- **Header search:** a "Find anything" field in the header opens the command bar, so it can be found without the key.
+- **Member list:** hides by itself when the chat would get narrower than 480 px. The channel topic sits at its top.
+- **Freeze dumps:** `MiniDumpWriteDump` on the own process froze about 1 in 4 test runs (4 of 15, against 0 of 15
+  without that test), so the test that writes a real dump only runs on request. The watchdog itself still dumps
+  in-process, as in the iced client; Microsoft advises a separate process for this. Not changed yet.
+
+## 2026-11-07: window tests for hermes-gpui
+**What changed:** `hermes-gpui` has a new dev-dependency, `gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }`, the gpui the kit already pins with its test platform on. `the_wheel_and_menus_over_a_chat_do_not_crash` runs the real `Shell` in a headless window against a real server.
+**Why:** the wheel crash came from a borrow only a real event dispatch shows. The test fails with the same panic when the fix is taken out. The kit's own `test-support` feature would be simpler, but it mentions the optional `gpui-fast`, which makes Cargo resolve it and would force `taffy` from 0.15.1 down to 0.15.0 in the app. Tests that use real I/O need `cx.executor().allow_parking()`.
+
+## 2026-11-07: smaller default text and named sizes
+**What changed:** `font.size` now defaults to 11, which `hermes-gpui` draws at 14 px, with secondary text at 13 and captions at 12. Before, it was 13 (16 px, chosen to be close to Discord). Text uses four roles (`heading_size`, `body_size`, `secondary_size`, `caption_size`) instead of three sizes with one-off additions.
+**Why:** the developer tried the client, found the default too big and the sizes inconsistent, and chose 14 px. A saved `font.size` is not touched. The default lives in `hermes-client-core`, so a new iced install would start at 11 px; that client is on its way out.
+
+## 2026-11-07: dropdowns for audio devices, submenus in menus
+**What changed:** the microphone and speaker settings use the kit's `Select` instead of rows of chips; other short choices stay chips. Menu entries of a group sit in a submenu when at least two are next to each other (Notifications, Create, Status), and each instance has a submenu in the user panel's menu.
+**Why:** the developer's request; device names are long and there can be many. The grouping is in `menu_entries::grouped`, so the flat entries and their tests are unchanged.
+
+## 2026-11-07: microphone volume up to 400 %, smoother meter, richer network graphs
+**What changed:**
+- The microphone volume goes to 400 % (`hermes_audio::MAX_INPUT_VOLUME`, it was 200 %). Above 100 % a soft limiter keeps samples below full scale; it leaves anything under 0.8 alone.
+- The downmix leaves out channels 30 dB below the loudest, because averaging a stereo stream that has the microphone on one side halves its level.
+- Input levels are reported every 20 ms instead of 50 ms, and the settings meter animates each frame with a fast rise and slow fall.
+- The network graphs are drawn on a canvas: value scale, time axis, min/avg/max, a hover readout with the time, and 1, 5 or 15 minute ranges (the history is 15 minutes). Long ranges keep the highest value per point, so a spike stays visible.
+**Why:** the developer's request: the microphone was quiet at 200 %, the meter looked low in frame rate, and the graphs did not say what period they cover.
+
+## 2026-11-07: Volumes in decibels, native title bar, left column
+
+Asked for by the developer.
+
+- **Volume sliders are decibels.** The stored value is the slider's position. Above 100 % every 100 % doubles the
+  amplitude (`hermes_audio::volume_gain`): 200 % is +6 dB, 300 % is +12 dB, the top of every slider. Below 100 % every
+  halving of the position halves the amplitude and 0 % is silent, because a pure exponential never reaches silence.
+- **Native title bar**, replacing the 2026-11-07 "title-less header": the title is `page | space - Hermes`. Its colour
+  follows the theme where Windows allows (Windows 11 caption colour; Windows 10 only dark or light).
+- **Left column:** see `docs/gpui-migration.md`. Theme keys `channel.text` and `channel.category` are new and derived
+  for older theme files; neko's values were sampled from the developer's screenshot.
+- **Level meter:** at most 30 redraws a second and only when the bar moves, instead of one per display frame.
+
+## 2026-11-07: Tags, username changes and friends
+
+Asked for by the developer.
+
+- **Tags:** `name#1234`, four digits, random and free for that name. Names stop being unique; the pair is. The instance's
+  first account and everyone who was an instance admin at the migration have no tag; instance admins change that with
+  a member's menu, `PATCH /admin/users/{id}` (`tagless`) or `hermes-server user set-tagless`. Only one account can have a
+  name without a tag.
+- **Storage:** `users.username` holds the whole handle, because removing that column's UNIQUE would need rebuilding a
+  table half the schema points at (a rebuild with foreign keys on runs the cascades). `#` is not allowed in names, so it
+  splits back; on the wire `username` and `discriminator` are separate.
+- **Signing in:** `name#1234`, or `name` alone when that means one account (an account without a tag, or the only one
+  of that name). Existing accounts sign in as before until someone takes their name.
+- **Changing the username:** needs the password. The tag stays unless taken for the new name; an account without a tag
+  needs the new name to be free.
+- **Friends:** requests by handle, stored in `relationships`. Friends see each other's presence and may always open a
+  DM, whatever `dm_from` and `dm_policy` say. Blocking is not part of this.
+- **Client:** the Friends page has Online, All, Pending and People tabs. The TUI gets none of this yet.
+
+## 2026-11-07: End-to-end encryption and one desktop client
+
+Asked for by the developer.
+
+- **End-to-end encryption** of DMs, group DMs, their files and all voice, with no passwords: see `docs/e2ee.md`, which
+  also says what it does not protect. PLAN.md planned MLS for this; MLS needs clients to keep their own message
+  history, while here history lives on the server and is read on any device, so messages are sealed per device instead.
+- **New dependencies** (the request cannot be met without them): `x25519-dalek`, `ed25519-dalek`, `chacha20poly1305`,
+  `hkdf`, `zeroize`, and `base64` in the client core.
+- **Protocol version 2 and packet version 2:** clients and servers from before this refuse each other with a clear
+  message, instead of calls going silent. Update the server first.
+- **`privacy.require_dm_encryption`** is on by default: a plain DM is refused, including with attachments.
+- **hermes-gpui replaced hermes-gui,** taking its crate name and the `hermes` binary, as the developer asked. The iced
+  client, `spikes/` (throwaway Phase 0 experiments nothing used), its workflow, the `iced` and `pulldown-cmark` workspace
+  dependencies and a `data/` folder that was committed by mistake (a test database and a throwaway TLS key) are gone.

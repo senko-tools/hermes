@@ -90,6 +90,7 @@ async fn post_system_message(
         deleted: false,
         pinned: false,
         kind: MessageKind::System,
+        e2ee: None,
     };
     let mut tx = state.db.write.begin().await?;
     db::messages::insert(&mut tx, &row).await?;

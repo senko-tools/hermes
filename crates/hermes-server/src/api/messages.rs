@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessageRequest};
+use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadState};
@@ -129,6 +130,44 @@ pub async fn get(
     Ok(Json(one_to_wire(&state, row, auth.user_id).await?))
 }
 
+/// An encrypted message as it is stored: JSON, and the `content` next to it must be empty, since a
+/// client that also sent the words would defeat the point.
+fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<String>> {
+    let Some(e2ee) = e2ee else {
+        return Ok(None);
+    };
+    if !content.is_empty() {
+        return Err(validate::field_error(
+            "content",
+            "must be empty in an encrypted message",
+        ));
+    }
+    let json =
+        serde_json::to_string(e2ee).map_err(|_| Error::internal("envelope not serializable"))?;
+    if json.len() > MAX_ENVELOPE_BYTES {
+        return Err(validate::field_error("e2ee", "is too large"));
+    }
+    Ok(Some(json))
+}
+
+/// DMs must be encrypted (`privacy.require_dm_encryption`); spaces are not.
+fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) -> ApiResult<()> {
+    if kind.is_private() {
+        if e2ee.is_none() && state.config.privacy.require_dm_encryption {
+            return Err(Error::new(
+                ErrorCode::BadRequest,
+                "Direct messages are end-to-end encrypted here: update Hermes to send them",
+            ));
+        }
+    } else if e2ee.is_some() {
+        return Err(validate::field_error(
+            "e2ee",
+            "only direct messages are encrypted",
+        ));
+    }
+    Ok(())
+}
+
 /// `SEND_MESSAGES` (+ `ATTACH_FILES` with attachments); slowmode unless `BYPASS_SLOWMODE`.
 /// Mentions are stored and raise the mentioned users' mention counts.
 pub async fn send(
@@ -164,14 +203,16 @@ pub async fn send(
             ),
         );
     }
-    if req.content.trim().is_empty() && attachment_ids.is_empty() {
+    if req.content.trim().is_empty() && attachment_ids.is_empty() && req.e2ee.is_none() {
         fields.add("content", "must not be empty");
     }
     fields.finish()?;
+    let e2ee = sealed_form(req.e2ee.as_ref(), &req.content)?;
 
     let (resolved, slowmode, kind) = {
         let cache = state.cache();
         let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        check_encryption(&state, t.kind, e2ee.as_ref())?;
         if !attachment_ids.is_empty() {
             t.require(Permissions::ATTACH_FILES)?;
         }
@@ -217,6 +258,7 @@ pub async fn send(
         deleted: false,
         pinned: false,
         kind: MessageKind::Default,
+        e2ee,
     };
     let mut tx = state.db.write.begin().await?;
     db::messages::insert(&mut tx, &row).await?;
@@ -269,12 +311,14 @@ pub async fn edit(
     let max = state.config.limits.max_message_length as usize;
     validate::message_content(&req.content, max)
         .map_err(|problem| validate::field_error("content", problem))?;
+    let e2ee = sealed_form(req.e2ee.as_ref(), &req.content)?;
     let t = target(
         &state.cache(),
         channel_id,
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
+    check_encryption(&state, t.kind, e2ee.as_ref())?;
     let mut row = live_message(&state, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
         return Err(Error::new(
@@ -283,6 +327,7 @@ pub async fn edit(
         ));
     }
     if req.content.trim().is_empty()
+        && e2ee.is_none()
         && db::messages::count_attachments(&state.db.read, message_id).await? == 0
     {
         return Err(validate::field_error("content", "must not be empty"));
@@ -297,10 +342,11 @@ pub async fn edit(
 
     let now = now_ms();
     let mut tx = state.db.write.begin().await?;
-    db::messages::edit_content(&mut tx, message_id, &req.content, now).await?;
+    db::messages::edit_content(&mut tx, message_id, &req.content, e2ee.as_deref(), now).await?;
     db::messages::set_mentions(&mut tx, message_id, &resolved.mentions).await?;
     tx.commit().await?;
     row.content = req.content;
+    row.e2ee = e2ee;
     row.edited_at = Some(now);
     let message = one_to_wire(&state, row, auth.user_id).await?;
     state.publish(

@@ -26,10 +26,10 @@ pub const VOICE_CERT_NAME: &str = "voice";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// A screen share frame must arrive completely within this time.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
-/// Screen share frames waiting to be written to one client.
-const VIDEO_QUEUE: usize = 8;
+/// Screen share frames waiting to be written to one client (about a quarter second at 60 fps).
+const VIDEO_QUEUE: usize = 16;
 /// Unidirectional streams a peer may have open at once (one per share frame).
-pub const MAX_UNI_STREAMS: u32 = 8;
+pub const MAX_UNI_STREAMS: u32 = 32;
 
 #[derive(Debug)]
 pub enum EndpointError {
@@ -61,6 +61,9 @@ pub fn transport_config() -> quinn::TransportConfig {
     ));
     transport.keep_alive_interval(Some(Duration::from_millis(KEEP_ALIVE_MS)));
     transport.max_concurrent_uni_streams(MAX_UNI_STREAMS.into());
+    transport.stream_receive_window(voice::VIDEO_STREAM_WINDOW.into());
+    transport.receive_window(voice::VIDEO_CONNECTION_WINDOW.into());
+    transport.send_window(u64::from(voice::VIDEO_CONNECTION_WINDOW));
     transport
 }
 
@@ -337,6 +340,10 @@ fn handle(
         }
         ClientControl::RequestKeyframe { participant_id } => {
             voice.keyframe_wanted(conn_id, participant_id);
+            None
+        }
+        ClientControl::VoiceKey { to, key } => {
+            voice.relay_key(conn_id, to, key);
             None
         }
     }

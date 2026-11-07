@@ -32,6 +32,7 @@ impl AttachmentRow {
             width: self.width,
             height: self.height,
             has_thumb: self.has_thumb,
+            sealed: None,
         }
     }
 

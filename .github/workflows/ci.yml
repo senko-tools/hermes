@@ -31,10 +31,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system libraries (Linux)
         if: runner.os == 'Linux'
-        # ALSA for cpal; GTK, libxdo and appindicator for the GUI's tray icon (tray-icon, muda).
+        # ALSA for cpal; GTK, libxdo and appindicator for the GUI's tray icon (tray-icon, muda);
+        # xkbcommon, fontconfig, freetype and Wayland for gpui (hermes-gui).
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy

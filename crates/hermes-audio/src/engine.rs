@@ -28,8 +28,9 @@ const OUTPUT_TARGET: Duration = Duration::from_millis(30);
 const OUTPUT_IDLE: Duration = Duration::from_secs(3);
 /// How long to wait before retrying a device that could not be opened.
 const RETRY: Duration = Duration::from_secs(2);
-/// Input level reports per second while metering.
-const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
+/// The shortest time between input level reports while metering: less than the 20 ms tick, so every
+/// tick reports (one frame of audio, 50 times a second).
+const LEVEL_INTERVAL: Duration = Duration::from_millis(15);
 const TICK: Duration = Duration::from_millis(20);
 
 /// A device replacement for headless use (the voicebot, tests): 48 kHz mono in 20 ms frames,
@@ -55,7 +56,7 @@ pub enum AudioEvent {
         participant: Option<u16>,
         speaking: bool,
     },
-    /// dBFS of the processed microphone signal, 20 times a second while metering.
+    /// dBFS of the processed microphone signal, 50 times a second while metering.
     InputLevel(f32),
     /// A device was lost (or the chosen one is missing) and another one is used.
     DeviceChanged { input: bool, name: String },
@@ -71,6 +72,9 @@ enum Command {
     SelfDeaf(bool),
     Ptt(bool),
     Receive(u16, Vec<u8>),
+    ReceiveShare(u16, Vec<u8>),
+    ShareVolume(u16, f32),
+    RemoveShare(u16),
     RemoveParticipant(u16),
     ClearParticipants,
     Volume(u16, f32),
@@ -141,6 +145,24 @@ impl Engine {
         self.send(Command::Receive(participant, datagram));
     }
 
+    /// A share audio datagram of `participant`'s screen share.
+    pub fn receive_share(&self, participant: u16, datagram: Vec<u8>) {
+        self.send(Command::ReceiveShare(participant, datagram));
+    }
+
+    /// The volume of `participant`'s screen share sound, as a slider position.
+    pub fn set_share_volume(&self, participant: u16, volume: f32) {
+        self.send(Command::ShareVolume(
+            participant,
+            crate::volume_gain(volume),
+        ));
+    }
+
+    /// Stops playing `participant`'s screen share sound (no longer watched, or stopped).
+    pub fn remove_share(&self, participant: u16) {
+        self.send(Command::RemoveShare(participant));
+    }
+
     pub fn remove_participant(&self, participant: u16) {
         self.send(Command::RemoveParticipant(participant));
     }
@@ -149,9 +171,9 @@ impl Engine {
         self.send(Command::ClearParticipants);
     }
 
-    /// 0–2 (200 %).
+    /// A participant's volume, as a slider position.
     pub fn set_volume(&self, participant: u16, volume: f32) {
-        self.send(Command::Volume(participant, volume));
+        self.send(Command::Volume(participant, crate::volume_gain(volume)));
     }
 
     pub fn set_local_mute(&self, participant: u16, muted: bool) {
@@ -171,7 +193,7 @@ impl Engine {
         self.send(Command::MicTest(on));
     }
 
-    /// Reports [`AudioEvent::InputLevel`] 20 times a second (opens the microphone).
+    /// Reports [`AudioEvent::InputLevel`] 50 times a second (opens the microphone).
     pub fn set_level_meter(&self, on: bool) {
         self.send(Command::Meter(on));
     }
@@ -216,6 +238,7 @@ struct Worker {
     ptt: bool,
     bitrate: u32,
     volumes: HashMap<u16, f32>,
+    share_volumes: HashMap<u16, f32>,
     local_mutes: HashMap<u16, bool>,
     speaking: HashMap<Option<u16>, bool>,
     /// Sounds requested while the output was closed.
@@ -255,6 +278,7 @@ impl Worker {
             ptt: false,
             bitrate,
             volumes: HashMap::new(),
+            share_volumes: HashMap::new(),
             local_mutes: HashMap::new(),
             speaking: HashMap::new(),
             pending_sounds: Vec::new(),
@@ -350,6 +374,18 @@ impl Worker {
                         p.set_muted(participant, true);
                     }
                 });
+            }
+            Command::ReceiveShare(participant, datagram) => {
+                let now = self.now_ms();
+                let volume = self.share_volumes.get(&participant).copied().unwrap_or(1.0);
+                self.with_playback(|p| p.push_share(participant, &datagram, now, volume));
+            }
+            Command::ShareVolume(participant, volume) => {
+                self.share_volumes.insert(participant, volume);
+                self.with_playback(|p| p.set_share_volume(participant, volume));
+            }
+            Command::RemoveShare(participant) => {
+                self.with_playback(|p| p.remove_share(participant));
             }
             Command::RemoveParticipant(participant) => {
                 self.with_playback(|p| p.remove(participant));
@@ -513,7 +549,8 @@ impl Worker {
             for datagram in loopback {
                 playback.push(MIC_TEST, &datagram, now, 1.0);
             }
-            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize;
+            // Stereo samples: two per frame.
+            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize * 2;
             while device.ring.occupied_len() < target {
                 let samples = playback.render();
                 device.ring.push_slice(samples);
@@ -658,7 +695,7 @@ fn speaking(playback: &Playback, now: f64) -> Vec<(u16, bool)> {
 }
 
 fn configure_playback(playback: &mut Playback, settings: &AudioSettings, deaf: bool) {
-    playback.output_volume = settings.output_volume.clamp(0.0, 2.0);
+    playback.output_volume = crate::volume_gain(settings.output_volume);
     playback.sounds_enabled = settings.sounds;
     playback.sounds_volume = settings.sounds_volume;
     playback.deafened = deaf;

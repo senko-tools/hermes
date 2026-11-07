@@ -190,9 +190,10 @@ pub fn open_output(device: &Device) -> Result<Output, String> {
     let config: StreamConfig = supported.config();
     let rate = supported.sample_rate();
     let channels = usize::from(supported.channels());
-    let (mut ring, cons) = HeapRb::<f32>::new(rate as usize / 2).split();
+    // Stereo, interleaved: half a second.
+    let (mut ring, cons) = HeapRb::<f32>::new(rate as usize).split();
     // 10 ms of silence so the first callback does not underrun.
-    for _ in 0..rate / 100 {
+    for _ in 0..rate / 100 * 2 {
         let _ = ring.try_push(0.0);
     }
     let failed = Arc::new(AtomicBool::new(false));
@@ -232,14 +233,14 @@ where
     let callback = move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
         let mut short = false;
         for frame in data.chunks_mut(channels) {
-            let v = match cons.try_pop() {
-                Some(v) => T::from_sample(v),
-                None => {
+            let pair = match (cons.try_pop(), cons.try_pop()) {
+                (Some(l), Some(r)) => [l, r],
+                _ => {
                     short = true;
-                    T::EQUILIBRIUM
+                    [0.0, 0.0]
                 }
             };
-            frame.fill(v);
+            spread(pair, frame);
         }
         if short {
             glitches.fetch_add(1, Ordering::Relaxed);
@@ -248,4 +249,39 @@ where
     device
         .build_output_stream(config, callback, error_callback(failed), None)
         .map_err(|e| format!("cannot open the output: {e}"))
+}
+
+/// Puts one stereo sample on a device frame of any width: both sides averaged on a mono
+/// device, left and right on the first two channels of a wider one (the rest silent).
+fn spread<T: SizedSample + FromSample<f32>>([left, right]: [f32; 2], frame: &mut [T]) {
+    match frame {
+        [mono] => *mono = T::from_sample((left + right) * 0.5),
+        [l, r, rest @ ..] => {
+            *l = T::from_sample(left);
+            *r = T::from_sample(right);
+            rest.fill(T::EQUILIBRIUM);
+        }
+        [] => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stereo_goes_to_any_number_of_channels() {
+        let mut mono = [0.0f32];
+        spread([0.4, 0.2], &mut mono);
+        assert!((mono[0] - 0.3).abs() < 1e-6);
+        let mut stereo = [0.0f32; 2];
+        spread([0.4, 0.2], &mut stereo);
+        assert_eq!(stereo, [0.4, 0.2]);
+        let mut surround = [9.0f32; 6];
+        spread([0.4, 0.2], &mut surround);
+        assert_eq!(surround, [0.4, 0.2, 0.0, 0.0, 0.0, 0.0]);
+        let mut ints = [0i16; 2];
+        spread([1.0, -1.0], &mut ints);
+        assert!(ints[0] > 32_000 && ints[1] < -32_000);
+    }
 }

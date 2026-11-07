@@ -1,7 +1,7 @@
 # Hermes
 
 Hermes is a self-hostable chat platform (spaces with text + voice channels, DMs, voice calls) written in Rust:
-a single-binary server, an iced desktop client (primary) and a ratatui terminal client (secondary).
+a single-binary server, a gpui desktop client (primary, see `docs/desktop-client.md`) and a ratatui terminal client (secondary).
 
 **The full specification is `PLAN.md` in the repo root.** It is long, so do not read it all at once:
 read its table of contents, then only the sections relevant to the current task. Section 20 contains the

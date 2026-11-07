@@ -21,7 +21,9 @@ use hermes_proto::gateway::{ServerEvent, VoiceStateUpdate};
 use hermes_proto::id::Id;
 use hermes_proto::models::VoiceState;
 use hermes_proto::permissions::Permissions;
-use hermes_proto::voice::{self, AudioHeader, KickReason, Participant, ServerControl, VideoHeader};
+use hermes_proto::voice::{
+    self, AudioHeader, AudioKind, KickReason, Participant, ServerControl, VideoHeader,
+};
 use tokio::sync::mpsc;
 
 use crate::gateway::bus::Audience;
@@ -35,6 +37,8 @@ pub use calls::After;
 const SPEAK_RECHECK: Duration = Duration::from_secs(1);
 /// A sharer is asked for a keyframe at most this often.
 const KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
+/// How often a running share's numbers are logged (to tell server from client problems).
+const SHARE_STATS_EVERY: Duration = Duration::from_secs(10);
 /// Rings older than this are forgotten (clients stop ringing after 30 s on their own).
 const RING_LIFETIME: Duration = Duration::from_secs(60);
 
@@ -95,6 +99,10 @@ struct Member {
     share: Option<Share>,
     /// Participants whose screen share this member receives.
     watching: HashSet<u16>,
+    /// Of those, the ones whose next frames this member could not decode (it just started
+    /// watching, or a frame was lost): only their next keyframe is sent, not the frames before
+    /// it, which would cost bandwidth and show nothing.
+    resync: HashSet<u16>,
 }
 
 /// A running screen share.
@@ -102,10 +110,73 @@ struct Member {
 struct Share {
     can_stream: bool,
     checked: Instant,
-    /// Frames in the current one-second window, for [`voice::MAX_VIDEO_FPS`].
-    window: Instant,
-    frames: u32,
+    /// A token bucket for [`voice::MAX_VIDEO_FPS`]: refills at that rate up to
+    /// [`voice::VIDEO_BURST`] frames; a frame costs one. Unlike a fixed one-second window, a
+    /// sharer at exactly the limit never loses a frame to timer jitter.
+    tokens: f64,
+    refilled: Instant,
+    /// The same for share audio datagrams ([`voice::MAX_SHARE_AUDIO_RATE`]).
+    audio_tokens: f64,
+    audio_refilled: Instant,
     last_keyframe_request: Option<Instant>,
+    /// The watcher count last sent to the sharer (`share_watchers`).
+    watchers: Option<u16>,
+    stats: ShareStats,
+}
+
+/// What a share did since [`ShareStats::since`], logged every [`SHARE_STATS_EVERY`].
+#[derive(Debug)]
+struct ShareStats {
+    since: Instant,
+    /// Frames and bytes that arrived from the sharer.
+    frames_in: u32,
+    bytes_in: u64,
+    keyframes_in: u32,
+    /// Dropped for exceeding [`voice::MAX_VIDEO_FPS`].
+    over_rate: u32,
+    /// Copies queued for watchers, and copies lost to a watcher's full queue.
+    forwarded: u32,
+    lost: u32,
+    /// Frames not sent to a watcher waiting for a keyframe.
+    skipped: u32,
+    keyframe_requests: u32,
+}
+
+impl ShareStats {
+    fn new() -> Self {
+        ShareStats {
+            since: Instant::now(),
+            frames_in: 0,
+            bytes_in: 0,
+            keyframes_in: 0,
+            over_rate: 0,
+            forwarded: 0,
+            lost: 0,
+            skipped: 0,
+            keyframe_requests: 0,
+        }
+    }
+
+    /// Logs and restarts the numbers once [`SHARE_STATS_EVERY`] has passed.
+    fn maybe_log(&mut self, user_id: Id, watchers: usize) {
+        let elapsed = self.since.elapsed();
+        if elapsed < SHARE_STATS_EVERY {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        tracing::info!(
+            "screen share of {user_id}: in {:.1} fps ({} keyframes, {} over the rate limit),              {:.0} kbit/s; {watchers} watching: {} frames queued, {} lost to full queues, {}              skipped while waiting for a keyframe, {} keyframe requests",
+            f64::from(self.frames_in) / secs,
+            self.keyframes_in,
+            self.over_rate,
+            self.bytes_in as f64 * 8.0 / 1000.0 / secs,
+            self.forwarded,
+            self.lost,
+            self.skipped,
+            self.keyframe_requests,
+        );
+        *self = ShareStats::new();
+    }
 }
 
 impl Share {
@@ -113,9 +184,13 @@ impl Share {
         Share {
             can_stream: true,
             checked: Instant::now() - SPEAK_RECHECK,
-            window: Instant::now(),
-            frames: 0,
+            tokens: f64::from(voice::VIDEO_BURST),
+            refilled: Instant::now(),
+            audio_tokens: f64::from(voice::SHARE_AUDIO_BURST),
+            audio_refilled: Instant::now(),
             last_keyframe_request: None,
+            watchers: None,
+            stats: ShareStats::new(),
         }
     }
 
@@ -126,6 +201,7 @@ impl Share {
             .is_none_or(|t| t.elapsed() >= KEYFRAME_INTERVAL);
         if due {
             self.last_keyframe_request = Some(Instant::now());
+            self.stats.keyframe_requests += 1;
         }
         due
     }
@@ -410,6 +486,7 @@ impl Voice {
                 checked: Instant::now() - SPEAK_RECHECK,
                 share: None,
                 watching: HashSet::new(),
+                resync: HashSet::new(),
             },
         );
         let conn = conns.get_mut(&conn_id).expect("checked above");
@@ -422,6 +499,7 @@ impl Voice {
             bitrate: room.bitrate,
             participants,
             sharing,
+            share_audio: true,
         });
 
         state.cache_mut().voice_states.insert(user_id, state_now);
@@ -647,9 +725,12 @@ impl Voice {
     /// Forwards one datagram (PLAN.md 12.4 "Server forwarding rule"): dropped if the sender is
     /// muted (self or server), lacks `SPEAK`, or the packet is malformed or too large; otherwise
     /// sent with the sender's participant ID to everyone else in the room who is not deafened.
+    /// Share audio goes its own way ([`Voice::forward_share_audio`]).
     pub fn forward(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
-        if AudioHeader::decode(&data).is_err() {
-            return;
+        match AudioHeader::decode_any(&data) {
+            Ok((AudioKind::Voice, ..)) => {}
+            Ok((AudioKind::Share, ..)) => return self.forward_share_audio(state, conn_id, data),
+            Err(_) => return,
         }
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
@@ -694,6 +775,83 @@ impl Voice {
 // Screen shares
 // ---------------------------------------------------------------------------------------------
 
+impl Voice {
+    /// Passes a sealed sender key to one other member of the sender's room (docs/e2ee.md). It is
+    /// opaque here: the server only knows that a key went from one member to another.
+    pub fn relay_key(&self, conn_id: ConnId, to: u16, key: String) {
+        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES {
+            return;
+        }
+        let reg = self.registry();
+        let Some((channel_id, from)) = reg.conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(member) = reg.rooms.get(&channel_id).and_then(|r| r.members.get(&to)) else {
+            return;
+        };
+        if let Some(conn) = reg.conns.get(&member.conn_id) {
+            let _ = conn
+                .link
+                .control
+                .send(ServerControl::VoiceKey { from, key });
+        }
+    }
+
+    /// Forwards one share audio datagram (docs/DECISIONS.md 2026-11-05): dropped unless the
+    /// sender shares their screen, still has `STREAM` and stays under
+    /// [`voice::MAX_SHARE_AUDIO_RATE`]; otherwise sent with the sender's participant ID to every
+    /// member watching them who is not deafened. Muting the microphone does not mute it.
+    fn forward_share_audio(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(room) = rooms.get_mut(&channel_id) else {
+            return;
+        };
+        let Some(sender) = room.members.get_mut(&participant_id) else {
+            return;
+        };
+        let user_id = sender.state.user_id;
+        let Some(share) = sender.share.as_mut() else {
+            return;
+        };
+        if share.checked.elapsed() >= SPEAK_RECHECK {
+            share.can_stream = state
+                .cache()
+                .channel_permissions(channel_id, user_id)
+                .contains(Permissions::STREAM);
+            share.checked = Instant::now();
+        }
+        if !share.can_stream {
+            return;
+        }
+        let now = Instant::now();
+        share.audio_tokens = (share.audio_tokens
+            + now.duration_since(share.audio_refilled).as_secs_f64()
+                * f64::from(voice::MAX_SHARE_AUDIO_RATE))
+        .min(f64::from(voice::SHARE_AUDIO_BURST));
+        share.audio_refilled = now;
+        if share.audio_tokens < 1.0 {
+            return;
+        }
+        share.audio_tokens -= 1.0;
+        let mut packet = data.to_vec();
+        voice::set_sender_id(&mut packet, participant_id);
+        let packet = Bytes::from(packet);
+        for (&id, member) in &room.members {
+            if id == participant_id || member.deaf() || !member.watching.contains(&participant_id) {
+                continue;
+            }
+            if let Some(conn) = conns.get(&member.conn_id) {
+                // Never blocks; a full or closed peer just loses the packet.
+                let _ = conn.link.conn.send_datagram(packet.clone());
+            }
+        }
+    }
+}
+
 /// Why a share request was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareError {
@@ -732,6 +890,7 @@ impl Voice {
             participant_id,
             ServerControl::ShareStarted { participant_id },
         );
+        room.count_watchers(conns, participant_id);
         Ok(())
     }
 
@@ -763,11 +922,15 @@ impl Voice {
         }
         if let Some(me) = room.members.get_mut(&participant_id) {
             if watching {
+                // Watching again also restarts at a keyframe.
                 me.watching.insert(target);
+                me.resync.insert(target);
             } else {
                 me.watching.remove(&target);
+                me.resync.remove(&target);
             }
         }
+        room.count_watchers(conns, target);
         if watching {
             room.request_keyframe(conns, target);
         }
@@ -795,11 +958,15 @@ impl Voice {
     /// Forwards one screen share frame (header + H.264 access unit): dropped unless the sender
     /// shares, still has `STREAM`, stays under [`voice::MAX_VIDEO_FPS`] and the header is valid;
     /// otherwise sent with the sender's participant ID to every member watching them. A watcher
-    /// whose queue is full loses the frame, and the sharer is asked for a keyframe.
+    /// whose queue is full loses the frame and gets nothing more until the next keyframe, which
+    /// the sharer is asked for; the same for every watcher when a frame is over the rate.
     pub fn forward_video(&self, state: &AppState, conn_id: ConnId, mut frame: Vec<u8>) {
-        if frame.len() > voice::MAX_VIDEO_FRAME || VideoHeader::decode(&frame).is_err() {
+        if frame.len() > voice::MAX_VIDEO_FRAME {
             return;
         }
+        let Ok(header) = VideoHeader::decode(&frame) else {
+            return;
+        };
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
         let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
@@ -825,29 +992,63 @@ impl Voice {
         if !share.can_stream {
             return;
         }
-        if share.window.elapsed() >= Duration::from_secs(1) {
-            share.window = Instant::now();
-            share.frames = 0;
+        let now = Instant::now();
+        share.tokens = (share.tokens
+            + now.duration_since(share.refilled).as_secs_f64() * f64::from(voice::MAX_VIDEO_FPS))
+        .min(f64::from(voice::VIDEO_BURST));
+        share.refilled = now;
+        share.stats.frames_in += 1;
+        share.stats.bytes_in += frame.len() as u64;
+        if header.keyframe {
+            share.stats.keyframes_in += 1;
         }
-        if share.frames >= voice::MAX_VIDEO_FPS {
+        if share.tokens < 1.0 {
+            share.stats.over_rate += 1;
+            for member in room.members.values_mut() {
+                if member.watching.contains(&participant_id) {
+                    member.resync.insert(participant_id);
+                }
+            }
+            room.request_keyframe(conns, participant_id);
             return;
         }
-        share.frames += 1;
+        share.tokens -= 1.0;
         voice::set_video_sender_id(&mut frame, participant_id);
         let frame = Bytes::from(frame);
-        let mut lost = false;
-        for (&id, member) in &room.members {
+        let (mut forwarded, mut lost, mut skipped, mut watchers) = (0, 0, 0, 0);
+        for (&id, member) in &mut room.members {
             if id == participant_id || !member.watching.contains(&participant_id) {
                 continue;
             }
-            if let Some(conn) = conns.get(&member.conn_id)
-                && conn.link.video.try_send(frame.clone()).is_err()
-            {
-                lost = true;
+            watchers += 1;
+            if member.resync.contains(&participant_id) {
+                if !header.keyframe {
+                    skipped += 1;
+                    continue;
+                }
+                member.resync.remove(&participant_id);
+            }
+            if let Some(conn) = conns.get(&member.conn_id) {
+                if conn.link.video.try_send(frame.clone()).is_ok() {
+                    forwarded += 1;
+                } else {
+                    lost += 1;
+                    member.resync.insert(participant_id);
+                }
             }
         }
-        if lost {
+        if lost > 0 || skipped > 0 {
             room.request_keyframe(conns, participant_id);
+        }
+        if let Some(share) = room
+            .members
+            .get_mut(&participant_id)
+            .and_then(|m| m.share.as_mut())
+        {
+            share.stats.forwarded += forwarded;
+            share.stats.lost += lost;
+            share.stats.skipped += skipped;
+            share.stats.maybe_log(user_id, watchers);
         }
     }
 }
@@ -874,12 +1075,53 @@ impl Room {
         }
         for member in self.members.values_mut() {
             member.watching.remove(&participant_id);
+            member.resync.remove(&participant_id);
         }
         self.tell_others(
             conns,
             participant_id,
             ServerControl::ShareStopped { participant_id },
         );
+    }
+
+    /// Tells `sharer` how many members watch them, if that changed since the last time.
+    fn count_watchers(&mut self, conns: &HashMap<ConnId, Conn>, sharer: u16) {
+        let count = self
+            .members
+            .iter()
+            .filter(|(id, m)| **id != sharer && m.watching.contains(&sharer))
+            .count();
+        let count = u16::try_from(count).unwrap_or(u16::MAX);
+        let Some(member) = self.members.get_mut(&sharer) else {
+            return;
+        };
+        let conn_id = member.conn_id;
+        let Some(share) = member.share.as_mut() else {
+            return;
+        };
+        if share.watchers == Some(count) {
+            return;
+        }
+        share.watchers = Some(count);
+        if let Some(conn) = conns.get(&conn_id) {
+            let _ = conn
+                .link
+                .control
+                .send(ServerControl::ShareWatchers { count });
+        }
+    }
+
+    /// [`Room::count_watchers`] for every sharer (after someone left).
+    fn count_all_watchers(&mut self, conns: &HashMap<ConnId, Conn>) {
+        let sharers: Vec<u16> = self
+            .members
+            .iter()
+            .filter(|(_, m)| m.share.is_some())
+            .map(|(&id, _)| id)
+            .collect();
+        for sharer in sharers {
+            self.count_watchers(conns, sharer);
+        }
     }
 
     /// Asks a sharer for a keyframe, at most every [`KEYFRAME_INTERVAL`].
@@ -937,7 +1179,9 @@ impl Registry {
         room.members.remove(&participant_id);
         for member in room.members.values_mut() {
             member.watching.remove(&participant_id);
+            member.resync.remove(&participant_id);
         }
+        room.count_all_watchers(&self.conns);
         for member in room.members.values() {
             if let Some(other) = self.conns.get(&member.conn_id) {
                 let _ = other

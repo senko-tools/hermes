@@ -89,9 +89,6 @@ pub async fn register(
     if invite_code.is_some_and(|c| !invites::is_valid_code(c)) {
         return Err(invite_invalid());
     }
-    if db::auth::username_taken(&state.db.read, &username).await? {
-        return Err(username_taken());
-    }
     let password_hash = auth::hash_password(req.password).await?;
 
     let now = now_ms();
@@ -112,18 +109,47 @@ pub async fn register(
             .ok_or_else(invite_invalid)?,
         None => None,
     };
-    let new_user = db::auth::NewUser {
-        id: user_id,
-        username: &username,
-        password_hash: &password_hash,
-        instance_admin: first_user,
-        created_at: now,
-    };
-    match db::auth::insert_user(&mut tx, &new_user).await {
-        Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
-            return Err(username_taken());
+    // The instance's first account, its owner, goes without a tag; everyone else gets a random
+    // free one. Two registrations can pick the same tag, so it tries again on that.
+    let mut discriminator = None;
+    for _ in 0..TAG_ATTEMPTS {
+        discriminator = if first_user {
+            None
+        } else {
+            Some(
+                state
+                    .cache()
+                    .free_tag(&username)
+                    .ok_or_else(username_taken)?,
+            )
+        };
+        let handle = match &discriminator {
+            Some(tag) => format!("{username}#{tag}"),
+            None => username.clone(),
+        };
+        let new_user = db::auth::NewUser {
+            id: user_id,
+            username: &handle,
+            password_hash: &password_hash,
+            instance_admin: first_user,
+            created_at: now,
+        };
+        match db::auth::insert_user(&mut tx, &new_user).await {
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+                discriminator = None;
+                if first_user {
+                    return Err(username_taken());
+                }
+                continue;
+            }
+            result => {
+                result?;
+                break;
+            }
         }
-        result => result?,
+    }
+    if discriminator.is_none() && !first_user {
+        return Err(username_taken());
     }
     let default_space = if first_user {
         let space = DefaultSpace::new(&state, user_id, state.config.instance.name.clone());
@@ -142,6 +168,7 @@ pub async fn register(
         user: User {
             id: user_id,
             username,
+            discriminator,
             display_name: None,
             avatar: None,
             status_text: None,
@@ -181,6 +208,9 @@ fn username_taken() -> Error {
     Error::new(ErrorCode::Conflict, "This username is taken")
 }
 
+/// How many random tags registering tries before giving up.
+const TAG_ATTEMPTS: usize = 5;
+
 /// Inserts a session for `token` and returns its ID.
 async fn insert_session(
     conn: &mut SqliteConnection,
@@ -217,8 +247,19 @@ pub async fn login(
     fields.finish()?;
     let device_name = device_name.unwrap_or_default();
 
-    let username = req.username.trim().to_lowercase();
-    let credentials = db::auth::credentials_by_username(&state.db.read, &username).await?;
+    let login = req.username.trim().trim_start_matches('@').to_lowercase();
+    let handle = db::auth::resolve_handle(&state.db.read, &login)
+        .await?
+        .map_err(|()| {
+            Error::new(
+                ErrorCode::InvalidCredentials,
+                "Several accounts have this name: add your # number, like name#1234",
+            )
+        })?;
+    let credentials = match &handle {
+        Some(handle) => db::auth::credentials_by_username(&state.db.read, handle).await?,
+        None => None,
+    };
     let hash = credentials.as_ref().map(|c| c.password_hash.clone());
     if !auth::verify_password(req.password, hash).await? {
         return Err(Error::new(
@@ -259,6 +300,7 @@ pub async fn login(
 pub async fn logout(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<StatusCode> {
     db::auth::delete_session(&state.db.write, auth.user_id, auth.session_id).await?;
     state.gateway.revoke(&[auth.session_id]);
+    super::devices::revoke_sessions(&state, &[auth.session_id]).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -289,6 +331,7 @@ pub async fn delete_session(
 ) -> ApiResult<StatusCode> {
     if db::auth::delete_session(&state.db.write, auth.user_id, session_id).await? {
         state.gateway.revoke(&[session_id]);
+        super::devices::revoke_sessions(&state, &[session_id]).await?;
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(Error::not_found("session"))

@@ -2,7 +2,7 @@
 
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    AttachmentRef, Channel, ChannelKind, Override, PrivacySettings, Role, Space, User,
+    AttachmentRef, Channel, ChannelKind, Override, PrivacySettings, Role, Space, User, split_handle,
 };
 use hermes_proto::permissions::Permissions;
 use sqlx::SqlitePool;
@@ -45,6 +45,7 @@ pub struct Snapshot {
     pub channels: Vec<Channel>,
     pub overrides: Vec<(Id, Override)>,
     pub dm_recipients: Vec<DmRecipientRow>,
+    pub relationships: Vec<super::friends::Row>,
 }
 
 pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
@@ -57,6 +58,7 @@ pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
         channels: channels(pool).await?,
         overrides: overrides(pool).await?,
         dm_recipients: dm_recipients(pool).await?,
+        relationships: super::friends::all(pool).await?,
     })
 }
 
@@ -84,10 +86,12 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
     .await?
     .into_iter()
     .map(|r| {
+        let (name, tag) = split_handle(&r.username);
         Ok(UserRow {
             user: User {
                 id: Id::from_i64(r.id),
-                username: r.username,
+                username: name.to_owned(),
+                discriminator: tag.map(str::to_owned),
                 display_name: r.display_name,
                 avatar: attachment(r.avatar_id, r.avatar_filename),
                 status_text: r.status_text,

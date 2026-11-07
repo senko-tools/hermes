@@ -6,8 +6,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{
-    ChangePasswordRequest, NotificationSettingRequest, Pagination, UpdateMeRequest,
-    UpdatePrivacyRequest, UserProfile,
+    ChangePasswordRequest, ChangeUsernameRequest, NotificationSettingRequest, Pagination,
+    UpdateMeRequest, UpdatePrivacyRequest, UserProfile,
 };
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -63,8 +63,73 @@ pub async fn change_password(
     let revoked = db::auth::delete_other_sessions(&mut tx, auth.user_id, auth.session_id).await?;
     tx.commit().await?;
     state.gateway.revoke(&revoked);
+    super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::debug!(user_id = %auth.user_id, revoked = revoked.len(), "password changed");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Changes my username (not the display name). The tag stays unless someone of the new name has
+/// it, and an account without a tag stays without one, which needs the name to be free.
+pub async fn change_username(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Json(req): Json<ChangeUsernameRequest>,
+) -> ApiResult<Json<CurrentUser>> {
+    let name = validate::username(&req.username)
+        .map_err(|problem| validate::field_error("username", problem))?;
+    if req.current_password.chars().count() > validate::MAX_PASSWORD_CHARS {
+        return Err(validate::field_error("current_password", "is too long"));
+    }
+    let hash = db::auth::password_hash(&state.db.read, auth.user_id).await?;
+    if !auth::verify_password(req.current_password, hash).await? {
+        return Err(Error::new(
+            ErrorCode::InvalidCredentials,
+            "The current password is wrong",
+        ));
+    }
+    let _writes = state.writes.lock().await;
+    let (mut user, instance_admin, tag) = {
+        let cache = state.cache();
+        let old = cache
+            .users
+            .get(&auth.user_id)
+            .ok_or_else(|| Error::internal("authenticated user missing from the cache"))?;
+        let tag = match old.user.discriminator.as_deref() {
+            None if cache.handle_taken(&name, None, auth.user_id) => {
+                return Err(Error::new(ErrorCode::Conflict, "This username is taken"));
+            }
+            None => None,
+            Some(tag) if !cache.handle_taken(&name, Some(tag), auth.user_id) => {
+                Some(tag.to_owned())
+            }
+            Some(_) => Some(
+                cache
+                    .free_tag(&name)
+                    .ok_or_else(|| Error::new(ErrorCode::Conflict, "This username is taken"))?,
+            ),
+        };
+        (old.user.clone(), old.instance_admin, tag)
+    };
+    user.username = name;
+    user.discriminator = tag;
+    let mut tx = state.db.write.begin().await?;
+    db::users::set_handle(&mut tx, auth.user_id, &user.handle()).await?;
+    tx.commit().await?;
+    let audience = {
+        let mut cache = state.cache_mut();
+        if let Some(cached) = cache.users.get_mut(&auth.user_id) {
+            cached.user = user.clone();
+        }
+        cache.profile_audience(auth.user_id)
+    };
+    state.publish(
+        ServerEvent::UserUpdate(user.clone()),
+        Audience::Users(audience.into_iter().collect()),
+    );
+    Ok(Json(CurrentUser {
+        user,
+        instance_admin,
+    }))
 }
 
 /// Updates my display name, avatar or status text; everyone who can see me gets `user_update`.
@@ -127,7 +192,7 @@ pub async fn update_me(
             if let Some(cached) = cache.users.get_mut(&auth.user_id) {
                 cached.user = user.clone();
             }
-            cache.presence_audience(auth.user_id)
+            cache.profile_audience(auth.user_id)
         };
         state.publish(
             ServerEvent::UserUpdate(user.clone()),
@@ -148,7 +213,7 @@ pub async fn get(
 ) -> ApiResult<Json<UserProfile>> {
     let cache = state.cache();
     let visible =
-        user_id == auth.user_id || cache.presence_audience(auth.user_id).contains(&user_id);
+        user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
     let user = cache
         .users
         .get(&user_id)

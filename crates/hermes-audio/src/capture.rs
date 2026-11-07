@@ -4,8 +4,8 @@
 use hermes_proto::voice::{self, AudioHeader};
 
 use crate::codec::Encoder;
-use crate::dsp::{self, Agc, Denoiser, Gate, MonoResampler};
-use crate::{AudioSettings, FRAME, SAMPLE_RATE};
+use crate::dsp::{self, Agc, Denoiser, Downmix, Gate, MonoResampler};
+use crate::{AudioSettings, FRAME, SAMPLE_RATE, volume_gain};
 
 pub struct Capture {
     channels: usize,
@@ -18,6 +18,7 @@ pub struct Capture {
     pub gate: Gate,
     encoder: Encoder,
     input_volume: f32,
+    downmix: Downmix,
     timestamp: u32,
     sequence: u16,
     was_open: bool,
@@ -37,6 +38,7 @@ impl Capture {
             gate: Gate::default(),
             encoder: Encoder::new(bitrate),
             input_volume: 1.0,
+            downmix: Downmix::default(),
             // Random start (RFC 3550); the sequence starts at 0.
             timestamp: rand_u32(),
             sequence: 0,
@@ -49,7 +51,7 @@ impl Capture {
 
     /// Takes over changed settings without losing the stream position.
     pub fn apply(&mut self, settings: &AudioSettings) {
-        self.input_volume = settings.input_volume.clamp(0.0, 2.0);
+        self.input_volume = volume_gain(settings.input_volume);
         self.gate.mode = settings.mode;
         self.gate.sensitivity_db = settings.vad_sensitivity_db;
         self.gate.ptt_release_delay = settings.ptt_release_delay;
@@ -78,7 +80,7 @@ impl Capture {
     /// Processes interleaved device samples; `send` gets each datagram to send (sender ID 0,
     /// the server sets it).
     pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(&[u8])) {
-        dsp::downmix(
+        self.downmix.process(
             interleaved,
             self.channels,
             self.input_volume,

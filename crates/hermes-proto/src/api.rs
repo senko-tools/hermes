@@ -197,6 +197,22 @@ pub struct AdminUserPatch {
     pub disabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_admin: Option<bool>,
+    /// Lets the account go without a `#1234` tag (`true`), or gives it one again (`false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagless: Option<bool>,
+}
+
+/// `POST /users/@me/username`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeUsernameRequest {
+    pub username: String,
+    pub current_password: String,
+}
+
+/// `POST /users/@me/friends`: `handle` is `name#1234`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddFriendRequest {
+    pub handle: String,
 }
 
 /// `POST /spaces/{id}/invites`.
@@ -427,6 +443,9 @@ pub struct SendMessageRequest {
     /// Own uploads that are not attached to a message yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<Id>,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
 }
 
 impl SendMessageRequest {
@@ -437,7 +456,11 @@ impl SendMessageRequest {
 /// `PATCH /channels/{id}/messages/{mid}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditMessageRequest {
+    #[serde(default)]
     pub content: String,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
 }
 
 /// `POST /channels/{id}/ack`.
@@ -550,6 +573,7 @@ mod tests {
                 user: User {
                     id: Id(5),
                     username: "senko".into(),
+                    discriminator: None,
                     display_name: None,
                     avatar: None,
                     status_text: None,

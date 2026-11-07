@@ -8,8 +8,10 @@
 //! - [`gateway`]: WebSocket envelope, ops, events and close codes
 //! - [`markup`]: message markup parser
 //! - [`voice`]: voice control stream messages and audio datagrams
+//! - [`e2ee`]: end-to-end encrypted payloads, opaque to the server
 
 pub mod api;
+pub mod e2ee;
 pub mod error;
 pub mod gateway;
 pub mod id;
@@ -22,5 +24,6 @@ pub use error::{ApiError, ErrorBody, ErrorCode};
 pub use id::Id;
 pub use permissions::Permissions;
 
-/// Gateway and REST protocol version.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Gateway and REST protocol version. 2: end-to-end encryption, which clients and servers from
+/// before it cannot take part in (docs/e2ee.md).
+pub const PROTOCOL_VERSION: u32 = 2;

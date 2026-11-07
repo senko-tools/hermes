@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO devices (user_id, device_id, sign_key, dh_key, signature, session_id, created_at)\n         VALUES (?, ?, ?, ?, ?, ?, ?)\n         ON CONFLICT (user_id, device_id) DO UPDATE\n         SET session_id = excluded.session_id, revoked_at = NULL\n         WHERE sign_key = excluded.sign_key AND dh_key = excluded.dh_key",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "b3cf60b39d350358a6b1372848a2ba26ceef1dc6e839fea27cd715b59c3132a6"
+}

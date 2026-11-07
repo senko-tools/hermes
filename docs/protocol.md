@@ -1,3 +1,10 @@
+Who shares is told only on the control stream, never on the gateway: only people in the call
+know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
+**unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
+have at most 32 such streams open at once, and both sides read them one at a time in the order
+they were opened, so frames stay in order. Both ends allow 4 MiB in flight per stream and 16 MiB
+per connection.
+
 # Hermes protocol reference
 
 Human-readable reference for everything on the wire. The source of truth is the `hermes-proto`
@@ -214,6 +221,7 @@ Server → client:
 | `share_started` | `{participant_id}` |
 | `share_stopped` | `{participant_id}` (also implied by `participant_left`; watchers must `watch` again when it restarts) |
 | `keyframe_requested` | `{}`: send your next screen share frame as a keyframe |
+| `share_watchers` | `{count}`: how many members watch your share; sent after `share_start` and whenever it changes. While it is 0 frames go nowhere, and clients stop capturing (clients that never receive it, from an older server, keep sending) |
 
 An invalid or expired `auth` token, or any op before `auth`, answers `error {code: "UNAUTHORIZED"}`
 and the server closes the connection. After `kicked` or `leave` the connection stays open.
@@ -253,12 +261,14 @@ they were opened, so frames stay in order.
 | 6 | 2 | height, even, 2–3840 |
 | 8 | 4 | milliseconds since the share started |
 
-The server drops frames over 512 KiB (header included), arriving slower than 5 s, with a bad
-header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 30
-per second, and sends the rest to the members watching the sharer. A watcher whose queue (8
-frames) is full loses the frame, and the sharer gets `keyframe_requested` (at most every
-500 ms; also when someone starts watching). The GUI sends at most 1280×720 at 10 frames per
-second, a keyframe at least every 5 s.
+The server drops frames over 2 MiB (header included), arriving slower than 5 s, with a bad
+header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 60
+per second on average (a token bucket that allows 10 frames of burst, so a sharer at exactly 60
+never loses a frame to timer jitter), and sends the rest to the members watching the sharer. A
+watcher whose queue (16 frames) is full loses the frame. After a lost frame (or a frame over the
+rate, or when someone starts watching) that watcher gets nothing from the sharer until their next
+keyframe, which the sharer is asked for with `keyframe_requested` (at most every 500 ms): frames
+before it could not be decoded anyway.
 
 ### DM calls
 
@@ -267,3 +277,18 @@ Every DM and group DM has a room keyed by its channel ID. "Start call" = `POST /
 they join, or for everyone when the caller leaves or the room empties. Clients stop ringing after
 30 s on their own. A system message `"<name> started a call"` is posted when the room fills, and
 `"Call ended · N min"` when it empties.
+
+## End-to-end encryption
+
+See [e2ee.md](e2ee.md). On the wire: `PUT /users/@me/devices` publishes this device's public keys,
+`POST /users/devices` (`user_ids`) returns users' devices, and the gateway sends `devices_update`
+(`user_id`, `devices`). `POST` and `PATCH` of DM messages take `e2ee` (an envelope) with empty `content`, and
+messages carry it back. The voice control stream relays `voice_key` (`to` from the client, `from` from the
+server, `key` opaque). Audio and video are packet version 2.
+
+## Friends and tags
+
+`POST /users/@me/username` (`username`, `current_password`), `GET` and `POST /users/@me/friends` (`handle`),
+`PUT` and `DELETE /users/@me/friends/{id}`; `ready.relationships`, `relationship_update`, `relationship_remove`.
+Users have `discriminator` next to `username`, absent for accounts without a tag. `PATCH /admin/users/{id}` takes
+`tagless`.

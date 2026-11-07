@@ -1452,7 +1452,7 @@ impl App {
         let reply_to = self.reply_to.take();
         self.info(format!("uploading {}…", path.display()));
         tokio::spawn(async move {
-            match core.upload(&inst, &path).await {
+            match core.upload_to(&inst, channel, &path, None).await {
                 Ok(attachment) => {
                     let draft = Draft {
                         content: String::new(),
@@ -1493,9 +1493,7 @@ impl App {
         tokio::spawn(async move {
             let result = async {
                 let bytes = core
-                    .rest(&inst)
-                    .map_err(|e| e.to_string())?
-                    .download(attachment.id, &attachment.filename)
+                    .download(&inst, &attachment)
                     .await
                     .map_err(|e| e.to_string())?;
                 let dir = std::env::temp_dir()

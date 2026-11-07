@@ -21,6 +21,8 @@ pub struct MessageRow {
     pub deleted: bool,
     pub pinned: bool,
     pub kind: MessageKind,
+    /// The encrypted form as JSON; `content` is empty then.
+    pub e2ee: Option<String>,
 }
 
 struct Raw {
@@ -33,6 +35,7 @@ struct Raw {
     deleted: bool,
     pinned: bool,
     kind: String,
+    e2ee: Option<String>,
 }
 
 impl Raw {
@@ -47,6 +50,7 @@ impl Raw {
             deleted: self.deleted,
             pinned: self.pinned,
             kind: message_kind(&self.kind)?,
+            e2ee: self.e2ee,
         })
     }
 }
@@ -85,8 +89,8 @@ pub async fn insert(conn: &mut SqliteConnection, m: &MessageRow) -> Result<(), s
     let kind = message_kind_name(m.kind);
     sqlx::query!(
         "INSERT INTO messages (id, channel_id, author_id, content, reply_to_id, edited_at, deleted,
-                               pinned, kind)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               pinned, kind, e2ee)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         channel_id,
         author_id,
@@ -95,7 +99,8 @@ pub async fn insert(conn: &mut SqliteConnection, m: &MessageRow) -> Result<(), s
         m.edited_at,
         m.deleted,
         m.pinned,
-        kind
+        kind,
+        m.e2ee
     )
     .execute(conn)
     .await?;
@@ -112,7 +117,7 @@ pub async fn get(
     sqlx::query_as!(
         Raw,
         r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
-                  deleted AS "deleted: bool", pinned AS "pinned: bool", kind
+                  deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
            FROM messages WHERE channel_id = ? AND id = ?"#,
         channel_id,
         id
@@ -137,7 +142,7 @@ pub async fn before(
         sqlx::query_as!(
             Raw,
             r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
-                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind
+                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
                FROM messages WHERE channel_id = ? AND id < ? ORDER BY id DESC LIMIT ?"#,
             channel_id,
             before,
@@ -163,7 +168,7 @@ pub async fn after(
         sqlx::query_as!(
             Raw,
             r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
-                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind
+                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
                FROM messages WHERE channel_id = ? AND id > ? ORDER BY id LIMIT ?"#,
             channel_id,
             after,
@@ -184,7 +189,7 @@ pub async fn pinned(
         sqlx::query_as!(
             Raw,
             r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
-                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind
+                      deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
                FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC"#,
             channel_id
         )
@@ -245,6 +250,7 @@ pub async fn attachments(
                 width: r.width.map(|w| int(w, "attachments.width")).transpose()?,
                 height: r.height.map(|h| int(h, "attachments.height")).transpose()?,
                 has_thumb: r.has_thumb,
+                sealed: None,
             },
         ))
     })
@@ -413,12 +419,14 @@ pub async fn edit_content(
     conn: &mut SqliteConnection,
     message_id: Id,
     content: &str,
+    e2ee: Option<&str>,
     edited_at: i64,
 ) -> Result<(), sqlx::Error> {
     let id = message_id.to_i64();
     sqlx::query!(
-        "UPDATE messages SET content = ?, edited_at = ? WHERE id = ?",
+        "UPDATE messages SET content = ?, e2ee = ?, edited_at = ? WHERE id = ?",
         content,
+        e2ee,
         edited_at,
         id
     )
@@ -431,7 +439,7 @@ pub async fn edit_content(
 pub async fn soft_delete(conn: &mut SqliteConnection, message_id: Id) -> Result<(), sqlx::Error> {
     let id = message_id.to_i64();
     sqlx::query!(
-        "UPDATE messages SET content = '', deleted = 1, pinned = 0 WHERE id = ?",
+        "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0 WHERE id = ?",
         id
     )
     .execute(&mut *conn)
@@ -594,7 +602,7 @@ pub async fn search(
         sqlx::query_as!(
             Raw,
             r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
-                      m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind
+                      m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
                FROM messages_fts f JOIN messages m ON m.id = f.rowid
                WHERE messages_fts MATCH ?1 AND m.deleted = 0
                  AND m.channel_id IN (SELECT value FROM json_each(?2))
@@ -651,7 +659,7 @@ pub async fn mentioning(
         sqlx::query_as!(
             Raw,
             r#"SELECT m.id, m.channel_id, m.author_id, m.content, m.reply_to_id, m.edited_at,
-                      m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind
+                      m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
                FROM messages m
                WHERE m.deleted = 0 AND m.author_id != ?1 AND m.id < ?4
                  AND m.channel_id IN (SELECT value FROM json_each(?3))

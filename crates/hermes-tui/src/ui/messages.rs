@@ -391,7 +391,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(topic, dim()),
         ]))
         .border_style(border_style(has_focus));
-    if let Some(footer) = crate::voice::room_footer(app, &inst, channel) {
+    if let Some(footer) = crate::voice::room_footer(app, s, &inst, channel) {
         block = block.title_bottom(Line::from(Span::styled(
             footer,
             Style::default().fg(Color::Green),

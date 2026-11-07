@@ -26,6 +26,12 @@ pub enum UserCommand {
     Disable { username: String },
     /// Enable a disabled account again.
     Enable { username: String },
+    /// Let an account go without a `#1234` tag (`true`), or give it one again (`false`).
+    SetTagless {
+        username: String,
+        #[arg(action = clap::ArgAction::Set)]
+        tagless: bool,
+    },
 }
 
 /// A random password of 16 letters and digits (no look-alikes such as 0/O and 1/l).
@@ -71,7 +77,13 @@ pub fn run(path: &Path, command: UserCommand) -> ExitCode {
 }
 
 async fn find(db: &Db, username: &str) -> Result<(Id, String, bool, bool), String> {
-    db::users::by_username(&db.read, username.trim_start_matches('@'))
+    let login = username.trim_start_matches('@').to_lowercase();
+    let handle = db::auth::resolve_handle(&db.read, &login)
+        .await
+        .map_err(|e| format!("Database error: {e}"))?
+        .map_err(|()| format!("Several accounts are called {username:?}: add the # number"))?
+        .ok_or_else(|| format!("There is no user called {username:?}"))?;
+    db::users::by_username(&db.read, &handle)
         .await
         .map_err(|e| format!("Database error: {e}"))?
         .ok_or_else(|| format!("There is no user called {username:?}"))
@@ -103,6 +115,45 @@ async fn execute(db: &Db, command: UserCommand) -> Result<(), String> {
                     crate::time::format_date(created_at)
                 );
             }
+        }
+        UserCommand::SetTagless { username, tagless } => {
+            let (id, handle, ..) = find(db, &username).await?;
+            let (name, tag) = hermes_proto::models::split_handle(&handle);
+            let new = if tagless == tag.is_none() {
+                handle.clone()
+            } else if tagless {
+                name.to_owned()
+            } else {
+                let start = rand::random_range(0..9999u16);
+                let mut free = None;
+                for i in 0..9999u16 {
+                    let candidate = format!("{name}#{:04}", (start + i) % 9999 + 1);
+                    if db::users::by_username(&db.read, &candidate)
+                        .await
+                        .map_err(dberr)?
+                        .is_none()
+                    {
+                        free = Some(candidate);
+                        break;
+                    }
+                }
+                free.ok_or_else(|| format!("All tags of {name:?} are taken"))?
+            };
+            if new != handle {
+                if tagless
+                    && db::users::by_username(&db.read, &new)
+                        .await
+                        .map_err(dberr)?
+                        .is_some()
+                {
+                    return Err(format!("Another account is already called {new:?}"));
+                }
+                let mut conn = db.write.acquire().await.map_err(dberr)?;
+                db::users::set_handle(&mut conn, id, &new)
+                    .await
+                    .map_err(dberr)?;
+            }
+            println!("{handle} is now {new}.");
         }
         UserCommand::ResetPassword { username } => {
             let (id, name, ..) = find(db, &username).await?;

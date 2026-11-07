@@ -1,8 +1,13 @@
-//! Opus at 48 kHz mono with 20 ms frames (PLAN.md 12.5 step 6, playback step 2).
+//! Opus at 48 kHz mono with 20 ms frames (PLAN.md 12.5 step 6, playback step 2), and stereo
+//! for the sound of screen shares.
 
 use opus::{Application, Bitrate, Channels};
 
+use crate::mixer::STEREO_FRAME;
 use crate::{FRAME, SAMPLE_RATE};
+
+/// The bitrate of a screen share's sound: music and films, stereo.
+pub const SHARE_BITRATE: i32 = 128_000;
 
 /// Largest encoded frame we produce (well below the 1000-byte datagram limit).
 pub const MAX_PACKET: usize = 1000 - hermes_proto::voice::HEADER_LEN;
@@ -76,6 +81,70 @@ impl Decoder {
     }
 }
 
+/// Encodes a screen share's sound: stereo, tuned for music rather than speech.
+pub struct ShareEncoder {
+    inner: opus::Encoder,
+    buf: Vec<u8>,
+}
+
+impl Default for ShareEncoder {
+    /// `application = AUDIO`, 128 kbit/s, in-band FEC on, expected loss 5 %, DTX on.
+    fn default() -> Self {
+        let mut inner = opus::Encoder::new(SAMPLE_RATE, Channels::Stereo, Application::Audio)
+            .expect("Opus supports 48 kHz stereo");
+        let _ = inner.set_bitrate(Bitrate::Bits(SHARE_BITRATE));
+        let _ = inner.set_inband_fec(true);
+        let _ = inner.set_packet_loss_perc(5);
+        let _ = inner.set_dtx(true);
+        ShareEncoder {
+            inner,
+            buf: vec![0; MAX_PACKET],
+        }
+    }
+}
+
+impl ShareEncoder {
+    /// Encodes one interleaved 20 ms stereo frame.
+    pub fn encode(&mut self, frame: &[f32; STEREO_FRAME]) -> Option<&[u8]> {
+        let len = self.inner.encode_float(frame, &mut self.buf).ok()?;
+        Some(&self.buf[..len])
+    }
+}
+
+/// Decodes a screen share's sound into interleaved stereo frames.
+pub struct StereoDecoder {
+    inner: opus::Decoder,
+}
+
+impl Default for StereoDecoder {
+    fn default() -> Self {
+        StereoDecoder {
+            inner: opus::Decoder::new(SAMPLE_RATE, Channels::Stereo)
+                .expect("Opus supports 48 kHz stereo"),
+        }
+    }
+}
+
+impl StereoDecoder {
+    pub fn decode(&mut self, packet: &[u8], out: &mut [f32; STEREO_FRAME]) {
+        if self.inner.decode_float(packet, out, false).is_err() {
+            self.conceal(out);
+        }
+    }
+
+    pub fn decode_fec(&mut self, next_packet: &[u8], out: &mut [f32; STEREO_FRAME]) {
+        if self.inner.decode_float(next_packet, out, true).is_err() {
+            self.conceal(out);
+        }
+    }
+
+    pub fn conceal(&mut self, out: &mut [f32; STEREO_FRAME]) {
+        if self.inner.decode_float(&[], out, false).is_err() {
+            out.fill(0.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +177,27 @@ mod tests {
         assert!(out.iter().all(|s| s.is_finite()));
         dec.decode(b"\xff\xff\xff", &mut out);
         assert!(out.iter().all(|s| s.is_finite()));
+    }
+
+    #[test]
+    fn stereo_keeps_its_sides() {
+        let mut enc = ShareEncoder::default();
+        let mut dec = StereoDecoder::default();
+        let mut out = [0.0; STEREO_FRAME];
+        for i in 0..20 {
+            // A tone on the left, silence on the right.
+            let mono = tone(i);
+            let mut frame = [0.0; STEREO_FRAME];
+            for (pair, s) in frame.as_chunks_mut::<2>().0.iter_mut().zip(mono) {
+                *pair = [s, 0.0];
+            }
+            let packet = enc.encode(&frame).unwrap().to_vec();
+            assert!(packet.len() < MAX_PACKET);
+            dec.decode(&packet, &mut out);
+        }
+        let left: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let right: Vec<f32> = out.iter().skip(1).step_by(2).copied().collect();
+        let (l, r) = (crate::dsp::rms(&left), crate::dsp::rms(&right));
+        assert!(l > 0.15 && r < 0.02, "{l} {r}");
     }
 }

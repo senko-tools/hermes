@@ -17,6 +17,10 @@ pub struct AttachmentRef {
 pub struct User {
     pub id: Id,
     pub username: String,
+    /// The four digits after the name, as in `name#1234`. `None`: an account the instance's owner
+    /// lets go without one (and everyone on a server older than tags).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discriminator: Option<String>,
     pub display_name: Option<String>,
     pub avatar: Option<AttachmentRef>,
     pub status_text: Option<String>,
@@ -27,6 +31,42 @@ impl User {
     pub fn name(&self) -> &str {
         self.display_name.as_deref().unwrap_or(&self.username)
     }
+
+    /// What others find this account by: `name#1234`, or `name` without a tag.
+    pub fn handle(&self) -> String {
+        match &self.discriminator {
+            Some(tag) => format!("{}#{tag}", self.username),
+            None => self.username.clone(),
+        }
+    }
+}
+
+/// Splits a handle into its name and tag: `name#1234` or `name`.
+pub fn split_handle(handle: &str) -> (&str, Option<&str>) {
+    match handle.split_once('#') {
+        Some((name, tag)) => (name, Some(tag)),
+        None => (handle, None),
+    }
+}
+
+/// How someone stands to me in the friend system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipKind {
+    Friend,
+    /// They asked to be my friend.
+    Incoming,
+    /// I asked to be their friend.
+    Outgoing,
+}
+
+/// One person in my friend list or requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relationship {
+    pub user: User,
+    pub kind: RelationshipKind,
+    /// When the request was accepted, or sent while it is pending.
+    pub since: i64,
 }
 
 /// The logged-in user: `User` plus `instance_admin` (used in `ready` and `GET /users/@me`).
@@ -177,6 +217,9 @@ pub struct Attachment {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub has_thumb: bool,
+    /// The key of an encrypted file, from inside its message. Never on the wire.
+    #[serde(skip)]
+    pub sealed: Option<crate::e2ee::SealedFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +264,12 @@ pub struct Message {
     /// Only echoed to the author's sessions; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// The encrypted form: `content` is empty on the wire and the client opens this into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
+    /// How the client found this message. Never on the wire.
+    #[serde(skip)]
+    pub lock: crate::e2ee::MessageLock,
 }
 
 impl Message {
@@ -474,6 +523,7 @@ pub(crate) mod tests {
         User {
             id: Id(id),
             username: format!("user{id}"),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,
@@ -556,6 +606,8 @@ pub(crate) mod tests {
             reactions: vec![],
             mentions: Mentions::default(),
             nonce: None,
+            e2ee: None,
+            lock: Default::default(),
         };
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value.get("nonce").is_none());

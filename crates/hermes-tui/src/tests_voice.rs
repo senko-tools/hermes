@@ -350,7 +350,10 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         |a| voice_users(a).len() == 2,
     )
     .await;
-    let footer = crate::voice::room_footer(&app, &inst, dm).unwrap();
+    let footer = {
+        let store = app.core.store();
+        crate::voice::room_footer(&app, store.instance(&inst).unwrap(), &inst, dm).unwrap()
+    };
     assert!(
         footer.contains("in voice: ") && footer.contains("L: leave"),
         "{footer}"

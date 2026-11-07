@@ -8,11 +8,14 @@ pub mod commands;
 pub mod config;
 mod core;
 pub mod crash;
+pub mod e2ee;
 pub mod files;
 pub mod gateway;
 pub mod known_hosts;
+pub mod logs;
 pub mod notify;
 pub mod rest;
+pub mod secure;
 pub mod store;
 pub mod time;
 pub mod tls;
@@ -24,7 +27,7 @@ pub mod volumes;
 
 pub use crate::core::{
     CertStatus, Core, CoreError, CoreEvent, CoreEvents, CoreOptions, Draft, InstanceId, MAX_QUEUED,
-    Probe, Store, content_type, now_ms, uuid_v4,
+    Probe, Store, StoreRef, content_type, now_ms, uuid_v4,
 };
 pub use hermes_audio as audio;
 pub use hermes_proto as proto;
