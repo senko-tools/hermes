@@ -198,6 +198,8 @@ impl Decoder {
 
     /// Decodes one access unit. `Ok(None)` while the decoder waits for more data; an error
     /// means the picture is broken until the next keyframe.
+    // The match has one arm where Media Foundation does not exist.
+    #[cfg_attr(not(windows), allow(clippy::infallible_destructuring_match))]
     pub fn decode(&mut self, data: &[u8]) -> Result<Option<Picture>, String> {
         let decoder = match &mut self.inner {
             Inner::OpenH264(decoder) => decoder,

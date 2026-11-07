@@ -23,15 +23,16 @@ use windows::Win32::Graphics::Direct3D11::{
     ID3D11Texture2D,
 };
 use windows::Win32::Media::MediaFoundation::{
-    CLSID_MSH264DecoderMFT, IMF2DBuffer2, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaType,
-    IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
-    MF_LOW_LATENCY, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
-    MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_VERSION, MF2DBuffer_LockFlags_Read,
-    MFCreateDXGIDeviceManager, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-    MFMediaType_Video, MFSTARTUP_LITE, MFShutdown, MFStartup, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-    MFT_MESSAGE_NOTIFY_END_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM,
-    MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES,
-    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_NV12,
+    CLSID_MSH264DecoderMFT, IMF2DBuffer2, IMFDXGIBuffer, IMFDXGIDeviceManager, IMFMediaBuffer,
+    IMFMediaType, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
+    MF_E_TRANSFORM_STREAM_CHANGE, MF_LOW_LATENCY, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE,
+    MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MF_SA_D3D11_AWARE, MF_VERSION,
+    MF2DBuffer_LockFlags_Read, MFCreateDXGIDeviceManager, MFCreateMediaType, MFCreateMemoryBuffer,
+    MFCreateSample, MFMediaType_Video, MFSTARTUP_LITE, MFShutdown, MFStartup,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_END_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_MESSAGE_SET_D3D_MANAGER, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea,
+    MFVideoFormat_H264, MFVideoFormat_NV12,
 };
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
@@ -192,7 +193,7 @@ impl MfDecoder {
                         if let Some(picture) = self.read_gpu(&sample)? {
                             return Ok(Some(picture));
                         }
-                        return read_nv12(&sample, self.display).map(Some);
+                        return read_nv12(&sample, &self.transform, self.display).map(Some);
                     }
                     Err(err) if err.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(None),
                     Err(err) if err.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
@@ -379,12 +380,19 @@ fn input_sample(data: &[u8]) -> Result<IMFSample, String> {
 
 /// Copies a decoded NV12 picture of `display` size out of `sample`: the Y rows, then the
 /// interleaved U/V rows, without padding.
-fn read_nv12(sample: &IMFSample, (width, height): (u32, u32)) -> Result<Picture, String> {
+fn read_nv12(
+    sample: &IMFSample,
+    transform: &IMFTransform,
+    (width, height): (u32, u32),
+) -> Result<Picture, String> {
     unsafe {
         let buffer = sample
             .GetBufferByIndex(0)
             .map_err(failed("decoded picture"))?;
-        let two_d: IMF2DBuffer2 = buffer.cast().map_err(failed("decoded picture"))?;
+        // Decoding on the CPU, it writes into the plain buffer we gave it, which has no 2D access.
+        let Ok(two_d) = buffer.cast::<IMF2DBuffer2>() else {
+            return read_plain_nv12(&buffer, transform, (width, height));
+        };
         let mut scanline: *mut u8 = std::ptr::null_mut();
         let mut pitch = 0i32;
         let mut start: *mut u8 = std::ptr::null_mut();
@@ -410,6 +418,40 @@ fn read_nv12(sample: &IMFSample, (width, height): (u32, u32)) -> Result<Picture,
             nv12_from(all, pitch, rows, (width, height))
         })();
         let _ = two_d.Unlock2D();
+        result
+    }
+}
+
+/// [`read_nv12`] for a plain buffer: its layout comes from the decoder's output format.
+fn read_plain_nv12(
+    buffer: &IMFMediaBuffer,
+    transform: &IMFTransform,
+    display: (u32, u32),
+) -> Result<Picture, String> {
+    unsafe {
+        let format = transform
+            .GetOutputCurrentType(0)
+            .map_err(failed("decoder output format"))?;
+        let frame = format
+            .GetUINT64(&MF_MT_FRAME_SIZE)
+            .map_err(failed("decoder output format"))?;
+        let (columns, rows) = ((frame >> 32) as usize, frame as u32 as usize);
+        // A stride is stored as a signed number; negative is bottom-up, which NV12 never is.
+        let pitch = format
+            .GetUINT32(&MF_MT_DEFAULT_STRIDE)
+            .map_or(columns, |stride| (stride as i32).unsigned_abs() as usize);
+        let mut start: *mut u8 = std::ptr::null_mut();
+        let mut len = 0u32;
+        buffer
+            .Lock(&mut start, None, Some(&mut len))
+            .map_err(failed("decoded picture"))?;
+        let result = if start.is_null() {
+            Err("the decoder returned no picture".to_owned())
+        } else {
+            let all = std::slice::from_raw_parts(start, len as usize);
+            nv12_from(all, pitch, rows, display)
+        };
+        let _ = buffer.Unlock();
         result
     }
 }
