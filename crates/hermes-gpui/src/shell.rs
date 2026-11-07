@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
-    WindowControlArea, div, px,
+    div, px,
 };
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
@@ -200,6 +200,8 @@ pub struct Shell {
     restore: Option<(InstanceId, Id)>,
     /// The title last given to the window.
     title: String,
+    /// The colour last given to the title bar.
+    title_bar: Option<gpui_kit::Rgba>,
     /// Give the keyboard to the open chat's message box at the next draw.
     pub focus_composer: bool,
     /// The window has the keyboard focus.
@@ -301,6 +303,7 @@ impl Shell {
             scale: window.scale_factor(),
             restore: None,
             title: String::new(),
+            title_bar: None,
             focus_composer: false,
             focused: true,
             _subscriptions: subscriptions,
@@ -316,6 +319,8 @@ impl Shell {
         this.start_event_pump(events, cx);
         this.start_link_listener(endpoint, cx);
         this.start_heartbeat(cx);
+        this.start_meter_timer(cx);
+        this.start_call_clock(cx);
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);
@@ -384,10 +389,15 @@ impl Shell {
                     this.update(cx, |this, cx| {
                         let _phase = watchdog::in_update();
                         watchdog::beat();
+                        // The microphone level comes 50 times a second: the meter's own timer
+                        // decides when it is worth a redraw.
+                        let redraw = batch.iter().any(|e| !matches!(e, CoreEvent::InputLevel(_)));
                         for event in batch {
                             this.on_core(event, window, cx);
                         }
-                        cx.notify();
+                        if redraw {
+                            cx.notify();
+                        }
                     })
                 });
                 if !matches!(result, Ok(Ok(()))) {
@@ -422,6 +432,24 @@ impl Shell {
                         cx.notify();
                     })
                 });
+            }
+        })
+        .detach();
+    }
+
+    /// Redraws once a second during a call, for the time on the voice channel's row.
+    fn start_call_clock(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.core.voice_channel().is_some() {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
             }
         })
         .detach();
@@ -465,7 +493,10 @@ impl Shell {
                 }
             }
             CoreEvent::VoiceStatus(_) => self.update_tray_voice(),
-            CoreEvent::InputLevel(db) => self.input_level = db,
+            CoreEvent::InputLevel(db) => {
+                self.input_level = db;
+                return;
+            }
             CoreEvent::StoreChanged { inst, what } => {
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
@@ -694,49 +725,52 @@ impl Shell {
         }
     }
 
-    /// The window's title, for the taskbar: the current page.
-    fn page_title(&self) -> String {
+    /// The window's title: the page, then its space, like `general | Maidenless - Hermes`.
+    pub fn page_title(&self) -> String {
         let store = self.core.store();
-        match &self.page {
-            Page::Friends => "Friends".into(),
-            Page::Results(Key::Search(..)) => "Search".into(),
-            Page::Results(Key::Mentions) => "Mentions".into(),
-            Page::Results(Key::Pins(..)) => "Pinned messages".into(),
-            Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
+        let place = if let Some((inst, space)) = &self.open_space_page {
+            let name = store
                 .instance(inst)
-                .and_then(|s| {
-                    s.channel(*channel)
-                        .map(|c| hermes_client_core::view::channel_title(s, c))
-                })
-                .unwrap_or_else(|| "Hermes".into()),
+                .and_then(|s| s.spaces.get(space))
+                .map_or("", |s| s.space.name.as_str());
+            title_parts("Space settings", Some(name))
+        } else if self.settings.is_some() {
+            "Settings".to_owned()
+        } else {
+            match &self.page {
+                Page::Friends => "Friends".to_owned(),
+                Page::Results(Key::Search(..)) => "Search".to_owned(),
+                Page::Results(Key::Mentions) => "Mentions".to_owned(),
+                Page::Results(Key::Pins(..)) => "Pinned messages".to_owned(),
+                Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
+                    .instance(inst)
+                    .and_then(|s| {
+                        let c = s.channel(*channel)?;
+                        let space = s
+                            .space_of(*channel)
+                            .and_then(|id| s.spaces.get(&id))
+                            .map(|st| st.space.name.as_str());
+                        Some(match space {
+                            Some(space) => {
+                                title_parts(c.name.as_deref().unwrap_or(""), Some(space))
+                            }
+                            None => hermes_client_core::view::channel_title(s, c),
+                        })
+                    })
+                    .unwrap_or_default(),
+            }
+        };
+        if place.is_empty() {
+            "Hermes".to_owned()
+        } else {
+            format!("{place} - Hermes")
         }
     }
 
     // ---- drawing ------------------------------------------------------------------------------
 
-    /// The bar over the main panel: it drags the window and holds the page's controls and the
-    /// window buttons. It has no title: the sidebar and the content say where you are.
-    fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let window_button = |id: &'static str, name: &'static str, area, close: bool| {
-            div()
-                .id(id)
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(46.))
-                .h_full()
-                .window_control_area(area)
-                .when(close, |d| {
-                    d.hover(|d| d.bg(theme::danger()).text_color(theme::on_accent()))
-                })
-                .when(!close, |d| d.hover(|d| d.bg(theme::hover())))
-                .child(icon(name, 16., theme::text_secondary()))
-        };
-        let maximize_icon = if window.is_maximized() {
-            assets::RESTORE
-        } else {
-            assets::MAXIMIZE
-        };
+    /// The bar over the main panel, holding the page's buttons and fields.
+    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .flex_shrink_0()
@@ -744,37 +778,8 @@ impl Shell {
             .h(px(theme::SIDEBAR_HEADER))
             .border_b_1()
             .border_color(theme::border())
-            .child(
-                div()
-                    .id("header-drag")
-                    .flex_1()
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag),
-            )
+            .child(div().flex_1())
             .children(self.render_header_controls(cx))
-            .child(
-                div()
-                    .flex()
-                    .h_full()
-                    .child(window_button(
-                        "win-min",
-                        assets::MINIMIZE,
-                        WindowControlArea::Min,
-                        false,
-                    ))
-                    .child(window_button(
-                        "win-max",
-                        maximize_icon,
-                        WindowControlArea::Max,
-                        false,
-                    ))
-                    .child(window_button(
-                        "win-close",
-                        assets::CLOSE,
-                        WindowControlArea::Close,
-                        true,
-                    )),
-            )
             .into_any_element()
     }
 
@@ -1053,6 +1058,14 @@ impl Shell {
     }
 }
 
+/// `page | space`, or the page alone.
+fn title_parts(page: &str, space: Option<&str>) -> String {
+    match space {
+        Some(space) if !space.is_empty() => format!("{page} | {space}"),
+        _ => page.to_owned(),
+    }
+}
+
 /// My chosen presence as the status others see.
 pub fn presence_status(presence: PresenceStatus) -> UserStatus {
     match presence {
@@ -1069,17 +1082,21 @@ impl Render for Shell {
         let _phase = watchdog::in_view();
         self.scale = window.scale_factor();
         self.viewport = window.viewport_size();
-        self.animate_meter(window);
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
         }
+        let bar = theme::sidebar();
+        if self.title_bar != Some(bar) {
+            crate::desktop::window::set_title_bar(window, bar);
+            self.title_bar = Some(bar);
+        }
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
 
-        let rail = self.render_rail(cx);
+        let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
         let main = match self.page.clone() {
             Page::Friends => self.render_friends(cx).into_any_element(),
@@ -1103,7 +1120,7 @@ impl Render for Shell {
             }
             _ => None,
         };
-        let header = self.render_header(window, cx);
+        let header = self.render_header(cx);
         let main_column = div()
             .flex()
             .flex_col()
@@ -1125,40 +1142,49 @@ impl Render for Shell {
         let full_page = self
             .render_space_settings(cx)
             .or_else(|| self.render_settings(cx));
+        let showing_page = full_page.is_some();
         let body = match full_page {
-            // Settings replace the sidebar and the chat; the header still drags the window.
+            // Settings replace the sidebar and the chat.
             Some(page) => div()
                 .flex()
                 .flex_col()
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .child(self.render_header(window, cx))
                 .children(self.render_status(cx))
                 .child(div().flex_1().min_h_0().child(page))
                 .into_any_element(),
-            None => {
-                let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
-                let width = f32::from(self.config.sidebar.width).clamp(180., 480.);
-                let side = self.sidebar_visible.then(|| {
+            None => main_column.into_any_element(),
+        };
+        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+        let width = f32::from(self.config.sidebar.width).clamp(180., 480.);
+        // The rail and the sidebar side by side, with the voice and user panels across both.
+        let left = if showing_page || !self.sidebar_visible {
+            rail
+        } else {
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .w(crate::theme::px(theme::RAIL_WIDTH + width))
+                .h_full()
+                .bg(theme::sidebar())
+                .when(on_right, |d| d.border_l_1())
+                .when(!on_right, |d| d.border_r_1())
+                .border_color(theme::border())
+                .child(
                     div()
-                        .relative()
-                        .flex_shrink_0()
-                        .w(crate::theme::px(width))
-                        .h_full()
-                        .child(sidebar)
-                        .child(self.render_resize_handle(on_right, cx))
-                });
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .when(on_right, |d| d.flex_row_reverse())
-                    .children(side)
-                    .child(main_column)
-                    .into_any_element()
-            }
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .when(on_right, |d| d.flex_row_reverse())
+                        .child(rail)
+                        .child(div().flex_1().min_w_0().h_full().child(sidebar)),
+                )
+                .children(self.render_bottom_panels(cx))
+                .child(self.render_resize_handle(on_right, cx))
+                .into_any_element()
         };
         let resizing = self.resizing.is_some();
         div()
@@ -1193,7 +1219,8 @@ impl Render for Shell {
                         cx.listener(|this, _, _, cx| this.end_resize(cx)),
                     )
             })
-            .child(rail)
+            .when(on_right, |d| d.flex_row_reverse())
+            .child(left)
             .child(body)
             .children(self.render_modals(cx))
             .children(self.render_menu())

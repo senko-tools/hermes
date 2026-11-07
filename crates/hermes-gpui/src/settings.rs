@@ -94,6 +94,11 @@ enum SliderKind {
     SoundsVolume,
 }
 
+/// How often the level meter can redraw the window at most.
+const METER_FPS: f32 = 30.0;
+/// The bar has to move this far for a redraw (a pixel or so on a setting row).
+const METER_STEP_DB: f32 = 0.25;
+
 /// Where the level meter's bar goes next: it follows the level quickly upwards and falls slowly, as
 /// meters do, in dB and `seconds` after it was last drawn.
 pub fn meter_step(shown: f32, level: f32, seconds: f32) -> f32 {
@@ -185,20 +190,38 @@ struct DeviceSelects {
 }
 
 impl Shell {
-    /// Moves the level meter towards the level and asks for another frame while it shows.
-    pub fn animate_meter(&mut self, window: &mut Window) {
-        let showing = self
-            .settings
-            .as_ref()
-            .is_some_and(|page| page.tab == Tab::Voice);
-        if !showing {
-            return;
-        }
-        let now = std::time::Instant::now();
-        let seconds = now.duration_since(self.meter_drawn).as_secs_f32();
-        self.meter_drawn = now;
-        self.meter_shown = meter_step(self.meter_shown, self.input_level, seconds);
-        window.request_animation_frame();
+    /// Moves the level meter at [`METER_FPS`] while it shows, redrawing only when the bar would
+    /// visibly move: a window redraw is what costs, not the meter.
+    pub fn start_meter_timer(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs_f32(1.0 / METER_FPS))
+                    .await;
+                let alive = this.update(cx, |this, cx| {
+                    let showing = this
+                        .settings
+                        .as_ref()
+                        .is_some_and(|page| page.tab == Tab::Voice);
+                    let now = std::time::Instant::now();
+                    let seconds = now.duration_since(this.meter_drawn).as_secs_f32();
+                    this.meter_drawn = now;
+                    if !showing {
+                        return;
+                    }
+                    let next = meter_step(this.meter_shown, this.input_level, seconds);
+                    let moved = (next - this.meter_shown).abs();
+                    this.meter_shown = next;
+                    if moved >= METER_STEP_DB {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Opens the settings over the whole window.
@@ -297,7 +320,7 @@ impl Shell {
             (
                 SliderKind::OutputVolume,
                 0.,
-                2.,
+                hermes_client_core::audio::MAX_VOLUME,
                 0.05,
                 voice.output_volume as f32,
             ),
@@ -1288,12 +1311,12 @@ impl Shell {
             vec![
                 setting(
                     "Microphone volume",
-                    &format!("{:.0} %", v.input_volume * 100.),
+                    &hermes_client_core::audio::volume_label(v.input_volume as f32),
                     self.slider(page, SliderKind::InputVolume),
                 ),
                 setting(
                     "Output volume",
-                    &format!("{:.0} %", v.output_volume * 100.),
+                    &hermes_client_core::audio::volume_label(v.output_volume as f32),
                     self.slider(page, SliderKind::OutputVolume),
                 ),
             ],

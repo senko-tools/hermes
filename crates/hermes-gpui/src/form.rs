@@ -274,6 +274,9 @@ impl Fields<'_, '_> {
     }
 }
 
+/// The edit form's choice for a channel outside every category.
+const NO_CATEGORY: &str = "None";
+
 impl Shell {
     fn fields<'a, 'b>(
         form: Form,
@@ -375,6 +378,22 @@ impl Shell {
         self.finish(fields);
     }
 
+    /// The categories of the space `channel` is in: `(id, name)`, in their order.
+    fn categories_of(&self, inst: &str, channel: Id) -> Vec<(Id, String)> {
+        let store = self.core.store();
+        let Some(s) = store.instance(inst) else {
+            return Vec::new();
+        };
+        let Some(space) = s.space_of(channel) else {
+            return Vec::new();
+        };
+        hermes_client_core::view::channel_tree(s, space)
+            .into_iter()
+            .filter(|c| c.kind == ChannelKind::Category)
+            .map(|c| (c.id, c.name))
+            .collect()
+    }
+
     pub fn open_form_edit_channel(
         &mut self,
         inst: InstanceId,
@@ -394,7 +413,14 @@ impl Shell {
             ChannelKind::GroupDm => "Rename group",
             _ => "Edit channel",
         };
-        let form = Form::new(Purpose::EditChannel { inst, channel }, title, "Save");
+        let form = Form::new(
+            Purpose::EditChannel {
+                inst: inst.clone(),
+                channel,
+            },
+            title,
+            "Save",
+        );
         let mut fields =
             Self::fields(form, window, cx).text("Name", "", c.name.clone().unwrap_or_default());
         if matches!(c.kind, ChannelKind::Text | ChannelKind::Voice) {
@@ -429,6 +455,16 @@ impl Shell {
                     c.bitrate
                         .map_or_else(|| "64".to_owned(), |b| (b / 1000).to_string()),
                 );
+        }
+        if matches!(c.kind, ChannelKind::Text | ChannelKind::Voice) {
+            let categories = self.categories_of(&inst, channel);
+            let current = categories
+                .iter()
+                .find(|(id, _)| Some(*id) == c.parent_id)
+                .map_or(NO_CATEGORY, |(_, name)| name.as_str());
+            let mut options = vec![NO_CATEGORY];
+            options.extend(categories.iter().map(|(_, name)| name.as_str()));
+            fields = fields.choice("Category", "The group it shows under.", &options, current);
         }
         self.finish(fields);
     }
@@ -728,6 +764,16 @@ impl Shell {
                         return Err("the bitrate must be between 8 and 510 kbit/s".into());
                     }
                     req.bitrate = Some(kbit * 1000);
+                }
+                if matches!(kind, ChannelKind::Text | ChannelKind::Voice) {
+                    let at = if kind == ChannelKind::Voice { 5 } else { 3 };
+                    let chosen = form.selected(at);
+                    req.parent_id = Some(
+                        self.categories_of(&inst, channel)
+                            .into_iter()
+                            .find(|(_, name)| *name == chosen)
+                            .map(|(id, _)| id),
+                    );
                 }
                 self.form_call(cx, async move {
                     core.rest(&inst)?.update_channel(channel, &req).await?;

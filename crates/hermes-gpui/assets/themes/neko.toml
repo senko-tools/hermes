@@ -61,7 +61,7 @@ default_color = "#f2ecee"
 # Background levels, darkest to lightest.
 [surface]
 deep = "#141112"              # --neko-bg-deep
-footer = "#251f21"            # --neko-bg-surface
+footer = "#362d30"            # --neko-bg-soft
 main = "#1a1617"              # --neko-bg-main
 sidebar = "#251f21"           # --neko-bg-surface
 raised = "#2d2629"            # --neko-bg-surface
@@ -90,10 +90,12 @@ unread_hover = "#f2ecee1a"
 mention_border = "#eec1c8"
 mention_bg = "#eec1c826"
 mention_hover = "#eec1c840"
-# Green like the voice-connected text, so it differs from the selected pink.
-connected_border = "#6aa694"
-connected_bg = "#6aa69426"
-connected_hover = "#6aa69440"
+# The block around the voice channel I am in and its people.
+connected_border = "#d4a5b2"
+connected_bg = "#3f3337"
+connected_hover = "#453a3d"
+text = "#817578"              # --neko-text-faint
+category = "#817578"
 
 [shape]
 radius = 4                    # buttons, inputs, menus: a little rounding

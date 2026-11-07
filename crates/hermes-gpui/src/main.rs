@@ -163,11 +163,10 @@ fn main() -> ExitCode {
                     cx,
                 ))),
                 window_min_size: Some(size(px(theme::WINDOW_MIN_W), px(theme::WINDOW_MIN_H))),
-                // The header over the main panel is the title bar: it drags the window and holds
-                // the window buttons. The title still names the window on the taskbar.
+                // The native title bar, which shows the space and page (`Shell::page_title`).
                 titlebar: Some(TitlebarOptions {
                     title: Some("Hermes".into()),
-                    appears_transparent: true,
+                    appears_transparent: false,
                     ..Default::default()
                 }),
                 ..Default::default()

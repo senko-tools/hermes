@@ -222,6 +222,10 @@ pub struct Channel {
     pub connected_border: Hex,
     pub connected_bg: Hex,
     pub connected_hover: Hex,
+    /// A channel's name while nothing marks it.
+    pub text: Hex,
+    /// A category's name.
+    pub category: Hex,
 }
 
 /// Corner radii and the width of the row state bar, in pixels.
@@ -323,6 +327,8 @@ impl Theme {
             channel.connected_border,
             channel.connected_bg,
             channel.connected_hover,
+            channel.text,
+            channel.category,
             shape.radius,
             shape.row_radius,
             shape.radius_large,
@@ -369,6 +375,8 @@ impl Theme {
             connected_border: self.voice.speaking_ring,
             connected_bg: Hex(alpha(self.voice.speaking_ring.0, 0.12)),
             connected_hover: Hex(alpha(self.voice.speaking_ring.0, 0.2)),
+            text: self.text.secondary,
+            category: self.text.tertiary,
         };
         d.shape = Shape {
             radius: 6,
@@ -659,7 +667,6 @@ macro_rules! colors {
 colors! {
     background = |t| t.surface.main.0;
     sidebar = |t| t.surface.sidebar.0;
-    rail = |t| t.surface.deep.0;
     footer = |t| t.surface.footer.0;
     raised = |t| t.surface.raised.0;
     overlay = |t| t.surface.overlay.0;
@@ -694,6 +701,11 @@ colors! {
     row_connected_bar = |t| t.channel.connected_border.0;
     row_connected_bg = |t| t.channel.connected_bg.0;
     row_connected_hover = |t| t.channel.connected_hover.0;
+    channel_text = |t| t.channel.text.0;
+    category_text = |t| t.channel.category.0;
+    icon_color = |t| t.icons.default.0;
+    accent_highlight = |t| t.accent.highlight.0;
+    success = |t| t.text.success.0;
     scrim = |t| alpha(t.surface.deep.0, 0.7);
     scrim_strong = |t| alpha(t.surface.deep.0, 0.9);
 }
@@ -794,7 +806,7 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.danger_foreground = danger_text.into();
     theme.muted = raised().into();
     theme.muted_foreground = text_tertiary().into();
-    theme.accent = hover().into();
+    theme.accent = selected().into();
     theme.accent_foreground = text().into();
     theme.border = border().into();
     theme.input = border().into();
@@ -803,6 +815,26 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.popover = overlay().into();
     theme.popover_foreground = text().into();
     theme.caret = text().into();
+    // Switches, checkboxes and radio buttons read `tokens.primary`, the dropdowns' rows the list
+    // tokens. Left alone they keep the kit's own black and white.
+    theme.switch = selected().into();
+    theme.switch_thumb = text().into();
+    theme.list_hover = selected().into();
+    theme.list_active = accent_soft().into();
+    theme.list_active_border = accent().into();
+    theme.list.active_highlight = true;
+    theme.tokens.primary = token(accent());
+    theme.tokens.primary_hover = token(with(|a| a.theme.accent.highlight.0));
+    theme.tokens.primary_active = token(with(|a| a.theme.accent.highlight.0));
+    theme.tokens.switch = token(selected());
+    theme.tokens.switch_thumb = token(text());
+    // The dropdowns' panels are `overlay`, the same as `hover` in some themes: `selected` shows.
+    theme.tokens.list_hover = token(selected());
+    theme.tokens.list_active = token(accent_soft());
+    theme.tokens.background = token(background());
+    theme.tokens.popover = token(overlay());
+    theme.tokens.muted = token(raised());
+    theme.tokens.accent = token(selected());
     KitTheme::sync_base(cx);
 }
 
@@ -922,6 +954,8 @@ mod tests {
             c.connected_border,
             c.connected_bg,
             c.connected_hover,
+            c.text,
+            c.category,
         ]
         .iter()
         .map(|h| [h.0.r, h.0.g, h.0.b, h.0.a].map(|v| (v * 255.0).round() as u8))

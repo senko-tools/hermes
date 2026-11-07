@@ -1757,3 +1757,16 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
 - Input levels are reported every 20 ms instead of 50 ms, and the settings meter animates each frame with a fast rise and slow fall.
 - The network graphs are drawn on a canvas: value scale, time axis, min/avg/max, a hover readout with the time, and 1, 5 or 15 minute ranges (the history is 15 minutes). Long ranges keep the highest value per point, so a spike stays visible.
 **Why:** the developer's request: the microphone was quiet at 200 %, the meter looked low in frame rate, and the graphs did not say what period they cover.
+
+## 2026-11-07: Volumes in decibels, native title bar, left column
+
+Asked for by the developer.
+
+- **Volume sliders are decibels.** The stored value is the slider's position. Above 100 % every 100 % doubles the
+  amplitude (`hermes_audio::volume_gain`): 200 % is +6 dB, 300 % is +12 dB, the top of every slider. Below 100 % every
+  halving of the position halves the amplitude and 0 % is silent, because a pure exponential never reaches silence.
+- **Native title bar**, replacing the 2026-11-07 "title-less header": the title is `page | space - Hermes`. Its colour
+  follows the theme where Windows allows (Windows 11 caption colour; Windows 10 only dark or light).
+- **Left column:** see `docs/gpui-migration.md`. Theme keys `channel.text` and `channel.category` are new and derived
+  for older theme files; neko's values were sampled from the developer's screenshot.
+- **Level meter:** at most 30 redraws a second and only when the bar moves, instead of one per display frame.

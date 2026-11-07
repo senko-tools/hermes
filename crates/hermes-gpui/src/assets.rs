@@ -34,8 +34,6 @@ pub const MIC_OFF: &str = "microphone-off";
 pub const HEADPHONES: &str = "headphones";
 pub const HEADPHONES_OFF: &str = "headphones-off";
 pub const MONITOR_SHARE: &str = "monitor-share";
-pub const MAXIMIZE: &str = "fullscreen";
-pub const RESTORE: &str = "fullscreen-exit";
 pub const WAVEFORM: &str = "waveform";
 pub const ARROW_LEFT: &str = "arrow-left";
 pub const ACCOUNT: &str = "account-circle";
@@ -47,7 +45,6 @@ pub const SERVER: &str = "server";
 pub const SHIELD: &str = "shield-account";
 pub const BELL: &str = "bell-outline";
 pub const LINK: &str = "link-variant";
-pub const MINIMIZE: &str = "minus";
 pub const BAN: &str = "cancel";
 pub const FOLDER_PLUS: &str = "folder-plus-outline";
 

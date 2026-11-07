@@ -416,7 +416,7 @@ impl Shell {
             || self.core.voice_requires_ptt())
         .then_some(self.ptt_down);
         let state_color = if connected {
-            theme::speaking()
+            theme::success()
         } else {
             theme::accent()
         };
@@ -502,20 +502,15 @@ impl Shell {
         } else {
             "Share screen"
         };
-        let buttons = div()
-            .flex()
-            .gap(px(4.))
-            .child(
-                panel_button("panel-share", assets::MONITOR_SHARE, sharing, share_label).on_click(
-                    cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                        this.share_button(event.position(), window, cx);
-                    }),
-                ),
-            )
-            .child(
-                panel_button("panel-leave", assets::HANG_UP, true, "Leave voice")
-                    .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx))),
-            );
+        let buttons = div().flex().gap(px(4.)).child(
+            panel_button("panel-share", assets::MONITOR_SHARE, sharing, share_label).on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.share_button(event.position(), window, cx);
+                }),
+            ),
+        );
+        let leave = me_button("panel-leave", assets::HANG_UP, false)
+            .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx)));
         Some(
             div()
                 .flex()
@@ -526,7 +521,14 @@ impl Shell {
                 .bg(theme::footer())
                 .border_t_1()
                 .border_color(theme::border())
-                .child(info)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(div().flex_1().min_w_0().child(info))
+                        .child(leave),
+                )
                 .child(network)
                 .child(buttons)
                 .into_any_element(),
@@ -1044,7 +1046,7 @@ impl Shell {
                 } else {
                     p.volume
                         .filter(|v| (*v - 1.0).abs() > 0.001)
-                        .map(|v| format!("volume {:.0} %", v * 100.0))
+                        .map(|v| format!("volume {}", hermes_client_core::audio::volume_label(v)))
                 };
                 div()
                     .flex()
@@ -1152,7 +1154,7 @@ impl Shell {
             cx.new(|_| {
                 SliderState::new()
                     .min(0.)
-                    .max(2.)
+                    .max(hermes_client_core::audio::MAX_VOLUME)
                     .step(0.05)
                     .default_value(value)
             })
@@ -1221,7 +1223,7 @@ impl Shell {
                 .child(
                     div()
                         .text_color(theme::text_secondary())
-                        .child(format!("{:.0} %", value * 100.)),
+                        .child(hermes_client_core::audio::volume_label(value)),
                 )
         };
         Some(

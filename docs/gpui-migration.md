@@ -31,8 +31,10 @@ PC needs a scratch server and its own config dir; see "How the window was tested
   when clicking outside them.
 - **Look:** sizes like Discord's (34 px rows, 40 px avatars, 240 px sidebar, 72 px rail).
   JetBrainsMono Nerd Font and Material icons, as in `hermes-gui`.
-- **Header:** a bar over the main panel, without a title: it drags the window and holds the page's buttons and
-  fields and the window buttons. The native title bar is off; the window title stays set for the taskbar.
+- **Title bar (changed 2026-11-07):** the native Windows one, showing the page and space (`general | Space - Hermes`).
+  The bar over the main panel only holds the page's buttons and fields.
+- **Left column:** rail and sidebar share one background with a border between them; the voice and user panels span
+  both at the bottom. A highlighted voice channel's block includes the people in it (from the developer's screenshot).
 - **Rail, like Discord's:** a column of icons on the far left. The top icon is the app icon (feather,
   maybe custom later) and opens Friends. The others are spaces; selecting one shows its channels in the
   sidebar and opens the channel last open in it, else its first text channel. Spaces are not a dropdown.

@@ -137,6 +137,29 @@ fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .text_size(theme::body_size())
 }
 
+/// The bar at the rail's edge beside the selected icon.
+fn rail_pill() -> Div {
+    div()
+        .absolute()
+        .left(px(-12.))
+        .top(px(8.))
+        .bottom(px(8.))
+        .w(px(4.))
+        .rounded_r(px(2.))
+        .bg(theme::accent())
+}
+
+/// A running time as `1:01:42`, or `2:05` under an hour.
+fn elapsed_text(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
 /// The two letters on a space's rail icon.
 fn initials(name: &str) -> String {
     name.chars().take(2).collect()
@@ -185,6 +208,7 @@ impl Shell {
     }
 
     pub fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
         let home_badge = self.home_badge();
         let home_selected = self.selected == Selected::Home;
         let home = rail_icon("home", home_selected)
@@ -194,6 +218,7 @@ impl Shell {
                 theme::selected()
             })
             .when(!home_selected, |d| d.hover(|d| d.bg(theme::hover())))
+            .when(home_selected, |d| d.child(rail_pill()))
             .child(icon(
                 assets::FEATHER,
                 28.,
@@ -226,6 +251,7 @@ impl Shell {
                     } else {
                         theme::text()
                     })
+                    .when(selected, |d| d.child(rail_pill()))
                     .child(initials(&name))
                     .children(
                         badge_element(badge)
@@ -257,7 +283,10 @@ impl Shell {
             .w(px(theme::RAIL_WIDTH))
             .h_full()
             .pt(px(12.))
-            .bg(theme::rail())
+            .bg(theme::sidebar())
+            .when(on_right, |d| d.border_l_1())
+            .when(!on_right, |d| d.border_r_1())
+            .border_color(theme::border())
             .child(home)
             .child(div().w(px(32.)).h(px(2.)).bg(theme::border()))
             .child(
@@ -316,10 +345,12 @@ impl Shell {
                     .border_color(theme::border())
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::hover()))
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::BOLD)
                     .text_size(theme::body_size())
-                    .child(div().flex_1().min_w_0().truncate().child(name))
-                    .child(icon(assets::CHEVRON_DOWN, 18., theme::text_secondary()))
+                    .text_color(theme::accent_highlight())
+                    .child(div().min_w_0().truncate().child(name))
+                    .child(icon(assets::CHEVRON_DOWN, 18., theme::accent_highlight()))
+                    .child(div().flex_1())
                     .on_click(cx.listener(
                         move |this, event: &gpui_kit::ClickEvent, window, cx| {
                             this.open_menu(open.clone(), event.position(), window, cx);
@@ -344,8 +375,13 @@ impl Shell {
                         cx,
                     )),
             )
-            .children(self.render_voice_panel(cx))
-            .child(self.render_me(cx))
+    }
+
+    /// Under the rail and the sidebar, across both: the voice panel and the user panel.
+    pub fn render_bottom_panels(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut panels: Vec<AnyElement> = self.render_voice_panel(cx).into_iter().collect();
+        panels.push(self.render_me(cx).into_any_element());
+        panels
     }
 
     /// Instances that need attention: signing in again, or a lost connection.
@@ -457,13 +493,65 @@ impl Shell {
             out
         };
         let mut rows = self.instance_notices(cx);
-        rows.extend(
-            tree_rows
-                .into_iter()
-                // The space itself is the header above the list.
-                .filter(|r| !matches!(r, Row::Space { .. }))
-                .map(|r| self.render_tree_row(r, false, cx)),
-        );
+        let mut tree_rows = tree_rows.into_iter().peekable();
+        while let Some(tree_row) = tree_rows.next() {
+            // The space itself is the header above the list.
+            if matches!(tree_row, Row::Space { .. }) {
+                continue;
+            }
+            let block = match &tree_row {
+                Row::Channel {
+                    kind: ChannelKind::Voice,
+                    selected,
+                    connected,
+                    badge,
+                    nested,
+                    id,
+                    ..
+                } => RowState::of(*selected, *connected, *badge).map(|s| (s, *nested, *id)),
+                _ => None,
+            };
+            let Some((state, nested, id)) = block else {
+                rows.push(self.render_tree_row(tree_row, false, cx));
+                continue;
+            };
+            // Highlighted: the channel's highlight goes around the people in it too.
+            let head = self.render_channel_row(tree_row, true, cx);
+            let mut people = Vec::new();
+            while tree_rows
+                .peek()
+                .is_some_and(|r| matches!(r, Row::VoiceUser { .. }))
+            {
+                let person = tree_rows.next().expect("just looked at it");
+                people.push(self.render_tree_row(person, false, cx));
+            }
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("voice-block-{id}")))
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .pb(px(if people.is_empty() { 0. } else { 4. }))
+                    .when(nested, |d| d.ml(px(10.)))
+                    .rounded(theme::row_radius())
+                    .overflow_hidden()
+                    .bg(state.background)
+                    .hover(move |d| d.bg(state.hover))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(theme::indicator_width())
+                            .bg(state.bar),
+                    )
+                    .child(head)
+                    .children(people)
+                    .into_any_element(),
+            );
+        }
         rows
     }
 
@@ -481,6 +569,27 @@ impl Shell {
             } => {
                 let node = Node::Category(inst.clone(), id);
                 let target = Target::Channel(inst.clone(), id);
+                let add = drag.is_some().then(|| {
+                    let inst = inst.clone();
+                    div()
+                        .id(SharedString::from(format!("category-add-{id}")))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(px(20.))
+                        .rounded(px(4.))
+                        .hover(|d| d.bg(theme::hover()))
+                        .child(icon(assets::PLUS, 16., theme::category_text()))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.run_action(
+                                Target::Channel(inst.clone(), id),
+                                crate::menu_entries::Action::CreateChannel,
+                                window,
+                                cx,
+                            );
+                        }))
+                });
                 let element = div()
                     .id(SharedString::from(format!("category-{id}")))
                     .flex()
@@ -489,10 +598,12 @@ impl Shell {
                     .gap(px(4.))
                     .h(px(28.))
                     .mt(px(10.))
+                    .pl(px(4.))
                     .cursor_pointer()
-                    .text_size(theme::caption_size())
-                    .text_color(theme::text_tertiary())
+                    .text_size(theme::secondary_size())
+                    .text_color(theme::category_text())
                     .hover(|d| d.text_color(theme::text_secondary()))
+                    .child(div().min_w_0().truncate().child(name.clone()))
                     .child(icon(
                         if collapsed {
                             assets::CHEVRON_RIGHT
@@ -500,16 +611,11 @@ impl Shell {
                             assets::CHEVRON_DOWN
                         },
                         14.,
-                        theme::text_tertiary(),
+                        theme::category_text(),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(name.to_uppercase()),
-                    )
+                    .child(div().flex_1())
                     .children(badge_element(badge))
+                    .children(add)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Err(err) = this.collapsed.toggle(&node) {
                             this.error(format!("could not save the sidebar state: {err}"), cx);
@@ -519,72 +625,7 @@ impl Shell {
                 let element = self.with_drag(element, drag, name, cx);
                 self.with_menu(element, target, cx).into_any_element()
             }
-            Row::Channel {
-                inst,
-                id,
-                kind,
-                name,
-                nested,
-                badge,
-                selected,
-                drag,
-                muted,
-                connected,
-            } => {
-                let glyph = if kind == ChannelKind::Voice {
-                    assets::VOLUME
-                } else {
-                    assets::POUND
-                };
-                let target = Target::Channel(inst.clone(), id);
-                let strong = selected || badge.unread || badge.mentions > 0;
-                let state = RowState::of(selected, connected, badge);
-                let element = bare_row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
-                    .relative()
-                    .overflow_hidden()
-                    .when(nested, |d| d.ml(px(10.)))
-                    .when(state.is_none(), |d| d.hover(|d| d.bg(theme::hover())))
-                    .when_some(state, |d, state| {
-                        d.bg(state.background)
-                            .hover(move |d| d.bg(state.hover))
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .top_0()
-                                    .bottom_0()
-                                    .w(theme::indicator_width())
-                                    .bg(state.bar),
-                            )
-                    })
-                    .when(muted, |d| d.text_color(theme::text_tertiary()))
-                    .when(strong && !muted, |d| d.text_color(theme::text()))
-                    .child(icon(
-                        glyph,
-                        theme::ROW_ICON,
-                        if connected {
-                            theme::speaking()
-                        } else {
-                            theme::text_tertiary()
-                        },
-                    ))
-                    .child(div().flex_1().min_w_0().truncate().child(name.clone()))
-                    .children(badge_element(badge))
-                    .on_click(cx.listener(
-                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                            this.select(inst.clone(), id, window, cx);
-                            let join_on =
-                                crate::voice::JoinOn::from_config(&this.config.voice.join_on);
-                            let joins = join_on == crate::voice::JoinOn::SingleClick
-                                || event.click_count() >= 2;
-                            if kind == ChannelKind::Voice && joins {
-                                this.join_voice(inst.clone(), id, cx);
-                            }
-                        },
-                    ));
-                let element = self.with_drag(element, drag, name, cx);
-                self.with_menu(element, target, cx).into_any_element()
-            }
+            channel @ Row::Channel { .. } => self.render_channel_row(channel, false, cx),
             Row::VoiceUser {
                 inst,
                 channel,
@@ -676,6 +717,104 @@ impl Shell {
                 self.with_menu(element, target, cx).into_any_element()
             }
         }
+    }
+
+    /// A channel's row. `in_block`: the block around it draws its state.
+    fn render_channel_row(
+        &self,
+        tree_row: Row,
+        in_block: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Row::Channel {
+            inst,
+            id,
+            kind,
+            name,
+            nested,
+            badge,
+            selected,
+            drag,
+            muted,
+            connected,
+        } = tree_row
+        else {
+            return div().into_any_element();
+        };
+        let glyph = if kind == ChannelKind::Voice {
+            assets::VOLUME
+        } else {
+            assets::POUND
+        };
+        let target = Target::Channel(inst.clone(), id);
+        let strong = selected || connected || badge.unread || badge.mentions > 0;
+        let state = RowState::of(selected, connected, badge).filter(|_| !in_block);
+        let timer = connected.then(|| self.time_in_voice(&inst)).flatten();
+        let element = bare_row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
+            .relative()
+            .overflow_hidden()
+            .text_color(theme::channel_text())
+            .when(nested && !in_block, |d| d.ml(px(10.)))
+            .when(state.is_none() && !in_block, |d| {
+                d.hover(|d| d.bg(theme::hover()))
+            })
+            .when_some(state, |d, state| {
+                d.bg(state.background)
+                    .hover(move |d| d.bg(state.hover))
+                    .child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(theme::indicator_width())
+                            .bg(state.bar),
+                    )
+            })
+            .when(muted, |d| d.text_color(theme::text_tertiary()))
+            .when(strong && !muted, |d| {
+                d.text_color(theme::text()).font_weight(FontWeight::MEDIUM)
+            })
+            .child(icon(
+                glyph,
+                theme::ROW_ICON,
+                if connected {
+                    theme::success()
+                } else {
+                    theme::icon_color()
+                },
+            ))
+            .child(div().flex_1().min_w_0().truncate().child(name.clone()))
+            .children(timer.map(|text| {
+                div()
+                    .flex_shrink_0()
+                    .text_size(theme::caption_size())
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(theme::success())
+                    .child(text)
+            }))
+            .children(badge_element(badge))
+            .on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    this.select(inst.clone(), id, window, cx);
+                    let join_on = crate::voice::JoinOn::from_config(&this.config.voice.join_on);
+                    let joins =
+                        join_on == crate::voice::JoinOn::SingleClick || event.click_count() >= 2;
+                    if kind == ChannelKind::Voice && joins {
+                        this.join_voice(inst.clone(), id, cx);
+                    }
+                }),
+            );
+        let element = self.with_drag(element, drag, name, cx);
+        self.with_menu(element, target, cx).into_any_element()
+    }
+
+    /// How long I have been in this instance's voice channel.
+    fn time_in_voice(&self, inst: &str) -> Option<String> {
+        let store = self.core.store();
+        let s = store.instance(inst)?;
+        let joined = s.voice_states.get(&s.me_id()?)?.joined_at;
+        Some(elapsed_text(hermes_client_core::now_ms() - joined))
     }
 
     fn dm_avatar(&self, inst: &str, peer: Option<Id>, name: &str) -> AnyElement {
@@ -799,6 +938,8 @@ impl Shell {
             .h(px(theme::FOOTER_HEIGHT))
             .px(px(8.))
             .bg(theme::footer())
+            .border_t_1()
+            .border_color(theme::border())
             .text_size(theme::body_size())
             .child(me)
             .children(self.render_me_buttons(cx))
