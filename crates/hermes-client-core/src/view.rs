@@ -485,10 +485,10 @@ fn mention_names(store: &InstanceStore, channel: Id) -> Vec<(String, String)> {
             .map(|c| c.recipients.clone())
             .unwrap_or_default(),
     };
-    if let Some(me) = &store.me {
-        if !users.iter().any(|u| u.id == me.user.id) {
-            users.push(me.user.clone());
-        }
+    if let Some(me) = &store.me
+        && !users.iter().any(|u| u.id == me.user.id)
+    {
+        users.push(me.user.clone());
     }
     let mut out = Vec::new();
     for user in &users {
