@@ -498,20 +498,22 @@ impl Shell {
                 };
                 cx.notify();
             }));
-        let share_label = if sharing {
-            "Stop sharing"
-        } else {
-            "Share screen"
-        };
-        let buttons = div().flex().gap(px(4.)).child(
-            panel_button("panel-share", assets::MONITOR_SHARE, sharing, share_label).on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.share_button(event.position(), window, cx);
-                }),
-            ),
+        let share = voice_button(
+            "panel-share",
+            assets::MONITOR_SHARE,
+            Look::plain(theme::accent()),
+            sharing,
+            cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                this.share_button(event.position(), window, cx);
+            }),
         );
-        let leave = me_button("panel-leave", assets::HANG_UP, false)
-            .on_click(cx.listener(|this, _, _, cx| this.leave_voice(cx)));
+        let leave = voice_button(
+            "panel-leave",
+            assets::HANG_UP,
+            Look::negative(),
+            false,
+            cx.listener(|this, _, _, cx| this.leave_voice(cx)),
+        );
         Some(
             div()
                 .flex()
@@ -528,11 +530,11 @@ impl Shell {
                         .items_center()
                         .gap(px(4.))
                         .child(div().flex_1().min_w_0().child(info))
+                        .child(share)
                         .child(leave),
                 )
                 .child(encryption)
                 .child(network)
-                .child(buttons)
                 .into_any_element(),
         )
     }
@@ -756,33 +758,37 @@ impl Shell {
         let muted = self.core.self_mute() || self.core.self_deaf();
         let deafened = self.core.self_deaf();
         vec![
-            me_button(
+            voice_button(
                 "me-mute",
                 if muted { assets::MIC_OFF } else { assets::MIC },
+                Look::positive(),
                 muted,
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_mute(cx);
-                cx.notify();
-            }))
-            .into_any_element(),
-            me_button(
+                cx.listener(|this, _, _, cx| {
+                    this.toggle_mute(cx);
+                    cx.notify();
+                }),
+            ),
+            voice_button(
                 "me-deafen",
                 if deafened {
                     assets::HEADPHONES_OFF
                 } else {
                     assets::HEADPHONES
                 },
+                Look::positive(),
                 deafened,
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_deafen(cx);
-                cx.notify();
-            }))
-            .into_any_element(),
-            me_button("me-settings", assets::COG, false)
-                .on_click(cx.listener(|this, _, window, cx| this.open_settings(window, cx)))
-                .into_any_element(),
+                cx.listener(|this, _, _, cx| {
+                    this.toggle_deafen(cx);
+                    cx.notify();
+                }),
+            ),
+            voice_button(
+                "me-settings",
+                assets::COG,
+                Look::plain(theme::accent()),
+                false,
+                cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+            ),
         ]
     }
 
@@ -1537,11 +1543,12 @@ impl Shell {
             }
             _ => return None,
         };
-        let here = self.core.voice_channel() == Some((inst.clone(), channel));
+        // In the call: the voice panel's own button leaves it.
+        if self.core.voice_channel() == Some((inst.clone(), channel)) {
+            return None;
+        }
         let joining = self.joining.is_some();
-        let label = if here {
-            "Leave"
-        } else if joining {
+        let label = if joining {
             "Joining…"
         } else if matches!(self.page, Page::Chat(..)) {
             "Call"
@@ -1552,14 +1559,9 @@ impl Shell {
             Button::new("header-voice")
                 .cursor_pointer()
                 .label(label)
-                .when(!here, |b| b.primary())
-                .when(here, |b| b.danger())
+                .primary()
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if here {
-                        this.leave_voice(cx);
-                    } else {
-                        this.join_voice(inst.clone(), channel, cx);
-                    }
+                    this.join_voice(inst.clone(), channel, cx);
                 }))
                 .into_any_element(),
         )
@@ -1590,56 +1592,85 @@ pub fn chip(
         .child(label.into())
 }
 
-fn panel_button(
-    id: &'static str,
-    name: &'static str,
-    danger: bool,
-    _hint: &'static str,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_1()
-        .items_center()
-        .justify_center()
-        .h(px(30.))
-        .rounded(px(4.))
-        .cursor_pointer()
-        .when(danger, |d| d.bg(theme::danger()))
-        .when(!danger, |d| {
-            d.bg(theme::selected()).hover(|d| d.bg(theme::hover()))
-        })
-        .child(icon(
-            name,
-            18.,
-            if danger {
-                theme::on_accent()
-            } else {
-                theme::text()
-            },
-        ))
+/// The colours of a voice button: its icon at rest and under the pointer, and while it is on.
+#[derive(Clone, Copy)]
+pub struct Look {
+    rest: gpui_kit::Rgba,
+    hover: gpui_kit::Rgba,
+    on: gpui_kit::Rgba,
 }
 
-fn me_button(id: &'static str, name: &'static str, off: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+impl Look {
+    /// Mute and deafen: green-ish while off, red while on.
+    pub fn positive() -> Look {
+        Look {
+            rest: theme::mix(theme::text_secondary(), theme::success(), 0.55),
+            hover: theme::success(),
+            on: theme::danger(),
+        }
+    }
+
+    /// Leaving a call: red-ish.
+    pub fn negative() -> Look {
+        Look {
+            rest: theme::mix(theme::text_secondary(), theme::danger(), 0.6),
+            hover: theme::danger(),
+            on: theme::danger(),
+        }
+    }
+
+    /// Plain grey, `on` while it is on.
+    pub fn plain(on: gpui_kit::Rgba) -> Look {
+        Look {
+            rest: theme::text_secondary(),
+            hover: theme::text(),
+            on,
+        }
+    }
+}
+
+/// A little bouncy: a toggle overshoots once and settles in about a quarter second.
+const TOGGLE_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(420., 24., 1.);
+
+/// An icon button of the voice and user panels. Hovering colours the icon; turning on fades in a
+/// soft background of the `on` colour while the icon pops.
+pub fn voice_button(
+    id: &'static str,
+    glyph: &'static str,
+    look: Look,
+    on: bool,
+    click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+) -> AnyElement {
+    use gpui_kit::{AnimationExt as _, SpringAnimation, Transformation};
     div()
         .id(id)
+        .group(id)
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .size(px(30.))
-        .rounded(px(4.))
+        .size(px(32.))
+        .rounded(px(6.))
         .cursor_pointer()
-        .hover(|d| d.bg(theme::hover()))
-        .child(icon(
-            name,
-            18.,
-            if off {
-                theme::danger()
-            } else {
-                theme::text_secondary()
+        .on_click(click)
+        .with_spring(
+            id,
+            SpringAnimation::new(TOGGLE_SPRING).to(on),
+            move |d, phase| {
+                let t = phase.0.clamp(0., 1.);
+                let color = theme::mix(look.rest, look.on, t);
+                // Biggest halfway through the change, either way.
+                let pop = 1. + 0.22 * (std::f32::consts::PI * t).sin();
+                d.bg(theme::alpha(look.on, 0.16 * t)).child(
+                    icon(glyph, 18., color)
+                        .with_transformation(Transformation::scale(size(pop, pop)))
+                        .group_hover(id, move |s| {
+                            s.text_color(if on { look.on } else { look.hover })
+                        }),
+                )
             },
-        ))
+        )
+        .into_any_element()
 }
 
 /// One of the network graphs: what it shows and how.
