@@ -820,8 +820,7 @@ impl Voice {
         voice::set_sender_id(&mut packet, participant_id);
         let packet = Bytes::from(packet);
         for (&id, member) in &room.members {
-            if id == participant_id || member.deaf() || !member.watching.contains(&participant_id)
-            {
+            if id == participant_id || member.deaf() || !member.watching.contains(&participant_id) {
                 continue;
             }
             if let Some(conn) = conns.get(&member.conn_id) {

@@ -108,6 +108,14 @@ pub enum Action {
     Mention,
     CopyUsername,
     CopyUserId,
+    AddFriend,
+    AcceptFriend,
+    DeclineFriend,
+    CancelFriendRequest,
+    RemoveFriend,
+    /// Instance admins: lets the account go without a `#1234` tag, or gives it one again.
+    GiveNoTag,
+    TakeNoTag,
     ChangeNickname,
     ManageRoles,
     Kick,
@@ -176,6 +184,13 @@ impl Action {
             Action::SendMessage => "Message",
             Action::Mention => "Mention",
             Action::CopyUsername => "Copy username",
+            Action::AddFriend => "Add friend",
+            Action::AcceptFriend => "Accept friend request",
+            Action::DeclineFriend => "Decline friend request",
+            Action::CancelFriendRequest => "Cancel friend request",
+            Action::RemoveFriend => "Remove friend",
+            Action::GiveNoTag => "Remove their # number",
+            Action::TakeNoTag => "Give them a # number",
             Action::CopyUserId => "Copy user ID",
             Action::ChangeNickname => "Change nickname…",
             Action::ManageRoles => "Roles…",
@@ -450,8 +465,32 @@ pub fn entries_with(
                 push(&mut out, [Action::SendMessage]);
             }
             push(&mut out, [Action::Mention]);
+            if let (false, Some(s)) = (me, s) {
+                use hermes_client_core::proto::models::RelationshipKind as R;
+                match s.relationships.get(user).map(|r| r.kind) {
+                    None => push(&mut out, [Action::AddFriend]),
+                    Some(R::Friend) => push(&mut out, [Action::RemoveFriend]),
+                    Some(R::Incoming) => {
+                        push(&mut out, [Action::AcceptFriend, Action::DeclineFriend]);
+                    }
+                    Some(R::Outgoing) => push(&mut out, [Action::CancelFriendRequest]),
+                }
+            }
             out.push(None);
             push(&mut out, [Action::CopyUsername, Action::CopyUserId]);
+            if let Some(s) = s
+                && s.me.as_ref().is_some_and(|m| m.instance_admin)
+                && let Some(them) = s.user(*user)
+            {
+                push(
+                    &mut out,
+                    [if them.discriminator.is_some() {
+                        Action::GiveNoTag
+                    } else {
+                        Action::TakeNoTag
+                    }],
+                );
+            }
             if let (Some(s), Some(space)) = (s, space) {
                 let can = |p| view::can_in_space(s, *space, p);
                 let above = view::outranks(s, *space, *user);

@@ -110,7 +110,7 @@ impl Shell {
                 let name = core
                     .store()
                     .instance(&inst)
-                    .and_then(|s| s.me.as_ref().map(|m| m.user.username.clone()));
+                    .and_then(|s| s.me.as_ref().map(|m| m.user.handle()));
                 if let Some(name) = name {
                     self.copy(name, "Username", cx);
                 }
@@ -247,6 +247,69 @@ impl Shell {
                 );
             }
 
+            (Target::Member(inst, _, user), Action::AddFriend) => {
+                let handle = {
+                    let store = core.store();
+                    store
+                        .instance(&inst)
+                        .and_then(|s| s.user(user))
+                        .map(hermes_client_core::proto::models::User::handle)
+                };
+                if let Some(handle) = handle {
+                    self.call_status(
+                        &inst,
+                        "Friend request sent",
+                        move |r| async move { r.add_friend(&handle).await.map(|_| ()) },
+                        cx,
+                    );
+                }
+            }
+            (Target::Member(inst, _, user), Action::AcceptFriend) => {
+                self.call_status(
+                    &inst,
+                    "Friend request accepted",
+                    move |r| async move { r.accept_friend(user).await.map(|_| ()) },
+                    cx,
+                );
+            }
+            (
+                Target::Member(inst, _, user),
+                Action::DeclineFriend | Action::CancelFriendRequest | Action::RemoveFriend,
+            ) => {
+                let done = match action {
+                    Action::DeclineFriend => "Friend request declined",
+                    Action::CancelFriendRequest => "Friend request taken back",
+                    _ => "Friend removed",
+                };
+                self.call_status(
+                    &inst,
+                    done,
+                    move |r| async move { r.remove_friend(user).await },
+                    cx,
+                );
+            }
+            (Target::Member(inst, _, user), Action::GiveNoTag | Action::TakeNoTag) => {
+                let tagless = action == Action::GiveNoTag;
+                self.call_status(
+                    &inst,
+                    if tagless {
+                        "They now go without a # number"
+                    } else {
+                        "They now have a # number"
+                    },
+                    move |r| async move {
+                        r.admin_update_user(
+                            user,
+                            &hermes_client_core::proto::api::AdminUserPatch {
+                                tagless: Some(tagless),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                    },
+                    cx,
+                );
+            }
             (Target::Member(inst, _, user), Action::SendMessage) => {
                 self.message_user(inst, user, window, cx);
             }
@@ -254,7 +317,7 @@ impl Shell {
                 let name = core
                     .store()
                     .instance(&inst)
-                    .and_then(|s| s.user(user).map(|u| u.username.clone()));
+                    .and_then(|s| s.user(user).map(|u| u.handle()));
                 if let Some(name) = name {
                     self.copy(name, "Username", cx);
                 }

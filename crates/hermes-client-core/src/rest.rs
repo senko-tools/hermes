@@ -5,17 +5,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use hermes_proto::api::{
-    AckRequest, AdminUser, AdminUserPatch, AuthResponse, BanRequest, CallRingRequest,
-    ChangePasswordRequest, ChannelPosition, CreateChannelRequest, CreateDmRequest,
-    CreateInviteRequest, CreateRoleRequest, CreateSpaceRequest, EditMessageRequest, HistoryQuery,
-    InstanceResponse, LoginRequest, NotificationSettingRequest, OverrideRequest, RegisterRequest,
-    RolePosition, SearchQuery, SearchResponse, SendMessageRequest, SessionInfo,
-    TransferSpaceRequest, UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
-    UpdatePrivacyRequest, UpdateRoleRequest, UpdateSpaceRequest, UserProfile, VoiceJoinRequest,
-    VoiceJoinResponse, VoiceSelfStateRequest, VoiceStatePatchRequest,
+    AckRequest, AddFriendRequest, AdminUser, AdminUserPatch, AuthResponse, BanRequest,
+    CallRingRequest, ChangePasswordRequest, ChangeUsernameRequest, ChannelPosition,
+    CreateChannelRequest, CreateDmRequest, CreateInviteRequest, CreateRoleRequest,
+    CreateSpaceRequest, EditMessageRequest, HistoryQuery, InstanceResponse, LoginRequest,
+    NotificationSettingRequest, OverrideRequest, RegisterRequest, RolePosition, SearchQuery,
+    SearchResponse, SendMessageRequest, SessionInfo, TransferSpaceRequest, UpdateChannelRequest,
+    UpdateMeRequest, UpdateMemberRequest, UpdatePrivacyRequest, UpdateRoleRequest,
+    UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
+    VoiceStatePatchRequest,
 };
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
+use hermes_proto::models::Relationship;
 use hermes_proto::models::{
     Attachment, AuditEntry, Ban, Channel, CurrentUser, Invite, Member, Message, PrivacySettings,
     Role, Space,
@@ -233,6 +235,36 @@ impl Rest {
 
     pub async fn update_me(&self, req: &UpdateMeRequest) -> Result<CurrentUser> {
         self.call(Method::PATCH, "/users/@me", Some(req)).await
+    }
+
+    /// Changes my username (not my display name); needs my password.
+    pub async fn change_username(&self, req: &ChangeUsernameRequest) -> Result<CurrentUser> {
+        self.call(Method::POST, "/users/@me/username", Some(req))
+            .await
+    }
+
+    pub async fn friends(&self) -> Result<Vec<Relationship>> {
+        self.get("/users/@me/friends").await
+    }
+
+    /// Sends a friend request to `name#1234`, or accepts theirs if they already asked.
+    pub async fn add_friend(&self, handle: &str) -> Result<Relationship> {
+        let req = AddFriendRequest {
+            handle: handle.to_owned(),
+        };
+        self.call(Method::POST, "/users/@me/friends", Some(&req))
+            .await
+    }
+
+    pub async fn accept_friend(&self, user: Id) -> Result<Relationship> {
+        self.call::<(), _>(Method::PUT, &format!("/users/@me/friends/{user}"), None)
+            .await
+    }
+
+    /// Removes a friend, declines a request or takes mine back.
+    pub async fn remove_friend(&self, user: Id) -> Result<()> {
+        self.empty::<()>(Method::DELETE, &format!("/users/@me/friends/{user}"), None)
+            .await
     }
 
     pub async fn user(&self, id: Id) -> Result<UserProfile> {

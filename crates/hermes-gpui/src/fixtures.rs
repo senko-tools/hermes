@@ -19,6 +19,7 @@ pub fn user(id: u64, name: &str, display: Option<&str>) -> User {
     User {
         id: Id(id),
         username: name.into(),
+        discriminator: None,
         display_name: display.map(str::to_owned),
         avatar: None,
         status_text: None,
@@ -144,6 +145,7 @@ pub fn store() -> InstanceStore {
         presences: vec![],
         notification_settings: vec![],
         dm_voice_states: vec![],
+        relationships: vec![],
         privacy: Default::default(),
         voice: VoiceInfo {
             enabled: true,

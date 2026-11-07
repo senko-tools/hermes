@@ -198,6 +198,7 @@ mod tests {
             author: User {
                 id: Id(2),
                 username: "a".into(),
+                discriminator: None,
                 display_name: None,
                 avatar: None,
                 status_text: None,

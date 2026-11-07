@@ -9,7 +9,8 @@ use hermes_proto::gateway::{
 use hermes_proto::id::Id;
 use hermes_proto::models::{
     Attachment, Channel, ChannelKind, CurrentUser, Member, Message, NotificationSetting,
-    PrivacySettings, ReactionSummary, ReadState, Role, Space, Status, User, VoiceState,
+    PrivacySettings, ReactionSummary, ReadState, Relationship, Role, Space, Status, User,
+    VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
@@ -142,6 +143,8 @@ pub enum Changed {
     Dms,
     VoiceStates,
     NotificationSettings,
+    /// Friends and friend requests.
+    Relationships,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +205,8 @@ pub struct InstanceStore {
     pub voice_states: HashMap<Id, VoiceState>,
     /// My privacy settings on this instance.
     pub privacy: PrivacySettings,
+    /// My friends and friend requests, by the other person.
+    pub relationships: HashMap<Id, Relationship>,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }
@@ -233,6 +238,11 @@ impl InstanceStore {
             .insert(ready.user.user.id, ready.user.user.clone());
         self.me = Some(ready.user);
         self.privacy = ready.privacy;
+        self.relationships.clear();
+        for r in ready.relationships {
+            self.users.insert(r.user.id, r.user.clone());
+            self.relationships.insert(r.user.id, r);
+        }
         self.instance = Some(ready.instance);
         self.voice = Some(ready.voice);
         for snapshot in ready.spaces {
@@ -633,6 +643,9 @@ impl InstanceStore {
 
     fn update_user_everywhere(&mut self, user: &User) {
         self.users.insert(user.id, user.clone());
+        if let Some(r) = self.relationships.get_mut(&user.id) {
+            r.user = user.clone();
+        }
         if let Some(me) = &mut self.me
             && me.user.id == user.id
         {
@@ -904,6 +917,15 @@ impl InstanceStore {
                 self.privacy = privacy;
                 vec![C::Me]
             }
+            ServerEvent::RelationshipUpdate(r) => {
+                self.users.insert(r.user.id, r.user.clone());
+                self.relationships.insert(r.user.id, r);
+                vec![C::Relationships]
+            }
+            ServerEvent::RelationshipRemove { user_id } => {
+                self.relationships.remove(&user_id);
+                vec![C::Relationships]
+            }
         }
     }
 
@@ -927,6 +949,7 @@ pub(crate) mod tests {
         User {
             id: Id(id),
             username: name.into(),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,
@@ -1010,6 +1033,7 @@ pub(crate) mod tests {
             }],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            relationships: vec![],
             privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,

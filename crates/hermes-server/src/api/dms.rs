@@ -41,11 +41,15 @@ pub async fn list(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<J
     Ok(Json(dms))
 }
 
-/// `dm_policy`: with `shared_space`, the caller must share a space with `other`.
+/// `dm_policy`: with `shared_space`, the caller must share a space with `other` or be their friend.
 fn check_policy(state: &AppState, cache: &Cache, user_id: Id, other: Id) -> ApiResult<()> {
     match state.config.privacy.dm_policy {
         DmPolicy::Anyone => Ok(()),
-        DmPolicy::SharedSpace if cache.shares_space(user_id, other) => Ok(()),
+        DmPolicy::SharedSpace
+            if cache.shares_space(user_id, other) || cache.are_friends(user_id, other) =>
+        {
+            Ok(())
+        }
         DmPolicy::SharedSpace => Err(Error::new(
             ErrorCode::MissingPermission,
             "You can only message users who share a space with you",
@@ -61,11 +65,12 @@ fn as_request(cache: &Cache, sender: Id, other: Id) -> ApiResult<bool> {
         .get(&other)
         .map(|u| u.privacy)
         .unwrap_or_default();
-    let allowed = match privacy.dm_from {
-        DmFrom::Everyone => true,
-        DmFrom::Spaces => cache.shares_space(sender, other),
-        DmFrom::Nobody => false,
-    };
+    let allowed = cache.are_friends(sender, other)
+        || match privacy.dm_from {
+            DmFrom::Everyone => true,
+            DmFrom::Spaces => cache.shares_space(sender, other),
+            DmFrom::Nobody => false,
+        };
     if allowed {
         Ok(false)
     } else if privacy.message_requests {

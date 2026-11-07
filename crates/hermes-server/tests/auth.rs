@@ -171,7 +171,8 @@ async fn register_validation_and_conflicts() {
     }
 
     server.register("dave", None).await;
-    server.register_raw("DAVE", None).await.err(409, "CONFLICT");
+    // Names are not unique any more: the tag tells them apart.
+    server.register("DAVE", None).await;
 
     // Malformed and incomplete bodies.
     server

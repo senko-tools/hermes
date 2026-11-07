@@ -12,8 +12,8 @@ use axum::http::HeaderMap;
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Channel, CurrentUser, Member, Presence, PresenceStatus, PrivacySettings, Role, Space,
-    SpacePreview, Status, User, VoiceState,
+    Channel, CurrentUser, Member, Presence, PresenceStatus, PrivacySettings, Relationship,
+    RelationshipKind, Role, Space, SpacePreview, Status, User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
@@ -143,6 +143,14 @@ pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {
 /// Members included in a [`SpaceSnapshot`]; larger spaces lazy-load the rest via REST.
 pub const SNAPSHOT_MEMBER_CAP: usize = 1000;
 
+/// A friend request or friendship between two people.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedRelationship {
+    pub requester: Id,
+    pub created_at: i64,
+    pub accepted_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedUser {
     pub user: User,
@@ -189,6 +197,8 @@ pub struct Cache {
     pub presences: HashMap<Id, PresenceStatus>,
     /// Runtime only, keyed by user (one voice room per user).
     pub voice_states: HashMap<Id, VoiceState>,
+    /// Friends and friend requests, under both people.
+    pub relationships: HashMap<Id, HashMap<Id, CachedRelationship>>,
 }
 
 impl CachedUser {
@@ -241,6 +251,17 @@ impl Cache {
                 .collect(),
             ..Cache::default()
         };
+        for r in s.relationships {
+            cache.insert_relationship(
+                r.user_low,
+                r.user_high,
+                CachedRelationship {
+                    requester: r.requester,
+                    created_at: r.created_at,
+                    accepted_at: r.accepted_at,
+                },
+            );
+        }
 
         for space in s.spaces {
             let state = SpaceState {
@@ -522,16 +543,117 @@ impl Cache {
     }
 
     /// Whether two users are members of at least one common space.
+    pub fn insert_relationship(&mut self, a: Id, b: Id, relationship: CachedRelationship) {
+        self.relationships
+            .entry(a)
+            .or_default()
+            .insert(b, relationship);
+        self.relationships
+            .entry(b)
+            .or_default()
+            .insert(a, relationship);
+    }
+
+    pub fn accept_relationship(&mut self, a: Id, b: Id, now: i64) {
+        for (me, other) in [(a, b), (b, a)] {
+            if let Some(r) = self
+                .relationships
+                .get_mut(&me)
+                .and_then(|list| list.get_mut(&other))
+            {
+                r.accepted_at = Some(now);
+            }
+        }
+    }
+
+    pub fn remove_relationship(&mut self, a: Id, b: Id) {
+        for (me, other) in [(a, b), (b, a)] {
+            if let Some(list) = self.relationships.get_mut(&me) {
+                list.remove(&other);
+            }
+        }
+    }
+
+    pub fn are_friends(&self, a: Id, b: Id) -> bool {
+        self.relationships
+            .get(&a)
+            .and_then(|list| list.get(&b))
+            .is_some_and(|r| r.accepted_at.is_some())
+    }
+
+    /// How `other` stands to `me`.
+    pub fn relationship(&self, me: Id, other: Id) -> Option<Relationship> {
+        let r = self.relationships.get(&me)?.get(&other)?;
+        let user = self.users.get(&other)?.user.clone();
+        let (kind, since) = match r.accepted_at {
+            Some(at) => (RelationshipKind::Friend, at),
+            None if r.requester == me => (RelationshipKind::Outgoing, r.created_at),
+            None => (RelationshipKind::Incoming, r.created_at),
+        };
+        Some(Relationship { user, kind, since })
+    }
+
+    /// Everyone in `me`'s friend list and requests, by name.
+    pub fn relationships_of(&self, me: Id) -> Vec<Relationship> {
+        let mut all: Vec<Relationship> = self
+            .relationships
+            .get(&me)
+            .into_iter()
+            .flat_map(|list| list.keys())
+            .filter_map(|other| self.relationship(me, *other))
+            .collect();
+        all.sort_by(|a, b| a.user.username.cmp(&b.user.username));
+        all
+    }
+
+    /// Whether an account other than `except` has this name and tag.
+    pub fn handle_taken(&self, name: &str, tag: Option<&str>, except: Id) -> bool {
+        self.users.values().any(|u| {
+            u.user.id != except && u.user.username == name && u.user.discriminator.as_deref() == tag
+        })
+    }
+
+    /// A random tag nobody called `name` has; `None` when all 9999 are taken.
+    pub fn free_tag(&self, name: &str) -> Option<String> {
+        let used: HashSet<&str> = self
+            .users
+            .values()
+            .filter(|u| u.user.username == name)
+            .filter_map(|u| u.user.discriminator.as_deref())
+            .collect();
+        let start = rand::random_range(0..9999u16);
+        (0..9999u16)
+            .map(|i| format!("{:04}", (start + i) % 9999 + 1))
+            .find(|tag| !used.contains(tag.as_str()))
+    }
+
+    /// Who hears about `user_id`'s profile changes: the presence audience and everyone in their
+    /// friend requests.
+    pub fn profile_audience(&self, user_id: Id) -> HashSet<Id> {
+        let mut users = self.presence_audience(user_id);
+        if let Some(list) = self.relationships.get(&user_id) {
+            users.extend(list.keys().copied());
+        }
+        users
+    }
+
     pub fn shares_space(&self, a: Id, b: Id) -> bool {
         self.spaces
             .values()
             .any(|s| s.members.contains_key(&a) && s.members.contains_key(&b))
     }
 
-    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, and
-    /// themselves.
+    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, their
+    /// friends, and themselves.
     pub fn presence_audience(&self, user_id: Id) -> HashSet<Id> {
         let mut users = HashSet::from([user_id]);
+        if let Some(list) = self.relationships.get(&user_id) {
+            users.extend(
+                list.iter()
+                    .filter(|(_, r)| r.accepted_at.is_some())
+                    .map(|(id, _)| *id),
+            );
+        }
         for space in self.spaces.values() {
             if space.members.contains_key(&user_id) {
                 users.extend(space.members.keys().copied());

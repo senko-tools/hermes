@@ -107,6 +107,7 @@ fn author(cache: &Cache, user_id: Id) -> User {
         || User {
             id: user_id,
             username: "unknown".into(),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,

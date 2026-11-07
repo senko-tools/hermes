@@ -96,6 +96,8 @@ pub enum Purpose {
     },
     EditProfile(InstanceId),
     ChangePassword(InstanceId),
+    ChangeUsername(InstanceId),
+    AddFriend,
 }
 
 pub enum Field {
@@ -574,6 +576,46 @@ impl Shell {
         self.finish(fields);
     }
 
+    pub fn open_form_username(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = {
+            let store = self.core.store();
+            store
+                .instance(&inst)
+                .and_then(|s| s.me.as_ref().map(|m| m.user.username.clone()))
+                .unwrap_or_default()
+        };
+        let form = Form::new(Purpose::ChangeUsername(inst), "Change username", "Change").text(
+            "Your display name stays as it is. The # number stays too, unless someone with the \
+                 new name already has it.",
+        );
+        let fields = Self::fields(form, window, cx)
+            .text("New username", "letters a-z, digits, _ and .", current)
+            .password("Current password");
+        self.finish(fields);
+    }
+
+    /// Asks for `name#1234`; with several instances, also which of them.
+    pub fn open_form_add_friend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let instances = self.core.instance_ids();
+        if instances.is_empty() {
+            self.error("Add an instance first", cx);
+            return;
+        }
+        let form = Form::new(Purpose::AddFriend, "Add a friend", "Send request")
+            .text("Ask them for their whole name: it is on their user panel, like name#1234.");
+        let mut fields = Self::fields(form, window, cx).text("Name", "name#1234", "");
+        if instances.len() > 1 {
+            let options: Vec<&str> = instances.iter().map(String::as_str).collect();
+            fields = fields.choice("Instance", "", &options, &instances[0]);
+        }
+        self.finish(fields);
+    }
+
     pub fn open_form_password(
         &mut self,
         inst: InstanceId,
@@ -844,6 +886,44 @@ impl Shell {
                         })
                         .await?;
                     Ok("Password changed; other devices were signed out".to_owned())
+                });
+            }
+            Purpose::ChangeUsername(inst) => {
+                let username = form.required(0, "a username", cx)?;
+                let current_password = form.raw(1, cx);
+                if current_password.is_empty() {
+                    return Err("Your password is needed to change the username.".into());
+                }
+                self.form_call(cx, async move {
+                    let me = core
+                        .rest(&inst)?
+                        .change_username(&hermes_client_core::proto::api::ChangeUsernameRequest {
+                            username,
+                            current_password,
+                        })
+                        .await?;
+                    Ok(format!("You are now {}", me.user.handle()))
+                });
+            }
+            Purpose::AddFriend => {
+                let handle = form.required(0, "a name", cx)?;
+                let inst = match form.selected(1) {
+                    "" => self
+                        .core
+                        .instance_ids()
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                    chosen => chosen.to_owned(),
+                };
+                self.form_call(cx, async move {
+                    let added = core.rest(&inst)?.add_friend(&handle).await?;
+                    Ok(match added.kind {
+                        hermes_client_core::proto::models::RelationshipKind::Friend => {
+                            format!("You and {} are friends", added.user.name())
+                        }
+                        _ => format!("Friend request sent to {}", added.user.handle()),
+                    })
                 });
             }
             Purpose::EditProfile(inst) => {

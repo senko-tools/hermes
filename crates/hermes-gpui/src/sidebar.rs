@@ -7,7 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div};
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::ChannelKind;
+use hermes_client_core::proto::models::{ChannelKind, User};
 use hermes_client_core::{InstanceId, view};
 
 use crate::assets::{self, icon};
@@ -203,6 +203,12 @@ impl Shell {
                 });
             }
             badge.unread |= !view::dm_requests(s).is_empty();
+            let incoming = s
+                .relationships
+                .values()
+                .filter(|r| r.kind == hermes_client_core::proto::models::RelationshipKind::Incoming)
+                .count();
+            badge.mentions += incoming as u32;
         }
         badge
     }
@@ -889,7 +895,7 @@ impl Shell {
             Selected::Space(inst, _) => Some(inst.clone()),
             Selected::Home => self.core.instance_ids().first().cloned(),
         };
-        let (name, avatar) = {
+        let (name, handle, avatar) = {
             let store = self.core.store();
             let me = inst
                 .as_ref()
@@ -898,6 +904,7 @@ impl Shell {
             let name = me
                 .as_ref()
                 .map_or_else(|| "Not signed in".to_owned(), |u| u.name().to_owned());
+            let handle = me.as_ref().map(User::handle);
             let presence = crate::shell::presence_status(self.core.presence());
             let avatar = self.avatar_with_status(
                 inst.as_deref().unwrap_or(""),
@@ -906,7 +913,7 @@ impl Shell {
                 theme::AVATAR_SMALL,
                 presence,
             );
-            (name, avatar)
+            (name, handle, avatar)
         };
         let target = Target::Me(inst);
         let open = target.clone();
@@ -923,7 +930,21 @@ impl Shell {
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .child(avatar)
-            .child(div().flex_1().min_w_0().truncate().child(name))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().truncate().child(name))
+                    .children(handle.map(|handle| {
+                        div()
+                            .truncate()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(handle)
+                    })),
+            )
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.open_menu(open.clone(), event.position(), window, cx);

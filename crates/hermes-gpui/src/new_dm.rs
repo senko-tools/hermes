@@ -101,7 +101,7 @@ impl Shell {
                 .gap(px(14.))
                 .child(heading("New message"))
                 .child(paragraph(
-                    "Usernames of people you share a space with, separated by commas.",
+                    "Names of your friends and people you share a space with, separated by commas (name or name#1234).",
                 ))
                 .child(Input::new(&state.input).large())
                 .children(state.error.clone().map(error_line))
@@ -150,11 +150,17 @@ pub fn resolve(store: &InstanceStore, input: &str) -> Result<Vec<Id>, String> {
                         .as_deref()
                         .is_some_and(|d| d.eq_ignore_ascii_case(name)))
         });
-        // A username match wins over a display name.
+        // A whole `name#1234` wins, then a username, then a display name.
         let found = store
             .users
             .values()
-            .find(|u| Some(u.id) != me && u.username.eq_ignore_ascii_case(name))
+            .find(|u| Some(u.id) != me && u.handle().eq_ignore_ascii_case(name))
+            .or_else(|| {
+                store
+                    .users
+                    .values()
+                    .find(|u| Some(u.id) != me && u.username.eq_ignore_ascii_case(name))
+            })
             .or_else(|| matches.next());
         match found {
             Some(user) if !ids.contains(&user.id) => ids.push(user.id),

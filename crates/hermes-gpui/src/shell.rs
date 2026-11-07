@@ -134,6 +134,8 @@ pub struct Shell {
     pub previous_page: Option<Page>,
     pub command_bar: Option<CommandBar>,
     pub keybinds: Keybinds,
+    /// What the Friends page lists.
+    pub friends_tab: crate::friends::FriendsTab,
     /// The member list shows next to a chat.
     pub show_members: bool,
     pub sidebar_visible: bool,
@@ -266,6 +268,7 @@ impl Shell {
             previous_page: None,
             command_bar: None,
             keybinds,
+            friends_tab: crate::friends::FriendsTab::default(),
             show_members: true,
             sidebar_visible: true,
             resizing: None,

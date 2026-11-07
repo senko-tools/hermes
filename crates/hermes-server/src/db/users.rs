@@ -19,6 +19,19 @@ pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<
     Ok(())
 }
 
+/// Stores `users.username`, the whole handle.
+pub async fn set_handle(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    handle: &str,
+) -> Result<(), sqlx::Error> {
+    let id = user_id.to_i64();
+    sqlx::query!("UPDATE users SET username = ? WHERE id = ?", handle, id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_flags(
     conn: &mut SqliteConnection,
     user_id: Id,
@@ -118,17 +131,20 @@ pub async fn delete_notification_setting(
     Ok(())
 }
 
-/// `(id, disabled, instance_admin)` of every user, for the admin refresh and the CLI.
-pub async fn flags(e: impl sqlx::SqliteExecutor<'_>) -> Result<Vec<(Id, bool, bool)>, sqlx::Error> {
+/// `(id, disabled, instance_admin, handle)` of every user, for the admin refresh and the CLI.
+pub async fn flags(
+    e: impl sqlx::SqliteExecutor<'_>,
+) -> Result<Vec<(Id, bool, bool, String)>, sqlx::Error> {
     let rows = sqlx::query!(
-        r#"SELECT id, disabled AS "disabled: bool", instance_admin AS "instance_admin: bool"
+        r#"SELECT id, disabled AS "disabled: bool", instance_admin AS "instance_admin: bool",
+                  username
            FROM users ORDER BY id"#
     )
     .fetch_all(e)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|r| (Id::from_i64(r.id), r.disabled, r.instance_admin))
+        .map(|r| (Id::from_i64(r.id), r.disabled, r.instance_admin, r.username))
         .collect())
 }
 

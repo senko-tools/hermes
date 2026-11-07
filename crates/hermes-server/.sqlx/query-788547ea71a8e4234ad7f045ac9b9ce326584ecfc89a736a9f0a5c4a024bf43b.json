@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO relationships (user_low, user_high, requester_id, created_at)\n         VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "788547ea71a8e4234ad7f045ac9b9ce326584ecfc89a736a9f0a5c4a024bf43b"
+}

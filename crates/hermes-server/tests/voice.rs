@@ -720,7 +720,10 @@ async fn share_audio_reaches_only_watchers() {
     let (mut b, b_ready) = server.voice_join(&bob, &general).await;
     let (c, _) = server.voice_join(&carol, &general).await;
     let alice_pid = a_ready["participant_id"].as_u64().unwrap() as u16;
-    assert_eq!(b_ready["share_audio"], true, "the server forwards share audio");
+    assert_eq!(
+        b_ready["share_audio"], true,
+        "the server forwards share audio"
+    );
     let watch = json!({ "op": "watch", "d": { "participant_id": alice_pid, "watching": true } });
 
     // Not sharing: dropped, even for someone who asked to watch.

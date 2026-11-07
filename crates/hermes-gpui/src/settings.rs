@@ -862,6 +862,29 @@ impl Shell {
                  commands or the API (/admin/users).",
             );
         }
+        let username_inst = inst.clone();
+        let copy_handle = me.user.handle();
+        account_rows.push(setting(
+            "Username",
+            &format!("You are {copy_handle}. Friends add you by this name."),
+            wrap()
+                .child(
+                    Button::new("account-username-copy")
+                        .cursor_pointer()
+                        .label("Copy")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.copy(copy_handle.clone(), "Username", cx);
+                        })),
+                )
+                .child(
+                    Button::new("account-username")
+                        .cursor_pointer()
+                        .label("Change username…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_form_username(username_inst.clone(), window, cx);
+                        })),
+                ),
+        ));
         let profile_inst = inst.clone();
         account_rows.push(setting(
             "Profile",

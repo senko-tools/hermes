@@ -1,16 +1,16 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id FROM users WHERE username = ?",
+  "query": "SELECT username FROM users WHERE username = ?",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "username",
         "ordinal": 0,
-        "type_info": "Integer",
+        "type_info": "Text",
         "origin": {
           "Table": {
             "table": "users",
-            "name": "id"
+            "name": "username"
           }
         }
       }
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "2e61cd30a6cd3e0937dd096b4f94493e8bcb8c10687d0f8c0592fe38ed956fa6"
+  "hash": "fdbb1cd2873a5c866faaf3a60185d1f98e14198655aa536c2227ef8d2c6b88e1"
 }

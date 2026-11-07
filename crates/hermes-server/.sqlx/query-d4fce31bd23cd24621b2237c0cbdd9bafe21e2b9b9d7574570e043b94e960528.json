@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, disabled AS \"disabled: bool\", instance_admin AS \"instance_admin: bool\"\n           FROM users ORDER BY id",
+  "query": "SELECT id, disabled AS \"disabled: bool\", instance_admin AS \"instance_admin: bool\",\n                  username\n           FROM users ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "instance_admin"
           }
         }
+      },
+      {
+        "name": "username",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
       }
     ],
     "parameters": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "5858c3f4f40ae264065d080fd8d2e86579760a5392f24cbce7fbdc854703703f"
+  "hash": "d4fce31bd23cd24621b2237c0cbdd9bafe21e2b9b9d7574570e043b94e960528"
 }

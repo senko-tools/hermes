@@ -1770,3 +1770,22 @@ Asked for by the developer.
 - **Left column:** see `docs/gpui-migration.md`. Theme keys `channel.text` and `channel.category` are new and derived
   for older theme files; neko's values were sampled from the developer's screenshot.
 - **Level meter:** at most 30 redraws a second and only when the bar moves, instead of one per display frame.
+
+## 2026-11-07: Tags, username changes and friends
+
+Asked for by the developer.
+
+- **Tags:** `name#1234`, four digits, random and free for that name. Names stop being unique; the pair is. The instance's
+  first account and everyone who was an instance admin at the migration have no tag; instance admins change that with
+  a member's menu, `PATCH /admin/users/{id}` (`tagless`) or `hermes-server user set-tagless`. Only one account can have a
+  name without a tag.
+- **Storage:** `users.username` holds the whole handle, because removing that column's UNIQUE would need rebuilding a
+  table half the schema points at (a rebuild with foreign keys on runs the cascades). `#` is not allowed in names, so it
+  splits back; on the wire `username` and `discriminator` are separate.
+- **Signing in:** `name#1234`, or `name` alone when that means one account (an account without a tag, or the only one
+  of that name). Existing accounts sign in as before until someone takes their name.
+- **Changing the username:** needs the password. The tag stays unless taken for the new name; an account without a tag
+  needs the new name to be free.
+- **Friends:** requests by handle, stored in `relationships`. Friends see each other's presence and may always open a
+  DM, whatever `dm_from` and `dm_policy` say. Blocking is not part of this.
+- **Client:** the Friends page has Online, All, Pending and People tabs. The TUI gets none of this yet.

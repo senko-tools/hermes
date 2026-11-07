@@ -92,6 +92,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
             .get(&user_id)
             .map(|u| u.privacy)
             .unwrap_or_default(),
+        relationships: cache.relationships_of(user_id),
         voice: VoiceInfo {
             enabled: endpoint.is_some(),
             quic_port: endpoint.map(|e| e.port),
