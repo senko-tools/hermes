@@ -1664,3 +1664,42 @@ The developer asked for Phase 6 to v1.0 without questions, decisions logged here
   in its log: a hang is not a panic. The cause found (a store read lock taken twice on the UI
   thread) is fixed, and debug builds now panic on it (`Core::store`); the watchdog makes the next
   unknown hang show where it is stuck.
+
+## 2026-11-07: The desktop client moves from iced to gpui
+
+- **What:** the developer decided to replace iced with gpui, which changes PLAN.md sections 6 and 15.
+  The new client grows in `crates/hermes-gpui` (binary `hermes-gpui`); `crates/hermes-gui` stays
+  untouched until the new client replaces it, then it and `spikes/iced-ui` are removed. So far the new
+  crate is a layout shell on sample data.
+- **Dependency:** `gpui-kit =0.9.0` (Apache-2.0), which pins GPUI as `gpui-pre =0.3.11` and adds the
+  widgets gpui lacks (text areas, menus, dialogs, resizable panels). Not the `gpui` crate: its last
+  release is 0.2.2 from October 2025. Approved by the developer. CI's Linux job gets the system
+  libraries gpui needs.
+- **Layout changes** (replacing section 15.1 in the new client): no native title bar, the sidebar
+  reaches the top of the window and a 32 px bar over the main panel holds the window buttons and drag
+  area. Friends is the sidebar's top item and its page holds message requests, DMs, group DMs and
+  people, replacing the Spaces | Messages tabs. Instances are hidden from the sidebar unless none is
+  saved, and are added from the menu of the sidebar's empty space or from settings. A real friend
+  system (requests stored on the server) was chosen and is still to be built.
+- **Why:** the developer expects better performance and a safer long-term bet, with Discord's CTO
+  announcing a GPUI desktop client in November 2026.
+- **Known gaps:** on Windows, gpui's surface drawing is an empty stub, so screen-share video has no
+  built-in path other than per-frame images (see the 2026-11 screen share entries for why those were
+  dropped), and probably needs a patched renderer. gpui's Windows renderer has no software fallback at
+  runtime, while iced's has. GPUI is pre-1.0 with no stable API, hence the exact pin. The performance
+  gain has not been measured.
+
+## 2026-11-07: gpui client layout, second pass after the developer tried it
+
+Replaces the layout part of the entry above; `docs/gpui-migration.md` has the current summary.
+
+- **What:** the native Windows title bar returns, titled with the current page, and the in-app bar is
+  gone. A Discord-like icon rail replaces the spaces dropdown: its top icon is the app icon and opens
+  Friends, with DMs in the sidebar and requests and people in the main panel. Sizes follow Discord's.
+  The font, Material icons, sounds and app icon come from the iced client.
+- **Mouse up:** every click acts on release. The kit's `context_menu` opens on press, so `menu.rs` has
+  our own. Drags and placing the text cursor still start on press, and the kit's menus close on press.
+- **Dependency:** `embed-resource =3.0.12` as a build dependency, because gpui reads the window icon
+  from the executable's resources. Approved by the developer. `hermes-gpui` also uses `hermes-audio`.
+- **Why:** the shell looked small and compact, the dropdown looked off, mouse down felt too quick, and
+  the top sidebar item sat too close to the window's edge without a title bar.

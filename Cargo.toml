@@ -77,6 +77,9 @@ ringbuf = "=0.6.0"
 
 # GUI / TUI
 iced = "=0.14.0"
+# The iced client's replacement (approved 2026-11-07, see docs/DECISIONS.md). Pins GPUI as gpui-pre.
+gpui-kit = "=0.9.0"
+embed-resource = "=3.0.12"  # the window icon: gpui reads it from the executable (approved 2026-11-07)
 ratatui = "=0.30.2"
 crossterm = { version = "=0.29.0", features = ["event-stream"] }
 

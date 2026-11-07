@@ -1,0 +1,23 @@
+[package]
+name = "hermes-gpui"
+description = "Hermes desktop client (gpui), replacing the iced client in hermes-gui"
+license = "GPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "hermes-gpui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+hermes-audio.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true
+
+[lints]
+workspace = true
