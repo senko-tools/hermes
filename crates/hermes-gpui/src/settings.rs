@@ -890,54 +890,10 @@ impl Shell {
             .enumerate()
             .map(|(n, (name, loaded))| {
                 let chosen = *name == config.general.theme;
-                let swatches = match loaded {
-                    Ok(t) => [
-                        t.surface.main.0,
-                        t.surface.sidebar.0,
-                        t.accent.base.0,
-                        t.text.primary.0,
-                    ]
-                    .into_iter()
-                    .map(|color| {
-                        div()
-                            .size(px(18.))
-                            .rounded(px(3.))
-                            .bg(color)
-                            .border_1()
-                            .border_color(theme::border())
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-                    Err(_) => vec![
-                        div()
-                            .text_size(theme::tiny_size())
-                            .text_color(theme::danger())
-                            .child("not loaded")
-                            .into_any_element(),
-                    ],
-                };
                 let value = name.clone();
-                div()
-                    .id(("theme-card", n))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .w(px(150.))
-                    .p(px(10.))
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .border_2()
-                    .border_color(if chosen {
-                        theme::accent()
-                    } else {
-                        theme::border()
-                    })
-                    .hover(|d| d.bg(theme::hover()))
-                    .child(div().text_size(theme::small_size()).child(name.clone()))
-                    .child(div().flex().gap(px(4.)).children(swatches))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_theme(value.clone(), cx);
-                    }))
+                theme_card(n, name, loaded, chosen).on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_theme(value.clone(), cx);
+                }))
             });
         let theme_group = group_with(
             "Theme",
@@ -1875,6 +1831,202 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 .child(control),
         )
         .into_any_element()
+}
+
+/// A rounded bar standing in for a line of text in a theme's miniature.
+fn preview_bar(width: f32, height: f32, color: gpui_kit::Rgba) -> gpui_kit::Div {
+    div()
+        .flex_shrink_0()
+        .w(px(width))
+        .h(px(height))
+        .rounded(px(height / 2.))
+        .bg(color)
+}
+
+/// A sidebar row in a theme's miniature, with its state bar and background if it has them.
+fn preview_row(
+    state: Option<(gpui_kit::Rgba, gpui_kit::Rgba)>,
+    indicator: f32,
+    text: gpui_kit::Rgba,
+    width: f32,
+) -> gpui_kit::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .w_full()
+        .py(px(2.))
+        .when_some(state, |d, (_, background)| d.bg(background))
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(indicator))
+                .h(px(10.))
+                .when_some(state, |d, (bar, _)| d.bg(bar)),
+        )
+        .child(preview_bar(width, 4., text))
+}
+
+/// A line of chat in a theme's miniature.
+fn preview_line(
+    avatar: gpui_kit::Rgba,
+    first: (f32, gpui_kit::Rgba),
+    second: (f32, gpui_kit::Rgba),
+) -> gpui_kit::Div {
+    div()
+        .flex()
+        .gap(px(5.))
+        .child(
+            div()
+                .flex_shrink_0()
+                .size(px(10.))
+                .rounded(px(5.))
+                .bg(avatar),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .child(preview_bar(first.0, 4., first.1))
+                .child(preview_bar(second.0, 4., second.1)),
+        )
+}
+
+/// A theme drawn in miniature: sidebar with a selected and an unread row, chat lines and the input.
+fn theme_preview(t: &Theme) -> gpui_kit::Div {
+    let indicator = f32::from(t.shape.indicator_width).max(1.);
+    let corner = f32::from(t.shape.radius).min(4.);
+    let sidebar = div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .gap(px(4.))
+        .w(px(52.))
+        .h_full()
+        .p(px(6.))
+        .bg(t.surface.sidebar.0)
+        .child(preview_bar(28., 5., t.accent.highlight.0))
+        .child(preview_row(None, indicator, t.text.secondary.0, 22.))
+        .child(preview_row(
+            Some((t.channel.selected_border.0, t.channel.selected_bg.0)),
+            indicator,
+            t.text.primary.0,
+            26.,
+        ))
+        .child(preview_row(
+            Some((t.channel.unread_border.0, t.channel.unread_bg.0)),
+            indicator,
+            t.text.primary.0,
+            18.,
+        ))
+        .child(preview_row(None, indicator, t.text.tertiary.0, 24.));
+    let chat = div()
+        .flex()
+        .flex_col()
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .gap(px(6.))
+        .p(px(8.))
+        .bg(t.surface.main.0)
+        .child(preview_line(
+            t.accent.muted.0,
+            (40., t.text.primary.0),
+            (60., t.text.secondary.0),
+        ))
+        .child(preview_line(
+            t.presence.online.0,
+            (30., t.text.primary.0),
+            (48., t.text.secondary.0),
+        ))
+        .child(div().flex_1())
+        .child(
+            div()
+                .flex()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(12.))
+                        .rounded(px(corner))
+                        .bg(t.surface.raised.0),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(18.))
+                        .h(px(12.))
+                        .rounded(px(corner))
+                        .bg(t.accent.base.0),
+                ),
+        );
+    div().flex().size_full().child(sidebar).child(chat)
+}
+
+/// A card for a theme: its miniature (or that its file did not load) and its name. The theme in use
+/// is outlined in the accent colour.
+fn theme_card(
+    n: usize,
+    name: &str,
+    loaded: &Result<Theme, String>,
+    chosen: bool,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    const WIDTH: f32 = 160.;
+    const PREVIEW_HEIGHT: f32 = 96.;
+    let picture = match loaded {
+        Ok(t) => theme_preview(t),
+        Err(_) => div()
+            .flex()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .text_size(theme::tiny_size())
+            .text_color(theme::danger())
+            .child("not loaded"),
+    };
+    div()
+        .id(("theme-card", n))
+        .group("theme-card")
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .w(px(WIDTH))
+        .cursor_pointer()
+        .child(
+            div()
+                .w_full()
+                .h(px(PREVIEW_HEIGHT))
+                .overflow_hidden()
+                .rounded(px(6.))
+                .when(chosen, |d| d.border_2().border_color(theme::accent()))
+                .when(!chosen, |d| {
+                    d.border_1()
+                        .border_color(theme::border())
+                        .group_hover("theme-card", |d| d.border_color(theme::text_tertiary()))
+                })
+                .child(picture),
+        )
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(6.))
+                .text_color(if chosen {
+                    theme::text()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(name.to_owned())
+                .when(chosen, |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::tiny_size())
+                            .text_color(theme::accent())
+                            .child("in use"),
+                    )
+                }),
+        )
 }
 
 /// `Ctrl+Shift+M` as separate key caps.
