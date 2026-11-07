@@ -430,7 +430,10 @@ impl Shell {
             .p(px(4.))
             .rounded(px(4.))
             .cursor_pointer()
-            .group("voice-panel-info")
+            // Text in plain divs ignores gpui's group hover, so the place takes the hover colour
+            // from here (the status line has its own colour).
+            .text_color(theme::text_secondary())
+            .hover(|d| d.text_color(theme::accent()))
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select(room_inst.clone(), channel, window, cx);
             }))
@@ -472,8 +475,6 @@ impl Shell {
                 div()
                     .truncate()
                     .text_size(theme::caption_size())
-                    .text_color(theme::text_secondary())
-                    .group_hover("voice-panel-info", |s| s.text_color(theme::text()))
                     .child(place),
             );
         let encryption = self.render_voice_encryption();
@@ -489,7 +490,7 @@ impl Shell {
             .cursor_pointer()
             .text_size(theme::caption_size())
             .text_color(theme::text_tertiary())
-            .hover(|d| d.text_color(theme::text()))
+            .hover(|d| d.text_color(theme::accent()))
             .child(div().flex_1().min_w_0().truncate().child(quality))
             .child(self.render_spark())
             .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
@@ -609,24 +610,18 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The network details over the sidebar: live graphs and the numbers.
+    /// The network details over the sidebar: a tile per measure with its value now, the chosen
+    /// one's graph, and the raw numbers in one quiet line.
     pub fn render_network(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let at = self.network_open?;
-        let server = self
-            .net
-            .link
-            .map_or_else(|| "—".to_owned(), |l| l.server.to_string());
-        let rtt = self
-            .net
-            .link
-            .map_or_else(|| "—".to_owned(), |l| format!("{} ms", l.rtt_ms));
-        let total = self.net.link.map_or_else(
-            || "—".to_owned(),
+        let link = self.net.link;
+        let details = link.map_or_else(
+            || "Waiting for the first numbers…".to_owned(),
             |l| {
                 let lost = l.lost_packets as f32 * 100.0 / l.sent_packets.max(1) as f32;
                 format!(
-                    "{} sent, {} lost ({lost:.1} %)",
-                    l.sent_packets, l.lost_packets
+                    "{} · round trip {} ms · {} packets, {lost:.1} % lost",
+                    l.server, l.rtt_ms, l.sent_packets
                 )
             },
         );
@@ -639,39 +634,61 @@ impl Shell {
             let ago = ((1.0 - at) * (range - 1) as f32).round() as usize;
             shown.len().checked_sub(ago + 1).map(|i| (i, ago))
         });
-        let graphs: Vec<AnyElement> = [
-            Graph {
-                name: "Latency",
-                unit: |v| format!("{v:.0} ms"),
-                floor: 40.,
-                color: theme::speaking(),
-                value: |s| s.ping_ms as f32,
-            },
-            Graph {
-                name: "Packet loss",
-                unit: |v| format!("{v:.1} %"),
-                floor: 2.,
-                color: theme::danger(),
-                value: |s| s.loss_pct,
-            },
-            Graph {
-                name: "Download",
-                unit: bitrate,
-                floor: 100.,
-                color: theme::link(),
-                value: |s| s.down_kbit,
-            },
-            Graph {
-                name: "Upload",
-                unit: bitrate,
-                floor: 100.,
-                color: theme::accent(),
-                value: |s| s.up_kbit,
-            },
-        ]
-        .into_iter()
-        .map(|graph| self.render_graph(&graph, &shown, hovered, range, cx))
-        .collect();
+        let graphs = net_graphs();
+        let chosen = self.net_graph.min(graphs.len() - 1);
+        let tiles = graphs
+            .iter()
+            .enumerate()
+            .map(|(n, graph)| {
+                let now = shown
+                    .last()
+                    .map_or_else(|| "—".to_owned(), |s| (graph.unit)((graph.value)(s)));
+                let selected = n == chosen;
+                div()
+                    .id(("net-tile", n))
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .px(px(10.))
+                    .py(px(8.))
+                    .rounded(px(8.))
+                    .cursor_pointer()
+                    .border_1()
+                    .when(selected, |d| {
+                        d.bg(theme::alpha(graph.color, 0.12))
+                            .border_color(theme::alpha(graph.color, 0.6))
+                    })
+                    .when(!selected, |d| {
+                        d.bg(theme::raised())
+                            .border_color(theme::alpha(theme::border(), 0.0))
+                            .hover(|d| d.border_color(theme::border()))
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(div().size(px(6.)).rounded(px(3.)).bg(graph.color))
+                            .child(graph.name),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(now),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.net_graph = n;
+                        cx.notify();
+                    }))
+            })
+            .collect::<Vec<_>>();
+        let graph = self.render_graph(&graphs[chosen], &shown, hovered, range, cx);
         let ranges = NET_RANGES.into_iter().map(|seconds| {
             chip(
                 ("net-range", seconds),
@@ -682,6 +699,12 @@ impl Shell {
                 this.net_range = seconds;
                 cx.notify();
             }))
+        });
+        let code = self.core.voice_encryption().map(|e| {
+            format!(
+                "Encryption code {} (the same for everyone in the call)",
+                e.code
+            )
         });
         Some(
             deferred(
@@ -694,15 +717,16 @@ impl Shell {
                             .occlude()
                             .flex()
                             .flex_col()
-                            .gap(px(10.))
-                            .w(px(440.))
+                            .gap(px(12.))
+                            .w(px(420.))
                             .max_h(self.viewport.height - px(16.))
                             .overflow_y_scroll()
-                            .p(px(12.))
-                            .rounded(px(8.))
+                            .p(px(14.))
+                            .rounded(px(10.))
                             .bg(theme::sidebar())
                             .border_1()
                             .border_color(theme::border())
+                            .shadow_lg()
                             .font_family(theme::font())
                             .text_color(theme::text())
                             .text_size(theme::secondary_size())
@@ -715,11 +739,13 @@ impl Shell {
                                     .flex()
                                     .items_center()
                                     .gap(px(4.))
+                                    .child(icon(assets::WAVEFORM, 16., theme::success()))
                                     .child(
                                         div()
                                             .flex_1()
+                                            .ml(px(4.))
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child("Voice connection"),
+                                            .child("Connection"),
                                     )
                                     .children(ranges)
                                     .child(icon_button("network-close", assets::CLOSE).on_click(
@@ -729,23 +755,20 @@ impl Shell {
                                         }),
                                     )),
                             )
-                            .children(graphs)
+                            .child(div().flex().gap(px(6.)).children(tiles))
+                            .child(graph)
                             .child(
                                 div()
                                     .flex()
                                     .flex_col()
                                     .gap(px(2.))
+                                    .pt(px(8.))
+                                    .border_t_1()
+                                    .border_color(theme::border())
                                     .text_size(theme::caption_size())
-                                    .text_color(theme::text_secondary())
-                                    .child(format!("Round trip (QUIC): {rtt}"))
-                                    .child(format!("Packets: {total}"))
-                                    .child(format!("Server: {server}"))
-                                    .children(self.core.voice_encryption().map(|e| {
-                                        format!(
-                                            "Encryption code: {} (the same for everyone here)",
-                                            e.code
-                                        )
-                                    })),
+                                    .text_color(theme::text_tertiary())
+                                    .child(details)
+                                    .children(code),
                             ),
                     ),
             )
@@ -754,15 +777,20 @@ impl Shell {
         )
     }
 
-    /// The buttons next to my name: mute, deafen and settings.
-    pub fn render_me_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// Mute and deafen, as the user panel and the call bar show them (`prefix` keeps their
+    /// animations apart).
+    fn mute_deafen(&self, prefix: &'static str, cx: &mut Context<Self>) -> [AnyElement; 2] {
         let muted = self.core.self_mute() || self.core.self_deaf();
         let deafened = self.core.self_deaf();
-        vec![
+        let (mute_id, deafen_id) = match prefix {
+            "bar" => ("bar-mute", "bar-deafen"),
+            _ => ("me-mute", "me-deafen"),
+        };
+        [
             voice_button(
-                "me-mute",
+                mute_id,
                 if muted { assets::MIC_OFF } else { assets::MIC },
-                Look::positive(),
+                Look::plain(theme::danger()),
                 muted,
                 cx.listener(|this, _, _, cx| {
                     this.toggle_mute(cx);
@@ -770,27 +798,86 @@ impl Shell {
                 }),
             ),
             voice_button(
-                "me-deafen",
+                deafen_id,
                 if deafened {
                     assets::HEADPHONES_OFF
                 } else {
                     assets::HEADPHONES
                 },
-                Look::positive(),
+                Look::plain(theme::danger()),
                 deafened,
                 cx.listener(|this, _, _, cx| {
                     this.toggle_deafen(cx);
                     cx.notify();
                 }),
             ),
-            voice_button(
-                "me-settings",
-                assets::COG,
-                Look::plain(theme::accent()),
-                false,
-                cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
-            ),
         ]
+    }
+
+    /// The buttons next to my name: mute, deafen and settings.
+    pub fn render_me_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut buttons: Vec<AnyElement> = self.mute_deafen("me", cx).into();
+        buttons.push(voice_button(
+            "me-settings",
+            assets::COG,
+            Look::plain(theme::accent()),
+            false,
+            cx.listener(|this, _, window, cx| this.open_settings(window, cx)),
+        ));
+        buttons
+    }
+
+    /// Floating over the room I am in: share on the left, mute and deafen together, leave on the
+    /// right.
+    fn render_call_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let sharing = self.core.sharing_screen();
+        let [mute, deafen] = self.mute_deafen("bar", cx);
+        div()
+            .absolute()
+            .bottom(px(20.))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .id("call-bar")
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .p(px(6.))
+                    .rounded(px(12.))
+                    .bg(theme::raised())
+                    .border_1()
+                    .border_color(theme::border())
+                    .shadow_lg()
+                    .child(voice_button(
+                        "bar-share",
+                        assets::MONITOR_SHARE,
+                        Look::plain(theme::accent()),
+                        sharing,
+                        cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                            this.share_button(event.position(), window, cx);
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .rounded(px(8.))
+                            .bg(theme::selected())
+                            .child(mute)
+                            .child(deafen),
+                    )
+                    .child(voice_button(
+                        "bar-leave",
+                        assets::HANG_UP,
+                        Look::negative(),
+                        false,
+                        cx.listener(|this, _, _, cx| this.leave_voice(cx)),
+                    )),
+            )
+            .into_any_element()
     }
 
     /// Someone in a voice room, under its channel in the sidebar.
@@ -828,13 +915,13 @@ impl Shell {
             .pl(px(if nested { 46. } else { 36. }))
             .pr(px(8.))
             .rounded(px(4.))
-            .hover(|d| d.bg(theme::hover()))
             .text_size(theme::secondary_size())
             .text_color(if speaking {
                 theme::text()
             } else {
                 theme::text_secondary()
             })
+            .hover(|d| d.text_color(theme::accent()))
             .child(
                 div()
                     .flex_shrink_0()
@@ -972,11 +1059,13 @@ impl Shell {
         .absolute()
         .size_full();
         div()
+            .relative()
             .flex()
             .flex_col()
             .size_full()
             .gap(px(12.))
             .p(px(16.))
+            .when(in_call, |d| d.pb(px(84.)))
             .child(
                 div()
                     .text_size(theme::caption_size())
@@ -996,6 +1085,7 @@ impl Shell {
                     .child(measure)
                     .children(lines),
             )
+            .when(in_call, |d| d.child(self.render_call_bar(cx)))
     }
 
     fn render_tile(
@@ -1367,53 +1457,67 @@ impl Shell {
         use crate::screen::capture::{FRAME_RATES, RESOLUTIONS};
         let at = self.share_menu?;
         let voice = &self.config.voice;
-        let field = |name: &'static str, control: AnyElement| {
+        // A labelled section: a small heading over its choices.
+        let section = |name: &'static str, choices: Vec<AnyElement>| {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(px(6.))
                 .child(
                     div()
-                        .text_size(theme::secondary_size())
-                        .text_color(theme::text_secondary())
-                        .child(name),
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .child(name.to_uppercase()),
                 )
-                .child(control)
+                .child(div().flex().flex_wrap().gap(px(6.)).children(choices))
         };
         let mut screens = vec![String::new()];
         screens.extend(self.screen_names.iter().skip(1).cloned());
-        let screen_chips = screens.into_iter().enumerate().map(|(n, screen)| {
-            let label = if screen.is_empty() {
-                "Primary screen".to_owned()
-            } else {
-                screen.clone()
-            };
-            chip(("share-screen", n), label, screen == voice.share_screen).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    let value = format!("{screen:?}");
-                    this.set_share_setting("voice.share_screen", &value, cx);
-                },
-            ))
-        });
-        let resolutions = RESOLUTIONS.into_iter().enumerate().map(|(n, name)| {
-            chip(("share-res", n), name, voice.share_resolution == name).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    let value = format!("{name:?}");
-                    this.set_share_setting("voice.share_resolution", &value, cx);
-                },
-            ))
-        });
-        let rates = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
-            chip(
-                ("share-fps", n),
-                format!("{fps} fps"),
-                voice.share_fps == fps,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.set_share_setting("voice.share_fps", &fps.to_string(), cx);
-            }))
-        });
-        let wrap = || div().flex().flex_wrap().gap(px(4.));
+        let screen_chips = screens
+            .into_iter()
+            .enumerate()
+            .map(|(n, screen)| {
+                let label = if screen.is_empty() {
+                    "Primary screen".to_owned()
+                } else {
+                    screen.trim_start_matches(['\\', '.']).to_owned()
+                };
+                chip(("share-screen", n), label, screen == voice.share_screen)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let value = format!("{screen:?}");
+                        this.set_share_setting("voice.share_screen", &value, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let resolutions = RESOLUTIONS
+            .into_iter()
+            .enumerate()
+            .map(|(n, name)| {
+                let label = if name == "native" { "Full size" } else { name };
+                chip(("share-res", n), label, voice.share_resolution == name)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let value = format!("{name:?}");
+                        this.set_share_setting("voice.share_resolution", &value, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        let rates = FRAME_RATES
+            .into_iter()
+            .enumerate()
+            .map(|(n, fps)| {
+                chip(
+                    ("share-fps", n),
+                    format!("{fps} fps"),
+                    voice.share_fps == fps,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_share_setting("voice.share_fps", &fps.to_string(), cx);
+                }))
+                .into_any_element()
+            })
+            .collect();
         Some(
             deferred(
                 anchored()
@@ -1425,13 +1529,12 @@ impl Shell {
                             .occlude()
                             .flex()
                             .flex_col()
-                            .gap(px(10.))
-                            .w(px(320.))
-                            .p(px(12.))
-                            .rounded(px(8.))
+                            .w(px(400.))
+                            .rounded(px(10.))
                             .bg(theme::sidebar())
                             .border_1()
                             .border_color(theme::border())
+                            .shadow_lg()
                             .font_family(theme::font())
                             .text_color(theme::text())
                             .text_size(theme::secondary_size())
@@ -1441,30 +1544,61 @@ impl Shell {
                             }))
                             .child(
                                 div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Share your screen"),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .px(px(16.))
+                                    .py(px(12.))
+                                    .border_b_1()
+                                    .border_color(theme::border())
+                                    .child(icon(assets::MONITOR_SHARE, 18., theme::accent()))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_size(theme::body_size())
+                                            .child("Share your screen"),
+                                    )
+                                    .child(icon_button("share-close", assets::CLOSE).on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.share_menu = None;
+                                            cx.notify();
+                                        }),
+                                    )),
                             )
-                            .child(field(
-                                "Screen",
-                                wrap().children(screen_chips).into_any_element(),
-                            ))
-                            .child(field(
-                                "Resolution",
-                                wrap().children(resolutions).into_any_element(),
-                            ))
-                            .child(field(
-                                "Frame rate",
-                                wrap().children(rates).into_any_element(),
-                            ))
-                            .child(field(
-                                "When it cannot keep up, keep",
-                                self.render_preference_picker(cx),
-                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(14.))
+                                    .px(px(16.))
+                                    .py(px(14.))
+                                    .child(section("Screen", screen_chips))
+                                    .child(section("Resolution", resolutions))
+                                    .child(section("Frame rate", rates))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(6.))
+                                            .child(
+                                                div()
+                                                    .text_size(theme::caption_size())
+                                                    .text_color(theme::text_tertiary())
+                                                    .child("WHEN IT FALLS BEHIND, KEEP"),
+                                            )
+                                            .child(self.render_preference_picker(cx)),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .flex()
                                     .justify_end()
                                     .gap(px(8.))
+                                    .px(px(16.))
+                                    .py(px(12.))
+                                    .border_t_1()
+                                    .border_color(theme::border())
                                     .child(
                                         Button::new("share-cancel")
                                             .cursor_pointer()
@@ -1557,7 +1691,7 @@ pub fn chip(
         .when(!chosen, |d| {
             d.bg(theme::selected())
                 .text_color(theme::text_secondary())
-                .hover(|d| d.text_color(theme::text()))
+                .hover(|d| d.text_color(theme::accent()))
         })
         .child(label.into())
 }
@@ -1568,33 +1702,28 @@ pub struct Look {
     rest: gpui_kit::Rgba,
     hover: gpui_kit::Rgba,
     on: gpui_kit::Rgba,
+    /// A soft background of `on` under the pointer too.
+    hover_bg: bool,
 }
 
 impl Look {
-    /// Mute and deafen: green-ish while off, red while on.
-    pub fn positive() -> Look {
-        Look {
-            rest: theme::mix(theme::text_secondary(), theme::success(), 0.55),
-            hover: theme::success(),
-            on: theme::danger(),
-        }
-    }
-
-    /// Leaving a call: red-ish.
+    /// Leaving a call: the red of a muted microphone, with a soft red behind it on hover.
     pub fn negative() -> Look {
         Look {
-            rest: theme::mix(theme::text_secondary(), theme::danger(), 0.6),
+            rest: theme::danger(),
             hover: theme::danger(),
             on: theme::danger(),
+            hover_bg: true,
         }
     }
 
-    /// Plain grey, `on` while it is on.
+    /// Grey, the accent on hover, `on` while it is on.
     pub fn plain(on: gpui_kit::Rgba) -> Look {
         Look {
             rest: theme::text_secondary(),
-            hover: theme::text(),
+            hover: theme::accent(),
             on,
+            hover_bg: false,
         }
     }
 }
@@ -1622,6 +1751,9 @@ pub fn voice_button(
         .size(px(32.))
         .rounded(px(6.))
         .cursor_pointer()
+        .when(look.hover_bg, |d| {
+            d.hover(|d| d.bg(theme::alpha(look.on, 0.16)))
+        })
         .on_click(click)
         .with_spring(
             id,
@@ -1651,6 +1783,40 @@ struct Graph {
     floor: f32,
     color: gpui_kit::Rgba,
     value: fn(&NetSample) -> f32,
+}
+
+/// The measures of the connection popup, in the order of its tiles.
+fn net_graphs() -> Vec<Graph> {
+    vec![
+        Graph {
+            name: "Latency",
+            unit: |v| format!("{v:.0} ms"),
+            floor: 40.,
+            color: theme::speaking(),
+            value: |s| s.ping_ms as f32,
+        },
+        Graph {
+            name: "Loss",
+            unit: |v| format!("{v:.1} %"),
+            floor: 2.,
+            color: theme::danger(),
+            value: |s| s.loss_pct,
+        },
+        Graph {
+            name: "Download",
+            unit: bitrate,
+            floor: 100.,
+            color: theme::link(),
+            value: |s| s.down_kbit,
+        },
+        Graph {
+            name: "Upload",
+            unit: bitrate,
+            floor: 100.,
+            color: theme::accent(),
+            value: |s| s.up_kbit,
+        },
+    ]
 }
 
 fn bitrate(kbit: f32) -> String {
@@ -1725,7 +1891,7 @@ impl Shell {
         range: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        const HEIGHT: f32 = 52.;
+        const HEIGHT: f32 = 80.;
         let values: Vec<f32> = samples.iter().map(graph.value).collect();
         let unit = graph.unit;
         let top = nice_top(values.iter().copied().fold(graph.floor, f32::max));

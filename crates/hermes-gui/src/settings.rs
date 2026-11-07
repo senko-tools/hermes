@@ -1805,10 +1805,10 @@ pub fn nav_item(
         })
         .group(NAV_ITEM)
         .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected, |d| d.hover(|d| d.text_color(theme::text())))
+        .when(!selected, |d| d.hover(|d| d.text_color(theme::accent())))
         .child(
             icon(glyph, 18., theme::text_tertiary())
-                .group_hover(NAV_ITEM, |s| s.text_color(theme::text_secondary())),
+                .group_hover(NAV_ITEM, |s| s.text_color(theme::accent())),
         )
         .child(SharedString::from(name.to_owned()))
 }
@@ -1853,10 +1853,10 @@ pub fn frame(
                         .cursor_pointer()
                         .text_size(theme::caption_size())
                         .text_color(theme::text_tertiary())
-                        .hover(|d| d.text_color(theme::text()))
+                        .hover(|d| d.text_color(theme::accent()))
                         .child(
                             icon(assets::ARROW_LEFT, 18., theme::text_tertiary())
-                                .group_hover("page-close", |s| s.text_color(theme::text())),
+                                .group_hover("page-close", |s| s.text_color(theme::accent())),
                         )
                         .child(div().flex_1().min_w_0().truncate().child(title))
                         .on_click(close),

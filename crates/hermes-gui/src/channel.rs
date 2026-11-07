@@ -2748,7 +2748,7 @@ pub fn icon_button(
         .group(ICON_BUTTON)
         .child(
             icon(name, 18., theme::text_secondary())
-                .group_hover(ICON_BUTTON, |s| s.text_color(theme::text())),
+                .group_hover(ICON_BUTTON, |s| s.text_color(theme::accent())),
         )
 }
 

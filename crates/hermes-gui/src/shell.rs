@@ -174,6 +174,8 @@ pub struct Shell {
     pub net: NetHistory,
     /// How many seconds the network graphs show.
     pub net_range: usize,
+    /// Which measure the network popup graphs (its tiles' order).
+    pub net_graph: usize,
     /// Where the pointer is along the network graphs, 0 to 1.
     pub net_hover: Option<f32>,
     /// The window's size, as last drawn.
@@ -297,6 +299,7 @@ impl Shell {
             volume_menu: None,
             net: NetHistory::default(),
             net_range: crate::voice::NET_RANGES[0],
+            net_graph: 0,
             net_hover: None,
             viewport: window.viewport_size(),
             network_open: None,

@@ -1053,7 +1053,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                     .when(!chosen, |d| {
                         d.bg(theme::selected())
                             .text_color(theme::text_secondary())
-                            .hover(|d| d.text_color(theme::text()))
+                            .hover(|d| d.text_color(theme::accent()))
                     })
                     .child(SharedString::from(option.clone()))
                     .on_click(cx.listener(move |this, _, _, cx| {

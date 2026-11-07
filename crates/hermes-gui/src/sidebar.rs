@@ -408,11 +408,11 @@ impl Shell {
                     .font_weight(FontWeight::BOLD)
                     .text_size(theme::body_size())
                     .text_color(theme::accent_highlight())
-                    .hover(|d| d.text_color(theme::text()))
+                    .hover(|d| d.text_color(theme::accent()))
                     .child(div().min_w_0().truncate().child(name))
                     .child(
                         icon(assets::CHEVRON_DOWN, 18., theme::accent_highlight())
-                            .group_hover("space-header", |s| s.text_color(theme::text())),
+                            .group_hover("space-header", |s| s.text_color(theme::accent())),
                     )
                     .child(div().flex_1())
                     .on_click(cx.listener(
@@ -652,7 +652,7 @@ impl Shell {
                         .group("category-add")
                         .child(
                             icon(assets::PLUS, 16., theme::category_text())
-                                .group_hover("category-add", |s| s.text_color(theme::text())),
+                                .group_hover("category-add", |s| s.text_color(theme::accent())),
                         )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
@@ -677,7 +677,7 @@ impl Shell {
                     .text_size(theme::secondary_size())
                     .text_color(theme::category_text())
                     .group(CATEGORY_ROW)
-                    .hover(|d| d.text_color(theme::text_secondary()))
+                    .hover(|d| d.text_color(theme::accent()))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     .child(
                         icon(
@@ -689,7 +689,7 @@ impl Shell {
                             14.,
                             theme::category_text(),
                         )
-                        .group_hover(CATEGORY_ROW, |s| s.text_color(theme::text_secondary())),
+                        .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent())),
                     )
                     .child(div().flex_1())
                     .children(badge_element(badge))
@@ -853,7 +853,7 @@ impl Shell {
             })
             // Plain rows brighten their text and icon under the pointer.
             .when(state.is_none() && !in_block, |d| {
-                d.hover(|d| d.text_color(theme::text()))
+                d.hover(|d| d.text_color(theme::accent()))
             })
             .child(
                 icon(
@@ -866,7 +866,7 @@ impl Shell {
                     },
                 )
                 .when(!connected, |i| {
-                    i.group_hover(CHANNEL_ROW, |s| s.text_color(theme::text_secondary()))
+                    i.group_hover(CHANNEL_ROW, |s| s.text_color(theme::accent()))
                 }),
             )
             .child(div().flex_1().min_w_0().truncate().child(name.clone()))

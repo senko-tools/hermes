@@ -550,7 +550,7 @@ fn tab_button(
         .when(!selected && enabled, |d| {
             d.cursor_pointer()
                 .text_color(theme::text_secondary())
-                .hover(|d| d.text_color(theme::text()))
+                .hover(|d| d.text_color(theme::accent()))
         })
         .when(!enabled, |d| d.text_color(theme::text_tertiary()))
         .child(name)

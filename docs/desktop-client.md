@@ -43,12 +43,19 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Responsibility:** the developer left share video and the tray to Claude's judgement.
 - **Words (2026-11-08):** spaces are called "servers" in everything the user reads (code, config keys and
   the protocol keep `space`). Instances stay "instances".
-- **Hover (2026-11-08):** most things change their text or icon colour under the pointer (`icon_button`,
-  chips, nav items, channel rows, use `group_hover` for icons). People in lists, messages, search results
-  and emoji keep a background hover.
-- **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen green-ish while off and red
-  while on, leave red-ish, share accent while sharing; toggles animate with a gpui spring. Share sits
-  next to leave in the voice panel; the header has no Leave button.
+- **Hover (2026-11-08):** most things turn the accent colour under the pointer (`icon_button`, chips, nav
+  items, channel rows, people under voice channels). People in member lists, messages, search results and
+  emoji keep a background hover. `group_hover` only recolours icons (svg): gpui ignores it for text in
+  plain divs, so text takes a direct `.hover` on its row.
+- **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen grey while off and red while
+  on, leave the muted-mic red, share accent while sharing; toggles animate with a gpui spring. Share sits
+  next to leave in the voice panel, and the room I am in has a floating call bar (share, mute|deafen,
+  leave). The header has no Leave button.
+- **One client per config directory:** a lock file (`hermes.lock`) plus the link pipe; a second launch
+  hands over and exits, also while the first is still starting.
+- **Voice while alone:** no audio is sent while nobody else is in the room (`voice_has_listeners`).
+- **Mentions:** typed and completed as `@name`, `@name#1234`, `@role`, `#channel`;
+  `view::resolve_mentions` turns them into markup on send, `readable_mentions` back for editing.
 - **Menus:** the rail's empty space and plus list only the instances; the empty space under a server's
   channels offers Create Channel, Create Category and Invite to Server. A person's menu (member lists,
   voice rows, tiles) has Profile, Volume…, Mute for me, and for moderators server mute/deafen,
