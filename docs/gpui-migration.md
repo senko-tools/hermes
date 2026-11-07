@@ -40,7 +40,7 @@ PC needs a scratch server and its own config dir; see "How the window was tested
   spaces. Opening someone opens the DM.
 - **Instances:** hidden from the sidebar unless none is saved or one needs attention. Their actions are in the menu
   of the rail's plus, the empty rail or sidebar space, and the user panel.
-- **Network graph:** the voice panel's connection line opens live graphs of latency, loss and bandwidth.
+- **Network graph:** the voice panel's connection line opens live graphs of latency, loss and bandwidth, over 1, 5 or 15 minutes.
 - **Responsibility:** the developer left share video and the tray to Claude's judgement.
 
 ## Not done yet, on purpose

@@ -81,7 +81,7 @@ pub enum CoreEvent {
         user: Id,
         speaking: bool,
     },
-    /// Microphone level in dBFS, 20 times a second while [`Core::set_level_meter`] is on.
+    /// Microphone level in dBFS, 50 times a second while [`Core::set_level_meter`] is on.
     InputLevel(f32),
     /// Who shares their screen in your voice room changed, or your own share started or
     /// stopped ([`Core::screen_sharers`], [`Core::sharing_screen`]).

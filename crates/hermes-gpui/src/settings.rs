@@ -94,6 +94,26 @@ enum SliderKind {
     SoundsVolume,
 }
 
+/// Where the level meter's bar goes next: it follows the level quickly upwards and falls slowly, as
+/// meters do, in dB and `seconds` after it was last drawn.
+pub fn meter_step(shown: f32, level: f32, seconds: f32) -> f32 {
+    const RISE: f32 = 0.03;
+    const FALL: f32 = 0.25;
+    let time = if level > shown { RISE } else { FALL };
+    shown + (level - shown) * (1.0 - (-seconds / time).exp())
+}
+
+#[cfg(test)]
+#[test]
+fn the_meter_rises_quickly_and_falls_slowly() {
+    let frame = 1.0 / 60.0;
+    let rise = meter_step(-60.0, -20.0, frame) + 60.0;
+    let fall = -20.0 - meter_step(-20.0, -60.0, frame);
+    assert!(rise > 4.0 * fall, "rise {rise}, fall {fall}");
+    assert!((meter_step(-30.0, -30.0, frame) + 30.0).abs() < 1e-6);
+    assert!((meter_step(-60.0, -20.0, 10.0) + 20.0).abs() < 0.01);
+}
+
 /// A choice of the audio device dropdowns; `value` is what the config stores.
 #[derive(Clone)]
 struct DeviceChoice {
@@ -165,6 +185,22 @@ struct DeviceSelects {
 }
 
 impl Shell {
+    /// Moves the level meter towards the level and asks for another frame while it shows.
+    pub fn animate_meter(&mut self, window: &mut Window) {
+        let showing = self
+            .settings
+            .as_ref()
+            .is_some_and(|page| page.tab == Tab::Voice);
+        if !showing {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let seconds = now.duration_since(self.meter_drawn).as_secs_f32();
+        self.meter_drawn = now;
+        self.meter_shown = meter_step(self.meter_shown, self.input_level, seconds);
+        window.request_animation_frame();
+    }
+
     /// Opens the settings over the whole window.
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.is_some() {
@@ -254,7 +290,7 @@ impl Shell {
             (
                 SliderKind::InputVolume,
                 0.,
-                2.,
+                hermes_client_core::audio::MAX_INPUT_VOLUME,
                 0.05,
                 voice.input_volume as f32,
             ),
@@ -1276,8 +1312,9 @@ impl Shell {
                 },
             ))
         });
-        let level = self.input_level.clamp(METER_MIN, 0.);
-        let open = level >= v.vad_sensitivity as f32;
+        // The bar moves smoothly; whether the gate is open is the real level's business.
+        let level = self.meter_shown.clamp(METER_MIN, 0.);
+        let open = self.input_level >= v.vad_sensitivity as f32;
         let fill = (level - METER_MIN) / -METER_MIN;
         let meter = div()
             .w_full()

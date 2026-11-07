@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -152,6 +152,9 @@ pub struct Shell {
     pub headphones_hint_shown: bool,
     /// Microphone level in dBFS while the meter runs.
     pub input_level: f32,
+    /// What the level meter's bar shows, and when it was last drawn.
+    pub meter_shown: f32,
+    pub meter_drawn: Instant,
     /// The push-to-talk key is held.
     pub ptt_down: bool,
     /// What the push-to-talk thread watches.
@@ -159,8 +162,14 @@ pub struct Shell {
     /// A ringing incoming call (the banner).
     pub call: Option<Call>,
     pub volume_menu: Option<VolumeMenu>,
-    /// The voice connection's last two minutes.
+    /// The voice connection's last minutes.
     pub net: NetHistory,
+    /// How many seconds the network graphs show.
+    pub net_range: usize,
+    /// Where the pointer is along the network graphs, 0 to 1.
+    pub net_hover: Option<f32>,
+    /// The window's size, as last drawn.
+    pub viewport: Size<Pixels>,
     /// The network details are open, where they were asked for.
     pub network_open: Option<Point<Pixels>>,
     /// The size of the voice room's tile area, as last drawn.
@@ -266,11 +275,16 @@ impl Shell {
             joining: None,
             headphones_hint_shown: false,
             input_level: -60.0,
+            meter_shown: -60.0,
+            meter_drawn: Instant::now(),
             ptt_down: false,
             ptt_keys: Arc::default(),
             call: None,
             volume_menu: None,
             net: NetHistory::default(),
+            net_range: crate::voice::NET_RANGES[0],
+            net_hover: None,
+            viewport: window.viewport_size(),
             network_open: None,
             room_area: crate::voice::no_area(),
             share_menu: None,
@@ -1054,6 +1068,8 @@ impl Render for Shell {
         watchdog::beat();
         let _phase = watchdog::in_view();
         self.scale = window.scale_factor();
+        self.viewport = window.viewport_size();
+        self.animate_meter(window);
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);

@@ -295,7 +295,7 @@ impl Core {
         self.voice().engine.set_mic_test(on);
     }
 
-    /// Emits [`CoreEvent::InputLevel`] 20 times a second while on (opens the microphone).
+    /// Emits [`CoreEvent::InputLevel`] 50 times a second while on (opens the microphone).
     pub fn set_level_meter(&self, on: bool) {
         self.voice().engine.set_level_meter(on);
     }

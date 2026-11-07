@@ -33,8 +33,10 @@ const RING_EVERY: Duration = Duration::from_millis(2000);
 const ASPECT: f32 = 16.0 / 9.0;
 const AVATAR_MAX: f32 = 72.0;
 const TILE_GAP: f32 = 12.0;
-/// How many seconds the network graph shows.
-const HISTORY: usize = 120;
+/// How many seconds of the connection are kept for the network graphs.
+const HISTORY: usize = 900;
+/// The time ranges the network graphs offer, in seconds.
+pub const NET_RANGES: [usize; 3] = [60, 300, 900];
 
 /// `voice.join_on`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub struct NetSample {
     pub loss_pct: f32,
     pub down_kbit: f32,
     pub up_kbit: f32,
+    /// When it was taken, Unix milliseconds.
+    pub at_ms: i64,
 }
 
 /// The last two minutes of the voice connection, for the graph.
@@ -110,6 +114,7 @@ impl NetHistory {
                     down_kbit: new.received_bytes.saturating_sub(old.received_bytes) as f32 * 8.0
                         / 1000.0,
                     up_kbit: new.sent_bytes.saturating_sub(old.sent_bytes) as f32 * 8.0 / 1000.0,
+                    at_ms: 0,
                 }
             }
             _ => NetSample {
@@ -118,7 +123,10 @@ impl NetHistory {
             },
         };
         self.link = link;
-        self.samples.push_back(sample);
+        self.samples.push_back(NetSample {
+            at_ms: hermes_client_core::now_ms(),
+            ..sample
+        });
         while self.samples.len() > HISTORY {
             self.samples.pop_front();
         }
@@ -555,7 +563,6 @@ impl Shell {
     /// The network details over the sidebar: live graphs and the numbers.
     pub fn render_network(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let at = self.network_open?;
-        let last = self.net.samples.back().copied().unwrap_or_default();
         let server = self
             .net
             .link
@@ -574,10 +581,59 @@ impl Shell {
                 )
             },
         );
-        let ping_values: Vec<f32> = self.net.samples.iter().map(|s| s.ping_ms as f32).collect();
-        let loss_values: Vec<f32> = self.net.samples.iter().map(|s| s.loss_pct).collect();
-        let down_values: Vec<f32> = self.net.samples.iter().map(|s| s.down_kbit).collect();
-        let up_values: Vec<f32> = self.net.samples.iter().map(|s| s.up_kbit).collect();
+        let range = self.net_range;
+        let shown: Vec<NetSample> = {
+            let skip = self.net.samples.len().saturating_sub(range);
+            self.net.samples.iter().skip(skip).copied().collect()
+        };
+        let hovered = self.net_hover.and_then(|at| {
+            let ago = ((1.0 - at) * (range - 1) as f32).round() as usize;
+            shown.len().checked_sub(ago + 1).map(|i| (i, ago))
+        });
+        let graphs: Vec<AnyElement> = [
+            Graph {
+                name: "Latency",
+                unit: |v| format!("{v:.0} ms"),
+                floor: 40.,
+                color: theme::speaking(),
+                value: |s| s.ping_ms as f32,
+            },
+            Graph {
+                name: "Packet loss",
+                unit: |v| format!("{v:.1} %"),
+                floor: 2.,
+                color: theme::danger(),
+                value: |s| s.loss_pct,
+            },
+            Graph {
+                name: "Download",
+                unit: bitrate,
+                floor: 100.,
+                color: theme::link(),
+                value: |s| s.down_kbit,
+            },
+            Graph {
+                name: "Upload",
+                unit: bitrate,
+                floor: 100.,
+                color: theme::accent(),
+                value: |s| s.up_kbit,
+            },
+        ]
+        .into_iter()
+        .map(|graph| self.render_graph(&graph, &shown, hovered, range, cx))
+        .collect();
+        let ranges = NET_RANGES.into_iter().map(|seconds| {
+            chip(
+                ("net-range", seconds),
+                format!("{} min", seconds / 60),
+                self.net_range == seconds,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.net_range = seconds;
+                cx.notify();
+            }))
+        });
         Some(
             deferred(
                 anchored()
@@ -590,7 +646,9 @@ impl Shell {
                             .flex()
                             .flex_col()
                             .gap(px(10.))
-                            .w(px(340.))
+                            .w(px(440.))
+                            .max_h(self.viewport.height - px(16.))
+                            .overflow_y_scroll()
                             .p(px(12.))
                             .rounded(px(8.))
                             .bg(theme::sidebar())
@@ -607,12 +665,14 @@ impl Shell {
                                 div()
                                     .flex()
                                     .items_center()
+                                    .gap(px(4.))
                                     .child(
                                         div()
                                             .flex_1()
                                             .font_weight(FontWeight::MEDIUM)
                                             .child("Voice connection"),
                                     )
+                                    .children(ranges)
                                     .child(icon_button("network-close", assets::CLOSE).on_click(
                                         cx.listener(|this, _, _, cx| {
                                             this.network_open = None;
@@ -620,34 +680,7 @@ impl Shell {
                                         }),
                                     )),
                             )
-                            .child(graph(
-                                "Latency",
-                                format!("{} ms", last.ping_ms),
-                                &ping_values,
-                                40.,
-                                theme::speaking(),
-                            ))
-                            .child(graph(
-                                "Packet loss",
-                                format!("{:.1} %", last.loss_pct),
-                                &loss_values,
-                                2.,
-                                theme::danger(),
-                            ))
-                            .child(graph(
-                                "Download",
-                                format!("{:.0} kbit/s", last.down_kbit),
-                                &down_values,
-                                100.,
-                                theme::link(),
-                            ))
-                            .child(graph(
-                                "Upload",
-                                format!("{:.0} kbit/s", last.up_kbit),
-                                &up_values,
-                                100.,
-                                theme::accent(),
-                            ))
+                            .children(graphs)
                             .child(
                                 div()
                                     .flex()
@@ -1557,55 +1590,260 @@ fn me_button(id: &'static str, name: &'static str, off: bool) -> gpui_kit::State
         ))
 }
 
-/// A named live graph, as bars: the newest second on the right, scaled to the highest value shown
-/// but at least `floor`, so a quiet connection does not look busy.
-fn graph(
+/// One of the network graphs: what it shows and how.
+struct Graph {
     name: &'static str,
-    now: String,
-    values: &[f32],
+    unit: fn(f32) -> String,
+    /// The value scale reaches at least this, so a quiet connection does not look busy.
     floor: f32,
     color: gpui_kit::Rgba,
-) -> AnyElement {
-    const HEIGHT: f32 = 40.;
-    let top = values.iter().copied().fold(floor, f32::max);
-    let bars = values.iter().map(|v| {
-        div()
-            .flex_1()
-            .min_w(px(1.))
-            .h(px(
-                (v / top * HEIGHT).clamp(if *v > 0. { 1. } else { 0. }, HEIGHT)
-            ))
-            .bg(color)
-    });
-    let empty = HISTORY.saturating_sub(values.len());
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(3.))
-        .child(
+    value: fn(&NetSample) -> f32,
+}
+
+fn bitrate(kbit: f32) -> String {
+    if kbit >= 1000. {
+        format!("{:.1} Mbit/s", kbit / 1000.)
+    } else {
+        format!("{kbit:.0} kbit/s")
+    }
+}
+
+/// Minimum, average and maximum, with their unit once if they share it.
+fn stats_line(low: String, average: String, high: String) -> String {
+    let number = |text: &str| {
+        text.rsplit_once(' ')
+            .map(|(n, u)| (n.to_owned(), u.to_owned()))
+    };
+    match (number(&low), number(&average), number(&high)) {
+        (Some((l, a_unit)), Some((a, b_unit)), Some((_, c_unit)))
+            if a_unit == b_unit && b_unit == c_unit =>
+        {
+            format!("min {l} · avg {a} · max {high}")
+        }
+        _ => format!("min {low} · avg {average} · max {high}"),
+    }
+}
+
+/// `seconds` as a time before now: `-1 min`, `-2 min 30 s`, `-30 s`.
+fn time_ago(seconds: usize) -> String {
+    match (seconds / 60, seconds % 60) {
+        (0, s) => format!("-{s} s"),
+        (m, 0) => format!("-{m} min"),
+        (m, s) => format!("-{m} min {s} s"),
+    }
+}
+
+/// The value scale's top: the next of 1, 2 or 5 times a power of ten at or above `value`.
+fn nice_top(value: f32) -> f32 {
+    let value = value.max(f32::MIN_POSITIVE);
+    let power = 10_f32.powf(value.log10().floor());
+    [1., 2., 5., 10.]
+        .into_iter()
+        .map(|step| step * power)
+        .find(|top| *top >= value * 0.999)
+        .unwrap_or(value)
+}
+
+/// At most `points` points of a graph, as `(sample index, value)`. A long range has more samples than
+/// pixels, so each point takes the highest value it covers: a spike must not disappear.
+fn thin(values: &[f32], points: usize) -> Vec<(f32, f32)> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let points = points.clamp(1, values.len());
+    (0..points)
+        .map(|n| {
+            let from = n * values.len() / points;
+            let to = ((n + 1) * values.len() / points).max(from + 1);
+            let top = values[from..to].iter().copied().fold(f32::MIN, f32::max);
+            ((from + to - 1) as f32 / 2., top)
+        })
+        .collect()
+}
+
+impl Shell {
+    /// A graph of the shown samples, the newest on the right: name, minimum, average and maximum, the
+    /// latest value or the hovered one with its time, a value scale, and a time axis.
+    fn render_graph(
+        &self,
+        graph: &Graph,
+        samples: &[NetSample],
+        hovered: Option<(usize, usize)>,
+        range: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const HEIGHT: f32 = 52.;
+        let values: Vec<f32> = samples.iter().map(graph.value).collect();
+        let unit = graph.unit;
+        let top = nice_top(values.iter().copied().fold(graph.floor, f32::max));
+        let stats = if values.is_empty() {
+            "no data yet".to_owned()
+        } else {
+            let low = values.iter().copied().fold(f32::MAX, f32::min);
+            let high = values.iter().copied().fold(f32::MIN, f32::max);
+            let average = values.iter().sum::<f32>() / values.len() as f32;
+            stats_line(unit(low), unit(average), unit(high))
+        };
+        let readout = match hovered {
+            Some((index, ago)) => format!(
+                "{} ({}) · {}",
+                hermes_client_core::time::format(samples[index].at_ms, "%H:%M:%S", self.utc_offset),
+                if ago == 0 {
+                    "now".to_owned()
+                } else {
+                    time_ago(ago)
+                },
+                unit(values[index]),
+            ),
+            None => values.last().map_or_else(|| "—".to_owned(), |v| unit(*v)),
+        };
+        let bounds = std::rc::Rc::new(std::cell::Cell::new(gpui_kit::Bounds::default()));
+        let seen = bounds.clone();
+        let color = graph.color;
+        let hover = self.net_hover;
+        let chart = canvas(
+            move |area, _, _| seen.set(area),
+            move |area, (), window, _| {
+                draw_graph(area, &values, top, range, color, hover, window);
+            },
+        )
+        .absolute()
+        .size_full();
+        let scale = |text: String| {
             div()
-                .flex()
+                .absolute()
+                .left(px(4.))
                 .text_size(theme::caption_size())
-                .child(
-                    div()
-                        .flex_1()
-                        .text_color(theme::text_secondary())
-                        .child(name),
-                )
-                .child(now),
+                .text_color(theme::text_tertiary())
+                .child(text)
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().font_weight(FontWeight::MEDIUM).child(graph.name))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .when(hovered.is_none(), |d| d.child(stats)),
+                    )
+                    .child(div().flex_shrink_0().child(readout)),
+            )
+            .child(
+                div()
+                    .id(graph.name)
+                    .relative()
+                    .h(px(HEIGHT))
+                    .overflow_hidden()
+                    .rounded(px(3.))
+                    .bg(theme::code_background())
+                    .child(chart)
+                    .child(scale(unit(top)).top(px(1.)))
+                    .child(scale(unit(top / 2.)).top(px(HEIGHT / 2. + 1.)))
+                    .on_mouse_move(cx.listener(
+                        move |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                            let area: gpui_kit::Bounds<Pixels> = bounds.get();
+                            if area.size.width > Pixels::ZERO {
+                                let along = (event.position.x - area.left()) / area.size.width;
+                                this.net_hover = Some(along.clamp(0., 1.));
+                                cx.notify();
+                            }
+                        },
+                    ))
+                    .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                        if !*hovered {
+                            this.net_hover = None;
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .text_size(theme::caption_size())
+                    .text_color(theme::text_tertiary())
+                    .child(time_ago(range))
+                    .child(time_ago(range / 2))
+                    .child("now"),
+            )
+            .into_any_element()
+    }
+}
+
+/// Draws a graph's grid, its filled line, and the line under the pointer.
+fn draw_graph(
+    area: gpui_kit::Bounds<Pixels>,
+    values: &[f32],
+    top: f32,
+    range: usize,
+    color: gpui_kit::Rgba,
+    hover: Option<f32>,
+    window: &mut Window,
+) {
+    let grid = theme::alpha(theme::text_tertiary(), 0.25);
+    let bottom = area.bottom();
+    let middle = area.top() + area.size.height / 2.;
+    for y in [area.top(), middle] {
+        window.paint_quad(gpui_kit::fill(
+            gpui_kit::Bounds::new(
+                gpui_kit::point(area.left(), y),
+                gpui_kit::size(area.size.width, gpui_kit::px(1.)),
+            ),
+            grid,
+        ));
+    }
+    // The newest sample sits on the right edge, one second per step, so a graph that has only just
+    // started fills up from the right.
+    let step = area.size.width / (range.max(2) - 1) as f32;
+    let newest = values.len().saturating_sub(1) as f32;
+    let at = |index: f32, value: f32| {
+        gpui_kit::point(
+            area.right() - step * (newest - index),
+            bottom - area.size.height * (value / top).clamp(0., 1.),
         )
-        .child(
-            div()
-                .flex()
-                .items_end()
-                .h(px(HEIGHT))
-                .rounded(px(3.))
-                .overflow_hidden()
-                .bg(theme::code_background())
-                .children((0..empty).map(|_| div().flex_1().min_w(px(1.))))
-                .children(bars),
-        )
-        .into_any_element()
+    };
+    // No more points than two per pixel of width at this scale.
+    let points = thin(values, (f32::from(area.size.width) / 2.) as usize);
+    if let (Some(first), Some(last)) = (points.first(), points.last()) {
+        let mut stroke = gpui_kit::PathBuilder::stroke(gpui_kit::px(1.5));
+        let mut area_fill = gpui_kit::PathBuilder::fill();
+        area_fill.move_to(gpui_kit::point(at(first.0, first.1).x, bottom));
+        stroke.move_to(at(first.0, first.1));
+        for (index, value) in &points {
+            let point = at(*index, *value);
+            stroke.line_to(point);
+            area_fill.line_to(point);
+        }
+        area_fill.line_to(gpui_kit::point(at(last.0, last.1).x, bottom));
+        area_fill.close();
+        if points.len() > 1 {
+            if let Ok(path) = area_fill.build() {
+                window.paint_path(path, theme::alpha(color, 0.2));
+            }
+            if let Ok(path) = stroke.build() {
+                window.paint_path(path, color);
+            }
+        }
+    }
+    if let Some(along) = hover {
+        window.paint_quad(gpui_kit::fill(
+            gpui_kit::Bounds::new(
+                gpui_kit::point(area.left() + area.size.width * along, area.top()),
+                gpui_kit::size(gpui_kit::px(1.), area.size.height),
+            ),
+            theme::text_secondary(),
+        ));
+    }
 }
 
 /// The size of nothing, before the room was first measured.
@@ -1616,6 +1854,47 @@ pub fn no_area() -> Size<Pixels> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_scales_are_round_numbers() {
+        assert_eq!(nice_top(40.), 50.);
+        assert_eq!(nice_top(50.), 50.);
+        assert_eq!(nice_top(61.), 100.);
+        assert_eq!(nice_top(2.), 2.);
+        assert_eq!(nice_top(1300.), 2000.);
+        assert!(nice_top(0.).is_finite());
+    }
+
+    #[test]
+    fn thinning_keeps_spikes() {
+        let mut values = vec![1.0; 900];
+        values[451] = 80.0;
+        let points = thin(&values, 200);
+        assert_eq!(points.len(), 200);
+        assert!(points.iter().any(|(_, v)| *v == 80.0), "the spike survives");
+        assert_eq!(thin(&[3.0, 4.0], 200), [(0.0, 3.0), (1.0, 4.0)]);
+        assert!(thin(&[], 200).is_empty());
+    }
+
+    #[test]
+    fn stats_say_a_shared_unit_once() {
+        let line = |a: &str, b: &str, c: &str| stats_line(a.into(), b.into(), c.into());
+        assert_eq!(
+            line("1.2 Mbit/s", "2.0 Mbit/s", "3.1 Mbit/s"),
+            "min 1.2 · avg 2.0 · max 3.1 Mbit/s"
+        );
+        assert_eq!(
+            line("900 kbit/s", "1.0 Mbit/s", "1.5 Mbit/s"),
+            "min 900 kbit/s · avg 1.0 Mbit/s · max 1.5 Mbit/s"
+        );
+    }
+
+    #[test]
+    fn times_read_well() {
+        assert_eq!(time_ago(30), "-30 s");
+        assert_eq!(time_ago(60), "-1 min");
+        assert_eq!(time_ago(450), "-7 min 30 s");
+    }
 
     #[test]
     fn the_grid_makes_tiles_as_large_as_it_can() {

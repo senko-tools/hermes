@@ -20,6 +20,10 @@ use std::time::Duration;
 
 pub use devices::AudioDevices;
 pub use dsp::InputMode;
+
+/// The highest microphone volume, 400 % (+12 dB).
+pub const MAX_INPUT_VOLUME: f32 = 4.0;
+
 pub use engine::{AudioEvent, Engine, Io, VirtualIo};
 pub use sounds::Sound;
 

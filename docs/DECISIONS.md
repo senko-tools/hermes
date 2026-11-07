@@ -1749,3 +1749,11 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
 ## 2026-11-07: dropdowns for audio devices, submenus in menus
 **What changed:** the microphone and speaker settings use the kit's `Select` instead of rows of chips; other short choices stay chips. Menu entries of a group sit in a submenu when at least two are next to each other (Notifications, Create, Status), and each instance has a submenu in the user panel's menu.
 **Why:** the developer's request; device names are long and there can be many. The grouping is in `menu_entries::grouped`, so the flat entries and their tests are unchanged.
+
+## 2026-11-07: microphone volume up to 400 %, smoother meter, richer network graphs
+**What changed:**
+- The microphone volume goes to 400 % (`hermes_audio::MAX_INPUT_VOLUME`, it was 200 %). Above 100 % a soft limiter keeps samples below full scale; it leaves anything under 0.8 alone.
+- The downmix leaves out channels 30 dB below the loudest, because averaging a stereo stream that has the microphone on one side halves its level.
+- Input levels are reported every 20 ms instead of 50 ms, and the settings meter animates each frame with a fast rise and slow fall.
+- The network graphs are drawn on a canvas: value scale, time axis, min/avg/max, a hover readout with the time, and 1, 5 or 15 minute ranges (the history is 15 minutes). Long ranges keep the highest value per point, so a spike stays visible.
+**Why:** the developer's request: the microphone was quiet at 200 %, the meter looked low in frame rate, and the graphs did not say what period they cover.

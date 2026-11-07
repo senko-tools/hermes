@@ -94,11 +94,67 @@ impl Resampler {
 }
 
 /// Appends the average of each interleaved frame of `data`, scaled by `gain`.
-pub fn downmix(data: &[f32], channels: usize, gain: f32, out: &mut Vec<f32>) {
-    let channels = channels.max(1);
-    for frame in data.chunks_exact(channels) {
-        out.push(frame.iter().sum::<f32>() / channels as f32 * gain);
+/// Interleaved device samples to mono, with the microphone volume applied. Channels with next to no
+/// signal are left out of the average: many devices offer a stereo stream with the microphone on one
+/// side, and averaging with the silent side would halve its level.
+#[derive(Debug, Default)]
+pub struct Downmix {
+    /// Each channel's recent power, smoothed so a pause on one side does not change the level.
+    power: Vec<f32>,
+}
+
+impl Downmix {
+    /// A channel counts unless it is this far below the loudest (-30 dB).
+    const QUIET: f32 = 0.001;
+    /// How much of the smoothed power each block of samples replaces.
+    const SMOOTHING: f32 = 0.05;
+
+    pub fn process(&mut self, data: &[f32], channels: usize, gain: f32, out: &mut Vec<f32>) {
+        let channels = channels.max(1);
+        let frames = (data.len() / channels).max(1);
+        let mut block = vec![0.0_f32; channels];
+        for frame in data.chunks_exact(channels) {
+            for (power, sample) in block.iter_mut().zip(frame) {
+                *power += sample * sample;
+            }
+        }
+        if self.power.len() != channels {
+            self.power = block.iter().map(|p| p / frames as f32).collect();
+        } else {
+            for (smooth, power) in self.power.iter_mut().zip(&block) {
+                *smooth += (power / frames as f32 - *smooth) * Self::SMOOTHING;
+            }
+        }
+        let loudest = self.power.iter().copied().fold(0.0, f32::max);
+        let floor = loudest * Self::QUIET;
+        let counted: Vec<bool> = self.power.iter().map(|p| *p >= floor).collect();
+        let count = counted.iter().filter(|c| **c).count().max(1) as f32;
+        for frame in data.chunks_exact(channels) {
+            let sum: f32 = frame
+                .iter()
+                .zip(&counted)
+                .filter(|(_, counted)| **counted)
+                .map(|(sample, _)| sample)
+                .sum();
+            let sample = sum / count * gain;
+            out.push(if gain > 1.0 {
+                soft_limit(sample)
+            } else {
+                sample
+            });
+        }
     }
+}
+
+/// Keeps a boosted sample below full scale without the crackle of clipping: below the knee it is
+/// untouched, above it bends smoothly towards 1.
+pub fn soft_limit(sample: f32) -> f32 {
+    const KNEE: f32 = 0.8;
+    let size = sample.abs();
+    if size <= KNEE {
+        return sample;
+    }
+    sample.signum() * (KNEE + (1.0 - KNEE) * ((size - KNEE) / (1.0 - KNEE)).tanh())
 }
 
 pub fn rms(samples: &[f32]) -> f32 {
@@ -305,8 +361,50 @@ mod tests {
     #[test]
     fn downmix_averages_channels() {
         let mut out = Vec::new();
-        downmix(&[1.0, 0.0, 0.5, 0.5], 2, 2.0, &mut out);
-        assert_eq!(out, vec![1.0, 1.0]);
+        Downmix::default().process(&[0.2, 0.1, 0.4, 0.3], 2, 1.0, &mut out);
+        assert!((out[0] - 0.15).abs() < 1e-6, "{out:?}");
+        assert!((out[1] - 0.35).abs() < 1e-6, "{out:?}");
+    }
+
+    #[test]
+    fn downmix_ignores_a_silent_channel() {
+        let mut out = Vec::new();
+        Downmix::default().process(&[0.4, 0.0, -0.4, 0.0], 2, 1.0, &mut out);
+        assert_eq!(out, [0.4, -0.4], "the level is not halved");
+    }
+
+    #[test]
+    fn downmix_keeps_counting_a_channel_during_a_short_pause() {
+        let mut downmix = Downmix::default();
+        let mut out = Vec::new();
+        downmix.process(&[0.4, 0.4, 0.4, 0.4], 2, 1.0, &mut out);
+        out.clear();
+        downmix.process(&[0.4, 0.0], 2, 1.0, &mut out);
+        assert_eq!(out, [0.2]);
+    }
+
+    #[test]
+    fn the_limiter_only_touches_what_would_clip() {
+        for quiet in [0.0, 0.3, -0.5, 0.8] {
+            assert_eq!(soft_limit(quiet), quiet);
+        }
+        let mut last = soft_limit(0.8);
+        for step in 1..200 {
+            let limited = soft_limit(0.8 + step as f32 * 0.05);
+            assert!(limited > last - 1e-6 && limited <= 1.0, "{limited}");
+            last = limited;
+        }
+        assert_eq!(soft_limit(-3.0), -soft_limit(3.0));
+    }
+
+    #[test]
+    fn a_boost_goes_through_the_limiter_but_unity_does_not() {
+        let mut out = Vec::new();
+        Downmix::default().process(&[0.9], 1, 1.0, &mut out);
+        assert_eq!(out, [0.9]);
+        out.clear();
+        Downmix::default().process(&[0.9], 1, 4.0, &mut out);
+        assert!(out[0] <= 1.0 && out[0] > 0.8, "{out:?}");
     }
 
     #[test]

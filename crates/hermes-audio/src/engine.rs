@@ -28,8 +28,9 @@ const OUTPUT_TARGET: Duration = Duration::from_millis(30);
 const OUTPUT_IDLE: Duration = Duration::from_secs(3);
 /// How long to wait before retrying a device that could not be opened.
 const RETRY: Duration = Duration::from_secs(2);
-/// Input level reports per second while metering.
-const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
+/// The shortest time between input level reports while metering: less than the 20 ms tick, so every
+/// tick reports (one frame of audio, 50 times a second).
+const LEVEL_INTERVAL: Duration = Duration::from_millis(15);
 const TICK: Duration = Duration::from_millis(20);
 
 /// A device replacement for headless use (the voicebot, tests): 48 kHz mono in 20 ms frames,
@@ -55,7 +56,7 @@ pub enum AudioEvent {
         participant: Option<u16>,
         speaking: bool,
     },
-    /// dBFS of the processed microphone signal, 20 times a second while metering.
+    /// dBFS of the processed microphone signal, 50 times a second while metering.
     InputLevel(f32),
     /// A device was lost (or the chosen one is missing) and another one is used.
     DeviceChanged { input: bool, name: String },
@@ -189,7 +190,7 @@ impl Engine {
         self.send(Command::MicTest(on));
     }
 
-    /// Reports [`AudioEvent::InputLevel`] 20 times a second (opens the microphone).
+    /// Reports [`AudioEvent::InputLevel`] 50 times a second (opens the microphone).
     pub fn set_level_meter(&self, on: bool) {
         self.send(Command::Meter(on));
     }

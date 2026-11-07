@@ -148,7 +148,13 @@ impl Playback {
 
     /// Adds a received share audio datagram from `participant`'s screen share (created on
     /// first use at `default_volume`).
-    pub fn push_share(&mut self, participant: u16, datagram: &[u8], now_ms: f64, default_volume: f32) {
+    pub fn push_share(
+        &mut self,
+        participant: u16,
+        datagram: &[u8],
+        now_ms: f64,
+        default_volume: f32,
+    ) {
         let Ok((AudioKind::Share, header, opus)) = AudioHeader::decode_any(datagram) else {
             return;
         };
@@ -383,7 +389,11 @@ mod tests {
                 playback.push(5, p, i as f64 * 20.0, 1.0);
                 out.extend_from_slice(playback.render_48k_stereo());
             }
-            let left: Vec<f32> = out[STEREO_FRAME * 10..].iter().step_by(2).copied().collect();
+            let left: Vec<f32> = out[STEREO_FRAME * 10..]
+                .iter()
+                .step_by(2)
+                .copied()
+                .collect();
             let right: Vec<f32> = out[STEREO_FRAME * 10..]
                 .iter()
                 .skip(1)
