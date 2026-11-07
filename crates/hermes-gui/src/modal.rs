@@ -83,6 +83,7 @@ impl Shell {
         out.extend(self.render_viewer(cx));
         out.extend(self.render_network(cx));
         out.extend(self.render_volume_menu(cx));
+        out.extend(self.render_profile(cx));
         out.extend(self.render_share_menu(cx));
         out.extend(self.render_command_bar(cx));
         out.extend(self.render_confirm(cx));
@@ -140,12 +141,12 @@ impl Shell {
             (Target::Space(_, space), Action::DeleteSpace) => format!(
                 "{} and everything in it are deleted for everyone. This cannot be undone.",
                 s.and_then(|s| s.spaces.get(space))
-                    .map_or("This space", |st| st.space.name.as_str())
+                    .map_or("This server", |st| st.space.name.as_str())
             ),
             (Target::Space(_, space), _) => format!(
                 "You leave {} and need an invite to come back.",
                 s.and_then(|s| s.spaces.get(space))
-                    .map_or("this space", |st| st.space.name.as_str())
+                    .map_or("this server", |st| st.space.name.as_str())
             ),
             (Target::Channel(_, channel), Action::LeaveGroup) => format!(
                 "You leave {} and stop receiving its messages.",
@@ -166,11 +167,11 @@ impl Shell {
                 format!("{} messages are deleted for everyone.", messages.len())
             }
             (Target::Member(_, space, user), Action::Kick) => format!(
-                "{} is removed from the space. They can come back with an invite.",
+                "{} is removed from the server. They can come back with an invite.",
                 s.map(|s| s.display_name(*space, *user)).unwrap_or_default()
             ),
             (Target::Member(_, space, user), _) => format!(
-                "{} becomes the owner of this space, and you no longer are.",
+                "{} becomes the owner of this server, and you no longer are.",
                 s.map(|s| s.display_name(*space, *user)).unwrap_or_default()
             ),
             (Target::Role(..), _) => "This role is deleted and taken from everyone.".into(),

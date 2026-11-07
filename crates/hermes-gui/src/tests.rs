@@ -409,6 +409,8 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         Target::Channel(inst.clone(), channel),
         Target::Me(Some(inst.clone())),
         Target::Me(None),
+        Target::Instances,
+        Target::ChannelArea(inst.clone(), space),
     ];
     for target in targets {
         visual.update(|window, cx| {

@@ -10,8 +10,8 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, Entity, FontWeight, MouseButton, Pixels, Point, SharedString, Size,
-    Subscription, Window, anchored, canvas, deferred, div, img, size,
+    AnyElement, Context, Entity, FontWeight, Pixels, Point, SharedString, Size, Subscription,
+    Window, anchored, canvas, deferred, div, img, size,
 };
 use hermes_client_core::audio::{InputMode, Sound};
 use hermes_client_core::proto::id::Id;
@@ -430,7 +430,7 @@ impl Shell {
             .p(px(4.))
             .rounded(px(4.))
             .cursor_pointer()
-            .hover(|d| d.bg(theme::hover()))
+            .group("voice-panel-info")
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select(room_inst.clone(), channel, window, cx);
             }))
@@ -473,6 +473,7 @@ impl Shell {
                     .truncate()
                     .text_size(theme::caption_size())
                     .text_color(theme::text_secondary())
+                    .group_hover("voice-panel-info", |s| s.text_color(theme::text()))
                     .child(place),
             );
         let encryption = self.render_voice_encryption();
@@ -486,9 +487,9 @@ impl Shell {
             .py(px(2.))
             .rounded(px(4.))
             .cursor_pointer()
-            .hover(|d| d.bg(theme::hover()))
             .text_size(theme::caption_size())
             .text_color(theme::text_tertiary())
+            .hover(|d| d.text_color(theme::text()))
             .child(div().flex_1().min_w_0().truncate().child(quality))
             .child(self.render_spark())
             .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
@@ -797,23 +798,26 @@ impl Shell {
     pub fn render_voice_user(
         &self,
         inst: InstanceId,
-        _channel: Id,
+        channel: Id,
         user: Id,
         name: String,
         muted: bool,
         deafened: bool,
         speaking: bool,
-        me: bool,
         nested: bool,
         _dm: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let avatar = {
+        let (avatar, space) = {
             let store = self.core.store();
-            let found = store.instance(&inst).and_then(|s| s.user(user));
-            self.avatar(&inst, found, &name, 22.)
+            let s = store.instance(&inst);
+            let found = s.and_then(|s| s.user(user));
+            (
+                self.avatar(&inst, found, &name, 22.),
+                s.and_then(|s| s.space_of(channel)),
+            )
         };
-        let target_inst = inst.clone();
+        let target = Target::Member(inst.clone(), space, user);
         let element = div()
             .id(SharedString::from(format!("voice-user-{user}")))
             .flex()
@@ -849,24 +853,8 @@ impl Shell {
             })
             .when(deafened, |d| {
                 d.child(icon(assets::HEADPHONES_OFF, 14., theme::muted_voice()))
-            })
-            .when(!me, |d| {
-                d.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, _, _, _| {
-                        this.right_pressed = Some(Target::Member(target_inst.clone(), None, user));
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &gpui_kit::MouseUpEvent, window, cx| {
-                        if this.right_pressed.is_some() {
-                            this.open_volume_menu(inst.clone(), user, event.position, window, cx);
-                        }
-                    }),
-                )
             });
-        element.into_any_element()
+        self.with_menu(element, target, cx).into_any_element()
     }
 
     // ---- the room -----------------------------------------------------------------------------
@@ -1123,11 +1111,14 @@ impl Shell {
                     .into_any_element()
             }
         };
-        let (menu_inst, user) = (inst.clone(), p.user);
-        let can_menu = !own;
+        let space = self.core.store().instance(inst).and_then(|s| {
+            let channel = s.voice_states.get(&p.user)?.channel_id;
+            s.space_of(channel)
+        });
+        let target = Target::Member(inst.clone(), space, p.user);
         let click_key = share_key.clone();
         let has_picture = picture.is_some();
-        div()
+        let tile = div()
             .id(SharedString::from(format!("tile-{}", p.user)))
             .w(px(tile.0))
             .h(px(tile.1))
@@ -1154,31 +1145,8 @@ impl Shell {
                     this.enlarged_share = (!enlarged).then(|| click_key.clone());
                 }
                 cx.notify();
-            }))
-            .when(can_menu, |d| {
-                let pressed = Target::Member(menu_inst.clone(), None, user);
-                d.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, _, _, _| {
-                        this.right_pressed = Some(pressed.clone());
-                    }),
-                )
-                .on_mouse_up(
-                    MouseButton::Right,
-                    cx.listener(move |this, event: &gpui_kit::MouseUpEvent, window, cx| {
-                        if this.right_pressed.is_some() {
-                            this.open_volume_menu(
-                                menu_inst.clone(),
-                                user,
-                                event.position,
-                                window,
-                                cx,
-                            );
-                        }
-                    }),
-                )
-            })
-            .into_any_element()
+            }));
+        self.with_menu(tile, target, cx).into_any_element()
     }
 
     // ---- the volume menu ----------------------------------------------------------------------
@@ -1587,7 +1555,9 @@ pub fn chip(
             d.bg(theme::accent()).text_color(theme::on_accent())
         })
         .when(!chosen, |d| {
-            d.bg(theme::selected()).hover(|d| d.bg(theme::hover()))
+            d.bg(theme::selected())
+                .text_color(theme::text_secondary())
+                .hover(|d| d.text_color(theme::text()))
         })
         .child(label.into())
 }

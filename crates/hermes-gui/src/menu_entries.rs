@@ -30,6 +30,10 @@ pub enum Target {
     Invite(InstanceId, Id, String),
     /// My own entry in the user panel (`None`: no instance yet).
     Me(Option<InstanceId>),
+    /// The rail's empty space and its plus: adding instances, and each instance's menu.
+    Instances,
+    /// The empty space around a server's channels: instance, server.
+    ChannelArea(InstanceId, Id),
 }
 
 impl Target {
@@ -43,8 +47,9 @@ impl Target {
             | Target::Member(inst, ..)
             | Target::Role(inst, ..)
             | Target::Invite(inst, ..)
+            | Target::ChannelArea(inst, _)
             | Target::Me(Some(inst)) => Some(inst),
-            Target::Me(None) => None,
+            Target::Me(None) | Target::Instances => None,
         }
     }
 }
@@ -104,6 +109,18 @@ pub enum Action {
     /// Starts selecting messages (Ctrl+click and Shift+click add more).
     SelectMessage,
     // Member
+    Profile,
+    /// Opens the volume slider of someone in voice.
+    Volume,
+    MuteForMe,
+    UnmuteForMe,
+    ServerMute,
+    ServerUnmute,
+    ServerDeafen,
+    ServerUndeafen,
+    /// Stands for the "Move to" submenu of voice channels, which the menu builds.
+    MoveVoice,
+    DisconnectVoice,
     SendMessage,
     Mention,
     CopyUsername,
@@ -141,23 +158,23 @@ impl Action {
             Action::Reconnect => "Reconnect",
             Action::GoOffline => "Go offline",
             Action::GoOnline => "Go online",
-            Action::CreateSpace => "Create a space…",
+            Action::CreateSpace => "Create a server…",
             Action::EditProfile => "Edit profile…",
             Action::LogOut => "Log out",
             Action::RemoveInstance => "Remove instance",
-            Action::SpaceSettings => "Space settings",
+            Action::SpaceSettings => "Server settings",
             Action::CreateChannel => "Create channel…",
             Action::CreateCategory => "Create category…",
             Action::InvitePeople => "Invite people (copy link)",
             Action::MarkSpaceRead => "Mark all as read",
-            Action::SearchSpace => "Search in this space",
-            Action::CopySpaceId => "Copy space ID",
-            Action::LeaveSpace => "Leave space",
-            Action::DeleteSpace => "Delete space",
+            Action::SearchSpace => "Search in this server",
+            Action::CopySpaceId => "Copy server ID",
+            Action::LeaveSpace => "Leave server",
+            Action::DeleteSpace => "Delete server",
             Action::NotifyAll => "Notify: all messages",
             Action::NotifyMentions => "Notify: only @mentions",
             Action::NotifyNothing => "Notify: nothing",
-            Action::NotifyDefault => "Notify: like the space",
+            Action::NotifyDefault => "Notify: like the server",
             Action::Mute => "Mute",
             Action::Unmute => "Unmute",
             Action::MarkRead => "Mark as read",
@@ -181,6 +198,16 @@ impl Action {
             Action::Unpin => "Unpin message",
             Action::DeleteMessage => "Delete message",
             Action::SelectMessage => "Select",
+            Action::Profile => "Profile",
+            Action::Volume => "Volume…",
+            Action::MuteForMe => "Mute for me",
+            Action::UnmuteForMe => "Unmute for me",
+            Action::ServerMute => "Server mute",
+            Action::ServerUnmute => "Server unmute",
+            Action::ServerDeafen => "Server deafen",
+            Action::ServerUndeafen => "Server undeafen",
+            Action::MoveVoice => "Move to",
+            Action::DisconnectVoice => "Disconnect from voice",
             Action::SendMessage => "Message",
             Action::Mention => "Mention",
             Action::CopyUsername => "Copy username",
@@ -227,13 +254,23 @@ impl Action {
         }
     }
 
+    /// The label in the channel area's menu, which has no submenus.
+    pub fn area_label(self) -> &'static str {
+        match self {
+            Action::CreateChannel => "Create Channel",
+            Action::CreateCategory => "Create Category",
+            Action::InvitePeople => "Invite to Server",
+            other => other.label(),
+        }
+    }
+
     /// The label inside the action's submenu, which already says what it is about.
     pub fn short_label(self) -> &'static str {
         match self {
             Action::NotifyAll => "All messages",
             Action::NotifyMentions => "Only @mentions",
             Action::NotifyNothing => "Nothing",
-            Action::NotifyDefault => "Like the space",
+            Action::NotifyDefault => "Like the server",
             Action::CreateChannel => "Channel…",
             Action::CreateCategory => "Category…",
             other => other.label(),
@@ -252,7 +289,22 @@ impl Action {
         }
     }
 
-    /// Shown in red and confirmed first (Ban opens its own dialog instead).
+    /// Shown in red: it removes, ends or refuses something. Not all are confirmed first.
+    pub fn is_negative(self) -> bool {
+        self.is_destructive()
+            || matches!(
+                self,
+                Action::CloseDm
+                    | Action::DisconnectVoice
+                    | Action::Ban
+                    | Action::LogOut
+                    | Action::RemoveFriend
+                    | Action::DeclineFriend
+                    | Action::CancelFriendRequest
+            )
+    }
+
+    /// Confirmed first (Ban opens its own dialog instead).
     pub fn is_destructive(self) -> bool {
         matches!(
             self,
@@ -302,18 +354,27 @@ pub fn can_delete(s: &InstanceStore, channel: Id, message: Id) -> bool {
         || (!s.dms.contains_key(&channel) && view::can(s, channel, Permissions::MANAGE_MESSAGES))
 }
 
+/// What the entries depend on beyond the store.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Extra {
+    /// My presence, for the user panel's menu.
+    pub presence: Option<PresenceStatus>,
+    /// The person is muted for me (a member's menu).
+    pub locally_muted: bool,
+}
+
 /// The entries for `target`; `status` is the instance's connection status and `s` its store.
 #[cfg(test)]
 pub fn entries(target: &Target, status: &ConnStatus, s: Option<&InstanceStore>) -> Entries {
-    entries_with(target, status, s, None)
+    entries_with(target, status, s, Extra::default())
 }
 
-/// [`entries`], with my presence for the user panel's menu.
+/// [`entries`], with what they depend on outside the store.
 pub fn entries_with(
     target: &Target,
     status: &ConnStatus,
     s: Option<&InstanceStore>,
-    presence: Option<PresenceStatus>,
+    extra: Extra,
 ) -> Entries {
     let mut out = Entries::new();
     match target {
@@ -461,6 +522,7 @@ pub fn entries_with(
         }
         Target::Member(_, space, user) => {
             let me = s.and_then(InstanceStore::me_id) == Some(*user);
+            push(&mut out, [Action::Profile]);
             if !me {
                 push(&mut out, [Action::SendMessage]);
             }
@@ -475,6 +537,9 @@ pub fn entries_with(
                     }
                     Some(R::Outgoing) => push(&mut out, [Action::CancelFriendRequest]),
                 }
+            }
+            if let (false, Some(s)) = (me, s) {
+                voice_entries(s, *user, extra.locally_muted, &mut out);
             }
             out.push(None);
             push(&mut out, [Action::CopyUsername, Action::CopyUserId]);
@@ -525,10 +590,21 @@ pub fn entries_with(
             }
         }
         Target::Invite(..) => push(&mut out, [Action::CopyInviteLink, Action::RevokeInvite]),
+        // The instances are listed by the menu itself, with their own entries.
+        Target::Instances => {}
+        Target::ChannelArea(_, space) => {
+            let Some(s) = s else { return out };
+            if view::can_in_space(s, *space, Permissions::MANAGE_CHANNELS) {
+                push(&mut out, [Action::CreateChannel, Action::CreateCategory]);
+            }
+            if view::can_in_space(s, *space, Permissions::CREATE_INVITES) {
+                push(&mut out, [Action::InvitePeople]);
+            }
+        }
         // Selected messages have a bar of their own, not a menu.
         Target::Messages(..) => {}
         Target::Me(inst) => {
-            let current = presence.unwrap_or(PresenceStatus::Online);
+            let current = extra.presence.unwrap_or(PresenceStatus::Online);
             for (action, status) in [
                 (Action::SetOnline, PresenceStatus::Online),
                 (Action::SetIdle, PresenceStatus::Idle),
@@ -612,6 +688,56 @@ pub fn grouped(entries: &[Option<Entry>]) -> Vec<Grouped> {
     out
 }
 
+/// Someone else in voice: how I hear them, then what moderators may do, checked like the server
+/// does in the channel they are in and only for members below my highest role.
+fn voice_entries(s: &InstanceStore, user: Id, locally_muted: bool, out: &mut Entries) {
+    let Some(state) = s.voice_states.get(&user) else {
+        return;
+    };
+    out.push(None);
+    push(
+        out,
+        [
+            Action::Volume,
+            if locally_muted {
+                Action::UnmuteForMe
+            } else {
+                Action::MuteForMe
+            },
+        ],
+    );
+    let channel = state.channel_id;
+    let Some(space) = s.space_of(channel) else {
+        return;
+    };
+    if !view::outranks(s, space, user) {
+        return;
+    }
+    let can = |p| view::can(s, channel, p);
+    let mut moderation = Vec::new();
+    if can(Permissions::MUTE_MEMBERS) {
+        moderation.push(if state.server_mute {
+            Action::ServerUnmute
+        } else {
+            Action::ServerMute
+        });
+    }
+    if can(Permissions::DEAFEN_MEMBERS) {
+        moderation.push(if state.server_deaf {
+            Action::ServerUndeafen
+        } else {
+            Action::ServerDeafen
+        });
+    }
+    if can(Permissions::MOVE_MEMBERS) {
+        moderation.extend([Action::MoveVoice, Action::DisconnectVoice]);
+    }
+    if !moderation.is_empty() {
+        out.push(None);
+        push(out, moderation);
+    }
+}
+
 /// Notification level and mute entries for a space, a DM or a space channel. `fallback` is the
 /// level used without a setting: `None` for a space channel (it follows its space, and gets a
 /// "like the space" entry).
@@ -686,6 +812,78 @@ mod tests {
         );
     }
 
+    fn member_entries(s: &InstanceStore, locally_muted: bool) -> Vec<Action> {
+        let target = Target::Member("h".into(), Some(Id(10)), Id(3));
+        let extra = Extra {
+            presence: None,
+            locally_muted,
+        };
+        actions(&entries_with(
+            &target,
+            &ConnStatus::Connected,
+            Some(s),
+            extra,
+        ))
+    }
+
+    #[test]
+    fn someone_in_voice_gets_volume_and_moderation() {
+        // I own the server; Bob is in its voice channel.
+        let mut s = crate::fixtures::store();
+        let all = member_entries(&s, false);
+        for action in [
+            Action::Profile,
+            Action::Volume,
+            Action::MuteForMe,
+            Action::ServerMute,
+            Action::ServerDeafen,
+            Action::MoveVoice,
+            Action::DisconnectVoice,
+            Action::Kick,
+        ] {
+            assert!(all.contains(&action), "{action:?} missing from {all:?}");
+        }
+        assert_eq!(all[0], Action::Profile);
+        assert!(member_entries(&s, true).contains(&Action::UnmuteForMe));
+
+        s.voice_states.get_mut(&Id(3)).expect("bob").server_mute = true;
+        let muted = member_entries(&s, false);
+        assert!(muted.contains(&Action::ServerUnmute) && !muted.contains(&Action::ServerMute));
+
+        // Bob owns the server now: I cannot act on him, but still choose how I hear him.
+        s.spaces.get_mut(&Id(10)).expect("space").space.owner_id = Id(3);
+        let plain = member_entries(&s, false);
+        assert!(plain.contains(&Action::Volume) && plain.contains(&Action::MuteForMe));
+        for action in [
+            Action::ServerUnmute,
+            Action::MoveVoice,
+            Action::DisconnectVoice,
+        ] {
+            assert!(!plain.contains(&action), "{action:?} offered: {plain:?}");
+        }
+
+        // Out of voice: no voice entries at all.
+        s.voice_states.remove(&Id(3));
+        assert!(!member_entries(&s, false).contains(&Action::Volume));
+        assert!(Action::DisconnectVoice.is_negative());
+    }
+
+    #[test]
+    fn the_channel_area_and_the_rail_have_their_own_menus() {
+        let s = crate::fixtures::store();
+        let area = Target::ChannelArea("h".into(), Id(10));
+        assert_eq!(
+            actions(&entries(&area, &ConnStatus::Connected, Some(&s))),
+            [
+                Action::CreateChannel,
+                Action::CreateCategory,
+                Action::InvitePeople
+            ]
+        );
+        assert_eq!(Action::InvitePeople.area_label(), "Invite to Server");
+        assert!(entries(&Target::Instances, &ConnStatus::Connected, None).is_empty());
+    }
+
     #[test]
     fn instance_entries_follow_the_status() {
         let target = Target::Instance("h".into());
@@ -710,5 +908,7 @@ mod tests {
         assert!(Action::LeaveSpace.is_destructive());
         assert!(!Action::Ban.is_destructive());
         assert!(!Action::MarkRead.is_destructive());
+        assert!(Action::CloseDm.is_negative() && !Action::CloseDm.is_destructive());
+        assert!(Action::LeaveSpace.is_negative() && !Action::MarkRead.is_negative());
     }
 }

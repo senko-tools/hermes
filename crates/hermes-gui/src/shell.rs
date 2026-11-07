@@ -111,6 +111,10 @@ pub struct Shell {
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
     pub menu: Option<OpenMenu>,
+    /// Where the last menu opened: what its entries open goes there too.
+    pub menu_at: Point<Pixels>,
+    /// The profile card that is open.
+    pub profile: Option<crate::user_menu::ProfileCard>,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
     pub add_instance: Option<AddInstance>,
@@ -256,6 +260,8 @@ impl Shell {
             status_serial: 0,
             right_pressed: None,
             menu: None,
+            menu_at: Point::default(),
+            profile: None,
             confirm: None,
             add_instance: None,
             form: None,
@@ -739,7 +745,7 @@ impl Shell {
                 .instance(inst)
                 .and_then(|s| s.spaces.get(space))
                 .map_or("", |s| s.space.name.as_str());
-            title_parts("Space settings", Some(name))
+            title_parts("Server settings", Some(name))
         } else if self.settings.is_some() {
             "Settings".to_owned()
         } else {

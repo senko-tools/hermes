@@ -191,8 +191,8 @@ pub const CATALOG: &[PermissionInfo] = {
         ),
         info(
             Permissions::MANAGE_SPACE,
-            "Manage space",
-            "Change the space's name, description and icon.",
+            "Manage server",
+            "Change the server's name, description and icon.",
             General,
             false,
         ),
@@ -227,7 +227,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::CREATE_INVITES,
             "Create invites",
-            "Make invite links to this space.",
+            "Make invite links to this server.",
             General,
             true,
         ),
@@ -241,7 +241,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::CHANGE_NICKNAME,
             "Change nickname",
-            "Set their own nickname in this space.",
+            "Set their own nickname in this server.",
             General,
             false,
         ),
@@ -255,7 +255,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::VIEW_AUDIT_LOG,
             "View audit log",
-            "See who changed what in the space settings.",
+            "See who changed what in the server settings.",
             General,
             false,
         ),

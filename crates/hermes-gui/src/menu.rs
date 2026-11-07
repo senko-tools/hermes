@@ -25,10 +25,12 @@ type RunLine = Rc<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>;
 
 /// One entry of a built menu.
 #[derive(Clone)]
-enum Line {
+pub(crate) enum Line {
     Item {
         label: SharedString,
         checked: bool,
+        /// Drawn in red: it removes or ends something.
+        danger: bool,
         run: RunLine,
     },
     Submenu {
@@ -36,6 +38,8 @@ enum Line {
         lines: Vec<Line>,
     },
     Separator,
+    /// The "Move to" submenu, filled in by the shell from the voice channels.
+    Move,
 }
 
 impl Shell {
@@ -63,13 +67,14 @@ impl Shell {
             )
     }
 
-    /// The empty space of the rail or the sidebar: adding instances, and each instance's menu.
+    /// The empty space of the rail or of Friends' sidebar: adding instances, and each instance's
+    /// menu.
     pub fn with_instances_menu(
         &self,
         element: Stateful<Div>,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        self.with_menu(element, Target::Me(None), cx)
+        self.with_menu(element, Target::Instances, cx)
     }
 
     /// Opens the menu of `target` at `position`, as if it had been right-clicked there.
@@ -84,6 +89,7 @@ impl Shell {
         if lines.is_empty() {
             return;
         }
+        self.menu_at = position;
         let shell = cx.entity().downgrade();
         let view = build_menu(shell, lines, window, cx);
         view.focus_handle(cx).focus(window, cx);
@@ -103,21 +109,39 @@ impl Shell {
         let status = target
             .inst()
             .map_or(ConnStatus::Connected, |inst| self.core.status(inst));
+        let extra = menu_entries::Extra {
+            presence: Some(self.core.presence()),
+            locally_muted: match target {
+                Target::Member(inst, _, user) => self.core.user_muted(inst, *user),
+                _ => false,
+            },
+        };
         let entries = {
             let store = self.core.store();
             menu_entries::entries_with(
                 target,
                 &status,
                 target.inst().and_then(|i| store.instance(i)),
-                Some(self.core.presence()),
+                extra,
             )
         };
         let mut lines = Vec::new();
-        // The user panel's menu is also the only way to the instances, which the sidebar hides.
-        if matches!(target, Target::Me(_)) {
+        // The user panel's menu is also a way to the instances, which the sidebar hides.
+        if matches!(target, Target::Me(_) | Target::Instances) {
             lines.extend(self.instance_lines());
         }
-        lines.extend(entry_lines(target, &entries));
+        for line in entry_lines(target, &entries) {
+            match line {
+                Line::Move => lines.push(Line::Submenu {
+                    label: menu_entries::Action::MoveVoice.label().into(),
+                    lines: self.move_lines(target),
+                }),
+                line => lines.push(line),
+            }
+        }
+        if lines.last().is_some_and(|l| matches!(l, Line::Separator)) {
+            lines.pop();
+        }
         lines
     }
 
@@ -126,6 +150,7 @@ impl Shell {
         let mut lines = vec![Line::Item {
             label: "Add an instance…".into(),
             checked: false,
+            danger: false,
             run: Rc::new(|this, window, cx| this.open_add_instance(String::new(), window, cx)),
         }];
         for inst in self.core.instance_ids() {
@@ -136,13 +161,19 @@ impl Shell {
                 inside.push(Line::Item {
                     label: "Sign in…".into(),
                     checked: false,
+                    danger: false,
                     run: Rc::new(move |this, window, cx| this.sign_in(&sign_in, window, cx)),
                 });
             }
             let target = Target::Instance(inst.clone());
             let entries = {
                 let store = self.core.store();
-                menu_entries::entries_with(&target, &status, store.instance(&inst), None)
+                menu_entries::entries_with(
+                    &target,
+                    &status,
+                    store.instance(&inst),
+                    menu_entries::Extra::default(),
+                )
             };
             inside.extend(entry_lines(&target, &entries));
             lines.push(Line::Submenu {
@@ -171,6 +202,17 @@ impl Shell {
 
 /// The lines of `entries`, with neighbours of a group in a submenu.
 fn entry_lines(target: &Target, entries: &Entries) -> Vec<Line> {
+    // The channel area's few entries stay flat, and act on the server.
+    if let Target::ChannelArea(inst, space) = target {
+        let server = Target::Space(inst.clone(), *space);
+        return entries
+            .iter()
+            .map(|entry| match entry {
+                None => Line::Separator,
+                Some(entry) => action_line(&server, *entry, entry.action.area_label()),
+            })
+            .collect();
+    }
     menu_entries::grouped(entries)
         .into_iter()
         .map(|line| match line {
@@ -191,11 +233,28 @@ fn entry_lines(target: &Target, entries: &Entries) -> Vec<Line> {
         .collect()
 }
 
+/// A plain entry that does `run`, for menus the shell builds itself.
+pub(crate) fn run_line(
+    label: impl Into<SharedString>,
+    run: impl Fn(&mut Shell, &mut Window, &mut Context<Shell>) + 'static,
+) -> Line {
+    Line::Item {
+        label: label.into(),
+        checked: false,
+        danger: false,
+        run: Rc::new(run),
+    }
+}
+
 fn action_line(target: &Target, entry: Entry, label: &'static str) -> Line {
+    if entry.action == menu_entries::Action::MoveVoice {
+        return Line::Move;
+    }
     let (target, action) = (target.clone(), entry.action);
     Line::Item {
         label: label.into(),
         checked: entry.checked,
+        danger: action.is_negative(),
         run: Rc::new(move |this, window, cx| {
             this.menu_action(target.clone(), action, window, cx);
         }),
@@ -223,6 +282,8 @@ fn add_lines(
     for line in lines {
         menu = match line {
             Line::Separator => menu.separator(),
+            // Replaced by its submenu before the menu is built.
+            Line::Move => menu,
             Line::Submenu { label, lines } => {
                 let shell = shell.clone();
                 menu.submenu(label, window, cx, move |menu, window, cx| {
@@ -232,6 +293,7 @@ fn add_lines(
             Line::Item {
                 label,
                 checked,
+                danger,
                 run,
             } => {
                 let shell = shell.clone();
@@ -243,6 +305,7 @@ fn add_lines(
                         .self_stretch()
                         .items_center()
                         .cursor_pointer()
+                        .when(danger, |d| d.text_color(crate::theme::danger()))
                         .child(label.clone())
                 });
                 menu.item(row.checked(checked).on_click(move |_, window, cx| {

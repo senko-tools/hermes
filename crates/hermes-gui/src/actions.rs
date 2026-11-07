@@ -134,13 +134,13 @@ impl Shell {
                 );
             }
             (Target::Space(_, space), Action::CopySpaceId) => {
-                self.copy(space.to_string(), "Space ID", cx);
+                self.copy(space.to_string(), "Server ID", cx);
             }
             (Target::Space(inst, space), Action::LeaveSpace) => {
                 self.leave_space(&inst, space, cx);
                 self.call_status(
                     &inst,
-                    "Left the space",
+                    "Left the server",
                     move |r| async move { r.leave_space(space).await },
                     cx,
                 );
@@ -149,7 +149,7 @@ impl Shell {
                 self.leave_space(&inst, space, cx);
                 self.call_status(
                     &inst,
-                    "Space deleted",
+                    "Server deleted",
                     move |r| async move { r.delete_space(space).await },
                     cx,
                 );
@@ -364,6 +364,7 @@ impl Shell {
     ) {
         if self.run_message_action(&target, action, window, cx)
             || self.run_space_action(&target, action, window, cx)
+            || self.run_member_action(&target, action, window, cx)
         {
             return;
         }

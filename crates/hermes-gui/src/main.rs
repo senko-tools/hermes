@@ -44,6 +44,7 @@ mod space_settings;
 mod tests;
 mod theme;
 mod tree;
+mod user_menu;
 mod voice;
 mod watchdog;
 

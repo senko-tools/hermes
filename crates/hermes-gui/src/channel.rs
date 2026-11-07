@@ -1032,7 +1032,7 @@ impl Shell {
             }
             SlashCommand::Nick(nick) => {
                 let Some(space) = space else {
-                    self.error("Nicknames are per space; open a space channel.", cx);
+                    self.error("Nicknames are per server; open a server channel.", cx);
                     return;
                 };
                 let core = self.core.clone();
@@ -1073,7 +1073,7 @@ impl Shell {
                 Some(space) => {
                     self.run_action(Target::Space(inst, space), Action::InvitePeople, window, cx);
                 }
-                None => self.error("Invites are for spaces; open a space channel.", cx),
+                None => self.error("Invites are for servers; open a server channel.", cx),
             },
         }
     }
@@ -2734,9 +2734,15 @@ pub fn icon_button(
         .size(px(28.))
         .rounded(px(4.))
         .cursor_pointer()
-        .hover(|d| d.bg(theme::hover()))
-        .child(icon(name, 18., theme::text_secondary()))
+        .group(ICON_BUTTON)
+        .child(
+            icon(name, 18., theme::text_secondary())
+                .group_hover(ICON_BUTTON, |s| s.text_color(theme::text())),
+        )
 }
+
+/// The hover group of [`icon_button`]: the innermost one wins, so one name serves them all.
+const ICON_BUTTON: &str = "icon-button";
 
 #[cfg(test)]
 mod tests {

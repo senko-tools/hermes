@@ -253,8 +253,8 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
     let t = target.unwrap_or_default();
     use AuditAction as A;
     let what = match entry.action {
-        A::SpaceUpdate => "changed the space settings".to_owned(),
-        A::SpaceTransfer => format!("gave the space to {t}"),
+        A::SpaceUpdate => "changed the server settings".to_owned(),
+        A::SpaceTransfer => format!("gave the server to {t}"),
         A::MemberUpdate => format!("updated {t}"),
         A::MemberKick => format!("kicked {t}"),
         A::MemberBan => format!("banned {t}"),
@@ -341,7 +341,7 @@ impl Shell {
                 })
             };
             let name = field(name, "Name", window, cx);
-            let description = field(description, "What is this space about?", window, cx);
+            let description = field(description, "What is this server about?", window, cx);
             let member_query = field(String::new(), "Search members", window, cx);
             let page_key = key.clone();
             let notify_key = key.clone();
@@ -549,7 +549,7 @@ impl Shell {
                     if let Some(page) = this.space_pages.get_mut(&key) {
                         page.overview_dirty = false;
                     }
-                    this.info("Space saved", cx);
+                    this.info("Server saved", cx);
                 }
                 Err(err) => this.error(format!("could not save: {err}"), cx),
             },
@@ -562,7 +562,7 @@ impl Shell {
             cx,
             async move {
                 let Some(file) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a space icon")
+                    .set_title("Choose a server icon")
                     .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
                     .pick_file()
                     .await
@@ -1049,7 +1049,11 @@ impl Shell {
         let editable = view::can_in_space(s, space, Permissions::MANAGE_SPACE);
         let is_owner = Some(st.space.owner_id) == s.me_id();
         let mut rows = vec![
-            setting("Space name", "", Input::new(&page.name).disabled(!editable)),
+            setting(
+                "Server name",
+                "",
+                Input::new(&page.name).disabled(!editable),
+            ),
             setting(
                 "Description",
                 "Shown on invite pages.",
@@ -1125,7 +1129,7 @@ impl Shell {
             }
         } else {
             rows.push(muted(
-                "You need the Manage space permission to change these.",
+                "You need the Manage server permission to change these.",
             ));
         }
         let members = st.members.len();
@@ -1135,20 +1139,21 @@ impl Shell {
             .filter(|c| c.kind.has_messages())
             .count();
         let owner = s.display_name(Some(space), st.space.owner_id);
-        let mut about = vec![setting(
-            "About",
-            &format!(
-                "Owned by {owner} · {members} member{} · {channels} channel{}",
-                plural(members),
-                plural(channels)
-            ),
-            Button::new("space-copy-id")
-                .cursor_pointer()
-                .label("Copy space ID")
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.copy(space.to_string(), "Space ID", cx)),
+        let mut about =
+            vec![setting(
+                "About",
+                &format!(
+                    "Owned by {owner} · {members} member{} · {channels} channel{}",
+                    plural(members),
+                    plural(channels)
                 ),
-        )];
+                Button::new("space-copy-id")
+                    .cursor_pointer()
+                    .label("Copy server ID")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.copy(space.to_string(), "Server ID", cx)
+                    })),
+            )];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             let invite_inst = inst.clone();
             about.push(setting(
@@ -1171,13 +1176,13 @@ impl Shell {
         let danger_inst = inst.clone();
         let danger = if is_owner {
             setting(
-                "Delete space",
+                "Delete server",
                 "Deletes every channel and message for everyone. This cannot be undone. To keep \
                  the space, give it to someone else from the Members tab first.",
                 Button::new("space-delete")
                     .cursor_pointer()
                     .danger()
-                    .label("Delete space")
+                    .label("Delete server")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
@@ -1188,12 +1193,12 @@ impl Shell {
             )
         } else {
             setting(
-                "Leave space",
+                "Leave server",
                 "You will need a new invite to come back.",
                 Button::new("space-leave")
                     .cursor_pointer()
                     .danger()
-                    .label("Leave space")
+                    .label("Leave server")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
@@ -1207,7 +1212,7 @@ impl Shell {
             "Overview",
             None,
             vec![
-                group("Space", rows),
+                group("Server", rows),
                 group("About", about),
                 group("Danger zone", vec![danger]),
             ],
@@ -1939,7 +1944,7 @@ impl Shell {
             group(
                 "Roles",
                 vec![muted(
-                    "This space has no roles yet. Create them in the Roles tab.",
+                    "This server has no roles yet. Create them in the Roles tab.",
                 )],
             )
         } else {
@@ -2045,7 +2050,7 @@ impl Shell {
             let kick = target.clone();
             danger.push(setting(
                 "Kick",
-                "Removes them from the space; they can come back with a new invite.",
+                "Removes them from the server; they can come back with a new invite.",
                 Button::new("member-kick")
                     .cursor_pointer()
                     .danger()
@@ -2135,9 +2140,7 @@ impl Shell {
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_INVITES);
         let create_inst = inst.clone();
-        let mut rows: Vec<AnyElement> = vec![muted(
-            "Anyone with a link can join while it is valid. Revoke a link to stop it working.",
-        )];
+        let mut rows: Vec<AnyElement> = vec![muted("Anyone with a valid link can join.")];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             rows.push(
                 Button::new("invite-create")

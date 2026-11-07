@@ -101,7 +101,7 @@ impl Shell {
                 .gap(px(14.))
                 .child(heading("New message"))
                 .child(paragraph(
-                    "Names of your friends and people you share a space with, separated by commas (name or name#1234).",
+                    "Names of your friends and people you share a server with, separated by commas (name or name#1234).",
                 ))
                 .child(Input::new(&state.input).large())
                 .children(state.error.clone().map(error_line))

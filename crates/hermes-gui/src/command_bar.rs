@@ -295,7 +295,7 @@ pub fn entries(
             continue;
         };
         out.push(Entry {
-            label: "Create a space".into(),
+            label: "Create a server".into(),
             detail: inst.clone(),
             command: Command::Menu(Target::Instance(inst.clone()), M::CreateSpace),
         });
@@ -316,7 +316,7 @@ pub fn entries(
                 command: Command::Results(Key::Search(inst.clone(), Some(*space_id))),
             });
             out.push(Entry {
-                label: format!("Space settings: {}", space.space.name),
+                label: format!("Server settings: {}", space.space.name),
                 detail: inst.clone(),
                 command: Command::SpaceSettings(inst.clone(), *space_id),
             });

@@ -294,8 +294,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let form = Form::new(Purpose::CreateSpace(inst), "Create a space", "Create")
-            .text("A space is a home for your group, with its own channels, roles and members.");
+        let form = Form::new(Purpose::CreateSpace(inst), "Create a server", "Create")
+            .text("A server is a home for your group, with its own channels, roles and members.");
         self.form = None;
         let built = Self::fields(form, window, cx).text("Name", "e.g. Friends", "");
         self.finish(built);
@@ -491,7 +491,7 @@ impl Shell {
             format!("Ban {name}?"),
             "Ban",
         )
-        .text("They are removed from the space and cannot rejoin until unbanned.")
+        .text("They are removed from the server and cannot rejoin until unbanned.")
         .danger();
         let fields = Self::fields(form, window, cx)
             .text("Reason (optional)", "Shown in the ban list", "")
@@ -525,7 +525,7 @@ impl Shell {
             "Change nickname",
             "Save",
         )
-        .text("A nickname is only used in this space. Leave it empty to remove it.");
+        .text("A nickname is only used in this server. Leave it empty to remove it.");
         let fields = Self::fields(form, window, cx).text("Nickname", "", current);
         self.finish(fields);
     }
@@ -1051,7 +1051,9 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                         d.bg(theme::accent()).text_color(theme::on_accent())
                     })
                     .when(!chosen, |d| {
-                        d.bg(theme::selected()).hover(|d| d.bg(theme::hover()))
+                        d.bg(theme::selected())
+                            .text_color(theme::text_secondary())
+                            .hover(|d| d.text_color(theme::text()))
                     })
                     .child(SharedString::from(option.clone()))
                     .on_click(cx.listener(move |this, _, _, cx| {

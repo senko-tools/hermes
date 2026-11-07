@@ -18,7 +18,6 @@ use hermes_client_core::proto::models::DmFrom;
 use hermes_client_core::{CoreError, InstanceId, time};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::keybinds::{ACTIONS, Action, Keybinds};
 use crate::results::Remote;
 use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, RESOLUTIONS};
@@ -94,10 +93,12 @@ enum SliderKind {
     SoundsVolume,
 }
 
-/// How often the level meter can redraw the window at most.
-const METER_FPS: f32 = 30.0;
-/// The bar has to move this far for a redraw (a pixel or so on a setting row).
-const METER_STEP_DB: f32 = 0.25;
+/// How often the level meter can redraw the window at most. Every frame redraws the whole window,
+/// so this is not the display's rate: drawing at 144 Hz all the time cost about 10 % CPU and GPU.
+const METER_FPS: f32 = 60.0;
+/// The bar has to move this far for a redraw (under a pixel on a setting row), so a settled
+/// meter costs nothing.
+const METER_STEP_DB: f32 = 0.1;
 
 /// Where the level meter's bar goes next: it follows the level quickly upwards and falls slowly, as
 /// meters do, in dB and `seconds` after it was last drawn.
@@ -175,6 +176,8 @@ pub struct SettingsPage {
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
     pub mic_test: bool,
+    /// Held while the Voice tab and its level meter show.
+    fine_timers: Option<crate::desktop::window::FineTimers>,
     font: Entity<InputState>,
     mono_font: Entity<InputState>,
     time_format: Entity<InputState>,
@@ -376,6 +379,7 @@ impl Shell {
             sessions: Remote::Idle,
             device_selects: None,
             mic_test: false,
+            fine_timers: None,
             font: font_input,
             mono_font: mono_input,
             time_format,
@@ -404,6 +408,7 @@ impl Shell {
             return;
         };
         page.tab = tab;
+        page.fine_timers = (tab == Tab::Voice).then(crate::desktop::window::FineTimers::new);
         self.core.set_level_meter(tab == Tab::Voice);
         match tab {
             Tab::Account => self.load_sessions(cx),
@@ -857,10 +862,7 @@ impl Shell {
                 .unwrap_or_default()
         );
         if me.instance_admin {
-            hint.push_str(
-                ". You are an admin of this instance: manage users with the hermes-server user \
-                 commands or the API (/admin/users).",
-            );
+            hint.push_str(" · instance admin");
         }
         let username_inst = inst.clone();
         let copy_handle = me.user.handle();
@@ -953,7 +955,7 @@ impl Shell {
 
         let dm_chips = [
             (DmFrom::Everyone, "Everyone"),
-            (DmFrom::Spaces, "People in my spaces"),
+            (DmFrom::Spaces, "People in my servers"),
             (DmFrom::Nobody, "Nobody"),
         ]
         .into_iter()
@@ -974,15 +976,12 @@ impl Shell {
         let privacy_rows = vec![
             setting(
                 "Direct messages from",
-                "Who can start a conversation with you on this instance. Conversations you \
-                 already have stay open.",
+                "Who can start a conversation with you.",
                 wrap().children(dm_chips),
             ),
             setting(
                 "Message requests",
-                "Messages from everyone else wait in Requests: you are notified once per \
-                 request, and they stay quiet until you accept. Off: they cannot message you \
-                 at all.",
+                "Messages from anyone else wait in Requests. Off: they cannot message you.",
                 Switch::new("allow-requests")
                     .cursor_pointer()
                     .checked(privacy.message_requests)
@@ -1059,9 +1058,7 @@ impl Shell {
                     "End-to-end encryption",
                     vec![setting(
                         "This device",
-                        "Direct messages, files and calls are encrypted here and only your and their \
-                         devices can read them, not the server. A device can only read what was sent \
-                         after it signed in. Its key stays on this computer.",
+                        "Only your and their devices can read DMs, files and calls.",
                         muted(
                             self.core.my_device_id(&inst).map_or_else(String::new, |d| {
                                 d.chars().take(16).collect::<String>()
@@ -1134,11 +1131,7 @@ impl Shell {
                     .gap(px(8.))
                     .children(cards)
                     .into_any_element(),
-                muted(
-                    "Your own themes are .toml files in the themes folder: copy one to start, and \
-                     changes show up as soon as you save. Keys you leave out come from the dark \
-                     theme.",
-                ),
+                muted("Your own themes are .toml files in the themes folder."),
             ],
         );
         let shown_px = i32::from(config.font.size) + 3;
@@ -1147,12 +1140,12 @@ impl Shell {
             vec![
                 setting(
                     "Font",
-                    "Used for all text. Any installed font's name works; Enter saves.",
+                    "Any installed font. Enter saves.",
                     Input::new(&page.font),
                 ),
                 setting(
                     "Code font",
-                    "Used for code blocks and inline code. Enter saves.",
+                    "For code. Enter saves.",
                     Input::new(&page.mono_font),
                 ),
                 setting(
@@ -1192,11 +1185,7 @@ impl Shell {
                     &if self.ui_scale_draft.is_some() {
                         format!("{:.0} %, applied when you let go", scale * 100.)
                     } else {
-                        format!(
-                            "{:.0} % on top of the system scaling. Ctrl+= and Ctrl+- zoom, Ctrl+0 \
-                             resets.",
-                            scale * 100.
-                        )
+                        format!("{:.0} % · Ctrl+= and Ctrl+- zoom", scale * 100.)
                     },
                     div()
                         .flex()
@@ -1210,8 +1199,7 @@ impl Shell {
                 setting(
                     "Panel widths",
                     &format!(
-                        "Sidebar {} px, member list {} px. Drag the sidebar's edge to resize; a \
-                         double-click on it resets.",
+                        "Sidebar {} px, member list {} px",
                         config.sidebar.width, config.sidebar.member_list_width
                     ),
                     Button::new("reset-widths")
@@ -1274,7 +1262,7 @@ impl Shell {
                         ),
                         self.flag(
                             "Show image previews",
-                            "Images in messages are shown, not just linked.",
+                            "",
                             b.image_previews,
                             "buffer.image_previews",
                             cx,
@@ -1300,17 +1288,12 @@ impl Shell {
                     vec![
                         setting(
                             "Group messages",
-                            &format!(
-                                "Messages by the same person within {} minutes share one name line.",
-                                b.group_minutes
-                            ),
+                            &format!("Within {} minutes", b.group_minutes),
                             self.slider(page, SliderKind::GroupMinutes),
                         ),
                         setting(
                             "Time format",
-                            &format!(
-                                "strftime style: %H:%M is 18:05, %I:%M %p is 06:05 PM. Now: {preview}. Enter saves."
-                            ),
+                            &format!("Now: {preview}. Enter saves."),
                             Input::new(&page.time_format),
                         ),
                     ],
@@ -1335,7 +1318,7 @@ impl Shell {
                 setting("Speakers", "", device_select(selects.map(|s| &s.output))),
                 setting(
                     "Device list",
-                    "Plugged in a headset? List the devices again.",
+                    "",
                     Button::new("devices-refresh")
                         .cursor_pointer()
                         .label("Refresh devices")
@@ -1392,18 +1375,14 @@ impl Shell {
                         theme::text_tertiary()
                     }),
             );
-        let mut input_rows = vec![setting(
-            "Input mode",
-            "Voice activity sends while you talk; push-to-talk while a key is held.",
-            wrap().children(mode_chips),
-        )];
+        let mut input_rows = vec![setting("Input mode", "", wrap().children(mode_chips))];
         if ptt_mode {
             input_rows.push(setting(
                 "Push-to-talk key",
                 if cfg!(windows) {
-                    "Works in every app: Mouse4, Mouse5, CapsLock, F1–F24, letters, Ctrl+Space… Enter saves."
+                    "e.g. Mouse4, F13, Ctrl+Space. Enter saves."
                 } else {
-                    "On this system it only works while the Hermes window is focused. Enter saves."
+                    "Only while Hermes is focused. Enter saves."
                 },
                 Input::new(&page.ptt_key),
             ));
@@ -1415,10 +1394,7 @@ impl Shell {
         }
         input_rows.push(setting(
             "Voice activity sensitivity",
-            &format!(
-                "Opens above {} dBFS · microphone now {level:.0} dBFS",
-                v.vad_sensitivity
-            ),
+            &format!("Opens above {} dBFS · now {level:.0}", v.vad_sensitivity),
             div()
                 .flex()
                 .flex_col()
@@ -1430,7 +1406,7 @@ impl Shell {
         let mic_test = page.mic_test;
         input_rows.push(setting(
             "Mic test",
-            "Hear your processed microphone (use headphones).",
+            "Hear yourself (use headphones).",
             Button::new("mic-test")
                 .cursor_pointer()
                 .label(if mic_test { "Stop test" } else { "Start test" })
@@ -1461,7 +1437,7 @@ impl Shell {
                 setting(
                     "Noise suppression",
                     if v.noise_suppression {
-                        "Removes background noise like fans and keyboards."
+                        "Removes fans, keyboards and the like."
                     } else {
                         "Without it, headphones are recommended."
                     },
@@ -1506,11 +1482,7 @@ impl Shell {
                     &format!("{:.0} %", v.sounds_volume * 100.),
                     self.slider(page, SliderKind::SoundsVolume),
                 ),
-                setting(
-                    "Join a voice channel with",
-                    "With double-click, a single click only opens the channel's voice room.",
-                    wrap().children(join_chips),
-                ),
+                setting("Join a voice channel with", "", wrap().children(join_chips)),
             ],
         );
         let mut screens = vec![String::new()];
@@ -1570,30 +1542,20 @@ impl Shell {
         let sharing = group(
             "Screen sharing",
             vec![
-                setting(
-                    "Screen to share",
-                    "Only people in the call see it. Start and stop it with the share button in \
-                     the voice panel.",
-                    wrap().children(screen_chips),
-                ),
+                setting("Screen to share", "", wrap().children(screen_chips)),
                 setting(
                     "Resolution",
-                    "The largest size your screen is sent at. Larger is sharper but uses more CPU \
-                     and bandwidth. Applies the next time you share.",
+                    "From your next share",
                     wrap().children(res_chips),
                 ),
                 setting(
                     "Frame rate",
-                    "Frames per second. More is smoother (video, games) but uses more bandwidth. \
-                     Applies the next time you share.",
+                    "From your next share",
                     wrap().children(fps_chips),
                 ),
                 setting(
                     "When it cannot keep up",
-                    "What your share keeps when your connection or computer falls behind. \
-                     Smoothness keeps the frame rate and lowers sharpness, then size; Clarity \
-                     keeps sharp, full-size pictures and lowers the frame rate; Mixed is in \
-                     between. Also on your tile while you share.",
+                    "What your share keeps when it falls behind",
                     wrap().children(pref_chips),
                 ),
             ],
@@ -1617,11 +1579,7 @@ impl Shell {
         let g = &self.config.general;
         page_body(
             "Notifications",
-            Some(
-                "Which messages notify is set per space or channel: right-click it and pick \
-                 \"Notify: …\" or Mute. By default spaces notify on @mentions and DMs on every \
-                 message.",
-            ),
+            Some("Per server and channel: right-click it, Notifications."),
             vec![
                 group(
                     "Desktop notifications",
@@ -1699,17 +1657,12 @@ impl Shell {
         groups.push(group(
             "Everywhere",
             vec![muted(
-                "Right-click channels, spaces, messages and people for more actions. Double-click \
-                 a voice channel to join it. Drag channels and roles to reorder them. Escape \
-                 closes menus and dialogs. Ctrl+K finds anything.",
+                "Right-click anything for more. Drag channels and roles to reorder them.",
             )],
         ));
         page_body(
             "Keybinds",
-            Some(
-                "Change them in the [keys] section of config.toml; changes apply at once. \
-                 Examples: \"Ctrl+K\", \"Alt+Shift+Down\", \"Ctrl+\\\\\".",
-            ),
+            Some("Change them in [keys] of config.toml, e.g. \"Ctrl+K\"."),
             groups,
         )
     }
@@ -1758,8 +1711,7 @@ impl Shell {
                     .text_size(theme::secondary_size())
                     .text_color(theme::text_secondary())
                     .child(
-                        "A self-hostable chat with spaces, text and voice channels, DMs and \
-                         calls. Licensed GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
+                        "Self-hostable chat. GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
                     ),
             )
             .child(
@@ -1826,6 +1778,8 @@ pub fn muted(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+const NAV_ITEM: &str = "nav-item";
+
 /// An entry of a page's navigation column. The caller adds what a click does.
 pub fn nav_item(
     glyph: &str,
@@ -1849,9 +1803,13 @@ pub fn nav_item(
         } else {
             theme::text_secondary()
         })
+        .group(NAV_ITEM)
         .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
-        .child(icon(glyph, 18., theme::text_tertiary()))
+        .when(!selected, |d| d.hover(|d| d.text_color(theme::text())))
+        .child(
+            icon(glyph, 18., theme::text_tertiary())
+                .group_hover(NAV_ITEM, |s| s.text_color(theme::text_secondary())),
+        )
         .child(SharedString::from(name.to_owned()))
 }
 
@@ -1880,22 +1838,28 @@ pub fn frame(
                 .p(px(12.))
                 .overflow_y_scroll()
                 .bg(theme::sidebar())
+                // The whole line goes back, not just the arrow.
                 .child(
                     div()
+                        .id("page-close")
+                        .group("page-close")
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
-                        .gap(px(4.))
-                        .pb(px(8.))
-                        .child(icon_button("page-close", assets::ARROW_LEFT).on_click(close))
+                        .gap(px(8.))
+                        .h(px(30.))
+                        .mb(px(8.))
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .hover(|d| d.text_color(theme::text()))
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(theme::caption_size())
-                                .text_color(theme::text_tertiary())
-                                .child(title),
-                        ),
+                            icon(assets::ARROW_LEFT, 18., theme::text_tertiary())
+                                .group_hover("page-close", |s| s.text_color(theme::text())),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(title))
+                        .on_click(close),
                 )
                 .children(nav),
         )

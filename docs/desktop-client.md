@@ -38,9 +38,24 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Friends:** the sidebar lists DMs and group DMs; the main panel has Online, All, Pending and People tabs.
   Opening someone opens the DM.
 - **Instances:** hidden from the sidebar unless none is saved or one needs attention. Their actions are in the menu
-  of the rail's plus, the empty rail or sidebar space, and the user panel.
+  of the rail's plus, the empty rail space, Friends' empty sidebar space, and the user panel.
 - **Network graph:** the voice panel's connection line opens live graphs of latency, loss and bandwidth, over 1, 5 or 15 minutes.
 - **Responsibility:** the developer left share video and the tray to Claude's judgement.
+- **Words (2026-11-08):** spaces are called "servers" in everything the user reads (code, config keys and
+  the protocol keep `space`). Instances stay "instances".
+- **Hover (2026-11-08):** most things change their text or icon colour under the pointer (`icon_button`,
+  chips, nav items, channel rows, use `group_hover` for icons). People in lists, messages, search results
+  and emoji keep a background hover.
+- **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen green-ish while off and red
+  while on, leave red-ish, share accent while sharing; toggles animate with a gpui spring. Share sits
+  next to leave in the voice panel; the header has no Leave button.
+- **Menus:** the rail's empty space and plus list only the instances; the empty space under a server's
+  channels offers Create Channel, Create Category and Invite to Server. A person's menu (member lists,
+  voice rows, tiles) has Profile, Volume…, Mute for me, and for moderators server mute/deafen,
+  Move to and Disconnect, checked like the server checks them. Negative entries are red
+  (`Action::is_negative`); only `is_destructive` ones are confirmed.
+- **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
+  while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.

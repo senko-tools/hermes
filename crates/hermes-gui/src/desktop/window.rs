@@ -96,3 +96,36 @@ pub fn flash(window: &Window) {
 
 #[cfg(not(windows))]
 pub fn flash(_window: &Window) {}
+
+/// Asks Windows for 1 ms timers while it lives. By default they fire every 15.6 ms, which makes a
+/// 60 fps animation stutter (frames 31 and 47 ms apart); the level meter holds one while it shows.
+pub struct FineTimers(());
+
+impl FineTimers {
+    pub fn new() -> FineTimers {
+        #[cfg(windows)]
+        // SAFETY: plain call, paired with `timeEndPeriod` in `drop`.
+        #[allow(unsafe_code)]
+        unsafe {
+            windows::Win32::Media::timeBeginPeriod(1);
+        }
+        FineTimers(())
+    }
+}
+
+impl Drop for FineTimers {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        // SAFETY: undoes the `timeBeginPeriod` of `new`.
+        #[allow(unsafe_code)]
+        unsafe {
+            windows::Win32::Media::timeEndPeriod(1);
+        }
+    }
+}
+
+impl Default for FineTimers {
+    fn default() -> FineTimers {
+        FineTimers::new()
+    }
+}

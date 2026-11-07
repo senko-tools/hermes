@@ -19,6 +19,10 @@ use crate::shell::{Page, Selected, Shell};
 use crate::theme::{self, px};
 use crate::tree::{self, Badge, Row};
 
+/// The hover groups of channel and category rows.
+const CHANNEL_ROW: &str = "channel-row";
+const CATEGORY_ROW: &str = "category-row";
+
 /// A row without a hover look: the caller gives it one (gpui allows one per element).
 fn bare_row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div> {
     div()
@@ -122,8 +126,8 @@ impl RowState {
     }
 }
 
-/// An icon of the rail: round, and a rounded square while selected, like Discord's.
-fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
+/// An icon of the rail; [`rail_morph`] gives it its shape.
+fn rail_icon(id: impl Into<SharedString>) -> Stateful<Div> {
     div()
         .id(id.into())
         .relative()
@@ -132,9 +136,27 @@ fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .items_center()
         .justify_center()
         .size(px(theme::RAIL_ICON))
-        .rounded(px(if selected { 14. } else { theme::RAIL_ICON / 2. }))
         .cursor_pointer()
         .text_size(theme::body_size())
+}
+
+/// Morphs a rail icon from round to a rounded square as it gets selected, and back.
+fn rail_morph(
+    id: impl Into<gpui_kit::ElementId>,
+    element: Stateful<Div>,
+    selected: bool,
+) -> AnyElement {
+    use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
+    element
+        .with_spring(
+            id,
+            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected),
+            |d, phase| {
+                let t = phase.0.clamp(0., 1.2);
+                d.rounded(px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * t))
+            },
+        )
+        .into_any_element()
 }
 
 /// The bar at the rail's edge beside the selected icon.
@@ -213,11 +235,21 @@ impl Shell {
         badge
     }
 
+    /// The rail stays beside the settings pages: a click on it leaves them for what it opens.
+    fn close_pages(&mut self, cx: &mut Context<Self>) {
+        if self.settings.is_some() {
+            self.close_settings(cx);
+        }
+        if self.open_space_page.is_some() {
+            self.close_space_settings(cx);
+        }
+    }
+
     pub fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
         let home_badge = self.home_badge();
         let home_selected = self.selected == Selected::Home;
-        let home = rail_icon("home", home_selected)
+        let home = rail_icon("home")
             .bg(if home_selected {
                 theme::accent()
             } else {
@@ -238,7 +270,11 @@ impl Shell {
                 badge_element(home_badge)
                     .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.open_friends(cx)));
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.close_pages(cx);
+                this.open_friends(cx);
+            }));
+        let home = rail_morph("home-morph", home, home_selected);
 
         let spaces: Vec<AnyElement> = self
             .rail_spaces()
@@ -246,7 +282,8 @@ impl Shell {
             .map(|(inst, id, name, badge)| {
                 let selected = self.selected == Selected::Space(inst.clone(), id);
                 let target = Target::Space(inst.clone(), id);
-                let element = rail_icon(format!("rail-space-{inst}-{id}"), selected)
+                let inst_key = inst.clone();
+                let element = rail_icon(format!("rail-space-{inst}-{id}"))
                     .bg(if selected {
                         theme::accent()
                     } else {
@@ -264,19 +301,26 @@ impl Shell {
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
+                        this.close_pages(cx);
                         this.select_space(inst.clone(), id, window, cx);
                     }));
-                self.with_menu(element, target, cx).into_any_element()
+                let element = self.with_menu(element, target, cx);
+                rail_morph(
+                    SharedString::from(format!("rail-morph-{inst_key}-{id}")),
+                    element,
+                    selected,
+                )
             })
             .collect();
 
-        let add = rail_icon("rail-add", false)
+        let add = rail_icon("rail-add")
+            .rounded(px(theme::RAIL_ICON / 2.))
             .bg(theme::selected())
             .hover(|d| d.bg(theme::hover()))
             .child(icon(assets::PLUS, 24., theme::accent()))
             .on_click(
                 cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu(Target::Me(None), event.position(), window, cx);
+                    this.open_menu(Target::Instances, event.position(), window, cx);
                 }),
             );
 
@@ -350,12 +394,16 @@ impl Shell {
                     .border_b_1()
                     .border_color(theme::border())
                     .cursor_pointer()
-                    .hover(|d| d.bg(theme::hover()))
+                    .group("space-header")
                     .font_weight(FontWeight::BOLD)
                     .text_size(theme::body_size())
                     .text_color(theme::accent_highlight())
+                    .hover(|d| d.text_color(theme::text()))
                     .child(div().min_w_0().truncate().child(name))
-                    .child(icon(assets::CHEVRON_DOWN, 18., theme::accent_highlight()))
+                    .child(
+                        icon(assets::CHEVRON_DOWN, 18., theme::accent_highlight())
+                            .group_hover("space-header", |s| s.text_color(theme::text())),
+                    )
                     .child(div().flex_1())
                     .on_click(cx.listener(
                         move |this, event: &gpui_kit::ClickEvent, window, cx| {
@@ -376,10 +424,17 @@ impl Shell {
                     .pt(px(8.))
                     .gap(px(2.))
                     .children(rows)
-                    .child(self.with_instances_menu(
-                        div().id("sidebar-empty").flex_1().min_h(px(48.)),
-                        cx,
-                    )),
+                    .child({
+                        // Under a server's channels: making more of them. Under the DMs: the
+                        // instances.
+                        let empty = div().id("sidebar-empty").flex_1().min_h(px(48.));
+                        match &self.selected {
+                            Selected::Space(inst, space) => {
+                                self.with_menu(empty, Target::ChannelArea(inst.clone(), *space), cx)
+                            }
+                            Selected::Home => self.with_instances_menu(empty, cx),
+                        }
+                    }),
             )
     }
 
@@ -584,8 +639,11 @@ impl Shell {
                         .justify_center()
                         .size(px(20.))
                         .rounded(px(4.))
-                        .hover(|d| d.bg(theme::hover()))
-                        .child(icon(assets::PLUS, 16., theme::category_text()))
+                        .group("category-add")
+                        .child(
+                            icon(assets::PLUS, 16., theme::category_text())
+                                .group_hover("category-add", |s| s.text_color(theme::text())),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             cx.stop_propagation();
                             this.run_action(
@@ -608,17 +666,21 @@ impl Shell {
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
                     .text_color(theme::category_text())
+                    .group(CATEGORY_ROW)
                     .hover(|d| d.text_color(theme::text_secondary()))
                     .child(div().min_w_0().truncate().child(name.clone()))
-                    .child(icon(
-                        if collapsed {
-                            assets::CHEVRON_RIGHT
-                        } else {
-                            assets::CHEVRON_DOWN
-                        },
-                        14.,
-                        theme::category_text(),
-                    ))
+                    .child(
+                        icon(
+                            if collapsed {
+                                assets::CHEVRON_RIGHT
+                            } else {
+                                assets::CHEVRON_DOWN
+                            },
+                            14.,
+                            theme::category_text(),
+                        )
+                        .group_hover(CATEGORY_ROW, |s| s.text_color(theme::text_secondary())),
+                    )
                     .child(div().flex_1())
                     .children(badge_element(badge))
                     .children(add)
@@ -640,11 +702,11 @@ impl Shell {
                 muted,
                 deafened,
                 speaking,
-                me,
                 nested,
                 dm,
+                ..
             } => self.render_voice_user(
-                inst, channel, user, name, muted, deafened, speaking, me, nested, dm, cx,
+                inst, channel, user, name, muted, deafened, speaking, nested, dm, cx,
             ),
             Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
                 .text_size(theme::body_size())
@@ -761,9 +823,7 @@ impl Shell {
             .overflow_hidden()
             .text_color(theme::channel_text())
             .when(nested && !in_block, |d| d.ml(px(10.)))
-            .when(state.is_none() && !in_block, |d| {
-                d.hover(|d| d.bg(theme::hover()))
-            })
+            .group(CHANNEL_ROW)
             .when_some(state, |d, state| {
                 d.bg(state.background)
                     .hover(move |d| d.bg(state.hover))
@@ -781,15 +841,24 @@ impl Shell {
             .when(strong && !muted, |d| {
                 d.text_color(theme::text()).font_weight(FontWeight::MEDIUM)
             })
-            .child(icon(
-                glyph,
-                theme::ROW_ICON,
-                if connected {
-                    theme::success()
-                } else {
-                    theme::icon_color()
-                },
-            ))
+            // Plain rows brighten their text and icon under the pointer.
+            .when(state.is_none() && !in_block, |d| {
+                d.hover(|d| d.text_color(theme::text()))
+            })
+            .child(
+                icon(
+                    glyph,
+                    theme::ROW_ICON,
+                    if connected {
+                        theme::success()
+                    } else {
+                        theme::icon_color()
+                    },
+                )
+                .when(!connected, |i| {
+                    i.group_hover(CHANNEL_ROW, |s| s.text_color(theme::text_secondary()))
+                }),
+            )
             .child(div().flex_1().min_w_0().truncate().child(name.clone()))
             .children(timer.map(|text| {
                 div()

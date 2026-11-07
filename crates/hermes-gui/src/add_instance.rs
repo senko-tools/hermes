@@ -548,7 +548,9 @@ fn tab_button(
         .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected && enabled, |d| {
-            d.cursor_pointer().hover(|d| d.bg(theme::hover()))
+            d.cursor_pointer()
+                .text_color(theme::text_secondary())
+                .hover(|d| d.text_color(theme::text()))
         })
         .when(!enabled, |d| d.text_color(theme::text_tertiary()))
         .child(name)
