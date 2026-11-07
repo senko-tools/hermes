@@ -111,6 +111,23 @@ fn main() -> ExitCode {
     if forward_to_running(&endpoint, cli.link.as_deref()) {
         return ExitCode::SUCCESS;
     }
+    // Nobody answered, but one may be starting: the lock tells. It is held until `main` returns.
+    let _lock = match single_instance::lock(&paths.dir) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if forward_to_running(&endpoint, cli.link.as_deref()) {
+                    return ExitCode::SUCCESS;
+                }
+            }
+            return fail("Hermes is already running");
+        }
+        Err(err) => {
+            eprintln!("no single-instance lock: {err}");
+            None
+        }
+    };
     let loaded = match ClientConfig::load(&paths.config()) {
         Ok(loaded) => loaded,
         Err(err) => return fail(&format!("Invalid config: {err}")),

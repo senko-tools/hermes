@@ -437,7 +437,8 @@ impl Shell {
                             "another launch handed over {}",
                             if link.is_empty() { "nothing" } else { "a link" }
                         );
-                        window.activate_window();
+                        // Also out of the tray: a second launch means "show me".
+                        this.show_window(window, cx);
                         if !link.is_empty() {
                             this.open_link(link, window, cx);
                         }
