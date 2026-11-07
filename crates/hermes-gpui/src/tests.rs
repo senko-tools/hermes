@@ -270,3 +270,135 @@ async fn rows_follow_history_sends_and_deletes() {
     .await;
     assert_eq!(messages(&core).len(), 1, "deleted messages are left out");
 }
+
+/// gpui keeps a list's state mutably borrowed while it calls the scroll handler. Reading the list
+/// from there panicked, which on Windows aborted the client at the first wheel notch.
+#[gpui::test]
+fn the_mouse_wheel_over_a_chat_does_not_panic(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    use gpui_kit::{
+        AppContext as _, Modifiers, ScrollDelta, ScrollEvent, VisualTestContext, WindowOptions,
+        point, px,
+    };
+
+    // The real server and tokio wake the window's tasks from other threads.
+    cx.executor().allow_parking();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    // As in `main`: the core spawns tokio tasks from the UI thread.
+    let _guard = runtime.enter();
+    let mut config = ClientConfig::default();
+    config.general.check_for_updates = false;
+    let (core, events) = Core::new(config, CoreOptions::in_memory("hermes-gui"));
+    let (server, inst, channel) = runtime.block_on(async {
+        let server = start("wheel").await;
+        let probed = add_instance::probe(core.clone(), server.link.clone())
+            .await
+            .unwrap();
+        let inst = add_instance::submit(core.clone(), account(&probed, Tab::Register, "alice"))
+            .await
+            .unwrap();
+        eventually(&core, "signed in", |s| {
+            s.instance(&inst).is_some_and(|s| s.me.is_some())
+        })
+        .await;
+        let space = core
+            .rest(&inst)
+            .unwrap()
+            .create_space("Hangout")
+            .await
+            .unwrap();
+        let channel: Id = space
+            .channels
+            .iter()
+            .find(|c| c.kind.has_messages())
+            .expect("a text channel")
+            .id;
+        eventually(&core, "the channel arrives", |s| {
+            s.instance(&inst)
+                .is_some_and(|s| s.channel(channel).is_some())
+        })
+        .await;
+        core.open_channel(&inst, channel).await.unwrap();
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                content: "hello".into(),
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+        eventually(&core, "the message is sent", |s| {
+            s.instance(&inst)
+                .and_then(|s| s.window(channel))
+                .is_some_and(|w| w.pending.is_empty() && !w.messages.is_empty())
+        })
+        .await;
+        (server, inst, channel)
+    });
+
+    let boot = crate::shell::Boot {
+        core,
+        events,
+        runtime: runtime.handle().clone(),
+        endpoint: crate::single_instance::Endpoint::for_config_dir(&server.dir.join("client")),
+        link: None,
+        warning: None,
+        tray: None,
+        global_keys: None,
+        start_hidden: false,
+    };
+    let (window, shell) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        Theme::change(ThemeMode::Dark, None, cx);
+        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            cx.new(|cx| crate::shell::Shell::new(boot, window, cx))
+        })
+        .unwrap()
+    });
+    let mut visual = VisualTestContext::from_window(window, cx);
+    let key = (inst.clone(), channel);
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            this.open_chat(inst.clone(), channel, window, cx);
+        });
+    });
+    for _ in 0..200 {
+        visual.run_until_parked();
+        let ready = visual.update(|_, cx| {
+            shell
+                .read(cx)
+                .chats
+                .get(&key)
+                .is_some_and(|view| !view.rows.is_empty())
+        });
+        if ready {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+
+    // Read marking only looks at the list while the window has the focus.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, _| this.focused = true);
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let position = point(px(700.), px(300.));
+    visual.simulate_mouse_move(position, None, Modifiers::none());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    for lines in [1.0, -1.0] {
+        visual.simulate_event(ScrollEvent {
+            position,
+            delta: ScrollDelta::Lines(point(0.0, lines)),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+    }
+}

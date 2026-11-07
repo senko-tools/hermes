@@ -1737,3 +1737,7 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
 - **Freeze dumps:** `MiniDumpWriteDump` on the own process froze about 1 in 4 test runs (4 of 15, against 0 of 15
   without that test), so the test that writes a real dump only runs on request. The watchdog itself still dumps
   in-process, as in the iced client; Microsoft advises a separate process for this. Not changed yet.
+
+## 2026-11-07: window tests for hermes-gpui
+**What changed:** `hermes-gpui` has a new dev-dependency, `gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }`, the gpui the kit already pins with its test platform on. `the_mouse_wheel_over_a_chat_does_not_panic` runs the real `Shell` in a headless window against a real server.
+**Why:** the wheel crash came from a borrow only a real event dispatch shows. The test fails with the same panic when the fix is taken out. The kit's own `test-support` feature would be simpler, but it mentions the optional `gpui-fast`, which makes Cargo resolve it and would force `taffy` from 0.15.1 down to 0.15.0 in the app. Tests that use real I/O need `cx.executor().allow_parking()`.
