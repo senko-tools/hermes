@@ -1481,6 +1481,8 @@ pub fn chip(
         .py(px(5.))
         .rounded(px(4.))
         .cursor_pointer()
+        .max_w_full()
+        .truncate()
         .text_size(theme::small_size())
         .when(chosen, |d| {
             d.bg(theme::accent()).text_color(theme::on_accent())

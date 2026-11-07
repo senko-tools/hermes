@@ -1351,6 +1351,7 @@ impl Shell {
                 div()
                     .flex()
                     .flex_col()
+                    .w_full()
                     .gap(px(8.))
                     .child(div().flex().flex_wrap().gap(px(4.)).children(swatches))
                     .child(Input::new(&draft.color).disabled(!editable)),

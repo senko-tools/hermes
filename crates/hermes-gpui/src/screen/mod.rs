@@ -135,38 +135,117 @@ fn skip_for(picture: (u32, u32), shown: (u32, u32)) -> u32 {
     (picture.0 / shown.0).min(picture.1 / shown.1).clamp(1, 4)
 }
 
-/// Limited-range BT.601, as OpenH264 encodes, to BGRA. `skip` takes every n-th pixel. Fixed point
-/// (16.16); the loops are plain so the compiler can vectorize them.
+/// One limited-range BT.601 pixel, as OpenH264 encodes, in 16.16 fixed point: `y` is already scaled
+/// and `(r, g, b)` are the chroma terms, which two neighbouring pixels share.
+#[inline(always)]
+fn put_pixel(px: &mut [u8], y: i32, (r, g, b): (i32, i32, i32)) {
+    px[0] = ((y + b) >> 16).clamp(0, 255) as u8;
+    px[1] = ((y + g) >> 16).clamp(0, 255) as u8;
+    px[2] = ((y + r) >> 16).clamp(0, 255) as u8;
+}
+
+#[inline(always)]
+fn luma(y: u8) -> i32 {
+    (i32::from(y) - 16).max(0) * 76309
+}
+
+#[inline(always)]
+fn chroma(u: u8, v: u8) -> (i32, i32, i32) {
+    let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
+    (104597 * v, -25675 * u - 53279 * v, 132201 * u)
+}
+
+/// A picture to BGRA. `skip` takes every n-th pixel.
 fn to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
+    if skip <= 1 {
+        full_size_to_bgra(p)
+    } else {
+        skipping_to_bgra(p, skip)
+    }
+}
+
+/// Every pixel, the case that has to be fast: a window-sized share at 60 fps. Colour is worked out
+/// once per two pixels, and walking the planes with iterators leaves no bounds checks.
+fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
+    let (w, h) = (p.width as usize, p.height as usize);
+    let mut out = vec![255u8; w * h * 4];
+    let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
+    let cw = (p.width / 2) as usize;
+    let last_c_row = ((p.height / 2) as usize).saturating_sub(1);
+    // The pairs of luma samples a row of chroma covers; an odd last column is drawn by itself.
+    let even = w & !1;
+    for (row, (line, y_row)) in out
+        .chunks_exact_mut(w * 4)
+        .zip(y_plane.chunks_exact(w))
+        .enumerate()
+    {
+        let c_row = (row / 2).min(last_c_row);
+        let (pairs, rest) = line.split_at_mut(even * 4);
+        let y_pairs = y_row[..even].chunks_exact(2);
+        if p.nv12 {
+            let uv = &u_plane[c_row * cw * 2..(c_row + 1) * cw * 2];
+            for ((px, ys), c) in pairs
+                .chunks_exact_mut(8)
+                .zip(y_pairs)
+                .zip(uv.chunks_exact(2))
+            {
+                let terms = chroma(c[0], c[1]);
+                put_pixel(&mut px[..4], luma(ys[0]), terms);
+                put_pixel(&mut px[4..], luma(ys[1]), terms);
+            }
+        } else {
+            let us = &u_plane[c_row * cw..(c_row + 1) * cw];
+            let vs = &v_plane[c_row * cw..(c_row + 1) * cw];
+            for (((px, ys), u), v) in pairs
+                .chunks_exact_mut(8)
+                .zip(y_pairs)
+                .zip(us.iter())
+                .zip(vs.iter())
+            {
+                let terms = chroma(*u, *v);
+                put_pixel(&mut px[..4], luma(ys[0]), terms);
+                put_pixel(&mut px[4..], luma(ys[1]), terms);
+            }
+        }
+        if !rest.is_empty() {
+            let last = cw.saturating_sub(1);
+            let terms = if p.nv12 {
+                let at = c_row * cw * 2 + last * 2;
+                chroma(u_plane[at], u_plane[at + 1])
+            } else {
+                let at = c_row * cw + last;
+                chroma(u_plane[at], v_plane[at])
+            };
+            put_pixel(rest, luma(y_row[even]), terms);
+        }
+    }
+    (p.width, p.height, out)
+}
+
+/// Every `skip`-th pixel, for tiles much smaller than the picture.
+fn skipping_to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
     let (w, h) = (p.width as usize, p.height as usize);
     let step = skip.max(1) as usize;
     let (out_w, out_h) = (w.div_ceil(step), h.div_ceil(step));
     let mut out = vec![255u8; out_w * out_h * 4];
     let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
-    let (cw, _) = p.chroma_size();
-    let cw = cw as usize;
+    let cw = (p.width / 2) as usize;
+    let last_c_row = ((p.height / 2) as usize).saturating_sub(1);
     for (row, line) in out.chunks_exact_mut(out_w * 4).enumerate() {
         let sy = row * step;
         let y_row = &y_plane[sy * w..sy * w + w];
-        let c_row = sy / 2;
-        for (col, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let c_row = (sy / 2).min(last_c_row);
+        for (col, px) in line.chunks_exact_mut(4).enumerate() {
             let sx = col * step;
-            let cx = sx / 2;
-            let (u, v) = if p.nv12 {
+            let cx = (sx / 2).min(cw.saturating_sub(1));
+            let terms = if p.nv12 {
                 let at = c_row * cw * 2 + cx * 2;
-                (i32::from(u_plane[at]), i32::from(u_plane[at + 1]))
+                chroma(u_plane[at], u_plane[at + 1])
             } else {
                 let at = c_row * cw + cx;
-                (i32::from(u_plane[at]), i32::from(v_plane[at]))
+                chroma(u_plane[at], v_plane[at])
             };
-            let y = (i32::from(y_row[sx]) - 16).max(0) * 76309;
-            let (u, v) = (u - 128, v - 128);
-            let r = (y + 104597 * v) >> 16;
-            let g = (y - 25675 * u - 53279 * v) >> 16;
-            let b = (y + 132201 * u) >> 16;
-            px[0] = b.clamp(0, 255) as u8;
-            px[1] = g.clamp(0, 255) as u8;
-            px[2] = r.clamp(0, 255) as u8;
+            put_pixel(px, luma(y_row[sx]), terms);
         }
     }
     (out_w as u32, out_h as u32, out)
@@ -457,6 +536,32 @@ mod tests {
                     );
                 }
                 assert_eq!(out[3], 255, "opaque");
+            }
+        }
+    }
+
+    /// A picture with every sample different, in either layout.
+    fn gradient(w: u32, h: u32, nv12: bool) -> codec::Picture {
+        let mut planes: Vec<u8> = (0..w * h).map(|i| (i % 251) as u8).collect();
+        let chroma = (w / 2 * h / 2) as usize;
+        planes.extend((0..chroma * 2).map(|i| (i * 7 % 253) as u8));
+        codec::Picture {
+            width: w,
+            height: h,
+            nv12,
+            planes,
+        }
+    }
+
+    #[test]
+    fn the_fast_path_draws_what_the_plain_one_does() {
+        // Sizes that fit a chroma sample per two pixels exactly, and an odd one that does not.
+        for (w, h) in [(8, 6), (16, 2), (7, 5)] {
+            for nv12 in [false, true] {
+                let picture = gradient(w, h, nv12);
+                // The skipping path visits every pixel with a step of one.
+                let plain = skipping_to_bgra(&picture, 1);
+                assert_eq!(full_size_to_bgra(&picture), plain, "{w}x{h} nv12={nv12}");
             }
         }
     }

@@ -1045,6 +1045,7 @@ impl Shell {
                     div()
                         .flex()
                         .flex_col()
+                        .w_full()
                         .gap(px(8.))
                         .child(wrap().children(presets))
                         .child(self.slider(page, SliderKind::UiScale)),
@@ -1302,6 +1303,7 @@ impl Shell {
             div()
                 .flex()
                 .flex_col()
+                .w_full()
                 .gap(px(6.))
                 .child(meter)
                 .child(self.slider(page, SliderKind::Vad)),
@@ -1687,7 +1689,7 @@ fn toml_string(value: String) -> String {
 }
 
 pub fn wrap() -> gpui_kit::Div {
-    div().flex().flex_wrap().gap(px(4.))
+    div().flex().flex_wrap().w_full().gap(px(4.))
 }
 
 pub fn muted(text: impl Into<SharedString>) -> AnyElement {
@@ -1869,7 +1871,7 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 .flex_col()
                 .items_start()
                 .flex_1()
-                .min_w(px(220.))
+                .min_w_0()
                 .child(control),
         )
         .into_any_element()

@@ -757,6 +757,24 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.secondary_hover = secondary_hover.into();
     theme.secondary_active = secondary_hover.into();
     theme.secondary_foreground = secondary_text.into();
+    // Buttons read these token copies, not the plain colours below.
+    let token = |color: Rgba| gpui_kit::Hsla::from(color).into();
+    theme.tokens.button = token(secondary);
+    theme.tokens.button_hover = token(secondary_hover);
+    theme.tokens.button_active = token(secondary_hover);
+    theme.tokens.button_secondary = token(secondary);
+    theme.tokens.button_secondary_hover = token(secondary_hover);
+    theme.tokens.button_secondary_active = token(secondary_hover);
+    theme.tokens.slider_bar = token(accent());
+    theme.tokens.slider_thumb = token(text());
+    theme.button_foreground = secondary_text.into();
+    theme.button_secondary_foreground = secondary_text.into();
+    theme.tokens.button_primary = token(primary);
+    theme.tokens.button_primary_hover = token(primary_hover);
+    theme.tokens.button_primary_active = token(primary_hover);
+    theme.tokens.button_danger = token(danger_bg);
+    theme.tokens.button_danger_hover = token(danger_hover);
+    theme.tokens.button_danger_active = token(danger_hover);
     theme.button_primary = primary.into();
     theme.button_primary_hover = primary_hover.into();
     theme.button_primary_active = primary_hover.into();
@@ -780,8 +798,6 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.popover = overlay().into();
     theme.popover_foreground = text().into();
     theme.caret = text().into();
-    theme.slider_bar = accent().into();
-    theme.slider_thumb = text().into();
     KitTheme::sync_base(cx);
 }
 

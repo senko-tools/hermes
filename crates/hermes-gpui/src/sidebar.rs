@@ -19,8 +19,8 @@ use crate::shell::{Page, Selected, Shell};
 use crate::theme::{self, px};
 use crate::tree::{self, Badge, Row};
 
-/// A row with hover and selected looks. The caller adds what a click does.
-fn row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div> {
+/// A row without a hover look: the caller gives it one (gpui allows one per element).
+fn bare_row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div> {
     div()
         .id(id.into())
         .flex()
@@ -37,6 +37,11 @@ fn row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div
         } else {
             theme::text_secondary()
         })
+}
+
+/// A row with hover and selected looks. The caller adds what a click does.
+fn row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div> {
+    bare_row(id, selected, height)
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
 }
@@ -520,10 +525,11 @@ impl Shell {
                 let target = Target::Channel(inst.clone(), id);
                 let strong = selected || badge.unread || badge.mentions > 0;
                 let state = RowState::of(selected, connected, badge);
-                let element = row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
+                let element = bare_row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
                     .relative()
                     .overflow_hidden()
                     .when(nested, |d| d.ml(px(10.)))
+                    .when(state.is_none(), |d| d.hover(|d| d.bg(theme::hover())))
                     .when_some(state, |d, state| {
                         d.bg(state.background)
                             .hover(move |d| d.bg(state.hover))
