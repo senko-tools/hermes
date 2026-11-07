@@ -13,7 +13,6 @@ pub const FILE: &str = "collapsed.toml";
 /// A node of the sidebar tree that can be collapsed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Node {
-    Instance(InstanceId),
     Space(InstanceId, Id),
     Category(InstanceId, Id),
 }
@@ -21,7 +20,6 @@ pub enum Node {
 impl Node {
     pub fn key(&self) -> String {
         match self {
-            Node::Instance(inst) => inst.clone(),
             Node::Space(inst, id) => format!("{inst}/space/{id}"),
             Node::Category(inst, id) => format!("{inst}/category/{id}"),
         }

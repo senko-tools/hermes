@@ -6,14 +6,13 @@
 
 // No console window next to the GUI in release builds on Windows.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-// While the port is in progress, parts of the copied logic wait for the feature that uses them.
-#![allow(dead_code)]
 
 mod actions;
 mod add_instance;
 mod assets;
 mod channel;
 mod collapsed;
+mod command_bar;
 mod desktop;
 mod desktop_shell;
 mod drag;
@@ -25,17 +24,23 @@ mod images;
 mod keybinds;
 mod keys;
 mod markup;
+mod members;
 mod menu;
 mod menu_entries;
 mod modal;
 mod new_dm;
 mod open;
 mod ptt;
+mod results;
 mod rows;
 mod screen;
+mod settings;
 mod shell;
 mod sidebar;
 mod single_instance;
+mod space_settings;
+#[cfg(test)]
+mod tests;
 mod theme;
 mod tree;
 mod voice;
@@ -148,7 +153,7 @@ fn main() -> ExitCode {
             Theme::change(ThemeMode::Dark, None, cx);
             let theme = Theme::global_mut(cx);
             theme.font_family = theme::FONT.into();
-            theme.font_size = px(theme::TEXT);
+            theme.font_size = theme::text_size();
             cx.on_window_closed(|cx, _| cx.quit()).detach();
 
             let options = WindowOptions {

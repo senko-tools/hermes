@@ -11,7 +11,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, MouseButton, Pixels, Point, SharedString, Size,
-    Subscription, Window, anchored, canvas, deferred, div, img, px, size,
+    Subscription, Window, anchored, canvas, deferred, div, img, size,
 };
 use hermes_client_core::audio::{InputMode, Sound};
 use hermes_client_core::proto::id::Id;
@@ -23,7 +23,7 @@ use crate::assets::{self, icon};
 use crate::channel::icon_button;
 use crate::menu_entries::Target;
 use crate::shell::{Page, Shell};
-use crate::theme;
+use crate::theme::{self, px};
 
 /// An incoming call rings for at most this long.
 const RING_FOR: Duration = Duration::from_secs(30);
@@ -435,7 +435,7 @@ impl Shell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(state_color)
                             .child(if connected {
@@ -450,7 +450,7 @@ impl Shell {
                             .rounded(px(3.))
                             .border_1()
                             .border_color(theme::border())
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .when(held, |d| {
                                 d.bg(theme::speaking()).text_color(theme::on_accent())
                             })
@@ -461,7 +461,7 @@ impl Shell {
             .child(
                 div()
                     .truncate()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_secondary())
                     .child(place),
             );
@@ -476,7 +476,7 @@ impl Shell {
             .rounded(px(4.))
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
-            .text_size(px(theme::TEXT_TINY))
+            .text_size(theme::tiny_size())
             .text_color(theme::text_tertiary())
             .child(div().flex_1().min_w_0().truncate().child(quality))
             .child(self.render_spark())
@@ -513,6 +513,7 @@ impl Shell {
                 .flex_shrink_0()
                 .gap(px(4.))
                 .p(px(6.))
+                .bg(theme::footer())
                 .border_t_1()
                 .border_color(theme::border())
                 .child(info)
@@ -593,9 +594,9 @@ impl Shell {
                             .bg(theme::sidebar())
                             .border_1()
                             .border_color(theme::border())
-                            .font_family(theme::FONT)
+                            .font_family(theme::font())
                             .text_color(theme::text())
-                            .text_size(px(theme::TEXT_SMALL))
+                            .text_size(theme::small_size())
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.network_open = None;
                                 cx.notify();
@@ -650,7 +651,7 @@ impl Shell {
                                     .flex()
                                     .flex_col()
                                     .gap(px(2.))
-                                    .text_size(px(theme::TEXT_TINY))
+                                    .text_size(theme::tiny_size())
                                     .text_color(theme::text_secondary())
                                     .child(format!("Round trip (QUIC): {rtt}"))
                                     .child(format!("Packets: {total}"))
@@ -731,7 +732,7 @@ impl Shell {
             .pr(px(8.))
             .rounded(px(4.))
             .hover(|d| d.bg(theme::hover()))
-            .text_size(px(theme::TEXT_SMALL))
+            .text_size(theme::small_size())
             .text_color(if speaking {
                 theme::text()
             } else {
@@ -751,10 +752,10 @@ impl Shell {
             )
             .child(div().flex_1().min_w_0().truncate().child(name))
             .when(muted && !deafened, |d| {
-                d.child(icon(assets::MIC_OFF, 14., theme::text_tertiary()))
+                d.child(icon(assets::MIC_OFF, 14., theme::muted_voice()))
             })
             .when(deafened, |d| {
-                d.child(icon(assets::HEADPHONES_OFF, 14., theme::text_tertiary()))
+                d.child(icon(assets::HEADPHONES_OFF, 14., theme::muted_voice()))
             })
             .when(!me, |d| {
                 d.on_mouse_down(
@@ -897,7 +898,7 @@ impl Shell {
             .p(px(16.))
             .child(
                 div()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_tertiary())
                     .child(summary),
             )
@@ -940,7 +941,7 @@ impl Shell {
             .items_center()
             .gap(px(4.))
             .child(p.name.clone())
-            .children(state_icon.map(|g| icon(g, 14., theme::text_tertiary())))
+            .children(state_icon.map(|g| icon(g, 14., theme::muted_voice())))
             .when(sharing, |d| {
                 d.child(icon(assets::MONITOR_SHARE, 14., theme::accent()))
             });
@@ -1021,7 +1022,7 @@ impl Shell {
                     .child(name_row)
                     .children(note.map(|note| {
                         div()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .text_color(theme::text_tertiary())
                             .child(note)
                     }))
@@ -1180,7 +1181,7 @@ impl Shell {
         let level = |name: &'static str, value: f32| {
             div()
                 .flex()
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .child(div().flex_1().child(name))
                 .child(
                     div()
@@ -1206,9 +1207,9 @@ impl Shell {
                             .bg(theme::sidebar())
                             .border_1()
                             .border_color(theme::border())
-                            .font_family(theme::FONT)
+                            .font_family(theme::font())
                             .text_color(theme::text())
-                            .text_size(px(theme::TEXT_SMALL))
+                            .text_size(theme::small_size())
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.volume_menu = None;
                                 cx.notify();
@@ -1307,7 +1308,7 @@ impl Shell {
                 .gap(px(4.))
                 .child(
                     div()
-                        .text_size(px(theme::TEXT_TINY))
+                        .text_size(theme::tiny_size())
                         .text_color(theme::text_secondary())
                         .child(name),
                 )
@@ -1365,9 +1366,9 @@ impl Shell {
                             .bg(theme::sidebar())
                             .border_1()
                             .border_color(theme::border())
-                            .font_family(theme::FONT)
+                            .font_family(theme::font())
                             .text_color(theme::text())
-                            .text_size(px(theme::TEXT_SMALL))
+                            .text_size(theme::small_size())
                             .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                 this.share_menu = None;
                                 cx.notify();
@@ -1480,7 +1481,7 @@ pub fn chip(
         .py(px(5.))
         .rounded(px(4.))
         .cursor_pointer()
-        .text_size(px(theme::TEXT_SMALL))
+        .text_size(theme::small_size())
         .when(chosen, |d| {
             d.bg(theme::accent()).text_color(theme::on_accent())
         })
@@ -1570,7 +1571,7 @@ fn graph(
         .child(
             div()
                 .flex()
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .child(
                     div()
                         .flex_1()

@@ -223,11 +223,6 @@ impl Action {
                 | Action::TransferOwnership
         )
     }
-
-    /// Red, but with its own dialog rather than a yes/no confirmation.
-    pub fn is_red(self) -> bool {
-        self.is_destructive() || self == Action::Ban
-    }
 }
 
 /// One menu entry: an action and whether it is the current choice (a check mark).
@@ -557,7 +552,7 @@ mod tests {
         assert_eq!(actions(&logged_out), [Action::RemoveInstance]);
         assert!(logged_out[0].is_some(), "no leading separator");
         assert!(Action::LeaveSpace.is_destructive());
-        assert!(!Action::Ban.is_destructive() && Action::Ban.is_red());
+        assert!(!Action::Ban.is_destructive());
         assert!(!Action::MarkRead.is_destructive());
     }
 }

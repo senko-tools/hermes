@@ -13,7 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, ExternalPaths, FontStyle, FontWeight, HighlightStyle,
     InteractiveText, ListAlignment, ListScrollEvent, ListState, MouseButton, SharedString,
-    StrikethroughStyle, StyledText, Subscription, UnderlineStyle, Window, div, img, list, px, rgba,
+    StrikethroughStyle, StyledText, Subscription, UnderlineStyle, Window, div, img, list, rgba,
 };
 use hermes_client_core::commands::{self, SlashCommand};
 use hermes_client_core::proto::id::Id;
@@ -29,7 +29,7 @@ use crate::markup::{self, Block, Link, Piece};
 use crate::menu_entries::{self, Action, Target};
 use crate::rows::{self, MessageRow, PendingRow, Row, RowKey};
 use crate::shell::{ChannelKey, Page, Shell};
-use crate::theme;
+use crate::theme::{self, px};
 
 /// Quick reactions offered by the palette.
 pub const QUICK_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "😮", "😢", "🎉", "👀", "🔥"];
@@ -1256,7 +1256,7 @@ impl Shell {
                     .flex_col()
                     .bg(theme::scrim_strong())
                     .occlude()
-                    .font_family(theme::FONT)
+                    .font_family(theme::font())
                     .text_color(theme::text())
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.viewer = None;
@@ -1502,12 +1502,12 @@ impl Shell {
                 .child(icon(assets::CHAT, 40., theme::accent()))
                 .child(
                     div()
-                        .text_size(px(theme::TEXT + 4.))
+                        .text_size(theme::text_size() + theme::px(4.))
                         .child(format!("Welcome to {title}")),
                 )
                 .child(
                     div()
-                        .text_size(px(theme::TEXT_SMALL))
+                        .text_size(theme::small_size())
                         .text_color(theme::text_secondary())
                         .child("This is the start of the conversation. Say hello!"),
                 )
@@ -1548,7 +1548,7 @@ impl Shell {
                         .py(px(2.))
                         .rounded(px(4.))
                         .bg(theme::background())
-                        .text_size(px(theme::TEXT_TINY))
+                        .text_size(theme::tiny_size())
                         .text_color(theme::text_secondary())
                         .child(text)
                 }))
@@ -1564,7 +1564,7 @@ impl Shell {
                 .gap(px(8.))
                 .px(px(20.))
                 .py(px(16.))
-                .text_size(px(theme::TEXT_SMALL))
+                .text_size(theme::small_size())
                 .text_color(theme::text_tertiary())
                 .child(icon(assets::LOCK, 14., theme::text_tertiary()))
                 .child("You cannot send messages in this channel.")
@@ -1626,13 +1626,13 @@ impl Shell {
             .py(px(8.))
             .rounded(px(8.))
             .bg(theme::selected())
-            .child(div().text_size(px(theme::TEXT)).child(what))
+            .child(div().text_size(theme::text_size()).child(what))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_tertiary())
                     .child("Ctrl+click to add · Shift+click for a range"),
             )
@@ -1692,7 +1692,7 @@ impl Shell {
                     .py(px(5.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT_SMALL))
+                    .text_size(theme::small_size())
                     .when(n == view.suggestion, |d| d.bg(theme::selected()))
                     .hover(|d| d.bg(theme::hover()))
                     .child(suggestion.label.clone())
@@ -1728,7 +1728,7 @@ impl Shell {
                 .child(
                     div()
                         .flex_1()
-                        .text_size(px(theme::TEXT_SMALL))
+                        .text_size(theme::small_size())
                         .text_color(theme::text_secondary())
                         .child(text),
                 )
@@ -1757,7 +1757,7 @@ impl Shell {
                 .py(px(4.))
                 .rounded(px(4.))
                 .bg(theme::selected())
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .child(icon(assets::FILE, 14., theme::text_secondary()))
                 .child(upload.name.clone())
                 .child(div().text_color(color).child(state))
@@ -1812,11 +1812,18 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(4.))
-                            .child(icon_button("composer-attach", assets::ATTACH).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.pick_files(pick_key.clone(), cx);
-                                }),
-                            ))
+                            .child(
+                                tip_button(
+                                    "composer-attach",
+                                    assets::ATTACH,
+                                    "Attach files (or drop them here)",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.pick_files(pick_key.clone(), cx);
+                                    },
+                                )),
+                            )
                             .child(div().flex_1().min_w_0().child(input)),
                     ),
             )
@@ -1864,7 +1871,7 @@ impl Shell {
                 .flex()
                 .justify_center()
                 .py(px(8.))
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(theme::text_tertiary())
                 .child("Loading older messages…")
                 .into_any_element(),
@@ -1918,7 +1925,7 @@ impl Shell {
                     .items_center()
                     .gap(px(6.))
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_tertiary())
                     .child(icon(assets::REPLY, 12., theme::text_tertiary()))
                     .child(
@@ -1939,12 +1946,12 @@ impl Shell {
             let name = s.display_name(space, msg.author.id);
             let color = space
                 .and_then(|sp| author_color(s, sp, msg.author.id))
-                .map_or(theme::accent(), theme::rgb_u32);
+                .map_or(theme::role_default(), theme::rgb_u32);
             let author = self.author_menu(
                 div()
                     .id(SharedString::from(format!("author-{id}")))
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT))
+                    .text_size(theme::text_size())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(color)
                     .child(name),
@@ -1961,7 +1968,7 @@ impl Shell {
                     .child(author)
                     .child(
                         div()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .text_color(theme::text_tertiary())
                             .child(time_text.clone()),
                     )
@@ -1979,7 +1986,7 @@ impl Shell {
         if msg.content.is_empty() && msg.edited_at.is_some() {
             body.push(
                 div()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_tertiary())
                     .child("(edited)")
                     .into_any_element(),
@@ -2003,7 +2010,7 @@ impl Shell {
                     .rounded(px(10.))
                     .border_1()
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT_SMALL))
+                    .text_size(theme::small_size())
                     .when(mine, |d| {
                         d.bg(theme::accent_soft()).border_color(theme::accent())
                     })
@@ -2050,7 +2057,7 @@ impl Shell {
             // Always laid out and only made visible on hover, so hovering never resizes the row.
             div()
                 .pt(px(3.))
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(rgba(0))
                 .group_hover(ROW_GROUP, |d| d.text_color(theme::text_tertiary()))
                 .child(time_text)
@@ -2245,7 +2252,7 @@ impl Shell {
     ) -> AnyElement {
         let edited_mark = || {
             div()
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(theme::text_tertiary())
                 .child("(edited)")
         };
@@ -2271,7 +2278,7 @@ impl Shell {
                         .bg(theme::code_background())
                         .border_1()
                         .border_color(theme::border())
-                        .text_size(px(theme::TEXT_SMALL))
+                        .text_size(theme::small_size())
                         .whitespace_normal()
                         .child(code),
                 )
@@ -2330,7 +2337,7 @@ impl Shell {
         }
         let styled = StyledText::new(SharedString::from(text)).with_highlights(highlights);
         let body = div()
-            .text_size(px(theme::TEXT))
+            .text_size(theme::text_size())
             .when(system, |d| d.text_color(theme::text_secondary()));
         if links.is_empty() {
             return body.child(styled).into_any_element();
@@ -2421,7 +2428,7 @@ impl Shell {
                 .h(px(h))
                 .rounded(px(6.))
                 .bg(theme::code_background())
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(theme::text_tertiary())
                 .child(text)
                 .into_any_element();
@@ -2449,13 +2456,13 @@ impl Shell {
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(theme::TEXT_SMALL))
+                            .text_size(theme::small_size())
                             .text_color(theme::link())
                             .child(a.filename.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .text_color(theme::text_tertiary())
                             .child(human_size(a.size)),
                     ),
@@ -2501,14 +2508,14 @@ impl Shell {
                     .items_baseline()
                     .child(
                         div()
-                            .text_size(px(theme::TEXT))
+                            .text_size(theme::text_size())
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme::accent())
+                            .text_color(theme::role_default())
                             .child(name.clone()),
                     )
                     .child(
                         div()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .text_color(theme::text_tertiary())
                             .child(time::format(
                                 pending.created_at,
@@ -2520,7 +2527,7 @@ impl Shell {
         }
         body = body.child(
             div()
-                .text_size(px(theme::TEXT))
+                .text_size(theme::text_size())
                 .text_color(color)
                 .child(pending.content.clone()),
         );
@@ -2529,7 +2536,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(color)
                 .child(note);
             if let PendingState::Failed(reason) = &pending.state {
@@ -2646,7 +2653,7 @@ fn centered(text: &'static str) -> gpui_kit::Div {
         .min_h_0()
         .items_center()
         .justify_center()
-        .text_size(px(theme::TEXT_SMALL))
+        .text_size(theme::small_size())
         .text_color(theme::text_tertiary())
         .child(text)
 }
@@ -2662,13 +2669,24 @@ fn divider(text: String, color: gpui_kit::Rgba, line: gpui_kit::Rgba) -> AnyElem
         .child(div().flex_1().h(px(1.)).bg(line))
         .child(
             div()
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(color)
                 .child(text),
         )
         .child(div().flex_1().h(px(1.)).bg(line))
         .into_any_element()
+}
+
+/// [`icon_button`] that says what it does when hovered.
+pub fn tip_button(
+    id: impl Into<gpui_kit::ElementId>,
+    name: &'static str,
+    tip: &'static str,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    icon_button(id, name).tooltip(move |window, cx| {
+        gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+    })
 }
 
 /// A small square button holding an icon. The caller adds what a click does.

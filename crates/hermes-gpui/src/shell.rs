@@ -6,7 +6,6 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
@@ -23,15 +22,20 @@ use crate::add_instance::AddInstance;
 use crate::assets::{self, icon};
 use crate::channel::{ChatView, Viewer};
 use crate::collapsed::Collapsed;
+use crate::command_bar::CommandBar;
 use crate::desktop::tray::Tray;
 use crate::form::Form;
 use crate::images::Images;
+use crate::keybinds::Keybinds;
 use crate::menu::OpenMenu;
 use crate::menu_entries::{Action, Target};
 use crate::new_dm::NewDm;
 use crate::ptt::GlobalKeys;
+use crate::results::{Key, ResultsPages};
 use crate::screen::{Latest, Share, capture::Capture};
+use crate::settings::SettingsPage;
 use crate::single_instance::{self, Endpoint};
+use crate::space_settings::SpacePage;
 use crate::voice::{Call, NetHistory, VolumeMenu};
 use crate::{theme, watchdog};
 
@@ -57,6 +61,8 @@ pub enum Page {
     Friends,
     Chat(InstanceId, Id),
     Voice(InstanceId, Id),
+    /// Search, mentions or pinned messages.
+    Results(Key),
 }
 
 /// The rail's selected icon, which decides what the sidebar lists.
@@ -109,6 +115,32 @@ pub struct Shell {
     pub confirm: Option<(Target, Action)>,
     pub add_instance: Option<AddInstance>,
     pub form: Option<Form>,
+    /// The settings page, over the whole window.
+    pub settings: Option<SettingsPage>,
+    /// The tab the settings page opens on.
+    pub settings_tab: crate::settings::Tab,
+    /// The UI scale slider's value while it is dragged: applied on release, because the slider
+    /// would change size under the pointer otherwise.
+    pub ui_scale_draft: Option<f64>,
+    /// Names of the themes, and each loaded for the previews in settings (or what is wrong with
+    /// its file).
+    pub themes: Vec<String>,
+    pub theme_previews: Vec<(String, Result<crate::theme::Theme, String>)>,
+    /// What each opened space's settings remember, and the one showing.
+    pub space_pages: HashMap<(InstanceId, Id), SpacePage>,
+    pub open_space_page: Option<(InstanceId, Id)>,
+    pub results: ResultsPages,
+    /// What a results page goes back to.
+    pub previous_page: Option<Page>,
+    pub command_bar: Option<CommandBar>,
+    pub keybinds: Keybinds,
+    /// The member list shows next to a chat.
+    pub show_members: bool,
+    pub sidebar_visible: bool,
+    /// The sidebar's edge is being dragged: where the drag started, and the width then.
+    pub resizing: Option<(f32, f32)>,
+    /// A newer release, if the update check found one.
+    pub update: Option<hermes_client_core::update::Update>,
     pub new_dm: Option<NewDm>,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
@@ -155,6 +187,8 @@ pub struct Shell {
     pub window_visible: bool,
     /// The window's scale factor, as last drawn.
     pub scale: f32,
+    /// What was open last time: opens once its instance is ready.
+    restore: Option<(InstanceId, Id)>,
     /// The title last given to the window.
     title: String,
     /// Give the keyboard to the open chat's message box at the next draw.
@@ -178,6 +212,7 @@ impl Shell {
             start_hidden,
         } = boot;
         let config = core.config();
+        let (keybinds, key_warnings) = Keybinds::from_config(&config.keys);
         let collapsed = core
             .paths()
             .map(|p| Collapsed::load(&p.dir))
@@ -209,6 +244,21 @@ impl Shell {
             confirm: None,
             add_instance: None,
             form: None,
+            settings: None,
+            settings_tab: crate::settings::Tab::default(),
+            ui_scale_draft: None,
+            themes: Vec::new(),
+            theme_previews: Vec::new(),
+            space_pages: HashMap::new(),
+            open_space_page: None,
+            results: HashMap::new(),
+            previous_page: None,
+            command_bar: None,
+            keybinds,
+            show_members: true,
+            sidebar_visible: true,
+            resizing: None,
+            update: None,
             new_dm: None,
             viewer: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
@@ -235,11 +285,20 @@ impl Shell {
             global_keys,
             window_visible: !start_hidden,
             scale: window.scale_factor(),
+            restore: None,
             title: String::new(),
             focus_composer: false,
             focused: true,
             _subscriptions: subscriptions,
         };
+        this.restore_layout();
+        this.reload_theme(cx);
+        window.set_rem_size(gpui_kit::px(16. * crate::theme::scale()));
+        this.start_theme_watcher(cx);
+        this.check_for_update(cx);
+        if let Some(warning) = key_warnings.into_iter().next() {
+            this.warn(warning, cx);
+        }
         this.start_event_pump(events, cx);
         this.start_link_listener(endpoint, cx);
         this.start_heartbeat(cx);
@@ -371,6 +430,7 @@ impl Shell {
         match event {
             CoreEvent::ConfigReloaded { warnings } => {
                 self.apply_config(cx);
+                self.reload_theme(cx);
                 if let Some(warning) = warnings.into_iter().next() {
                     self.warn(format!("config: {warning}"), cx);
                 }
@@ -395,7 +455,14 @@ impl Shell {
             CoreEvent::StoreChanged { inst, what } => {
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
-                    Changed::All => self.everything_changed(&inst, window, cx),
+                    Changed::All => {
+                        self.everything_changed(&inst, window, cx);
+                        if self.restore.as_ref().is_some_and(|(i, _)| *i == inst)
+                            && let Some((inst, channel)) = self.restore.take()
+                        {
+                            self.select(inst, channel, window, cx);
+                        }
+                    }
                     Changed::Spaces | Changed::Dms | Changed::Channel(_) => {
                         self.check_page_exists(cx);
                     }
@@ -442,7 +509,7 @@ impl Shell {
                 .is_some_and(|s| s.me.is_some() && !s.spaces.contains_key(space)),
         };
         let page_gone = match &self.page {
-            Page::Friends => false,
+            Page::Friends | Page::Results(_) => false,
             Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
                 .instance(inst)
                 .is_some_and(|s| s.me.is_some() && s.channel(*channel).is_none()),
@@ -506,13 +573,15 @@ impl Shell {
     /// The config changed: everything that follows it.
     pub fn apply_config(&mut self, cx: &mut Context<Self>) {
         self.config = self.core.config();
+        let (keybinds, warnings) = Keybinds::from_config(&self.config.keys);
+        self.keybinds = keybinds;
+        if let Some(warning) = warnings.into_iter().next() {
+            self.warn(warning, cx);
+        }
         self.update_ptt_keys();
         self.register_global_keys(cx);
         cx.notify();
     }
-
-    /// Opens the settings. (Comes with the settings step.)
-    pub fn open_settings(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
 
     /// Puts text on the clipboard; `what` names it for the status line.
     pub fn copy(&mut self, text: String, what: &str, cx: &mut Context<Self>) {
@@ -616,6 +685,9 @@ impl Shell {
         let store = self.core.store();
         match &self.page {
             Page::Friends => "Friends".into(),
+            Page::Results(Key::Search(..)) => "Search".into(),
+            Page::Results(Key::Mentions) => "Mentions".into(),
+            Page::Results(Key::Pins(..)) => "Pinned messages".into(),
             Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
                 .instance(inst)
                 .and_then(|s| {
@@ -694,10 +766,91 @@ impl Shell {
 
     /// The page's buttons and fields in the header. (More come with search and the member list.)
     fn render_header_controls(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        self.voice_header_button(cx)
-            .into_iter()
-            .map(|b| div().mr(px(8.)).child(b).into_any_element())
-            .collect()
+        if self.settings.is_some() || self.open_space_page.is_some() {
+            return Vec::new();
+        }
+        let mut controls: Vec<AnyElement> = Vec::new();
+        // What Ctrl+K opens, for those who do not know the key yet.
+        let find = div()
+            .id("header-find")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .w(px(180.))
+            .h(px(28.))
+            .px(px(8.))
+            .mr(px(8.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .bg(crate::theme::raised())
+            .text_size(crate::theme::tiny_size())
+            .text_color(theme::text_tertiary())
+            .child(icon(assets::SEARCH, 14., theme::text_tertiary()))
+            .child(div().flex_1().truncate().child("Find anything"))
+            .child(
+                crate::keybinds::Keybinds::combo_text(
+                    &self.config.keys,
+                    crate::keybinds::Action::CommandBar,
+                )
+                .unwrap_or_default(),
+            )
+            .on_click(cx.listener(|this, _, window, cx| this.open_command_bar(window, cx)));
+        controls.push(find.into_any_element());
+        if let Some(button) = self.voice_header_button(cx) {
+            controls.push(button);
+        }
+        if let Page::Voice(inst, channel) = &self.page {
+            // A voice channel's own chat.
+            let (inst, channel) = (inst.clone(), *channel);
+            controls.push(
+                crate::channel::tip_button("header-chat", assets::CHAT, "Open the chat")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_chat(inst.clone(), channel, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        if let Some((inst, channel)) = self.open_channel() {
+            let (pins_inst, search_inst) = (inst.clone(), inst);
+            controls.push(
+                crate::channel::tip_button("header-pins", assets::PIN, "Pinned messages")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_results(Key::Pins(pins_inst.clone(), channel), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            controls.push(
+                crate::channel::tip_button("header-members", assets::USERS, "Member list")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.show_members = !this.show_members;
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+            );
+            controls.push(
+                crate::channel::tip_button("header-search", assets::SEARCH, "Search")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.search_from(search_inst.clone(), channel, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        controls.push(
+            crate::channel::tip_button("header-mentions", assets::AT, "Mentions")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_results(Key::Mentions, window, cx);
+                }))
+                .into_any_element(),
+        );
+        vec![
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .mr(px(8.))
+                .children(controls)
+                .into_any_element(),
+        ]
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -719,7 +872,7 @@ impl Shell {
                 .bg(theme::sidebar())
                 .border_b_1()
                 .border_color(theme::border())
-                .text_size(px(theme::TEXT_SMALL))
+                .text_size(theme::small_size())
                 .text_color(color)
                 .child(div().flex_1().min_w_0().child(status.text.clone()))
                 .child(
@@ -734,6 +887,155 @@ impl Shell {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+impl Shell {
+    /// Reads what was open last time from `[[layout]]`. The first channel counts: a layout saved
+    /// by the iced client can hold several.
+    fn restore_layout(&mut self) {
+        let restored = self.config.layout.iter().find_map(|table| {
+            match table.get("buffer")?.as_str()? {
+                "channel" | "voice_room" => {}
+                _ => return None,
+            }
+            let inst = table.get("instance")?.as_str()?.to_owned();
+            let channel = Id(table.get("channel")?.as_str()?.parse::<u64>().ok()?);
+            let members = table
+                .get("members")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(true);
+            Some((inst, channel, members))
+        });
+        if let Some((inst, channel, members)) = restored {
+            self.restore = Some((inst, channel));
+            self.show_members = members;
+        }
+    }
+
+    /// Writes what is open to `[[layout]]` in `config.toml`.
+    pub fn save_layout(&mut self) {
+        let mut table = toml::Table::new();
+        match &self.page {
+            Page::Chat(inst, channel) => {
+                table.insert("buffer".into(), "channel".into());
+                table.insert("instance".into(), inst.clone().into());
+                table.insert("channel".into(), channel.to_string().into());
+                table.insert("members".into(), self.show_members.into());
+            }
+            Page::Voice(inst, channel) => {
+                table.insert("buffer".into(), "voice_room".into());
+                table.insert("instance".into(), inst.clone().into());
+                table.insert("channel".into(), channel.to_string().into());
+            }
+            Page::Friends | Page::Results(_) => {}
+        }
+        let tables = if table.is_empty() {
+            Vec::new()
+        } else {
+            vec![toml::Value::Table(table)]
+        };
+        let value = toml::Value::Array(tables);
+        if let Err(err) = self.core.set_setting("layout", &value.to_string()) {
+            tracing::error!("layout not saved: {err}");
+        }
+    }
+
+    /// Asks GitHub for a newer release (`general.check_for_updates`).
+    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        if !self.config.general.check_for_updates {
+            return;
+        }
+        self.run(
+            cx,
+            hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
+            |this, result, _, _| match result {
+                Ok(update) => this.update = update,
+                Err(err) => tracing::info!("update check failed: {err}"),
+            },
+        );
+    }
+
+    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let update = self.update.as_ref()?;
+        let url = update.url.clone();
+        Some(
+            div()
+                .id("update-banner")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(6.))
+                .bg(theme::accent_soft())
+                .cursor_pointer()
+                .text_size(crate::theme::small_size())
+                .child(div().flex_1().child(format!(
+                    "Hermes {} is available: click to open it",
+                    update.version
+                )))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Err(err) = crate::open::url(&url) {
+                        this.error(format!("could not open the browser: {err}"), cx);
+                    }
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// The sidebar's edge: dragging starts on press, a double-click goes back to the default.
+    fn render_resize_handle(&self, on_right: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("sidebar-edge")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(6.))
+            .when(on_right, |d| d.left(px(-3.)))
+            .when(!on_right, |d| d.right(px(-3.)))
+            .cursor_col_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.persist("sidebar.width", "240", cx);
+                        return;
+                    }
+                    let width = f32::from(this.config.sidebar.width);
+                    this.resizing = Some((event.position.x.as_f32(), width));
+                    cx.notify();
+                }),
+            )
+    }
+
+    fn resize_to(&mut self, x: f32, cx: &mut Context<Self>) {
+        let Some((start, width)) = self.resizing else {
+            return;
+        };
+        let moved = (x - start) / crate::theme::scale();
+        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+        let new = if on_right {
+            width - moved
+        } else {
+            width + moved
+        };
+        self.config.sidebar.width = new.clamp(180., 480.) as u16;
+        cx.notify();
+    }
+
+    fn end_resize(&mut self, cx: &mut Context<Self>) {
+        if self.resizing.take().is_some() {
+            let width = self.config.sidebar.width.to_string();
+            self.persist("sidebar.width", &width, cx);
+        }
+    }
+
+    /// The font or scale changed: every message's height with it.
+    pub fn remeasure_chats(&self) {
+        for view in self.chats.values() {
+            view.list.remeasure();
+        }
     }
 }
 
@@ -767,14 +1069,89 @@ impl Render for Shell {
             Page::Friends => self.render_friends(cx).into_any_element(),
             Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
             Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
+            Page::Results(key) => self.render_results(key, cx).into_any_element(),
+        };
+        // In a small window the chat needs the room more than the member list does.
+        let room = window.viewport_size().width.as_f32() / crate::theme::scale();
+        let sidebar_room = if self.sidebar_visible {
+            f32::from(self.config.sidebar.width)
+        } else {
+            0.
+        };
+        let member_room = f32::from(self.config.sidebar.member_list_width);
+        let members = match &self.page {
+            Page::Chat(inst, channel)
+                if room - theme::RAIL_WIDTH - sidebar_room - member_room >= 480. =>
+            {
+                self.render_members(inst, *channel, cx)
+            }
+            _ => None,
         };
         let header = self.render_header(window, cx);
+        let main_column = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(header)
+            .children(self.render_call_banner(cx))
+            .children(self.render_update_banner(cx))
+            .children(self.render_status(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().flex_1().min_w_0().h_full().child(main))
+                    .children(members),
+            );
+        let full_page = self
+            .render_space_settings(cx)
+            .or_else(|| self.render_settings(cx));
+        let body = match full_page {
+            // Settings replace the sidebar and the chat; the header still drags the window.
+            Some(page) => div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(self.render_header(window, cx))
+                .children(self.render_status(cx))
+                .child(div().flex_1().min_h_0().child(page))
+                .into_any_element(),
+            None => {
+                let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+                let width = f32::from(self.config.sidebar.width).clamp(180., 480.);
+                let side = self.sidebar_visible.then(|| {
+                    div()
+                        .relative()
+                        .flex_shrink_0()
+                        .w(crate::theme::px(width))
+                        .h_full()
+                        .child(sidebar)
+                        .child(self.render_resize_handle(on_right, cx))
+                });
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .when(on_right, |d| d.flex_row_reverse())
+                    .children(side)
+                    .child(main_column)
+                    .into_any_element()
+            }
+        };
+        let resizing = self.resizing.is_some();
         div()
             .flex()
             .size_full()
-            .font_family(theme::FONT)
+            .font_family(crate::theme::font())
             .bg(theme::background())
             .text_color(theme::text())
+            .text_size(crate::theme::text_size())
             // After any element has seen the release: it bubbles from them up to here.
             .on_mouse_up(
                 MouseButton::Right,
@@ -784,30 +1161,24 @@ impl Render for Shell {
                 MouseButton::Right,
                 cx.listener(|this, _, _, _| this.right_pressed = None),
             )
+            .when(resizing, |d| {
+                d.cursor_col_resize()
+                    .on_mouse_move(
+                        cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                            this.resize_to(event.position.x.as_f32(), cx);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_resize(cx)),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| this.end_resize(cx)),
+                    )
+            })
             .child(rail)
-            .child(
-                div().flex_1().min_w_0().h_full().child(
-                    h_resizable("shell")
-                        .child(
-                            resizable_panel()
-                                .size(px(theme::SIDEBAR_WIDTH))
-                                .size_range(px(180.)..px(480.))
-                                .child(sidebar),
-                        )
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .size_full()
-                                    .child(header)
-                                    .children(self.render_call_banner(cx))
-                                    .children(self.render_status(cx))
-                                    .child(div().flex_1().min_h_0().child(main)),
-                            ),
-                        ),
-                ),
-            )
+            .child(body)
             .children(self.render_modals(cx))
             .children(self.render_menu())
     }

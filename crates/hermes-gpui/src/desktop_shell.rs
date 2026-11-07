@@ -111,6 +111,7 @@ impl Shell {
 
     /// `true` closes the window, which ends the app.
     fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.save_layout();
         match desktop::on_close(self.config.general.close_to_tray, self.tray.is_some()) {
             CloseAction::Hide => {
                 self.hide_window(window, cx);
@@ -146,7 +147,10 @@ impl Shell {
                     self.show_window(window, cx);
                 }
             }
-            TrayAction::Quit => cx.quit(),
+            TrayAction::Quit => {
+                self.save_layout();
+                cx.quit();
+            }
         }
         cx.notify();
     }

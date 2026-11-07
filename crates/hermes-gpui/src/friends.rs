@@ -3,19 +3,19 @@
 //! DMs themselves are in the sidebar while Friends is selected.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, SharedString, div, px};
+use gpui_kit::{AnyElement, Context, SharedString, div};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Status;
 use hermes_client_core::{InstanceId, view};
 
 use crate::shell::Shell;
-use crate::theme;
+use crate::theme::{self, px};
 
 fn heading(text: String) -> AnyElement {
     div()
         .mt(px(20.))
         .mb(px(6.))
-        .text_size(px(theme::TEXT_TINY))
+        .text_size(theme::tiny_size())
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()
@@ -109,7 +109,7 @@ impl Shell {
             content.push(
                 div()
                     .mt(px(20.))
-                    .text_size(px(theme::TEXT))
+                    .text_size(theme::text_size())
                     .text_color(theme::text_tertiary())
                     .child("Nobody here yet. Add an instance to get started.")
                     .into_any_element(),
@@ -165,11 +165,11 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(div().text_size(px(theme::TEXT)).child(name))
+                    .child(div().text_size(theme::text_size()).child(name))
                     .child(
                         div()
                             .truncate()
-                            .text_size(px(theme::TEXT_SMALL))
+                            .text_size(theme::small_size())
                             .text_color(theme::text_tertiary())
                             .child(detail),
                     ),

@@ -112,7 +112,21 @@ fn report(dir: &Path, secs: u64, phase: &str) {
     let _ = std::fs::create_dir_all(dir);
     let (now, offset) = (now_ms(), time::local_offset_secs());
     let dump = write_dump(&logs::report_path(dir, "freeze", "dmp", now, offset));
-    let dump_line = match &dump {
+    write_report(dir, secs, phase, &dump, now, offset);
+}
+
+/// Writes the text of a freeze report, naming the dump.
+fn write_report(
+    dir: &Path,
+    secs: u64,
+    phase: &str,
+    dump: &std::io::Result<Option<PathBuf>>,
+    now: i64,
+    offset: i64,
+) {
+    use hermes_client_core::{logs, time};
+
+    let dump_line = match dump {
         Ok(Some(path)) => format!("minidump: {}", path.display()),
         Ok(None) => "minidump: not available on this system".to_owned(),
         Err(err) => format!("minidump: could not be written: {err}"),
@@ -186,7 +200,16 @@ mod tests {
     fn reports_name_the_phase_and_the_dump() {
         let dir = std::env::temp_dir().join(format!("hermes-watchdog-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        report(&dir, 12, "handling a message (update)");
+        std::fs::create_dir_all(&dir).unwrap();
+        let dump = Ok(Some(dir.join("freeze.dmp")));
+        write_report(
+            &dir,
+            12,
+            "handling a message (update)",
+            &dump,
+            hermes_client_core::now_ms(),
+            0,
+        );
         let names: Vec<String> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -199,6 +222,23 @@ mod tests {
         let text = std::fs::read_to_string(dir.join(log)).unwrap();
         assert!(text.contains("has not responded for 12 s"), "{text}");
         assert!(text.contains("handling a message (update)"), "{text}");
+        assert!(text.contains("freeze.dmp"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A dump suspends every thread of the process, and that can deadlock while other threads
+    /// run (it froze about one test run in four), so this only runs on request and alone:
+    /// `cargo test -p hermes-gpui -- --ignored a_real_dump --test-threads=1`.
+    #[test]
+    #[ignore = "suspends the whole process: run it alone"]
+    fn a_real_dump_is_written() {
+        let dir = std::env::temp_dir().join(format!("hermes-dump-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        report(&dir, 12, "handling a message (update)");
+        let names: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         if cfg!(windows) {
             assert!(names.iter().any(|n| n.ends_with(".dmp")), "{names:?}");
         }

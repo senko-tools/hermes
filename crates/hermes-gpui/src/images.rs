@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, RenderImage, SharedString, div, img, px};
+use gpui_kit::{AnyElement, Context, RenderImage, SharedString, div, img};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{Status, User};
 use image::Frame;
 
 use crate::shell::Shell;
-use crate::theme;
+use crate::theme::{self, px};
 
 /// The largest size an avatar is drawn at, in pixels on a 2x display.
 const AVATAR_PIXELS: u32 = 192;
@@ -146,7 +146,7 @@ impl Shell {
             .rounded(px(size / 2.))
             .bg(theme::selected())
             .text_color(theme::text())
-            .text_size(px((size * 0.45).max(theme::TEXT_TINY)))
+            .text_size(px((size * 0.45).max(12.)))
             .child(initial(name))
             .into_any_element()
     }

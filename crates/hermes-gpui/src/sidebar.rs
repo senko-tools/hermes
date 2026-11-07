@@ -4,7 +4,7 @@
 //! of the empty space and in settings.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div, px};
+use gpui_kit::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div};
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
@@ -16,7 +16,7 @@ use crate::collapsed::Node;
 use crate::drag::{Ghost, Item, Kind};
 use crate::menu_entries::Target;
 use crate::shell::{Page, Selected, Shell};
-use crate::theme;
+use crate::theme::{self, px};
 use crate::tree::{self, Badge, Row};
 
 /// A row with hover and selected looks. The caller adds what a click does.
@@ -29,8 +29,8 @@ fn row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div
         .gap(px(8.))
         .h(px(height))
         .px(px(8.))
-        .rounded(px(4.))
-        .text_size(px(theme::TEXT))
+        .rounded(theme::row_radius())
+        .text_size(theme::text_size())
         .cursor_pointer()
         .text_color(if selected {
             theme::text()
@@ -53,7 +53,7 @@ fn count_badge(count: u32) -> Div {
         .rounded(px(9.))
         .bg(theme::danger())
         .text_color(theme::on_accent())
-        .text_size(px(theme::TEXT_TINY))
+        .text_size(theme::tiny_size())
         .child(count.to_string())
 }
 
@@ -76,6 +76,47 @@ fn badge_element(badge: Badge) -> Option<Div> {
     }
 }
 
+/// How a sidebar row looks in a state: the bar on its left edge and its backgrounds.
+#[derive(Clone, Copy)]
+struct RowState {
+    bar: gpui_kit::Rgba,
+    background: gpui_kit::Rgba,
+    hover: gpui_kit::Rgba,
+}
+
+impl RowState {
+    /// `None`: a plain row. The states are in order of what matters most.
+    fn of(selected: bool, connected: bool, badge: Badge) -> Option<RowState> {
+        if selected {
+            Some(RowState {
+                bar: theme::row_selected_bar(),
+                background: theme::row_selected_bg(),
+                hover: theme::row_selected_hover(),
+            })
+        } else if connected {
+            Some(RowState {
+                bar: theme::row_connected_bar(),
+                background: theme::row_connected_bg(),
+                hover: theme::row_connected_hover(),
+            })
+        } else if badge.mentions > 0 {
+            Some(RowState {
+                bar: theme::row_mention_bar(),
+                background: theme::row_mention_bg(),
+                hover: theme::row_mention_hover(),
+            })
+        } else if badge.unread {
+            Some(RowState {
+                bar: theme::row_unread_bar(),
+                background: theme::row_unread_bg(),
+                hover: theme::row_unread_hover(),
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// An icon of the rail: round, and a rounded square while selected, like Discord's.
 fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
     div()
@@ -88,7 +129,7 @@ fn rail_icon(id: impl Into<SharedString>, selected: bool) -> Stateful<Div> {
         .size(px(theme::RAIL_ICON))
         .rounded(px(if selected { 14. } else { theme::RAIL_ICON / 2. }))
         .cursor_pointer()
-        .text_size(px(theme::TEXT))
+        .text_size(theme::text_size())
 }
 
 /// The two letters on a space's rail icon.
@@ -257,7 +298,7 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|d| d.bg(theme::hover()))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_size(px(theme::TEXT))
+                    .text_size(theme::text_size())
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(icon(assets::CHEVRON_DOWN, 18., theme::text_secondary()))
                     .on_click(cx.listener(
@@ -306,7 +347,7 @@ impl Shell {
             let id = SharedString::from(format!("notice-{inst}"));
             let target = Target::Instance(inst.clone());
             let element = row(id, false, theme::ROW_HEIGHT)
-                .text_size(px(theme::TEXT_SMALL))
+                .text_size(theme::small_size())
                 .text_color(if logged_out {
                     theme::accent()
                 } else {
@@ -370,7 +411,7 @@ impl Shell {
             Page::Chat(inst, channel) | Page::Voice(inst, channel) => {
                 Some((inst.clone(), *channel))
             }
-            Page::Friends => None,
+            Page::Friends | Page::Results(_) => None,
         }
     }
 
@@ -430,7 +471,7 @@ impl Shell {
                     .h(px(28.))
                     .mt(px(10.))
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT_TINY))
+                    .text_size(theme::tiny_size())
                     .text_color(theme::text_tertiary())
                     .hover(|d| d.text_color(theme::text_secondary()))
                     .child(icon(
@@ -478,8 +519,24 @@ impl Shell {
                 };
                 let target = Target::Channel(inst.clone(), id);
                 let strong = selected || badge.unread || badge.mentions > 0;
+                let state = RowState::of(selected, connected, badge);
                 let element = row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
+                    .relative()
+                    .overflow_hidden()
                     .when(nested, |d| d.ml(px(10.)))
+                    .when_some(state, |d, state| {
+                        d.bg(state.background)
+                            .hover(move |d| d.bg(state.hover))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(theme::indicator_width())
+                                    .bg(state.bar),
+                            )
+                    })
                     .when(muted, |d| d.text_color(theme::text_tertiary()))
                     .when(strong && !muted, |d| d.text_color(theme::text()))
                     .child(icon(
@@ -523,7 +580,7 @@ impl Shell {
                 inst, channel, user, name, muted, deafened, speaking, me, nested, dm, cx,
             ),
             Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
-                .text_size(px(theme::TEXT_SMALL))
+                .text_size(theme::small_size())
                 .child(icon(assets::PLUS, 18., theme::text_tertiary()))
                 .child(if many {
                     format!("New message on {inst}")
@@ -721,8 +778,8 @@ impl Shell {
             .gap(px(2.))
             .h(px(52.))
             .px(px(8.))
-            .bg(theme::rail())
-            .text_size(px(theme::TEXT_SMALL))
+            .bg(theme::footer())
+            .text_size(theme::small_size())
             .child(me)
             .children(self.render_me_buttons(cx))
     }
@@ -737,7 +794,7 @@ fn section_heading_owned(text: String) -> AnyElement {
         .flex_shrink_0()
         .px(px(8.))
         .py(px(6.))
-        .text_size(px(theme::TEXT_TINY))
+        .text_size(theme::tiny_size())
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()

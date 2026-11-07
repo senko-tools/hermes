@@ -8,7 +8,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div, px};
+use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
 use hermes_client_core::address::{AddTarget, HostPort, InviteLink};
 use hermes_client_core::proto::api::RegistrationMode;
 use hermes_client_core::proto::models::Invite;
@@ -16,7 +16,7 @@ use hermes_client_core::{CertStatus, Core, CoreError, InstanceId, Probe};
 
 use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
-use crate::theme;
+use crate::theme::{self, px};
 
 pub struct AddInstance {
     pub step: Step,
@@ -429,7 +429,7 @@ impl Shell {
                 }
                 body.push(
                     div()
-                        .text_size(px(theme::TEXT_TINY))
+                        .text_size(theme::tiny_size())
                         .text_color(theme::text_tertiary())
                         .child(account.host.display())
                         .into_any_element(),
@@ -474,7 +474,7 @@ impl Shell {
                 if !can_register {
                     body.push(
                         div()
-                            .text_size(px(theme::TEXT_TINY))
+                            .text_size(theme::tiny_size())
                             .text_color(theme::text_tertiary())
                             .child("This instance only accepts new accounts with an invite link.")
                             .into_any_element(),
@@ -519,7 +519,7 @@ fn fingerprint_line(name: &'static str, value: String) -> AnyElement {
         .flex()
         .flex_col()
         .gap(px(2.))
-        .text_size(px(theme::TEXT_TINY))
+        .text_size(theme::tiny_size())
         .child(div().text_color(theme::text_tertiary()).child(name))
         .child(SharedString::from(value))
         .into_any_element()
@@ -538,7 +538,7 @@ fn tab_button(
         .px(px(12.))
         .py(px(6.))
         .rounded(px(4.))
-        .text_size(px(theme::TEXT_SMALL))
+        .text_size(theme::small_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected && enabled, |d| {
             d.cursor_pointer().hover(|d| d.bg(theme::hover()))

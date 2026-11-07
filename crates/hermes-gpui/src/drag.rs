@@ -40,13 +40,13 @@ impl gpui_kit::Render for Ghost {
     ) -> impl gpui_kit::IntoElement {
         use gpui_kit::prelude::*;
         gpui_kit::div()
-            .px(gpui_kit::px(8.))
-            .py(gpui_kit::px(4.))
-            .rounded(gpui_kit::px(4.))
+            .px(crate::theme::px(8.))
+            .py(crate::theme::px(4.))
+            .rounded(crate::theme::px(4.))
             .bg(crate::theme::selected())
             .text_color(crate::theme::text())
-            .text_size(gpui_kit::px(crate::theme::TEXT_SMALL))
-            .font_family(crate::theme::FONT)
+            .text_size(crate::theme::small_size())
+            .font_family(crate::theme::font())
             .child(self.0.clone())
     }
 }

@@ -6,7 +6,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div, px};
+use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
 use hermes_client_core::proto::api::{
     BanRequest, CreateChannelRequest, CreateInviteRequest, OverrideRequest, UpdateChannelRequest,
     UpdateMemberRequest,
@@ -18,7 +18,7 @@ use hermes_client_core::{CoreError, InstanceId};
 
 use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
-use crate::theme;
+use crate::theme::{self, px};
 
 const SLOWMODE: [(&str, u32); 8] = [
     ("Off", 0),
@@ -884,14 +884,14 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
     let hint_line = |hint: &str| {
         (!hint.is_empty()).then(|| {
             div()
-                .text_size(px(theme::TEXT_TINY))
+                .text_size(theme::tiny_size())
                 .text_color(theme::text_tertiary())
                 .child(SharedString::from(hint.to_owned()))
         })
     };
     let name_line = |name: &str| {
         div()
-            .text_size(px(theme::TEXT_SMALL))
+            .text_size(theme::small_size())
             .text_color(theme::text_secondary())
             .child(SharedString::from(name.to_owned()))
     };
@@ -917,7 +917,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                     .py(px(5.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_size(px(theme::TEXT_SMALL))
+                    .text_size(theme::small_size())
                     .when(chosen, |d| {
                         d.bg(theme::accent()).text_color(theme::on_accent())
                     })

@@ -299,22 +299,12 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.run_message_action(&target, action, window, cx) {
+        if self.run_message_action(&target, action, window, cx)
+            || self.run_space_action(&target, action, window, cx)
+        {
             return;
         }
         tracing::warn!("menu action {action:?} does not apply to {target:?}");
-    }
-
-    /// An invite was made from the form.
-    pub fn invite_created(&mut self, _inst: InstanceId, _space: Id, _cx: &mut Context<Self>) {}
-
-    /// A role was dropped on another.
-    pub fn drop_role(
-        &mut self,
-        _dragged: crate::drag::Item,
-        _target: crate::drag::Item,
-        _cx: &mut Context<Self>,
-    ) {
     }
 
     /// Leaves whatever shows this instance.

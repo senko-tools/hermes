@@ -4,16 +4,16 @@
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, SharedString, deferred, div, px};
+use gpui_kit::{AnyElement, Context, Div, SharedString, deferred, div};
 
 use crate::menu_entries::{Action, Target};
 use crate::shell::Shell;
-use crate::theme;
+use crate::theme::{self, px};
 
 /// A heading for a dialog.
 pub fn heading(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(theme::TEXT + 2.))
+        .text_size(theme::text_size() + theme::px(2.))
         .font_weight(gpui_kit::FontWeight::MEDIUM)
         .child(text.into())
 }
@@ -21,7 +21,7 @@ pub fn heading(text: impl Into<SharedString>) -> Div {
 /// A paragraph for a dialog, in the secondary colour.
 pub fn paragraph(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(theme::TEXT_SMALL))
+        .text_size(theme::small_size())
         .text_color(theme::text_secondary())
         .child(text.into())
 }
@@ -29,7 +29,7 @@ pub fn paragraph(text: impl Into<SharedString>) -> Div {
 /// An error line for a dialog.
 pub fn error_line(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(theme::TEXT_SMALL))
+        .text_size(theme::small_size())
         .text_color(theme::danger())
         .child(text.into())
 }
@@ -60,12 +60,12 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .max_h_full()
                     .overflow_y_scroll()
                     .p(px(20.))
-                    .rounded(px(8.))
+                    .rounded(theme::radius_large())
                     .bg(theme::background())
                     .border_1()
                     .border_color(theme::border())
                     .text_color(theme::text())
-                    .font_family(theme::FONT)
+                    .font_family(theme::font())
                     .child(card),
             ),
     )
@@ -83,6 +83,7 @@ impl Shell {
         out.extend(self.render_network(cx));
         out.extend(self.render_volume_menu(cx));
         out.extend(self.render_share_menu(cx));
+        out.extend(self.render_command_bar(cx));
         out.extend(self.render_confirm(cx));
         out
     }

@@ -1725,3 +1725,12 @@ Developer's decisions while the client gets everything `hermes-gui` has. `hermes
   panel's connection line.
 - **Friend system and split panes:** after everything else. The Friends page lists message requests
   and people from shared spaces until then. Pane keybinds stay valid config but do nothing.
+- **Sizes and fonts:** `font.size` draws 3 px larger than its value, so the iced default of 13 means the 16 px
+  the developer asked for. The UI scale goes through `theme::px` and the window's rem size, since gpui has no scale
+  of its own.
+- **Choices as chips:** settings with a few choices are rows of buttons instead of dropdowns.
+- **Header search:** a "Find anything" field in the header opens the command bar, so it can be found without the key.
+- **Member list:** hides by itself when the chat would get narrower than 480 px. The channel topic sits at its top.
+- **Freeze dumps:** `MiniDumpWriteDump` on the own process froze about 1 in 4 test runs (4 of 15, against 0 of 15
+  without that test), so the test that writes a real dump only runs on request. The watchdog itself still dumps
+  in-process, as in the iced client; Microsoft advises a separate process for this. Not changed yet.
