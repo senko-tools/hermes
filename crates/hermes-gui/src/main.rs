@@ -163,9 +163,14 @@ fn main() -> ExitCode {
             };
             let restored = app.open_restored();
             let update = app.check_for_update();
+            // The display's scale, for avatars (later changes arrive as `Rescaled` events).
+            let scale = iced::window::oldest().then(|id| match id {
+                Some(id) => iced::window::scale_factor(id).map(message::Message::WindowRescaled),
+                None => Task::none(),
+            });
             (
                 app,
-                Task::batch([app::load_fonts().chain(open), restored, update]),
+                Task::batch([app::load_fonts().chain(open), restored, update, scale]),
             )
         },
         App::update,

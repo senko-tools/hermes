@@ -29,7 +29,7 @@ fn width_for<'s>(labels: impl Iterator<Item = &'s str>, fonts: &Fonts) -> f32 {
 pub struct Item<M> {
     pub label: String,
     pub message: M,
-    pub icon: char,
+    pub icon: crate::widget::icon::Glyph,
     /// Overrides the icon's color (status dots).
     pub icon_color: Option<Color>,
     pub danger: bool,

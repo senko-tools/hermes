@@ -41,6 +41,8 @@ pub enum VoiceMsg {
     /// Right-click on a participant: opens the volume menu at the cursor.
     UserMenu(InstanceId, Id),
     UserVolume(f32),
+    /// The volume of the menu's user's screen share sound.
+    ShareVolume(f32),
     UserMuted(bool),
     CloseUserMenu,
     /// The push-to-talk key went down (`true`) or up.
@@ -98,6 +100,8 @@ pub struct VolumeMenu {
     pub at: Point,
     pub volume: f32,
     pub muted: bool,
+    /// The volume of their screen share's sound, while I watch it.
+    pub share_volume: Option<f32>,
 }
 
 /// Joins a room; an empty DM room starts a call instead.
@@ -235,9 +239,11 @@ impl App {
                         s.display_name(space, user)
                     })
                 };
+                let watched = self.watching_shares.contains(&(inst.clone(), user));
                 self.volume_menu = Some(VolumeMenu {
                     volume: self.core.user_volume(&inst, user),
                     muted: self.core.user_muted(&inst, user),
+                    share_volume: watched.then(|| self.core.share_volume(&inst, user)),
                     inst,
                     user,
                     name,
@@ -249,6 +255,14 @@ impl App {
                     menu.volume = volume;
                     if let Err(err) = self.core.set_user_volume(&menu.inst, menu.user, volume) {
                         tracing::warn!("volume not saved: {err}");
+                    }
+                }
+            }
+            VoiceMsg::ShareVolume(volume) => {
+                if let Some(menu) = &mut self.volume_menu {
+                    menu.share_volume = Some(volume);
+                    if let Err(err) = self.core.set_share_volume(&menu.inst, menu.user, volume) {
+                        tracing::warn!("stream volume not saved: {err}");
                     }
                 }
             }
@@ -522,29 +536,44 @@ pub fn volume_overlay<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let height = 130.0;
+    let height = if menu.share_volume.is_some() {
+        190.0
+    } else {
+        130.0
+    };
     let x = menu.at.x.min(window.width - MENU_WIDTH - 4.0).max(0.0);
     let y = menu.at.y.min(window.height - height - 4.0).max(0.0);
-    let card = container(
-        column![
-            strong(menu.name.clone(), fonts),
-            row![
-                caption("Volume", fonts).width(Fill),
-                caption(format!("{:.0} %", menu.volume * 100.0), fonts)
-                    .color(theme.text.secondary.0),
-            ],
-            slider(0.0..=2.0, menu.volume, |v| Message::Voice(
-                VoiceMsg::UserVolume(v)
-            ))
-            .step(0.05_f32),
-            checkbox(menu.muted)
-                .label("Mute for me")
-                .on_toggle(|on| Message::Voice(VoiceMsg::UserMuted(on)))
-                .text_size(fonts.size)
-                .font(fonts.ui),
+    let level = |name: &'static str, volume: f32| {
+        row![
+            caption(name, fonts).width(Fill),
+            caption(format!("{:.0} %", volume * 100.0), fonts).color(theme.text.secondary.0),
         ]
-        .spacing(style::GAP_S),
-    )
+    };
+    let mut items = column![
+        strong(menu.name.clone(), fonts),
+        level("Volume", menu.volume),
+        slider(0.0..=2.0, menu.volume, |v| Message::Voice(
+            VoiceMsg::UserVolume(v)
+        ))
+        .step(0.05_f32),
+    ]
+    .spacing(style::GAP_S);
+    if let Some(share_volume) = menu.share_volume {
+        items = items.push(level("Stream volume", share_volume)).push(
+            slider(0.0..=2.0, share_volume, |v| {
+                Message::Voice(VoiceMsg::ShareVolume(v))
+            })
+            .step(0.05_f32),
+        );
+    }
+    items = items.push(
+        checkbox(menu.muted)
+            .label("Mute for me")
+            .on_toggle(|on| Message::Voice(VoiceMsg::UserMuted(on)))
+            .text_size(fonts.size)
+            .font(fonts.ui),
+    );
+    let card = container(items)
     .padding(style::GAP_S)
     .width(MENU_WIDTH)
     .style(move |_| container::Style {

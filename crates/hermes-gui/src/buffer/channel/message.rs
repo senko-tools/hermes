@@ -36,7 +36,39 @@ pub enum Img {
     Failed,
 }
 
-pub type Images = HashMap<(InstanceId, Id), Img>;
+/// Loaded images, keyed by instance and attachment: message thumbnails as the server sent
+/// them, and avatars decoded and resized to a few sizes (see `widget::avatar`).
+#[derive(Debug, Default)]
+pub struct Images {
+    thumbs: HashMap<(InstanceId, Id), Img>,
+    pub avatars: HashMap<(InstanceId, Id), Avatar>,
+}
+
+impl Images {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, key: &(InstanceId, Id)) -> Option<&Img> {
+        self.thumbs.get(key)
+    }
+
+    pub fn insert(&mut self, key: (InstanceId, Id), img: Img) {
+        self.thumbs.insert(key, img);
+    }
+
+    pub fn contains_key(&self, key: &(InstanceId, Id)) -> bool {
+        self.thumbs.contains_key(key)
+    }
+}
+
+/// An avatar picture being loaded, or loaded at every size of `avatar::SIZES`.
+#[derive(Debug, Clone)]
+pub enum Avatar {
+    Loading,
+    Ready(crate::widget::avatar::Picture),
+    Failed,
+}
 
 /// Whether an attachment is shown as an inline image.
 pub fn is_image(a: &Attachment) -> bool {

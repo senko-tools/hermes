@@ -21,7 +21,9 @@ use hermes_proto::gateway::{ServerEvent, VoiceStateUpdate};
 use hermes_proto::id::Id;
 use hermes_proto::models::VoiceState;
 use hermes_proto::permissions::Permissions;
-use hermes_proto::voice::{self, AudioHeader, KickReason, Participant, ServerControl, VideoHeader};
+use hermes_proto::voice::{
+    self, AudioHeader, AudioKind, KickReason, Participant, ServerControl, VideoHeader,
+};
 use tokio::sync::mpsc;
 
 use crate::gateway::bus::Audience;
@@ -113,6 +115,9 @@ struct Share {
     /// sharer at exactly the limit never loses a frame to timer jitter.
     tokens: f64,
     refilled: Instant,
+    /// The same for share audio datagrams ([`voice::MAX_SHARE_AUDIO_RATE`]).
+    audio_tokens: f64,
+    audio_refilled: Instant,
     last_keyframe_request: Option<Instant>,
     /// The watcher count last sent to the sharer (`share_watchers`).
     watchers: Option<u16>,
@@ -181,6 +186,8 @@ impl Share {
             checked: Instant::now() - SPEAK_RECHECK,
             tokens: f64::from(voice::VIDEO_BURST),
             refilled: Instant::now(),
+            audio_tokens: f64::from(voice::SHARE_AUDIO_BURST),
+            audio_refilled: Instant::now(),
             last_keyframe_request: None,
             watchers: None,
             stats: ShareStats::new(),
@@ -492,6 +499,7 @@ impl Voice {
             bitrate: room.bitrate,
             participants,
             sharing,
+            share_audio: true,
         });
 
         state.cache_mut().voice_states.insert(user_id, state_now);
@@ -717,9 +725,12 @@ impl Voice {
     /// Forwards one datagram (PLAN.md 12.4 "Server forwarding rule"): dropped if the sender is
     /// muted (self or server), lacks `SPEAK`, or the packet is malformed or too large; otherwise
     /// sent with the sender's participant ID to everyone else in the room who is not deafened.
+    /// Share audio goes its own way ([`Voice::forward_share_audio`]).
     pub fn forward(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
-        if AudioHeader::decode(&data).is_err() {
-            return;
+        match AudioHeader::decode_any(&data) {
+            Ok((AudioKind::Voice, ..)) => {}
+            Ok((AudioKind::Share, ..)) => return self.forward_share_audio(state, conn_id, data),
+            Err(_) => return,
         }
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
@@ -763,6 +774,63 @@ impl Voice {
 // ---------------------------------------------------------------------------------------------
 // Screen shares
 // ---------------------------------------------------------------------------------------------
+
+impl Voice {
+    /// Forwards one share audio datagram (docs/DECISIONS.md 2026-11-05): dropped unless the
+    /// sender shares their screen, still has `STREAM` and stays under
+    /// [`voice::MAX_SHARE_AUDIO_RATE`]; otherwise sent with the sender's participant ID to every
+    /// member watching them who is not deafened. Muting the microphone does not mute it.
+    fn forward_share_audio(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
+        let mut reg = self.registry();
+        let Registry { conns, rooms, .. } = &mut *reg;
+        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
+            return;
+        };
+        let Some(room) = rooms.get_mut(&channel_id) else {
+            return;
+        };
+        let Some(sender) = room.members.get_mut(&participant_id) else {
+            return;
+        };
+        let user_id = sender.state.user_id;
+        let Some(share) = sender.share.as_mut() else {
+            return;
+        };
+        if share.checked.elapsed() >= SPEAK_RECHECK {
+            share.can_stream = state
+                .cache()
+                .channel_permissions(channel_id, user_id)
+                .contains(Permissions::STREAM);
+            share.checked = Instant::now();
+        }
+        if !share.can_stream {
+            return;
+        }
+        let now = Instant::now();
+        share.audio_tokens = (share.audio_tokens
+            + now.duration_since(share.audio_refilled).as_secs_f64()
+                * f64::from(voice::MAX_SHARE_AUDIO_RATE))
+        .min(f64::from(voice::SHARE_AUDIO_BURST));
+        share.audio_refilled = now;
+        if share.audio_tokens < 1.0 {
+            return;
+        }
+        share.audio_tokens -= 1.0;
+        let mut packet = data.to_vec();
+        voice::set_sender_id(&mut packet, participant_id);
+        let packet = Bytes::from(packet);
+        for (&id, member) in &room.members {
+            if id == participant_id || member.deaf() || !member.watching.contains(&participant_id)
+            {
+                continue;
+            }
+            if let Some(conn) = conns.get(&member.conn_id) {
+                // Never blocks; a full or closed peer just loses the packet.
+                let _ = conn.link.conn.send_datagram(packet.clone());
+            }
+        }
+    }
+}
 
 /// Why a share request was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

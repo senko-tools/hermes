@@ -19,8 +19,8 @@ clap = { workspace = true, features = ["derive"] }
 directories.workspace = true
 futures-util.workspace = true
 global-hotkey.workspace = true
-iced = { workspace = true, features = ["tokio", "advanced", "image"] }
-image = { workspace = true, features = ["png"] }
+iced = { workspace = true, features = ["tokio", "advanced", "image", "svg"] }
+image = { workspace = true, features = ["png", "webp"] }
 notify.workspace = true
 notify-rust.workspace = true
 openh264.workspace = true
@@ -35,10 +35,12 @@ tray-icon.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Push-to-talk key polling (PLAN.md section 21, Spike C decision); Desktop Duplication for
 # screen sharing (the Direct3D 11 and DXGI features xcap enables already); Media Foundation for
-# hardware H.264 encoding (part of Windows); minidumps of a frozen UI (dbghelp, part of Windows).
+# hardware H.264 encoding (part of Windows); the shader compiler that draws the mouse pointer
+# into shares (part of Windows); minidumps of a frozen UI (dbghelp, part of Windows).
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D_Fxc",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",

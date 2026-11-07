@@ -114,7 +114,7 @@ pub fn tip_at<'a, M: 'a>(
 /// A square button holding one icon; it shows its background on hover, or always (in the
 /// accent color) when `active`.
 pub fn icon_button<'a, M: Clone + 'a>(
-    glyph: char,
+    glyph: crate::widget::icon::Glyph,
     active: bool,
     theme: &'a crate::theme::Theme,
 ) -> Button<'a, M> {

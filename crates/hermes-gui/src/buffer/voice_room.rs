@@ -12,7 +12,7 @@ use hermes_client_core::{Core, InstanceId};
 use iced::widget::{Space, column, container, mouse_area, responsive, row, stack, text};
 use iced::{Alignment, Border, Color, Element, Fill, Length, Size};
 
-use crate::buffer::channel::message::{Images, Img};
+use crate::buffer::channel::message::{Avatar, Images};
 use crate::font::Fonts;
 use crate::message::Message;
 use crate::theme::{Theme, style};
@@ -90,7 +90,7 @@ struct Tile {
     /// The latest picture of their share.
     picture: Option<crate::screen::view::Share>,
     /// Their avatar, once loaded.
-    face: Option<iced::widget::image::Handle>,
+    face: Option<crate::widget::avatar::Picture>,
 }
 
 /// The column count and tile size that make `n` tiles of [`ASPECT`] largest in `area` with
@@ -161,8 +161,8 @@ pub fn view<'a>(
                 picture: shares.pictures.get(&(inst.clone(), person.user)).cloned(),
                 face: person
                     .avatar
-                    .and_then(|id| match images.get(&(inst.clone(), id)) {
-                        Some(Img::Ready(handle)) => Some(handle.clone()),
+                    .and_then(|id| match images.avatars.get(&(inst.clone(), id)) {
+                        Some(Avatar::Ready(picture)) => Some(picture.clone()),
                         _ => None,
                     }),
                 person,

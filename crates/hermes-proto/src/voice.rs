@@ -78,6 +78,10 @@ pub enum ServerControl {
         /// Those of `participants` sharing their screen.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         sharing: Vec<u16>,
+        /// The server forwards share audio datagrams ([`PACKET_TYPE_SHARE_AUDIO`]) to watchers.
+        /// Older servers leave it out and drop them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        share_audio: bool,
     },
     ParticipantJoined(Participant),
     ParticipantLeft {
@@ -154,6 +158,16 @@ pub fn frame_len(prefix: [u8; 4]) -> Option<usize> {
 
 pub const PACKET_VERSION: u8 = 1;
 pub const PACKET_TYPE_AUDIO: u8 = 1;
+/// The sound of a screen share: the same header as [`PACKET_TYPE_AUDIO`], stereo Opus, sent
+/// only to the share's watchers. Its `timestamp` counts 48 kHz samples since the share started,
+/// on the same clock as the share's video timestamps (milliseconds), so the two can be played in
+/// sync. Clients and servers that predate it drop it (unknown type).
+pub const PACKET_TYPE_SHARE_AUDIO: u8 = 3;
+/// Share audio datagrams a sharer may send per second on average (50 at 20 ms, plus slack);
+/// the server drops the rest.
+pub const MAX_SHARE_AUDIO_RATE: u32 = 60;
+/// How many share audio datagrams may arrive ahead of [`MAX_SHARE_AUDIO_RATE`].
+pub const SHARE_AUDIO_BURST: u32 = 10;
 pub const HEADER_LEN: usize = 11;
 /// Datagrams larger than this are dropped by the server.
 pub const MAX_DATAGRAM: usize = 1000;
@@ -178,6 +192,24 @@ pub struct AudioHeader {
     pub audio_level: u8,
 }
 
+/// Which stream an audio datagram belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AudioKind {
+    /// The microphone ([`PACKET_TYPE_AUDIO`]).
+    Voice,
+    /// A screen share's sound ([`PACKET_TYPE_SHARE_AUDIO`]).
+    Share,
+}
+
+impl AudioKind {
+    fn packet_type(self) -> u8 {
+        match self {
+            AudioKind::Voice => PACKET_TYPE_AUDIO,
+            AudioKind::Share => PACKET_TYPE_SHARE_AUDIO,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketError {
     TooShort,
@@ -187,10 +219,15 @@ pub enum PacketError {
 }
 
 impl AudioHeader {
-    /// Writes the header and `opus` into one datagram.
+    /// Writes the header and `opus` into one voice datagram.
     pub fn encode(&self, opus: &[u8]) -> Vec<u8> {
+        self.encode_as(AudioKind::Voice, opus)
+    }
+
+    /// Writes the header and `opus` into one datagram of `kind`.
+    pub fn encode_as(&self, kind: AudioKind, opus: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(HEADER_LEN + opus.len());
-        out.push((PACKET_VERSION << 4) | PACKET_TYPE_AUDIO);
+        out.push((PACKET_VERSION << 4) | kind.packet_type());
         out.push(if self.voice_active {
             FLAG_VOICE_ACTIVE
         } else {
@@ -204,8 +241,16 @@ impl AudioHeader {
         out
     }
 
-    /// Parses a datagram into its header and Opus payload.
+    /// Parses a voice datagram into its header and Opus payload.
     pub fn decode(data: &[u8]) -> Result<(AudioHeader, &[u8]), PacketError> {
+        match AudioHeader::decode_any(data)? {
+            (AudioKind::Voice, header, opus) => Ok((header, opus)),
+            (AudioKind::Share, ..) => Err(PacketError::UnknownType(PACKET_TYPE_SHARE_AUDIO)),
+        }
+    }
+
+    /// Parses a voice or share audio datagram into its kind, header and Opus payload.
+    pub fn decode_any(data: &[u8]) -> Result<(AudioKind, AudioHeader, &[u8]), PacketError> {
         if data.len() > MAX_DATAGRAM {
             return Err(PacketError::TooLarge);
         }
@@ -216,10 +261,11 @@ impl AudioHeader {
         if version != PACKET_VERSION {
             return Err(PacketError::BadVersion(version));
         }
-        let kind = data[0] & 0x0f;
-        if kind != PACKET_TYPE_AUDIO {
-            return Err(PacketError::UnknownType(kind));
-        }
+        let kind = match data[0] & 0x0f {
+            PACKET_TYPE_AUDIO => AudioKind::Voice,
+            PACKET_TYPE_SHARE_AUDIO => AudioKind::Share,
+            other => return Err(PacketError::UnknownType(other)),
+        };
         let header = AudioHeader {
             voice_active: data[1] & FLAG_VOICE_ACTIVE != 0,
             sender_id: u16::from_be_bytes([data[2], data[3]]),
@@ -227,7 +273,7 @@ impl AudioHeader {
             sequence: u16::from_be_bytes([data[8], data[9]]),
             audio_level: data[10] & 0x7f,
         };
-        Ok((header, &data[HEADER_LEN..]))
+        Ok((kind, header, &data[HEADER_LEN..]))
     }
 }
 
@@ -401,6 +447,34 @@ mod tests {
     }
 
     #[test]
+    fn share_audio_is_its_own_type() {
+        let header = AudioHeader {
+            voice_active: true,
+            sender_id: 4,
+            timestamp: 48_000,
+            sequence: 9,
+            audio_level: 20,
+        };
+        let share = header.encode_as(AudioKind::Share, &[1, 2]);
+        assert_eq!(share[0], (PACKET_VERSION << 4) | PACKET_TYPE_SHARE_AUDIO);
+        assert_eq!(
+            AudioHeader::decode_any(&share),
+            Ok((AudioKind::Share, header, &[1u8, 2][..]))
+        );
+        // Voice-only decoding (what older clients and servers do) drops it.
+        assert_eq!(
+            AudioHeader::decode(&share),
+            Err(PacketError::UnknownType(PACKET_TYPE_SHARE_AUDIO))
+        );
+        let voice = header.encode(&[1, 2]);
+        assert_eq!(AudioHeader::decode_any(&voice).unwrap().0, AudioKind::Voice);
+        // The sender ID sits in the same place.
+        let mut share = share;
+        set_sender_id(&mut share, 77);
+        assert_eq!(AudioHeader::decode_any(&share).unwrap().1.sender_id, 77);
+    }
+
+    #[test]
     fn sender_id_is_overwritten() {
         let mut packet = AudioHeader {
             voice_active: true,
@@ -447,9 +521,11 @@ mod tests {
                 user_id: Id(9),
             }],
             sharing: vec![2],
+            share_audio: true,
         };
         let value = serde_json::to_value(&ready).unwrap();
         assert_eq!(value["d"]["participants"][0]["user_id"], "9");
+        assert_eq!(value["d"]["share_audio"], true);
         assert_eq!(
             serde_json::from_value::<ServerControl>(value).unwrap(),
             ready

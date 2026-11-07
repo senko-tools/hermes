@@ -7,8 +7,7 @@ you need to know whether the server, the network or a client is the cause.
 
 ## 1. Build (on the PC)
 
-Build release binaries. OpenH264 (screen sharing) needs NASM on `PATH` or its encoder is about
-3.5 times slower:
+Build release binaries. OpenH264 (screen sharing) needs NASM on `PATH`, otherwise its encoder is a lot slower:
 
 ```powershell
 $env:Path += ";C:\Program Files\NASM"

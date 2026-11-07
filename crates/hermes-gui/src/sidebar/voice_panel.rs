@@ -132,7 +132,7 @@ pub fn view<'a>(
     .width(Fill)
     .style(move |_, s| style::sidebar_item(theme, s, false))
     .on_press(Message::Select(inst, channel));
-    let toggle = |glyph: char, on: bool, hint: &'a str, message: VoiceMsg| {
+    let toggle = |glyph: crate::widget::icon::Glyph, on: bool, hint: &'a str, message: VoiceMsg| {
         tip_at(
             button(
                 container(icon(glyph, style::ICON))

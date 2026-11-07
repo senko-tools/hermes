@@ -820,19 +820,22 @@ async fn avatars_load_without_messages() {
     .await;
 
     let key = (inst.clone(), avatar);
-    assert!(!bob.images.contains_key(&key));
+    assert!(!bob.images.avatars.contains_key(&key));
     let _ = bob.update(Message::Core(CoreEvent::StoreChanged {
         inst: inst.clone(),
         what: Changed::All,
     }));
-    assert!(bob.images.contains_key(&key), "Alice's avatar is loading");
+    assert!(
+        bob.images.avatars.contains_key(&key),
+        "Alice's avatar is loading"
+    );
     // The next change does not fetch it again.
     let _ = bob.update(Message::Core(CoreEvent::StoreChanged {
         inst: inst.clone(),
         what: Changed::All,
     }));
     assert!(matches!(
-        bob.images.get(&key),
-        Some(crate::buffer::channel::message::Img::Loading)
+        bob.images.avatars.get(&key),
+        Some(crate::buffer::channel::message::Avatar::Loading)
     ));
 }

@@ -102,6 +102,7 @@ pub fn single_instance(endpoint: Endpoint) -> Subscription<Message> {
 pub fn window_and_keys() -> Subscription<Message> {
     event::listen_with(|event, status, _window| match event {
         Event::Window(window::Event::Resized(size)) => Some(Message::WindowResized(size)),
+        Event::Window(window::Event::Rescaled(scale)) => Some(Message::WindowRescaled(scale)),
         Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
         Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key,

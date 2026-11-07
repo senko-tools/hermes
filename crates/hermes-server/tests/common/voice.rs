@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use hermes_proto::voice::{self, ALPN, AudioHeader, VideoHeader};
+use hermes_proto::voice::{self, ALPN, AudioHeader, AudioKind, VideoHeader};
 use quinn::crypto::rustls::QuicClientConfig;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -187,6 +187,31 @@ impl VoiceClient {
         }
         .encode(&[1, 2, 3]);
         self.conn.send_datagram(packet.into()).unwrap();
+    }
+
+    /// Sends a share audio datagram with a 3-byte fake Opus payload.
+    pub fn send_share_audio(&self, sequence: u16) {
+        let packet = AudioHeader {
+            voice_active: true,
+            sender_id: 999,
+            timestamp: u32::from(sequence) * voice::FRAME_SAMPLES,
+            sequence,
+            audio_level: 20,
+        }
+        .encode_as(AudioKind::Share, &[4, 5, 6]);
+        self.conn.send_datagram(packet.into()).unwrap();
+    }
+
+    /// The kinds of the audio datagrams (voice or share) arriving within `ms` of each other.
+    pub async fn recv_kinds(&self, ms: u64) -> Vec<(AudioKind, u16)> {
+        let mut kinds = Vec::new();
+        while let Ok(Ok(data)) =
+            tokio::time::timeout(Duration::from_millis(ms), self.conn.read_datagram()).await
+        {
+            let (kind, header, _) = AudioHeader::decode_any(&data).unwrap();
+            kinds.push((kind, header.sender_id));
+        }
+        kinds
     }
 
     /// The next audio datagram within `ms`, if any.

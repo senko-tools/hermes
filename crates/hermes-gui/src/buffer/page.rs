@@ -156,7 +156,7 @@ where
 
 /// An entry of a settings page's navigation.
 pub fn nav_item<'a, M: Clone + 'a>(
-    glyph: char,
+    glyph: crate::widget::icon::Glyph,
     name: &str,
     selected: bool,
     on_press: M,

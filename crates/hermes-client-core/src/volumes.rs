@@ -1,8 +1,12 @@
-//! `user_volumes.toml`: per-user voice volumes, by instance (PLAN.md section 17).
+//! `user_volumes.toml`: per-user voice volumes, by instance (PLAN.md section 17), and the
+//! volumes of their screen shares' sound under `"share:<instance>"`.
 //!
 //! ```toml
 //! ["hermes.senko.tools"]
 //! "1234567890" = 1.5
+//!
+//! ["share:hermes.senko.tools"]
+//! "1234567890" = 0.5
 //! ```
 
 use std::collections::BTreeMap;
@@ -41,17 +45,35 @@ impl UserVolumes {
 
     /// 0–2; 1 when not set.
     pub fn get(&self, inst: &str, user: Id) -> f32 {
+        self.get_in(inst, user)
+    }
+
+    /// Sets (1.0 removes the entry) and saves.
+    pub fn set(&mut self, inst: &str, user: Id, volume: f32) -> Result<(), ConfigError> {
+        self.set_in(inst.to_owned(), user, volume)
+    }
+
+    /// The volume of `user`'s screen share sound, 0–2; 1 when not set.
+    pub fn get_share(&self, inst: &str, user: Id) -> f32 {
+        self.get_in(&share_key(inst), user)
+    }
+
+    /// Sets the volume of `user`'s screen share sound (1.0 removes the entry) and saves.
+    pub fn set_share(&mut self, inst: &str, user: Id, volume: f32) -> Result<(), ConfigError> {
+        self.set_in(share_key(inst), user, volume)
+    }
+
+    fn get_in(&self, table: &str, user: Id) -> f32 {
         self.volumes
-            .get(inst)
+            .get(table)
             .and_then(|users| users.get(&user.to_string()))
             .copied()
             .unwrap_or(1.0)
     }
 
-    /// Sets (1.0 removes the entry) and saves.
-    pub fn set(&mut self, inst: &str, user: Id, volume: f32) -> Result<(), ConfigError> {
+    fn set_in(&mut self, table: String, user: Id, volume: f32) -> Result<(), ConfigError> {
         let volume = volume.clamp(0.0, hermes_audio::mixer::MAX_USER_VOLUME);
-        let users = self.volumes.entry(inst.to_owned()).or_default();
+        let users = self.volumes.entry(table).or_default();
         if (volume - 1.0).abs() < f32::EPSILON {
             users.remove(&user.to_string());
         } else {
@@ -74,6 +96,11 @@ impl UserVolumes {
     }
 }
 
+/// The table of an instance's share volumes (an address never contains `:` before a host).
+fn share_key(inst: &str) -> String {
+    format!("share:{inst}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +117,13 @@ mod tests {
         assert_eq!(loaded.get("a", Id(1)), 1.5);
         assert_eq!(loaded.get("a", Id(2)), 2.0);
         assert_eq!(loaded.get("b", Id(1)), 1.0);
+        // Share volumes are separate.
+        volumes.set_share("a", Id(1), 0.25).unwrap();
+        let loaded = UserVolumes::load(&path);
+        assert_eq!(loaded.get_share("a", Id(1)), 0.25);
+        assert_eq!(loaded.get("a", Id(1)), 1.5);
+        assert_eq!(loaded.get_share("a", Id(2)), 1.0);
+        volumes.set_share("a", Id(1), 1.0).unwrap();
         volumes.set("a", Id(1), 1.0).unwrap();
         volumes.set("a", Id(2), 1.0).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().lines().count() <= 2);

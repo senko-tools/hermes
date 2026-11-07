@@ -58,6 +58,8 @@ pub enum Message {
     /// A background action finished: success or error text for the status line.
     Done(Result<String, String>),
     WindowResized(Size),
+    /// The OS changed the window's scale factor (DPI).
+    WindowRescaled(f32),
     /// Closes the top menu or dialog, else marks the focused channel read.
     Escape,
     PaneClicked(pane_grid::Pane),
@@ -71,6 +73,8 @@ pub enum Message {
     Channel(pane_grid::Pane, channel::Message),
     /// A thumbnail arrived (instance, attachment).
     ImageLoaded(InstanceId, Id, Result<Vec<u8>, String>),
+    /// An avatar thumbnail, resized to every `avatar::SIZES` (RGBA).
+    AvatarLoaded(InstanceId, Id, Result<Vec<(u32, Vec<u8>)>, String>),
     /// The viewer's full-size image arrived (attachment).
     ViewerLoaded(Id, Result<Vec<u8>, String>),
     CloseViewer,

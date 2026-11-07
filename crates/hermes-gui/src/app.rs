@@ -21,7 +21,7 @@ use iced::widget::{column, container, operation, row};
 use iced::{Element, Fill, Point, Size, Subscription, Task, window};
 
 use crate::buffer::channel::input::{self, Composer, Upload, UploadState};
-use crate::buffer::channel::message::{Images, Img};
+use crate::buffer::channel::message::{Avatar, Images, Img};
 use crate::buffer::{Buffer, channel, settings, space_settings};
 use crate::desktop::tray::{Tray, TrayAction};
 use crate::desktop::{self, CloseAction};
@@ -39,6 +39,7 @@ use crate::single_instance::Endpoint;
 use crate::subscription::{self, CoreEventsHandle};
 use crate::theme::{self, Theme, style};
 use crate::voice::{self as voice_ui, VoiceMsg};
+use crate::widget::avatar;
 use crate::widget::context_menu;
 use crate::widget::cursor::{self, Cursor};
 
@@ -505,6 +506,17 @@ impl App {
                 };
                 self.images.insert((inst, id), img);
             }
+            Message::AvatarLoaded(inst, id, result) => {
+                let avatar = match result {
+                    Ok(sizes) => Avatar::Ready(avatar::picture_from(sizes)),
+                    Err(err) => {
+                        tracing::warn!("avatar {id}: {err}");
+                        Avatar::Failed
+                    }
+                };
+                self.images.avatars.insert((inst, id), avatar);
+            }
+            Message::WindowRescaled(scale) => avatar::set_window_scale(scale),
             Message::ViewerLoaded(id, result) => {
                 if let Some(viewer) = &mut self.viewer
                     && viewer.attachment.id == id
@@ -1378,23 +1390,34 @@ impl App {
                         .filter_map(|u| u.avatar.as_ref())
                         .map(move |a| (inst.clone(), a.id))
                 })
-                .filter(|key| !self.images.contains_key(key))
+                .filter(|key| !self.images.avatars.contains_key(key))
                 .collect()
         };
-        let mut by_instance: std::collections::HashMap<InstanceId, Vec<Id>> =
-            std::collections::HashMap::new();
+        let mut tasks = Vec::new();
         for (inst, id) in wanted {
-            let ids = by_instance.entry(inst).or_default();
-            if !ids.contains(&id) {
-                ids.push(id);
+            if self.images.avatars.contains_key(&(inst.clone(), id)) {
+                continue; // two users with the same avatar
             }
+            self.images
+                .avatars
+                .insert((inst.clone(), id), Avatar::Loading);
+            let core = self.core.clone();
+            tasks.push(Task::perform(
+                async move {
+                    let result = async {
+                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        let bytes = rest.thumbnail(id).await.map_err(|e| e.to_string())?;
+                        tokio::task::spawn_blocking(move || avatar::resize(&bytes))
+                            .await
+                            .map_err(|e| e.to_string())?
+                    }
+                    .await;
+                    (inst, result)
+                },
+                move |(inst, result)| Message::AvatarLoaded(inst, id, result),
+            ));
         }
-        Task::batch(
-            by_instance
-                .into_iter()
-                .map(|(inst, ids)| self.load_images(&inst, ids))
-                .collect::<Vec<_>>(),
-        )
+        Task::batch(tasks)
     }
 
     /// Loads the thumbnails of these attachments into `images`.
@@ -2718,13 +2741,13 @@ impl App {
 
     /// The top of a right-click menu: what it is about.
     fn menu_header(&self, target: &Target) -> Option<context_menu::Header<'_, Message>> {
-        use crate::widget::{avatar, icon};
+        use crate::widget::icon;
         use hermes_client_core::proto::models::ChannelKind;
 
         let fonts = &self.fonts;
         let theme = &self.theme;
         let store = self.core.store();
-        let glyph = |g: char| -> Element<'_, Message> {
+        let glyph = |g: icon::Glyph| -> Element<'_, Message> {
             icon::icon(g, 18.0).color(theme.text.secondary.0).into()
         };
         let (lead, title) = match target {

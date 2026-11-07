@@ -212,7 +212,7 @@ impl Action {
     }
 
     /// The icon in front of the label (status entries show a colored dot instead).
-    pub fn icon(self) -> char {
+    pub fn icon(self) -> crate::widget::icon::Glyph {
         use crate::widget::icon as i;
         match self {
             Action::Reconnect => i::LINK,

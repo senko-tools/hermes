@@ -18,7 +18,8 @@ use hermes_proto::id::Id;
 use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
 use hermes_proto::voice::{
-    self, AudioHeader, ClientControl, KickReason, Participant, ServerControl, VideoHeader,
+    self, AudioHeader, AudioKind, ClientControl, KickReason, Participant, ServerControl,
+    VideoHeader,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -114,6 +115,8 @@ struct Session {
     sharing: HashSet<u16>,
     /// Shares this client receives.
     watching: HashSet<u16>,
+    /// The server forwards share audio (`ready.share_audio`).
+    share_audio: bool,
     /// My own screen share runs.
     my_share: bool,
     /// How many watch my share (`share_watchers`); `None` until the server says, which an older
@@ -653,6 +656,7 @@ impl Core {
                 me: None,
                 sharing: HashSet::new(),
                 watching: HashSet::new(),
+                share_audio: false,
                 my_share: false,
                 my_watchers: None,
                 status: VoiceStatus::Connecting,
@@ -800,13 +804,14 @@ impl Core {
                         break End::Lost("control stream closed".into());
                     };
                     match msg {
-                        ServerControl::Ready { participant_id, room_id, bitrate, participants, sharing } => {
+                        ServerControl::Ready { participant_id, room_id, bitrate, participants, sharing, share_audio } => {
                             authed = true;
                             *channel = room_id;
                             self.on_ready(generation, participant_id, room_id, bitrate, participants);
                             // A new room: nothing is watched and my share (if any) has ended.
                             self.with_session(generation, |s| {
                                 s.sharing = sharing.into_iter().collect();
+                                s.share_audio = share_audio;
                                 s.watching.clear();
                                 s.my_share = false;
                                 s.my_watchers = None;
@@ -823,6 +828,7 @@ impl Core {
                                 s.sharing.remove(&participant_id);
                                 s.watching.remove(&participant_id);
                             });
+                            self.voice().engine.remove_share(participant_id);
                             self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::KeyframeRequested {} => self.emit(CoreEvent::KeyframeRequested),
@@ -870,11 +876,24 @@ impl Core {
                     }
                 }
                 datagram = conn.read_datagram() => match datagram {
-                    Ok(data) => {
-                        if let Ok((header, _)) = AudioHeader::decode(&data) {
+                    Ok(data) => match AudioHeader::decode_any(&data) {
+                        Ok((AudioKind::Voice, header, _)) => {
                             self.voice().engine.receive(header.sender_id, data.to_vec());
                         }
-                    }
+                        // Only from shares I watch (the server sends no others).
+                        Ok((AudioKind::Share, header, _)) => {
+                            let watched = self
+                                .voice()
+                                .state()
+                                .session
+                                .as_ref()
+                                .is_some_and(|s| s.watching.contains(&header.sender_id));
+                            if watched {
+                                self.voice().engine.receive_share(header.sender_id, data.to_vec());
+                            }
+                        }
+                        Err(_) => {}
+                    },
                     Err(err) => break End::Lost(err.to_string()),
                 },
                 _ = ping.tick() => {
@@ -1162,19 +1181,56 @@ impl Core {
             .filter(|(pid, user)| users.contains(user) && s.sharing.contains(pid))
             .map(|(&pid, _)| pid)
             .collect();
+        let volumes = self.voice().volumes.lock().expect("volumes");
         for &pid in wanted.difference(&s.watching) {
             let _ = s.control.send(ClientControl::Watch {
                 participant_id: pid,
                 watching: true,
             });
+            if let Some(&user) = s.participants.get(&pid) {
+                let volume = volumes.get_share(&s.inst, user);
+                self.voice().engine.set_share_volume(pid, volume);
+            }
         }
         for &pid in s.watching.difference(&wanted) {
             let _ = s.control.send(ClientControl::Watch {
                 participant_id: pid,
                 watching: false,
             });
+            self.voice().engine.remove_share(pid);
         }
         s.watching = wanted;
+    }
+
+    /// Whether the voice server forwards screen share sound (newer servers do).
+    pub fn share_audio_supported(&self) -> bool {
+        self.voice()
+            .state()
+            .session
+            .as_ref()
+            .is_some_and(|s| s.share_audio)
+    }
+
+    /// The volume of `user`'s screen share sound, 0–2.
+    pub fn share_volume(&self, inst: &str, user: Id) -> f32 {
+        self.voice()
+            .volumes
+            .lock()
+            .expect("volumes")
+            .get_share(inst, user)
+    }
+
+    /// 0–2 (200 %), saved in `user_volumes.toml`.
+    pub fn set_share_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
+        self.voice()
+            .volumes
+            .lock()
+            .expect("volumes")
+            .set_share(inst, user, volume)?;
+        if let Some(pid) = self.participant_of(inst, user) {
+            self.voice().engine.set_share_volume(pid, volume);
+        }
+        Ok(())
     }
 
     /// The picture of `user`'s share broke (a lost frame): ask them for a keyframe.

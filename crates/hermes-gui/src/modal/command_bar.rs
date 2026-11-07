@@ -4,12 +4,13 @@
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::{InstanceId, Store, view};
-use iced::widget::{button, column, container, row, scrollable, text_input};
-use iced::{Alignment, Element, Fill};
+use iced::widget::{button, column, container, row, scrollable, stack, text_input};
+use iced::{Alignment, Element, Fill, Padding};
 
 use crate::font::Fonts;
 use crate::keybinds::{ACTIONS, Action};
 use crate::theme::{Theme, style};
+use crate::widget::icon::{self, icon};
 use crate::widget::{caption, label};
 
 pub const INPUT: &str = "command-bar-input";
@@ -128,22 +129,28 @@ impl CommandBar {
                     .padding(style::GAP_S),
             );
         }
+        // The search icon is drawn over the input's left padding: `text_input::Icon` only
+        // takes font glyphs, and the icons are SVGs.
+        const SEARCH_ICON: f32 = 16.0;
+        let input = text_input("Jump to a channel, a person or an action…", &self.input)
+            .padding(Padding {
+                left: style::INPUT_PAD.left + SEARCH_ICON + style::GAP_S,
+                ..style::INPUT_PAD
+            })
+            .style(move |_, st| style::input(theme, st))
+            .id(INPUT)
+            .on_input(Message::Input)
+            .on_submit(Message::Submit)
+            .font(fonts.ui)
+            .size(fonts.size);
+        let search = container(icon(icon::SEARCH, SEARCH_ICON).color(theme.text.tertiary.0))
+            .padding(Padding {
+                left: style::INPUT_PAD.left,
+                ..Padding::ZERO
+            })
+            .center_y(Fill);
         column![
-            text_input("Jump to a channel, a person or an action…", &self.input)
-                .padding(style::INPUT_PAD)
-                .style(move |_, st| style::input(theme, st))
-                .icon(iced::widget::text_input::Icon {
-                    font: crate::font::ICONS,
-                    code_point: crate::widget::icon::SEARCH,
-                    size: Some(16.into()),
-                    spacing: 8.0,
-                    side: iced::widget::text_input::Side::Left,
-                })
-                .id(INPUT)
-                .on_input(Message::Input)
-                .on_submit(Message::Submit)
-                .font(fonts.ui)
-                .size(fonts.size),
+            stack![input, search],
             scrollable(list)
                 .style(move |_, st| style::scrollbar(theme, st))
                 .height(360),

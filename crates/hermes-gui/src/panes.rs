@@ -433,7 +433,7 @@ fn voice_button<'a>(text: &'static str, ctx: &Context<'a>) -> button::Button<'a,
 }
 
 /// The icon in front of a pane's title.
-fn title_icon(core: &Core, buffer: &Buffer) -> char {
+fn title_icon(core: &Core, buffer: &Buffer) -> crate::widget::icon::Glyph {
     use crate::buffer::results::Key;
     use hermes_client_core::proto::models::ChannelKind;
 
@@ -606,7 +606,10 @@ fn body<'a>(id: pane_grid::Pane, pane: &'a Pane, ctx: &Context<'a>) -> Element<'
                     );
             } else {
                 let first = ctx.core.instance_ids().first().cloned();
-                let action = |glyph: char, title: &'static str, hint: &'static str, message| {
+                let action = |glyph: crate::widget::icon::Glyph,
+                              title: &'static str,
+                              hint: &'static str,
+                              message| {
                     welcome_action(glyph, title, hint, message, fonts, theme)
                 };
                 let mut grid = column![
@@ -857,7 +860,7 @@ pub fn page_view<'a>(buffer: &Buffer, ctx: &Context<'a>) -> Element<'a, Message>
 
 /// A card on the welcome page: an icon tile, a title and a hint.
 fn welcome_action<'a>(
-    glyph: char,
+    glyph: crate::widget::icon::Glyph,
     title: &'static str,
     hint: &'static str,
     message: Message,

@@ -397,7 +397,7 @@ pub fn view<'a>(
     use crate::buffer::settings_tabs as more;
     use crate::widget::icon as i;
 
-    let tab_button = |glyph: char, name: &'static str, t: Tab| {
+    let tab_button = |glyph: crate::widget::icon::Glyph, name: &'static str, t: Tab| {
         nav_item(glyph, name, tab == t, Message::Tab(t), fonts, theme)
     };
     let nav = column![

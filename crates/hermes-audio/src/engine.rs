@@ -71,6 +71,9 @@ enum Command {
     SelfDeaf(bool),
     Ptt(bool),
     Receive(u16, Vec<u8>),
+    ReceiveShare(u16, Vec<u8>),
+    ShareVolume(u16, f32),
+    RemoveShare(u16),
     RemoveParticipant(u16),
     ClearParticipants,
     Volume(u16, f32),
@@ -139,6 +142,21 @@ impl Engine {
     /// A datagram received from the voice server (its sender ID is the participant).
     pub fn receive(&self, participant: u16, datagram: Vec<u8>) {
         self.send(Command::Receive(participant, datagram));
+    }
+
+    /// A share audio datagram of `participant`'s screen share.
+    pub fn receive_share(&self, participant: u16, datagram: Vec<u8>) {
+        self.send(Command::ReceiveShare(participant, datagram));
+    }
+
+    /// The volume of `participant`'s screen share sound, 0–2 (200 %).
+    pub fn set_share_volume(&self, participant: u16, volume: f32) {
+        self.send(Command::ShareVolume(participant, volume));
+    }
+
+    /// Stops playing `participant`'s screen share sound (no longer watched, or stopped).
+    pub fn remove_share(&self, participant: u16) {
+        self.send(Command::RemoveShare(participant));
     }
 
     pub fn remove_participant(&self, participant: u16) {
@@ -216,6 +234,7 @@ struct Worker {
     ptt: bool,
     bitrate: u32,
     volumes: HashMap<u16, f32>,
+    share_volumes: HashMap<u16, f32>,
     local_mutes: HashMap<u16, bool>,
     speaking: HashMap<Option<u16>, bool>,
     /// Sounds requested while the output was closed.
@@ -255,6 +274,7 @@ impl Worker {
             ptt: false,
             bitrate,
             volumes: HashMap::new(),
+            share_volumes: HashMap::new(),
             local_mutes: HashMap::new(),
             speaking: HashMap::new(),
             pending_sounds: Vec::new(),
@@ -350,6 +370,18 @@ impl Worker {
                         p.set_muted(participant, true);
                     }
                 });
+            }
+            Command::ReceiveShare(participant, datagram) => {
+                let now = self.now_ms();
+                let volume = self.share_volumes.get(&participant).copied().unwrap_or(1.0);
+                self.with_playback(|p| p.push_share(participant, &datagram, now, volume));
+            }
+            Command::ShareVolume(participant, volume) => {
+                self.share_volumes.insert(participant, volume);
+                self.with_playback(|p| p.set_share_volume(participant, volume));
+            }
+            Command::RemoveShare(participant) => {
+                self.with_playback(|p| p.remove_share(participant));
             }
             Command::RemoveParticipant(participant) => {
                 self.with_playback(|p| p.remove(participant));
@@ -513,7 +545,8 @@ impl Worker {
             for datagram in loopback {
                 playback.push(MIC_TEST, &datagram, now, 1.0);
             }
-            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize;
+            // Stereo samples: two per frame.
+            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize * 2;
             while device.ring.occupied_len() < target {
                 let samples = playback.render();
                 device.ring.push_slice(samples);

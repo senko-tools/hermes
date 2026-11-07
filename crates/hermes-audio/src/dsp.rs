@@ -7,23 +7,35 @@ use std::time::Duration;
 use nnnoiseless::DenoiseState;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    Async, FixedAsync, Resampler as _, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
 };
 
 use crate::{FRAME, SAMPLE_RATE};
 
 /// Resampler for one mono stream, or a passthrough when the rates match.
-pub struct MonoResampler {
+pub type MonoResampler = Resampler;
+
+/// Resampler for one stream of interleaved channels, or a passthrough when the rates match.
+pub struct Resampler {
     inner: Option<Async<f32>>,
+    channels: usize,
     out_buf: Vec<f32>,
 }
 
-impl MonoResampler {
+impl Resampler {
+    /// A mono resampler.
     pub fn new(from: u32, to: u32) -> Self {
+        Self::interleaved(from, to, 1)
+    }
+
+    /// A resampler for `channels` interleaved channels.
+    pub fn interleaved(from: u32, to: u32, channels: usize) -> Self {
+        let channels = channels.max(1);
         if from == to {
             return Self {
                 inner: None,
+                channels,
                 out_buf: Vec::new(),
             };
         }
@@ -36,41 +48,44 @@ impl MonoResampler {
             1.1,
             &params,
             chunk,
-            1,
+            channels,
             FixedAsync::Input,
         )
         .expect("valid resampler parameters");
-        let out_buf = vec![0.0; inner.output_frames_max()];
+        let out_buf = vec![0.0; inner.output_frames_max() * channels];
         Self {
             inner: Some(inner),
+            channels,
             out_buf,
         }
     }
 
-    /// Consumes as many whole chunks of `input` as possible and appends the result to `output`.
+    /// Consumes as many whole chunks of `input` (interleaved) as possible and appends the
+    /// result to `output`.
     pub fn process(&mut self, input: &mut Vec<f32>, output: &mut Vec<f32>) {
         let Some(r) = self.inner.as_mut() else {
             output.append(input);
             return;
         };
+        let ch = self.channels;
         let mut used = 0;
         loop {
             let need = r.input_frames_next();
-            if input.len() - used < need {
+            if (input.len() - used) / ch < need {
                 break;
             }
-            let src =
-                InterleavedSlice::new(&input[used..used + need], 1, need).expect("input adapter");
-            let frames = self.out_buf.len();
+            let src = InterleavedSlice::new(&input[used..used + need * ch], ch, need)
+                .expect("input adapter");
+            let frames = self.out_buf.len() / ch;
             let mut dst =
-                InterleavedSlice::new_mut(&mut self.out_buf, 1, frames).expect("output adapter");
+                InterleavedSlice::new_mut(&mut self.out_buf, ch, frames).expect("output adapter");
             match r.process_into_buffer(&src, &mut dst, None) {
                 Ok((n_in, n_out)) => {
-                    used += n_in;
-                    output.extend_from_slice(&self.out_buf[..n_out]);
+                    used += n_in * ch;
+                    output.extend_from_slice(&self.out_buf[..n_out * ch]);
                 }
                 Err(_) => {
-                    used += need;
+                    used += need * ch;
                 }
             }
         }

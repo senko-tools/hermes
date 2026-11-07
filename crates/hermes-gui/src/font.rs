@@ -30,9 +30,6 @@ pub const BUNDLED: [&[u8]; 10] = [
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
 ];
 
-/// Icons (`widget::icon`) always come from the bundled Nerd Font, whatever `font.family` is.
-pub const ICONS: Font = Font::with_name(NERD_FONT);
-
 pub const MIN_SIZE: u16 = 8;
 pub const MAX_SIZE: u16 = 32;
 pub const MIN_SCALE: f64 = 0.75;

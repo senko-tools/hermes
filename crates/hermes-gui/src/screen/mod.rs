@@ -5,6 +5,10 @@
 
 pub mod capture;
 pub mod codec;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod cursor;
+#[cfg(windows)]
+mod cursor_gpu;
 #[cfg(windows)]
 mod dxgi;
 #[cfg(windows)]

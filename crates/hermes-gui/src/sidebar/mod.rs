@@ -148,7 +148,7 @@ fn tab_bar<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
 ) -> Element<'a, Message> {
-    let one = |name: &'static str, glyph: char, this: Tab, badge: Badge| {
+    let one = |name: &'static str, glyph: crate::widget::icon::Glyph, this: Tab, badge: Badge| {
         let selected = tab == this;
         let mut content = row![
             icon(glyph, 16.0),
@@ -298,7 +298,7 @@ fn row_view<'a>(
     fonts: &Fonts,
     theme: &'a Theme,
     menu: Option<&Target>,
-    face: &dyn Fn(&InstanceId, Id) -> Option<iced::widget::image::Handle>,
+    face: &dyn Fn(&InstanceId, Id) -> Option<avatar::Picture>,
 ) -> Element<'a, Message> {
     match row {
         Row::Instance {
@@ -553,7 +553,7 @@ fn row_view<'a>(
                 let picture = peer.and_then(|p| face(inst, p));
                 avatar::view(name, picture.as_ref(), SLOT, fonts)
             };
-            let small = |glyph: char, color: Color, message: Message| {
+            let small = |glyph: crate::widget::icon::Glyph, color: Color, message: Message| {
                 button(icon(glyph, 14.0).color(color))
                     .padding(2)
                     .style(move |_, s| style::ghost(theme, s, false))
