@@ -97,6 +97,6 @@ connected_hover = "#6aa69440"
 
 [shape]
 radius = 4                    # buttons, inputs, menus: a little rounding
-row_radius = 0                # --neko-indicator-rounding: rows stay square
+row_radius = 4                # the same as buttons and inputs
 radius_large = 6
 indicator_width = 2           # --neko-indicator-size
