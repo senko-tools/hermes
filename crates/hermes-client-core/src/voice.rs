@@ -319,7 +319,7 @@ impl Core {
             .get(inst, user)
     }
 
-    /// 0–2 (200 %), saved in `user_volumes.toml`.
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`.
     pub fn set_user_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
         self.voice()
             .volumes
@@ -1246,7 +1246,7 @@ impl Core {
             .get_share(inst, user)
     }
 
-    /// 0–2 (200 %), saved in `user_volumes.toml`.
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`.
     pub fn set_share_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
         self.voice()
             .volumes

@@ -150,9 +150,12 @@ impl Engine {
         self.send(Command::ReceiveShare(participant, datagram));
     }
 
-    /// The volume of `participant`'s screen share sound, 0–2 (200 %).
+    /// The volume of `participant`'s screen share sound, as a slider position.
     pub fn set_share_volume(&self, participant: u16, volume: f32) {
-        self.send(Command::ShareVolume(participant, volume));
+        self.send(Command::ShareVolume(
+            participant,
+            crate::volume_gain(volume),
+        ));
     }
 
     /// Stops playing `participant`'s screen share sound (no longer watched, or stopped).
@@ -168,9 +171,9 @@ impl Engine {
         self.send(Command::ClearParticipants);
     }
 
-    /// 0–2 (200 %).
+    /// A participant's volume, as a slider position.
     pub fn set_volume(&self, participant: u16, volume: f32) {
-        self.send(Command::Volume(participant, volume));
+        self.send(Command::Volume(participant, crate::volume_gain(volume)));
     }
 
     pub fn set_local_mute(&self, participant: u16, muted: bool) {
@@ -692,7 +695,7 @@ fn speaking(playback: &Playback, now: f64) -> Vec<(u16, bool)> {
 }
 
 fn configure_playback(playback: &mut Playback, settings: &AudioSettings, deaf: bool) {
-    playback.output_volume = settings.output_volume.clamp(0.0, 2.0);
+    playback.output_volume = crate::volume_gain(settings.output_volume);
     playback.sounds_enabled = settings.sounds;
     playback.sounds_volume = settings.sounds_volume;
     playback.deafened = deaf;

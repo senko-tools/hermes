@@ -5,7 +5,7 @@ use hermes_proto::voice::{self, AudioHeader};
 
 use crate::codec::Encoder;
 use crate::dsp::{self, Agc, Denoiser, Downmix, Gate, MonoResampler};
-use crate::{AudioSettings, FRAME, MAX_INPUT_VOLUME, SAMPLE_RATE};
+use crate::{AudioSettings, FRAME, SAMPLE_RATE, volume_gain};
 
 pub struct Capture {
     channels: usize,
@@ -51,7 +51,7 @@ impl Capture {
 
     /// Takes over changed settings without losing the stream position.
     pub fn apply(&mut self, settings: &AudioSettings) {
-        self.input_volume = settings.input_volume.clamp(0.0, MAX_INPUT_VOLUME);
+        self.input_volume = volume_gain(settings.input_volume);
         self.gate.mode = settings.mode;
         self.gate.sensitivity_db = settings.vad_sensitivity_db;
         self.gate.ptt_release_delay = settings.ptt_release_delay;

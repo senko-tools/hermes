@@ -53,7 +53,7 @@ impl UserVolumes {
         self.set_in(inst.to_owned(), user, volume)
     }
 
-    /// The volume of `user`'s screen share sound, 0–2; 1 when not set.
+    /// The volume of `user`'s screen share sound (a slider position); 1 when not set.
     pub fn get_share(&self, inst: &str, user: Id) -> f32 {
         self.get_in(&share_key(inst), user)
     }
@@ -72,7 +72,7 @@ impl UserVolumes {
     }
 
     fn set_in(&mut self, table: String, user: Id, volume: f32) -> Result<(), ConfigError> {
-        let volume = volume.clamp(0.0, hermes_audio::mixer::MAX_USER_VOLUME);
+        let volume = volume.clamp(0.0, hermes_audio::MAX_VOLUME);
         let users = self.volumes.entry(table).or_default();
         if (volume - 1.0).abs() < f32::EPSILON {
             users.remove(&user.to_string());

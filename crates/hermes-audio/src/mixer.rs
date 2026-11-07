@@ -5,8 +5,8 @@
 use crate::FRAME;
 use crate::dsp::soft_clip;
 
-/// Highest per-user volume (200 %).
-pub const MAX_USER_VOLUME: f32 = 2.0;
+/// Highest per-user amplitude factor: a slider at [`crate::MAX_VOLUME`].
+pub const MAX_USER_VOLUME: f32 = 4.0;
 
 /// One 20 ms stereo frame, interleaved (left, right).
 pub const STEREO_FRAME: usize = FRAME * 2;
@@ -38,7 +38,7 @@ impl Mixer {
         self.sounds.fill(0.0);
     }
 
-    /// Adds a screen share's stereo frame at `volume` (0–200 %).
+    /// Adds a screen share's stereo frame at the amplitude factor `volume`.
     pub fn add_share(&mut self, frame: &[f32; STEREO_FRAME], volume: f32) {
         let volume = volume.clamp(0.0, MAX_USER_VOLUME);
         for (m, s) in self.shares.iter_mut().zip(frame) {
@@ -46,7 +46,7 @@ impl Mixer {
         }
     }
 
-    /// Adds a participant's frame at `volume` (0–200 %).
+    /// Adds a participant's frame at the amplitude factor `volume`.
     pub fn add_voice(&mut self, frame: &[f32; FRAME], volume: f32) {
         let volume = volume.clamp(0.0, MAX_USER_VOLUME);
         for (m, s) in self.voices.iter_mut().zip(frame) {
