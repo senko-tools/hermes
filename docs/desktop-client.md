@@ -87,9 +87,11 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   output, and a paused file is let go after 15 s off screen or when paused files pass 64 MB; it
   plays on from where it was. The whole waveform, and a video's bar, is a seek bar: a press starts
   scrubbing, followed by window-level mouse listeners (`media_scrub_catcher`, also over the full
-  view), and the seek happens on release. The wheel over a speaker button, or anywhere in the full
-  view, sets one volume for all media (`voice.media_volume`, `voice.media_muted`); over the rest of
-  a card it scrolls the chat. Sound cards get their speaker once played. Video controls sit over the picture and fade
+  view), and the seek happens on release; moving the bar never starts a file. Ctrl+wheel over a
+  file, the slider that opens from its speaker, or the plain wheel in the full view set one volume
+  for all media (`voice.media_volume`, `voice.media_muted`); the plain wheel over a card scrolls the
+  chat. The speaker and slider are one hover area, so moving between them cannot close it. Downloading and
+  the like are in each file's right-click menu. Video controls sit over the picture and fade
   2 s after the mouse rests while playing. Uploads larger than the server's `max_upload_mb` are
   refused before sending (the server checks too).
 - **Animated pictures:** GIFs, animated WebP and APNG move in the chat, as avatars, server icons and

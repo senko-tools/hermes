@@ -272,6 +272,23 @@ async fn rows_follow_history_sends_and_deletes() {
     assert_eq!(messages(&core).len(), 1, "deleted messages are left out");
 }
 
+/// The ID of the `n`th loaded message of a channel.
+fn visual_message(
+    shell: &gpui_kit::Entity<crate::shell::Shell>,
+    cx: &gpui_kit::App,
+    inst: &str,
+    channel: Id,
+    n: usize,
+) -> Id {
+    let core = shell.read(cx).core.clone();
+    let store = core.store();
+    let window = store
+        .instance(inst)
+        .and_then(|s| s.window(channel))
+        .unwrap();
+    window.messages[n].id
+}
+
 /// gpui keeps a list's state mutably borrowed while it calls the scroll handler. Reading the list
 /// from there panicked, which on Windows aborted the client at the first wheel notch.
 #[gpui::test]
@@ -357,6 +374,27 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
             s.instance(&inst)
                 .and_then(|s| s.window(channel))
                 .is_some_and(|w| w.pending.is_empty() && w.messages.len() == 2)
+        })
+        .await;
+        let song = server.dir.join("song.flac");
+        std::fs::write(&song, "not really a song").unwrap();
+        let file = core
+            .upload_to(&inst, channel, &song, Default::default())
+            .await
+            .unwrap();
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                attachments: vec![file],
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+        eventually(&core, "the sound is sent", |s| {
+            s.instance(&inst)
+                .and_then(|s| s.window(channel))
+                .is_some_and(|w| w.pending.is_empty() && w.messages.len() == 3)
         })
         .await;
         (server, inst, space.space.id, channel)
@@ -550,6 +588,105 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         });
         visual.run_until_parked();
     }
+
+    // The speaker opens a slider, and going from one to the other never closes it.
+    let sound = visual.update(|_, cx| {
+        let core = shell.read(cx).core.clone();
+        let store = core.store();
+        let window = store
+            .instance(&inst)
+            .and_then(|s| s.window(channel))
+            .unwrap();
+        window.messages[2].attachments[0].id
+    });
+    let redraw = |visual: &mut VisualTestContext| {
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+    };
+    redraw(&mut visual);
+    let speaker = visual
+        .debug_bounds("media-speaker")
+        .expect("the speaker is drawn")
+        .center();
+    visual.simulate_mouse_move(speaker, None, Modifiers::none());
+    redraw(&mut visual);
+    let hovered = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| shell.read(cx).volume_hovered(&inst, sound))
+    };
+    assert!(hovered(&mut visual), "the speaker opens the slider");
+    // Let the opening animation finish, so the slider has its full width.
+    for _ in 0..20 {
+        visual.executor().advance_clock(Duration::from_millis(15));
+        redraw(&mut visual);
+    }
+    let track = visual
+        .update(|_, cx| shell.read(cx).slider_bounds(&inst, sound))
+        .expect("the slider is drawn");
+    // Step by step across the border of slider and speaker.
+    let (left, right) = (speaker.x.as_f32(), track.center().x.as_f32());
+    for step in 0..=24 {
+        let x = left + (right - left) * step as f32 / 24.;
+        visual.simulate_mouse_move(point(px(x), speaker.y), None, Modifiers::none());
+        redraw(&mut visual);
+        assert!(hovered(&mut visual), "still open {step}/24 of the way");
+    }
+    // Dragging the slider sets the volume, and it stays open when the mouse wanders off it.
+    let quarter = point(track.left() + track.size.width * 0.25, track.center().y);
+    let left_button = gpui_kit::MouseButton::Left;
+    let volume = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| shell.read(cx).config.voice.media_volume)
+    };
+    visual.simulate_mouse_move(quarter, None, Modifiers::none());
+    redraw(&mut visual);
+    visual.simulate_mouse_down(quarter, left_button, Modifiers::none());
+    redraw(&mut visual);
+    let pressed = volume(&mut visual);
+    assert!(
+        (pressed - 0.25).abs() < 0.02,
+        "pressed at a quarter: {pressed}, track {track:?}, at {quarter:?}"
+    );
+    let far = point(track.right() + px(200.), track.center().y + px(90.));
+    visual.simulate_mouse_move(far, Some(left_button), Modifiers::none());
+    redraw(&mut visual);
+    assert!(
+        (volume(&mut visual) - 1.).abs() < 0.001,
+        "dragged past its end"
+    );
+    visual.simulate_mouse_up(far, left_button, Modifiers::none());
+    redraw(&mut visual);
+
+    // Over the card: Ctrl+wheel sets the volume and the plain wheel does not.
+    let name = visual
+        .update(|_, cx| {
+            shell.read(cx).selection.bounds_of(crate::selection::Part {
+                message: visual_message(&shell, cx, &inst, channel, 2),
+                index: crate::selection::FILES,
+            })
+        })
+        .expect("the card is drawn")
+        .center();
+    visual.simulate_mouse_move(name, None, Modifiers::none());
+    redraw(&mut visual);
+    let before = volume(&mut visual);
+    visual.simulate_event(ScrollEvent {
+        position: name,
+        delta: ScrollDelta::Lines(point(0.0, -1.0)),
+        modifiers: Modifiers::control(),
+        ..Default::default()
+    });
+    redraw(&mut visual);
+    let after = volume(&mut visual);
+    assert!((before - after - 0.05).abs() < 0.001, "{before} to {after}");
+    visual.simulate_event(ScrollEvent {
+        position: name,
+        delta: ScrollDelta::Lines(point(0.0, -1.0)),
+        ..Default::default()
+    });
+    redraw(&mut visual);
+    assert_eq!(volume(&mut visual), after, "the plain wheel scrolls");
 
     // Each kind of menu opens and draws, submenus included.
     let targets = [

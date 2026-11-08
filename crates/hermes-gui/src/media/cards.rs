@@ -46,8 +46,11 @@ const VOLUME_PER_PIXEL: f64 = 0.05 / 75.;
 const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 /// The width of a waveform's bars.
 const PILL_W: f32 = 4.;
-/// The hover group of a sound card's speaker button.
+/// The hover group of a volume control's speaker.
 const SPEAKER_GROUP: &str = "media-speaker";
+/// How wide a volume slider opens: its track, and the percentage beside it.
+const SLIDER_TRACK_W: f32 = 72.;
+const SLIDER_TEXT_W: f32 = 40.;
 /// The hover group of a video's seek bar: it grows under the mouse.
 const SEEK_GROUP: &str = "media-seek";
 /// A playing video's controls hide after the mouse rests this many seconds, fading this long.
@@ -137,6 +140,12 @@ pub struct Media {
     volume_changes: u64,
     /// A seek bar being held.
     scrub: Option<Scrub>,
+    /// The volume control the mouse is over.
+    volume_hover: Option<BarKey>,
+    /// A volume slider being held.
+    volume_drag: Option<BarKey>,
+    /// Where each volume slider's track was drawn last.
+    sliders: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
     /// Where each seek bar was drawn last.
     bars: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
     /// The video the mouse is over (inline or in the full view), and when it last moved.
@@ -171,6 +180,12 @@ fn clock(ms: u64) -> String {
     } else {
         format!("{m}:{s:02}")
     }
+}
+
+/// Where `at` is along `bounds`, from 0 at its left end to 1, past its ends included.
+fn fraction_along(bounds: Bounds<Pixels>, at: Point<Pixels>) -> Option<f32> {
+    let width = bounds.size.width.as_f32();
+    (width > 0.).then(|| ((at.x - bounds.origin.x).as_f32() / width).clamp(0., 1.))
 }
 
 /// The video's size inside `max`, keeping its shape.
@@ -388,7 +403,7 @@ impl Shell {
         self.persist("voice.media_muted", &muted.to_string(), cx);
     }
 
-    /// The wheel over a speaker button or a full view changes the volume of every file, and
+    /// Ctrl+wheel over a card, or the wheel in a full view, changes the volume of every file, and
     /// shows it on that card.
     fn media_wheel(&mut self, key: &MediaKey, event: &ScrollEvent, cx: &mut Context<Self>) {
         let pixels = match event.delta {
@@ -403,6 +418,11 @@ impl Shell {
         if pixels > 0. {
             voice.media_muted = false;
         }
+        self.media_volume_changed(key, cx);
+    }
+
+    /// Shows the new volume on that card for a moment, then saves it.
+    fn media_volume_changed(&mut self, key: &MediaKey, cx: &mut Context<Self>) {
         self.media.volume_shown = Some(key.clone());
         self.media.volume_changes += 1;
         let change = self.media.volume_changes;
@@ -650,15 +670,29 @@ impl Shell {
 
     /// Where on a seek bar `at` is, from 0 (its left end) to 1, past its ends included.
     fn bar_fraction(&self, bar: &BarKey, at: Point<Pixels>) -> Option<f32> {
-        let bounds = *self.media.bars.borrow().get(bar)?;
-        let width = bounds.size.width.as_f32();
-        (width > 0.).then(|| ((at.x - bounds.origin.x).as_f32() / width).clamp(0., 1.))
+        fraction_along(*self.media.bars.borrow().get(bar)?, at)
     }
 
-    /// While a seek bar is held: listens to the mouse in the whole window, also over the full
-    /// view, which hides everything under it from the mouse. It goes in the root.
+    /// Sets the volume from where the mouse is on a slider.
+    fn media_slide(&mut self, bar: &BarKey, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(bounds) = self.media.sliders.borrow().get(bar).copied() else {
+            return;
+        };
+        let Some(fraction) = fraction_along(bounds, at) else {
+            return;
+        };
+        let voice = &mut self.config.voice;
+        voice.media_volume = f64::from(fraction);
+        voice.media_muted = false;
+        self.media_volume_changed(&bar.0, cx);
+    }
+
+    /// While a seek bar or a volume slider is held: listens to the mouse in the whole window, also
+    /// over the full view, which hides everything under it from the mouse. It goes in the root.
     pub fn media_scrub_catcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        self.media.scrub.as_ref()?;
+        if self.media.scrub.is_none() && self.media.volume_drag.is_none() {
+            return None;
+        }
         let this = cx.entity().downgrade();
         Some(
             canvas(
@@ -688,6 +722,10 @@ impl Shell {
     }
 
     fn media_scrub_move(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if let Some(bar) = self.media.volume_drag.clone() {
+            self.media_slide(&bar, at, cx);
+            return;
+        }
         let Some(bar) = self.media.scrub.as_ref().map(|s| s.bar.clone()) else {
             return;
         };
@@ -700,6 +738,10 @@ impl Shell {
     }
 
     fn media_scrub_end(&mut self, cx: &mut Context<Self>) {
+        if self.media.volume_drag.take().is_some() {
+            cx.notify();
+            return;
+        }
         if let Some(scrub) = self.media.scrub.take() {
             self.media_seek_to(scrub.inst, scrub.attachment, scrub.fraction, cx);
         }
@@ -732,45 +774,187 @@ impl Shell {
         }
     }
 
-    /// A sound card's speaker, once the file has played: a click mutes every file, and the wheel
-    /// over it sets their volume. Over the rest of a card the wheel scrolls the chat.
-    fn speaker_button(
+    /// A speaker that opens a slider to its left while the mouse is over either of them. Both
+    /// sit in one container, so there is no gap the mouse could fall into. It stays open while
+    /// the slider is held and for a moment after the volume changed. A click on the speaker mutes.
+    fn volume_control(
         &self,
-        key: &MediaKey,
+        bar: BarKey,
         a: &Attachment,
+        overlay: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<Div> {
-        let glyph = if self.media_gain() <= 0. {
+        let gain = self.media_gain();
+        let open = self.media.volume_hover.as_ref() == Some(&bar)
+            || self.media.volume_drag.as_ref() == Some(&bar)
+            || self.media.volume_shown.as_ref() == Some(&bar.0);
+        let glyph = if gain <= 0. {
             media_icons::VOLUME_OFF
         } else {
             assets::VOLUME
         };
-        let wheel_key = key.clone();
+        let full = bar.1;
+        let id = |what: &str| SharedString::from(format!("{what}-{}-{full}", a.id));
+        let (track_empty, text_color) = if overlay {
+            (
+                gpui_kit::hsla(0., 0., 1., 0.3),
+                gpui_kit::hsla(0., 0., 1., 0.9),
+            )
+        } else {
+            (
+                theme::alpha(theme::text_tertiary(), 0.35).into(),
+                theme::text_tertiary().into(),
+            )
+        };
+        let speaker = if overlay {
+            Self::overlay_button(id("volume-speaker"), glyph)
+        } else {
+            div()
+                .id(id("volume-speaker"))
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .size(px(22.))
+                .rounded(px(4.))
+                .cursor_pointer()
+                .group(SPEAKER_GROUP)
+                .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
+                .debug_selector(|| "media-speaker".to_owned())
+                .child(
+                    icon(glyph, 15., theme::text_tertiary())
+                        .group_hover(SPEAKER_GROUP, |s| s.text_color(theme::accent())),
+                )
+        }
+        .on_click(cx.listener(|this, _, _, cx| {
+            cx.stop_propagation();
+            this.media_mute(cx);
+        }));
+        let slider = open.then(|| {
+            let (drawn, pressed) = (bar.clone(), bar.clone());
+            let sliders = self.media.sliders.clone();
+            let track = div()
+                .relative()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .w(px(SLIDER_TRACK_W))
+                .h_full()
+                .cursor_pointer()
+                .child(
+                    canvas(
+                        move |bounds, _, _| {
+                            sliders.borrow_mut().insert(drawn.clone(), bounds);
+                        },
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .h(px(3.))
+                        .rounded(px(2.))
+                        .bg(track_empty)
+                        .child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .h_full()
+                                .w(gpui_kit::relative(gain.clamp(0., 1.)))
+                                .rounded(px(2.))
+                                .bg(theme::accent()),
+                        ),
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.media.volume_drag = Some(pressed.clone());
+                        this.media_slide(&pressed, event.position, cx);
+                    }),
+                );
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_end()
+                .h_full()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(SLIDER_TEXT_W))
+                        .pr(px(6.))
+                        .text_right()
+                        .text_size(theme::caption_size())
+                        .text_color(text_color)
+                        .child(format!("{:.0}%", gain * 100.)),
+                )
+                .child(track)
+                .with_animation(
+                    id("volume-open"),
+                    gpui_kit::Animation::new(Duration::from_millis(140))
+                        .with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.w(px((SLIDER_TRACK_W + SLIDER_TEXT_W) * t)),
+                )
+        });
+        let (over, height) = (bar, if overlay { 28. } else { 22. });
         div()
-            .id(SharedString::from(format!("speaker-{}", a.id)))
+            .id(id("volume"))
             .flex()
             .flex_shrink_0()
             .items_center()
-            .justify_center()
-            .size(px(22.))
-            .rounded(px(4.))
-            .cursor_pointer()
-            .group(SPEAKER_GROUP)
-            .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
-            .child(
-                icon(glyph, 15., theme::text_tertiary())
-                    .group_hover(SPEAKER_GROUP, |s| s.text_color(theme::accent())),
-            )
-            .on_click(cx.listener(|this, _, _, cx| {
-                cx.stop_propagation();
-                this.media_mute(cx);
+            .h(px(height))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.media.volume_hover = Some(over.clone());
+                } else if this.media.volume_hover.as_ref() == Some(&over) {
+                    this.media.volume_hover = None;
+                }
+                cx.notify();
             }))
-            .on_scroll(cx.listener(move |this, event, _, cx| {
-                cx.stop_propagation();
-                this.media_wheel(&wheel_key, event, cx);
-            }))
+            // Nothing in here plays or pauses the video underneath.
+            .on_click(|_, _, cx: &mut gpui_kit::App| cx.stop_propagation())
+            .children(slider)
+            .child(speaker)
     }
 
+    /// Whether the mouse has this file's volume control open.
+    #[cfg(test)]
+    pub fn volume_hovered(&self, inst: &str, id: Id) -> bool {
+        self.media.volume_hover == Some(((inst.to_owned(), id), false))
+    }
+
+    /// Where this file's volume slider was drawn last.
+    #[cfg(test)]
+    pub fn slider_bounds(&self, inst: &str, id: Id) -> Option<Bounds<Pixels>> {
+        let bar = ((inst.to_owned(), id), false);
+        self.media.sliders.borrow().get(&bar).copied()
+    }
+
+    /// Ctrl+wheel anywhere over a file sets the volume; the plain wheel scrolls the chat.
+    fn with_volume_wheel(
+        &self,
+        element: gpui_kit::Stateful<Div>,
+        key: &MediaKey,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let key = key.clone();
+        element.on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
+            if event.modifiers.control {
+                cx.stop_propagation();
+                this.media_wheel(&key, event, cx);
+            }
+        }))
+    }
+
+    /// What a card says about a file: where it is and how long it lasts, and its size.
     /// What a card says about a file: where it is and how long it lasts, and its size.
     fn media_meta(&self, key: &MediaKey, a: &Attachment) -> String {
         let (position, duration, _) = self.media_progress(key, a);
@@ -789,31 +973,6 @@ impl Shell {
         } else {
             size
         }
-    }
-
-    /// The volume in place of a card's time, for a moment after it changed there.
-    fn volume_meta(&self, key: &MediaKey) -> Option<AnyElement> {
-        if self.media.volume_shown.as_ref() != Some(key) {
-            return None;
-        }
-        let volume = self.media_gain();
-        let glyph = if volume <= 0. {
-            media_icons::VOLUME_OFF
-        } else {
-            assets::VOLUME
-        };
-        Some(
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(4.))
-                .text_size(theme::caption_size())
-                .text_color(theme::accent())
-                .child(icon(glyph, 13., theme::accent()))
-                .child(format!("{:.0} %", volume * 100.))
-                .into_any_element(),
-        )
     }
 
     /// A sound file: play, its name, time and size, and its waveform as the progress bar.
@@ -901,16 +1060,13 @@ impl Shell {
                     .h_full()
                     .child(pill)
             }));
-        let meta = self.volume_meta(&key).unwrap_or_else(|| {
-            div()
-                .flex_shrink_0()
-                .text_size(theme::caption_size())
-                .text_color(theme::text_tertiary())
-                .child(self.media_meta(&key, a))
-                .into_any_element()
-        });
+        let meta = div()
+            .flex_shrink_0()
+            .text_size(theme::caption_size())
+            .text_color(theme::text_tertiary())
+            .child(self.media_meta(&key, a));
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let speaker = item.is_some().then(|| self.speaker_button(&key, a, cx));
+        let volume = self.volume_control((key.clone(), false), a, false, cx);
         let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
         let card = div()
             .id(SharedString::from(format!("audio-{}", a.id)))
@@ -963,7 +1119,7 @@ impl Shell {
                                     .children(name_record),
                             )
                             .child(meta)
-                            .children(speaker),
+                            .child(volume),
                     )
                     .child(match failed {
                         Some(err) => div()
@@ -977,15 +1133,18 @@ impl Shell {
                         None => wave.mr(px(4.)).into_any_element(),
                     }),
             );
+        let card = self.with_volume_wheel(card, &key, cx);
         self.with_file_menu(card, inst, place, a.id, cx)
             .into_any_element()
     }
 
     /// How visible a video's controls are, from 0 to 1: fully while it is paused, its seek bar
-    /// is held, its volume just changed or the mouse moves over it; then they fade out.
+    /// is held, its volume is being changed or the mouse moves over it; then they fade out.
     fn controls_shown(&self, bar: &BarKey, playing: bool) -> f32 {
         let held = self.media.scrub.as_ref().is_some_and(|s| s.bar == *bar);
-        let volume = self.media.volume_shown.as_ref() == Some(&bar.0);
+        let volume = self.media.volume_shown.as_ref() == Some(&bar.0)
+            || self.media.volume_hover.as_ref() == Some(bar)
+            || self.media.volume_drag.as_ref() == Some(bar);
         if !playing || held || volume {
             return 1.;
         }
@@ -1068,9 +1227,8 @@ impl Shell {
     ) -> Div {
         let (position, duration, playing) = self.media_progress(key, a);
         let played = (position as f32 / duration as f32).clamp(0., 1.);
-        let muted = self.media_gain() <= 0.;
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let (full_key, wheel_key) = (key.clone(), key.clone());
+        let full_key = key.clone();
         let id = |what: &str| SharedString::from(format!("{what}-{}-{full}", a.id));
         let seek = self
             .seek_area((key.clone(), full), inst, a, cx)
@@ -1098,22 +1256,7 @@ impl Shell {
                             .bg(theme::accent()),
                     ),
             );
-        let volume = Self::overlay_button(
-            id("vmute"),
-            if muted {
-                media_icons::VOLUME_OFF
-            } else {
-                assets::VOLUME
-            },
-        )
-        .on_click(cx.listener(|this, _, _, cx| {
-            cx.stop_propagation();
-            this.media_mute(cx);
-        }))
-        .on_scroll(cx.listener(move |this, event, _, cx| {
-            cx.stop_propagation();
-            this.media_wheel(&wheel_key, event, cx);
-        }));
+        let volume = self.volume_control((key.clone(), full), a, true, cx);
         div()
             .absolute()
             .bottom_0()
@@ -1157,7 +1300,6 @@ impl Shell {
                         clock(duration)
                     )))
                     .child(div().flex_1())
-                    .children(self.volume_meta(key))
                     .child(volume)
                     .child(
                         Self::overlay_button(
@@ -1178,7 +1320,7 @@ impl Shell {
 
     /// What a video shows over its picture: its bars while they show, and it notes the mouse
     /// moving over it. Clicking the picture plays or pauses. In the full view the wheel sets the
-    /// volume; in the chat it scrolls, and only the speaker button sets it.
+    /// volume; in the chat it scrolls, and Ctrl+wheel sets it.
     fn video_surface(
         &self,
         surface: gpui_kit::Stateful<Div>,
@@ -1305,6 +1447,7 @@ impl Shell {
                 .child(self.video_top(inst, Some(place), a))
             }
         };
+        let element = self.with_volume_wheel(element, &key, cx);
         self.with_file_menu(element, inst, place, a.id, cx)
             .into_any_element()
     }
@@ -1364,6 +1507,18 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slider_fraction_stops_at_its_ends() {
+        let bounds = Bounds::new(
+            gpui_kit::point(gpui_kit::px(100.), gpui_kit::px(0.)),
+            gpui_kit::size(gpui_kit::px(50.), gpui_kit::px(10.)),
+        );
+        let at = |x| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(5.));
+        assert_eq!(fraction_along(bounds, at(125.)), Some(0.5));
+        assert_eq!(fraction_along(bounds, at(40.)), Some(0.));
+        assert_eq!(fraction_along(bounds, at(400.)), Some(1.));
+    }
 
     /// Moving the bar of a file nobody played must neither fetch it nor start it.
     #[test]
