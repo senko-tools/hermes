@@ -8,7 +8,7 @@ use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessag
 use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
-use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadState};
+use hermes_proto::models::{AuditAction, ChannelKind, Mentions, Message, MessageKind, ReadState};
 use hermes_proto::permissions::Permissions;
 use hermes_proto::{ApiError, ErrorCode};
 use serde_json::json;
@@ -150,7 +150,44 @@ fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<Strin
     Ok(Some(json))
 }
 
-/// DMs must be encrypted (`privacy.require_dm_encryption`); spaces are not.
+/// What a message mentions: read from its text, or as told for an encrypted one.
+fn mentions_of(content: &str, encrypted: bool, told: Option<&Mentions>) -> Mentions {
+    if encrypted {
+        told.cloned().unwrap_or_default()
+    } else {
+        hermes_proto::markup::extract_mentions(content)
+    }
+}
+
+/// An encrypted message in a server channel has to use the channel's current key, and one in a
+/// DM none of them.
+async fn check_epoch(
+    state: &AppState,
+    channel_id: Id,
+    kind: ChannelKind,
+    e2ee: Option<&Envelope>,
+) -> ApiResult<()> {
+    let Some(envelope) = e2ee else {
+        return Ok(());
+    };
+    if kind.is_private() {
+        return match envelope.epoch {
+            None => Ok(()),
+            Some(_) => Err(validate::field_error("e2ee", "must not name a channel key")),
+        };
+    }
+    let current = db::channel_keys::current_epoch(&state.db.read, channel_id).await?;
+    if envelope.epoch != Some(current) || current == 0 {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "This channel has a newer key",
+        ));
+    }
+    Ok(())
+}
+
+/// DMs must be encrypted (`privacy.require_dm_encryption`), and so must server channels
+/// (`privacy.require_channel_encryption`).
 fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) -> ApiResult<()> {
     if kind.is_private() {
         if e2ee.is_none() && state.config.privacy.require_dm_encryption {
@@ -159,10 +196,10 @@ fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) 
                 "Direct messages are end-to-end encrypted here: update Hermes to send them",
             ));
         }
-    } else if e2ee.is_some() {
-        return Err(validate::field_error(
-            "e2ee",
-            "only direct messages are encrypted",
+    } else if e2ee.is_none() && state.config.privacy.require_channel_encryption {
+        return Err(Error::new(
+            ErrorCode::BadRequest,
+            "Channels are end-to-end encrypted here: update Hermes to write in them",
         ));
     }
     Ok(())
@@ -216,12 +253,13 @@ pub async fn send(
         if !attachment_ids.is_empty() {
             t.require(Permissions::ATTACH_FILES)?;
         }
-        let resolved =
-            messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, &req.content);
+        let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+        let resolved = messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, raw);
         let slowmode = Some(t.slowmode_secs)
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
         (resolved, slowmode, t.kind)
     };
+    check_epoch(&state, channel_id, kind, req.e2ee.as_ref()).await?;
     if let Some(reply_id) = req.reply_to_id
         && db::messages::get(&state.db.read, channel_id, reply_id)
             .await?
@@ -322,6 +360,7 @@ pub async fn edit(
         Permissions::VIEW_CHANNEL,
     )?;
     check_encryption(&state, t.kind, e2ee.as_ref())?;
+    check_epoch(&state, channel_id, t.kind, req.e2ee.as_ref()).await?;
     let mut row = live_message(&state, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
         return Err(Error::new(
@@ -335,13 +374,9 @@ pub async fn edit(
     {
         return Err(validate::field_error("content", "must not be empty"));
     }
-    let resolved = messages::resolve_mentions(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        t.perms,
-        &req.content,
-    );
+    let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+    let resolved =
+        messages::resolve_mentions(&state.cache(), channel_id, auth.user_id, t.perms, raw);
 
     let now = now_ms();
     let mut tx = state.db.write.begin().await?;

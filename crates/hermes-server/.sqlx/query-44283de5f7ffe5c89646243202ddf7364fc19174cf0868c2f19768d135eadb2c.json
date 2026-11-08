@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO channel_key_epochs (channel_id, epoch, created_by, created_at)\n         VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "44283de5f7ffe5c89646243202ddf7364fc19174cf0868c2f19768d135eadb2c"
+}

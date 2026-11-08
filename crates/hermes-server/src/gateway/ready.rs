@@ -103,6 +103,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
             limits: InstanceLimits {
                 max_upload_mb: config.storage.max_upload_mb,
                 max_message_length: config.limits.max_message_length,
+                channels_encrypted: config.privacy.require_channel_encryption,
             },
         },
     })

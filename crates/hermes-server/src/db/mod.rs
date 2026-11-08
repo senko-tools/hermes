@@ -14,6 +14,7 @@
 pub mod attachments;
 pub mod audit;
 pub mod auth;
+pub mod channel_keys;
 pub mod channels;
 pub mod devices;
 pub mod dms;

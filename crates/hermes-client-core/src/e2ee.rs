@@ -397,6 +397,7 @@ pub fn seal_message(
         ciphertext,
         keys,
         sig: b64(&signature.to_bytes()),
+        epoch: None,
     })
 }
 

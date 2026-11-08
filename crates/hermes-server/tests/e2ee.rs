@@ -47,7 +47,7 @@ async fn pair(server: &TestServer) -> (String, String, String, String) {
 }
 
 #[tokio::test]
-async fn plain_direct_messages_are_refused_and_spaces_stay_plain() {
+async fn plain_direct_messages_are_refused() {
     let server = server("e2ee-refuses").await;
     let (alice, _, _, dm) = pair(&server).await;
 
@@ -91,7 +91,7 @@ async fn plain_direct_messages_are_refused_and_spaces_stay_plain() {
         .await
         .err(400, "BAD_REQUEST");
 
-    // Space channels are not encrypted, and do not take an envelope.
+    // Where channel encryption is off, channels stay plain, and an envelope has to name a key.
     let (owner, _, space) = (
         alice.clone(),
         (),
@@ -117,7 +117,7 @@ async fn plain_direct_messages_are_refused_and_spaces_stay_plain() {
             json!({ "nonce": "n", "e2ee": envelope("x") }),
         )
         .await
-        .err(400, "VALIDATION_FAILED");
+        .err(409, "CONFLICT");
 }
 
 #[tokio::test]

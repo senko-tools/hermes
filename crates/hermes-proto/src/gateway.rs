@@ -136,6 +136,9 @@ pub struct VoiceInfo {
 pub struct InstanceLimits {
     pub max_upload_mb: u32,
     pub max_message_length: u32,
+    /// Whether messages in server channels have to be end-to-end encrypted here.
+    #[serde(default)]
+    pub channels_encrypted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,6 +304,17 @@ pub enum ServerEvent {
     /// Removed, declined or taken back. Own sessions only.
     RelationshipRemove {
         user_id: Id,
+    },
+    /// A device has no keys for this channel yet (docs/e2ee.md).
+    ChannelKeyRequest(crate::e2ee::KeyRequest),
+    /// New keys of this channel wait for one of my devices.
+    ChannelKeysDelivered {
+        channel_id: Id,
+    },
+    /// This channel moved to a new key.
+    ChannelKeyEpoch {
+        channel_id: Id,
+        epoch: u32,
     },
     /// Someone's device keys changed (docs/e2ee.md).
     DevicesUpdate {
@@ -648,6 +662,7 @@ mod tests {
                 limits: InstanceLimits {
                     max_upload_mb: 25,
                     max_message_length: 4000,
+                    channels_encrypted: false,
                 },
             },
         };

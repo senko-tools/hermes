@@ -5,6 +5,7 @@ mod admin;
 mod attachments;
 mod audit;
 mod auth;
+mod channel_keys;
 mod channels;
 pub mod devices;
 mod dms;
@@ -70,6 +71,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/users/@me/username", post(users::change_username))
         .route("/users/@me/devices", put(devices::register))
         .route("/users/devices", post(devices::query))
+        .route("/users/@me/key-requests", get(channel_keys::requests))
+        .route(
+            "/channels/{id}/keys",
+            get(channel_keys::get).put(channel_keys::deliver),
+        )
+        .route("/channels/{id}/keys/members", get(channel_keys::members))
+        .route(
+            "/channels/{id}/keys/epochs",
+            post(channel_keys::start_epoch),
+        )
+        .route("/channels/{id}/keys/requests", post(channel_keys::request))
+        .route(
+            "/channels/{id}/key-policy",
+            get(channel_keys::channel_policy).put(channel_keys::set_channel_policy),
+        )
+        .route(
+            "/spaces/{id}/key-policy",
+            get(channel_keys::space_policy).put(channel_keys::set_space_policy),
+        )
         .route("/users/@me/friends", get(friends::list).post(friends::add))
         .route(
             "/users/@me/friends/{id}",

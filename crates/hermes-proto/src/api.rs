@@ -460,6 +460,9 @@ pub struct SendMessageRequest {
     /// The encrypted message: `content` must be empty then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2ee: Option<crate::e2ee::Envelope>,
+    /// Who an encrypted message mentions, since the server cannot read it to find out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<crate::models::Mentions>,
 }
 
 impl SendMessageRequest {
@@ -475,6 +478,9 @@ pub struct EditMessageRequest {
     /// The encrypted message: `content` must be empty then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub e2ee: Option<crate::e2ee::Envelope>,
+    /// Who an encrypted message mentions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<crate::models::Mentions>,
 }
 
 /// `POST /channels/{id}/ack`.

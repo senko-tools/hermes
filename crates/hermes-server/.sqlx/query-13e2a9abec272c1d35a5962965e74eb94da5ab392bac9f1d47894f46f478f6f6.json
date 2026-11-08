@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR REPLACE INTO channel_keys\n               (channel_id, epoch, user_id, device_id, sender_id, sender_device, eph, key, sig)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "13e2a9abec272c1d35a5962965e74eb94da5ab392bac9f1d47894f46f478f6f6"
+}

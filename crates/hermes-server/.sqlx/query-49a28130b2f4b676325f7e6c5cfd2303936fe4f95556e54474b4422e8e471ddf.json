@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE spaces SET key_handover = ?, new_members_read_history = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "49a28130b2f4b676325f7e6c5cfd2303936fe4f95556e54474b4422e8e471ddf"
+}

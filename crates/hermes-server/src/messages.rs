@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use hermes_proto::id::Id;
-use hermes_proto::markup;
 use hermes_proto::models::{Mentions, Message, MessageRef, ReactionSummary, Status, User};
 use hermes_proto::permissions::Permissions;
 
@@ -142,12 +141,11 @@ pub fn resolve_mentions(
     channel_id: Id,
     author_id: Id,
     perms: Permissions,
-    content: &str,
+    raw: Mentions,
 ) -> ResolvedMentions {
     let Some(channel) = cache.channels.get(&channel_id) else {
         return ResolvedMentions::default();
     };
-    let raw = markup::extract_mentions(content);
     let can_everyone = perms.contains(Permissions::MENTION_EVERYONE);
     let space = channel
         .channel

@@ -190,6 +190,8 @@ pub struct PrivacyConfig {
     /// Refuse direct messages that are not end-to-end encrypted, so a client from before
     /// encryption gets an error instead of leaking what it sends.
     pub require_dm_encryption: bool,
+    /// Refuse messages in server channels that are not end-to-end encrypted.
+    pub require_channel_encryption: bool,
 }
 
 impl Default for PrivacyConfig {
@@ -197,6 +199,7 @@ impl Default for PrivacyConfig {
         PrivacyConfig {
             dm_policy: DmPolicy::default(),
             require_dm_encryption: true,
+            require_channel_encryption: true,
         }
     }
 }

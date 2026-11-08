@@ -116,6 +116,7 @@ pub async fn start_with(
     config.limits.messages_per_5s = 100_000;
     // Most tests send plain DMs; tests/e2ee.rs turns this on.
     config.privacy.require_dm_encryption = false;
+    config.privacy.require_channel_encryption = false;
     let mut state = AppState::load(config).await.unwrap();
     configure(&mut state);
     let quic = state.config.voice.enabled.then(|| {

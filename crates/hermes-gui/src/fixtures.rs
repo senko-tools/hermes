@@ -158,6 +158,7 @@ pub fn store() -> InstanceStore {
             limits: InstanceLimits {
                 max_upload_mb: 25,
                 max_message_length: 4000,
+                channels_encrypted: false,
             },
         },
     };
