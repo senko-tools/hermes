@@ -45,6 +45,10 @@ impl Picture {
 
 /// How many bytes of decoded frames one animation may hold; a longer one is made smaller.
 const ANIMATION_BUDGET: usize = 96 << 20;
+/// The same for one in the chat, an avatar, icon or banner: many of these stay loaded at once.
+const PREVIEW_ANIMATION_BUDGET: usize = 24 << 20;
+/// The long side an animated picture in the chat is decoded at (it is shown at most 400 wide).
+const ANIMATED_PREVIEW: u32 = 480;
 /// Below this many pixels on its long side an animation stays still instead.
 const ANIMATION_MIN_SIDE: u32 = 48;
 
@@ -68,7 +72,16 @@ pub struct Images {
 const SEALED_PREVIEW: u32 = 800;
 
 pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
-    let moving = match animation_frames(bytes, max) {
+    decode_within(bytes, max, ANIMATION_BUDGET)
+}
+
+/// [`decode`] for a picture that stays loaded: an animation gets a smaller budget.
+fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
+    decode_within(bytes, max, PREVIEW_ANIMATION_BUDGET)
+}
+
+fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Picture, String> {
+    let moving = match frames_within(bytes, max, budget) {
         Ok(Some(frames)) => Some(frames),
         Ok(None) => None,
         Err(err) => {
@@ -232,7 +245,7 @@ impl Shell {
                         rest.thumbnail(id).await
                     }
                     .map_err(|e| e.to_string())?;
-                    tokio::task::spawn_blocking(move || decode(&bytes, Some(max)))
+                    tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(max)))
                         .await
                         .map_err(|e| e.to_string())?
                 },
@@ -300,12 +313,17 @@ impl Shell {
                 let animated = maybe_animated(&attachment.content_type, &attachment.filename);
                 let (bytes, max) = if attachment.sealed.is_some() || animated {
                     let bytes = core.download(&inst, &attachment).await;
-                    (bytes.map_err(|e| e.to_string())?, Some(SEALED_PREVIEW))
+                    let max = if animated {
+                        ANIMATED_PREVIEW
+                    } else {
+                        SEALED_PREVIEW
+                    };
+                    (bytes.map_err(|e| e.to_string())?, Some(max))
                 } else {
                     let rest = core.rest(&inst).map_err(|e| e.to_string())?;
                     (rest.thumbnail(id).await.map_err(|e| e.to_string())?, None)
                 };
-                tokio::task::spawn_blocking(move || decode(&bytes, max))
+                tokio::task::spawn_blocking(move || decode_preview(&bytes, max))
                     .await
                     .map_err(|e| e.to_string())?
             },

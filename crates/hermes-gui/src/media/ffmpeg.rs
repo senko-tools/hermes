@@ -130,11 +130,16 @@ fn seek_args(from_ms: u64) -> Vec<String> {
     }
 }
 
+/// Decoder threads for a video. Each holds frames of its own, and by default FFmpeg starts one
+/// per core: a 1080p decoder then needs well over 100 MB.
+const VIDEO_THREADS: &str = "4";
+
 /// Decodes the video from `from_ms` as BGRA frames of `width` by `height` at `fps`, one after
 /// another on stdout.
 pub fn video(url: &str, from_ms: u64, width: u32, height: u32, fps: f32) -> Result<Child, String> {
     command("ffmpeg")
         .args(["-nostdin", "-v", "error"])
+        .args(["-threads", VIDEO_THREADS, "-filter_threads", "1"])
         .args(seek_args(from_ms))
         .args(["-i", url, "-an", "-sn", "-dn", "-vf"])
         .arg(format!(

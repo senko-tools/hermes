@@ -304,7 +304,7 @@ impl Shell {
             rail_pill_slot: std::cell::Cell::new(0.),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
             crop: None,
-            media: HashMap::new(),
+            media: Default::default(),
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,
@@ -355,6 +355,7 @@ impl Shell {
         this.start_heartbeat(cx);
         this.start_meter_timer(cx);
         this.start_call_clock(cx);
+        this.start_media_sweep(cx);
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);

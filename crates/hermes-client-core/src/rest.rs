@@ -723,14 +723,15 @@ impl Rest {
             )
             .timeout(UPLOAD_TIMEOUT);
         let res = Self::send(req).await?;
-        Ok(res.bytes().await.map_err(network)?.to_vec())
+        // Takes the buffer over without copying it when it can.
+        Ok(Vec::from(res.bytes().await.map_err(network)?))
     }
 
     pub async fn thumbnail(&self, attachment: Id) -> Result<Vec<u8>> {
         let res =
             Self::send(self.request(Method::GET, &format!("/attachments/{attachment}/thumb")))
                 .await?;
-        Ok(res.bytes().await.map_err(network)?.to_vec())
+        Ok(Vec::from(res.bytes().await.map_err(network)?))
     }
 
     // ---- DMs ------------------------------------------------------------------------------

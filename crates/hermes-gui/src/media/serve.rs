@@ -20,6 +20,13 @@ pub struct Served {
     _bytes: Arc<Vec<u8>>,
 }
 
+impl Served {
+    /// How many bytes the file has.
+    pub fn size(&self) -> usize {
+        self._bytes.len()
+    }
+}
+
 /// Serves `bytes` until the returned [`Served`] is dropped.
 pub fn serve(bytes: Arc<Vec<u8>>) -> Result<Served, String> {
     let server = SERVER.get_or_init(start).clone()?;

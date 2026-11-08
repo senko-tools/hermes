@@ -1,6 +1,7 @@
 //! Playing one file: FFmpeg decodes its sound into a [`MediaOutput`] and its pictures into a
 //! short queue; the sound played so far is the clock the pictures follow. Seeking starts both
-//! decoders again at the new time.
+//! decoders again at the new time. A paused file runs no decoder: pausing stops them and playing
+//! starts them again where it was. All files share one output, since one plays at a time.
 
 use std::collections::VecDeque;
 use std::io::Read as _;
@@ -40,13 +41,16 @@ type Pictures = Arc<Mutex<VecDeque<(u64, Arc<RenderImage>)>>>;
 pub struct Player {
     served: Served,
     pub probe: Probe,
-    output: Option<MediaOutput>,
+    output: Option<Arc<MediaOutput>>,
+    /// The volume as a slider position, set on the shared output while this one plays.
+    volume: f32,
     /// Where the decoders started, and the output's played frames then.
     start_ms: u64,
     base_frames: u64,
-    /// The clock without sound: when it last started, and the position then.
-    wall: Option<Instant>,
-    wall_ms: u64,
+    /// The clock without sound: when the decoders started.
+    wall: Instant,
+    /// Where a paused file is.
+    paused_at: u64,
     playing: bool,
     /// The size pictures are decoded at.
     size: (u32, u32),
@@ -58,29 +62,35 @@ pub struct Player {
 }
 
 impl Player {
-    /// Opens a file in memory: probes it and opens the sound output, paused at the start.
-    /// Blocks: call it off the UI thread.
-    pub fn open(bytes: Arc<Vec<u8>>, device: Option<&str>, volume: f32) -> Result<Player, String> {
+    /// Opens a file in memory: probes it and takes the sound output (`shared`, else a new one on
+    /// `device`), paused at `at` ms. Blocks: call it off the UI thread.
+    pub fn open(
+        bytes: Arc<Vec<u8>>,
+        shared: Option<Arc<MediaOutput>>,
+        device: Option<&str>,
+        volume: f32,
+        at: u64,
+    ) -> Result<Player, String> {
         let served = super::serve::serve(bytes)?;
         let probe = ffmpeg::probe(&served.url)?;
         if !probe.audio && probe.video.is_none() {
             return Err("this file has no sound or picture".into());
         }
-        let output = if probe.audio {
-            let output = MediaOutput::open(device)?;
-            output.set_volume(volume);
-            Some(output)
-        } else {
-            None
+        let duration_ms = probe.duration_ms;
+        let output = match (probe.audio, shared) {
+            (false, _) => None,
+            (true, Some(output)) => Some(output),
+            (true, None) => Some(Arc::new(MediaOutput::open(device)?)),
         };
         Ok(Player {
             served,
             probe,
             output,
+            volume,
             start_ms: 0,
             base_frames: 0,
-            wall: None,
-            wall_ms: 0,
+            wall: Instant::now(),
+            paused_at: at.min(duration_ms),
             playing: false,
             size: (0, 0),
             pictures: Arc::default(),
@@ -94,28 +104,36 @@ impl Player {
         &self.served.url
     }
 
+    /// The shared sound output this file plays on, if it has sound.
+    pub fn output(&self) -> Option<&Arc<MediaOutput>> {
+        self.output.as_ref()
+    }
+
+    /// The bytes of the file it keeps in memory.
+    pub fn file_size(&self) -> usize {
+        self.served.size()
+    }
+
     pub fn playing(&self) -> bool {
         self.playing
     }
 
     /// Where playback is, in milliseconds.
     pub fn position_ms(&self) -> u64 {
-        let at = match &self.output {
+        if !self.playing {
+            return self.paused_at;
+        }
+        let since_start = match &self.output {
             Some(output) => {
                 let played = output.played_frames().saturating_sub(self.base_frames);
-                self.start_ms + played * 1000 / u64::from(output.rate().max(1))
+                played * 1000 / u64::from(output.rate().max(1))
             }
-            None => {
-                self.wall_ms
-                    + self
-                        .wall
-                        .map_or(0, |since| since.elapsed().as_millis() as u64)
-            }
+            None => self.wall.elapsed().as_millis() as u64,
         };
-        at.min(self.probe.duration_ms.max(1))
+        (self.start_ms + since_start).min(self.probe.duration_ms.max(1))
     }
 
-    /// Whether it played to the end.
+    /// Whether it is playing and has played to the end.
     pub fn ended(&self) -> bool {
         let decoded =
             |d: &Option<Decoder>| d.as_ref().is_none_or(|d| d.done.load(Ordering::Relaxed));
@@ -125,7 +143,7 @@ impl Player {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_empty();
-        self.started()
+        self.playing
             && decoded(&self.audio)
             && decoded(&self.video)
             && !sound_left
@@ -133,36 +151,47 @@ impl Player {
             && (self.output.is_some() || self.position_ms() + 100 >= self.probe.duration_ms)
     }
 
-    fn started(&self) -> bool {
-        self.audio.is_some() || self.video.is_some()
-    }
-
+    /// Plays from where it is paused; from the start once it is at the end.
     pub fn play(&mut self) {
-        if self.ended() {
-            self.seek(0);
+        if self.playing {
+            return;
         }
-        if !self.started() {
-            self.restart(self.start_ms);
+        if self.paused_at + 250 >= self.probe.duration_ms {
+            self.paused_at = 0;
         }
         self.playing = true;
         if let Some(output) = &self.output {
+            output.set_volume(self.volume);
             output.set_paused(false);
-        } else if self.wall.is_none() {
-            self.wall = Some(Instant::now());
         }
+        self.restart(self.paused_at);
     }
 
+    /// Stops where it is: the decoders end, the picture shown stays.
     pub fn pause(&mut self) {
+        if !self.playing {
+            return;
+        }
+        self.paused_at = self.position_ms();
         self.playing = false;
+        self.audio = None;
+        self.video = None;
+        self.pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         if let Some(output) = &self.output {
             output.set_paused(true);
-        } else if let Some(since) = self.wall.take() {
-            self.wall_ms += since.elapsed().as_millis() as u64;
+            output.clear();
         }
     }
 
-    pub fn set_volume(&self, volume: f32) {
-        if let Some(output) = &self.output {
+    /// The volume as a slider position.
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume;
+        if self.playing
+            && let Some(output) = &self.output
+        {
             output.set_volume(volume);
         }
     }
@@ -170,11 +199,11 @@ impl Player {
     /// Jumps to `ms`; keeps playing or paused as it was.
     pub fn seek(&mut self, ms: u64) {
         let ms = ms.min(self.probe.duration_ms.saturating_sub(1));
-        self.wall_ms = ms;
-        if self.wall.is_some() {
-            self.wall = Some(Instant::now());
+        if self.playing {
+            self.restart(ms);
+        } else {
+            self.paused_at = ms;
         }
-        self.restart(ms);
     }
 
     /// The size pictures are decoded at; a change starts the video again where it is.
@@ -182,7 +211,7 @@ impl Player {
         let size = (width.max(2) & !1, height.max(2) & !1);
         if size != self.size {
             self.size = size;
-            if self.playing || self.started() {
+            if self.playing {
                 let at = self.position_ms();
                 self.restart_video(at);
             }
@@ -201,6 +230,7 @@ impl Player {
             }
         }
         self.start_ms = ms;
+        self.wall = Instant::now();
         self.restart_video(ms);
     }
 
