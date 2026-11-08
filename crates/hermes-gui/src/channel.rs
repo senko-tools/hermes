@@ -1106,15 +1106,26 @@ impl Shell {
                 .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned())
         });
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        // Too large for the server: said at once, nothing is read or sent.
+        let refusal = self
+            .core
+            .store()
+            .instance(&key.0)
+            .and_then(|s| s.upload_refusal(size));
         let Some(view) = self.chats.get_mut(key) else {
             return;
         };
+        let refused = refusal.is_some();
         view.uploads.push(Upload {
             local,
             name,
             size,
-            state: UploadState::Uploading,
+            state: refusal.map_or(UploadState::Uploading, UploadState::Failed),
         });
+        if refused {
+            cx.notify();
+            return;
+        }
         let core = self.core.clone();
         let inst = key.0.clone();
         let channel = key.1;
@@ -1822,6 +1833,15 @@ impl Shell {
         });
         let pick_key = key.clone();
         let paste_key = key.clone();
+        let max_mb = self
+            .core
+            .store()
+            .instance(&key.0)
+            .and_then(|s| s.max_upload_mb());
+        let attach_tip = SharedString::from(match max_mb {
+            Some(mb) => format!("Attach files up to {mb} MB (or drop them here)"),
+            None => "Attach files (or drop them here)".to_owned(),
+        });
         let shell = cx.entity().downgrade();
         let input = Textarea::new(&view.input)
             .large()
@@ -1855,16 +1875,16 @@ impl Shell {
                             .items_center()
                             .gap(px(4.))
                             .child(
-                                tip_button(
-                                    "composer-attach",
-                                    assets::ATTACH,
-                                    "Attach files (or drop them here)",
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
+                                icon_button("composer-attach", assets::ATTACH)
+                                    .tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(
+                                            attach_tip.clone(),
+                                        )
+                                        .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_files(pick_key.clone(), cx);
-                                    },
-                                )),
+                                    })),
                             )
                             .child(div().flex_1().min_w_0().child(input)),
                     ),

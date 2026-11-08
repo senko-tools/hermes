@@ -309,7 +309,19 @@ impl Core {
         path: &Path,
         info: FileInfo,
     ) -> Result<Attachment> {
+        // The server's limit, checked before anything is sent.
+        let refusal = |size: u64| {
+            self.store()
+                .instance(inst)
+                .and_then(|s| s.upload_refusal(size))
+                .map_or(Ok(()), |why| Err(CoreError::Io(why)))
+        };
         if !self.channel_is_private(inst, channel) {
+            let size = tokio::fs::metadata(path)
+                .await
+                .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?
+                .len();
+            refusal(size)?;
             return self
                 .upload_measured(inst, path, info.waveform.as_deref(), info.duration_ms)
                 .await;
@@ -323,6 +335,8 @@ impl Core {
             .await
             .map_err(|e| CoreError::Io(e.to_string()))?
             .map_err(|e| CoreError::Io(e.to_string()))?;
+        // Sealed, it is a little larger: that is what the server counts.
+        refusal(sealed.len() as u64)?;
         let stored = self
             .rest(inst)?
             .upload(STORED_NAME, "application/octet-stream", sealed)

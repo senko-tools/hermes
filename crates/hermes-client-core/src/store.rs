@@ -216,6 +216,18 @@ impl InstanceStore {
         self.me.as_ref().map(|m| m.user.id)
     }
 
+    /// The largest file the server takes, in MB (as it counts them: MiB). `None` before it said.
+    pub fn max_upload_mb(&self) -> Option<u32> {
+        self.instance.as_ref().map(|i| i.limits.max_upload_mb)
+    }
+
+    /// Why a file of `size` bytes cannot be uploaded here, if it is larger than the server takes.
+    /// The server refuses it anyway; this says so before it is sent.
+    pub fn upload_refusal(&self, size: u64) -> Option<String> {
+        let mb = self.max_upload_mb()?;
+        (size > u64::from(mb) << 20).then(|| format!("Files on this server may be at most {mb} MB"))
+    }
+
     /// Replaces everything with a fresh `ready`. Message windows are stale and get reloaded;
     /// pending messages are kept so they can still be sent.
     pub fn apply_ready(&mut self, ready: Ready) {
@@ -1063,6 +1075,18 @@ pub(crate) mod tests {
 
     fn live_window(s: &mut InstanceStore, channel: u64) {
         s.merge_history(Id(channel), HistoryAnchor::Latest, vec![], PAGE);
+    }
+
+    #[test]
+    fn uploads_follow_the_servers_limit() {
+        assert_eq!(InstanceStore::default().upload_refusal(u64::MAX), None);
+        let s = store();
+        assert_eq!(s.max_upload_mb(), Some(25));
+        assert_eq!(s.upload_refusal(25 << 20), None);
+        assert_eq!(
+            s.upload_refusal((25 << 20) + 1).as_deref(),
+            Some("Files on this server may be at most 25 MB")
+        );
     }
 
     #[test]
