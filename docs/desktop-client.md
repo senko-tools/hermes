@@ -94,6 +94,14 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   the like are in each file's right-click menu. Video controls sit over the picture and fade
   2 s after the mouse rests while playing. Uploads larger than the server's `max_upload_mb` are
   refused before sending (the server checks too).
+- **Selecting text (2026-11-09):** chat text (names, times, messages, code, file names) is selected by dragging, across
+  messages too, in `selection.rs`. Text that can be selected but not clicked shows the line cursor; a drag never counts
+  as a click. Ctrl+C or the message's menu copies it.
+- **Files:** every file has its own right-click menu (`Target::File`, `Shell::with_file_menu`). gpui calls an element's
+  listeners last added first, so what stops an event is added before the menu (`with_own_menu`).
+- **Encryption settings:** a server's settings have an Encryption tab (`key_settings.rs`) with its rules, each
+  channel's, and who is waiting to be approved. See `docs/e2ee.md`.
+- **Last online:** on the profile card, from `GET /users/{id}`; "Online now" while they look Online or DND.
 - **Animated pictures:** GIFs, animated WebP and APNG move in the chat, as avatars, server icons and
   profile banners, only while the window has the focus. An `img` needs an `.id(...)` for gpui to
   step through its frames.

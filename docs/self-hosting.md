@@ -215,3 +215,16 @@ These commands are safe while the server runs; it notices the changes within 10 
 | The setup link expired | `hermes-server invite create` prints a new one while nobody has registered yet. |
 | Let's Encrypt failed during install | Port 80 must be reachable from the internet and the domain must point at this server. Re-run the installer; it falls back to a self-signed certificate meanwhile. |
 | Something else | `journalctl -u hermes -n 100` (or `docker compose logs hermes`) shows the last log lines; in the app, *Settings → About → Copy debug info* helps when asking for help. |
+
+## Limiting disk use
+
+Message text is tiny next to files, so the limits are for attachments. In `[storage]`:
+
+- `max_total_storage_gb`: everything uploaded together. Uploads are refused past it. 0 = no limit.
+- `max_user_storage_mb`: what one person's uploads may take up. 0 = no limit.
+- `limit_includes_messages`: `true` makes the database (the text of messages) count towards the total. Off by default,
+  so text ignores the limit; a message's length is bounded by `limits.max_message_length` anyway.
+
+Clients compress files before encrypting them when that saves at least 5 %. The server cannot do it for them: what it
+stores is ciphertext. `privacy.require_channel_encryption` (on by default) refuses channel messages that are not
+end-to-end encrypted; update clients together with the server.

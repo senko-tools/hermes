@@ -292,3 +292,23 @@ server, `key` opaque). Audio and video are packet version 2.
 `PUT` and `DELETE /users/@me/friends/{id}`; `ready.relationships`, `relationship_update`, `relationship_remove`.
 Users have `discriminator` next to `username`, absent for accounts without a tag. `PATCH /admin/users/{id}` takes
 `tagless`.
+
+## Channel keys
+
+Encrypted server channels, see `docs/e2ee.md`. The types are in `hermes_proto::e2ee`.
+
+| Call | What it does |
+| --- | --- |
+| `GET /channels/{id}/keys?device=` | current epoch, whether it must be replaced, the rules, this device's sealed keys |
+| `PUT /channels/{id}/keys` | hands keys of existing epochs to devices (`MANAGE_SPACE` if the channel is approved) |
+| `GET /channels/{id}/keys/members` | who can read the channel, who holds its current key |
+| `POST /channels/{id}/keys/epochs` | starts the next epoch; `409 CONFLICT` if someone else got there first |
+| `POST /channels/{id}/keys/requests` | this device lacks the channel's keys |
+| `GET /users/@me/key-requests` | devices waiting for keys of channels I can read |
+| `GET`/`PUT /spaces/{id}/key-policy` | a server's rules; only its owner can change them |
+| `GET`/`PUT /channels/{id}/key-policy` | what a channel changes of them; the owner or an administrator |
+
+Gateway events: `channel_key_request`, `channel_keys_delivered`, `channel_key_epoch`. A message in a channel carries
+`e2ee` with an `epoch`, which must be the current one (else `409 CONFLICT`), and `mentions`, since the server cannot
+read them from the text. A reaction on an encrypted message is sealed (`e2-` and hex). `GET /users/{id}` has
+`last_online_at`. `ready.instance.limits.channels_encrypted` says whether channels have to be encrypted.
