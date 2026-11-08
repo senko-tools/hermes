@@ -12,9 +12,9 @@ use gpui_kit::{
     AnyElement, Context, Entity, MouseButton, ObjectFit, Pixels, Point, Subscription, Window, div,
     img,
 };
+use hermes_client_core::InstanceId;
 use hermes_client_core::proto::api::{UpdateMeRequest, UpdateSpaceRequest};
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::{CoreError, InstanceId};
 
 use crate::images::Picture;
 use crate::modal::{dialog, heading, paragraph};
@@ -333,42 +333,51 @@ impl Shell {
                         .await
                         .map_err(|e| e.to_string())??;
                 let inst = purpose.inst().clone();
-                let work = async {
-                    let rest = core.rest(&inst)?;
-                    let picture = rest
-                        .upload(output.filename, output.content_type, output.bytes)
-                        .await?;
-                    match purpose {
-                        CropFor::Avatar(_) => {
-                            rest.update_me(&UpdateMeRequest {
-                                avatar_id: Some(Some(picture.id)),
-                                ..UpdateMeRequest::default()
-                            })
-                            .await?;
-                            Ok::<_, CoreError>("Avatar changed")
-                        }
-                        CropFor::SpaceIcon(_, space) => {
-                            rest.update_space(
-                                space,
-                                &UpdateSpaceRequest {
-                                    icon_id: Some(Some(picture.id)),
-                                    ..UpdateSpaceRequest::default()
-                                },
-                            )
-                            .await?;
-                            Ok("Icon changed")
-                        }
-                        CropFor::Banner(_) => {
-                            rest.update_me(&UpdateMeRequest {
+                fn failed(e: impl std::fmt::Display) -> String {
+                    e.to_string()
+                }
+                let rest = core.rest(&inst).map_err(failed)?;
+                let picture = rest
+                    .upload(output.filename, output.content_type, output.bytes)
+                    .await
+                    .map_err(failed)?;
+                match purpose {
+                    CropFor::Avatar(_) => {
+                        rest.update_me(&UpdateMeRequest {
+                            avatar_id: Some(Some(picture.id)),
+                            ..UpdateMeRequest::default()
+                        })
+                        .await
+                        .map_err(failed)?;
+                        Ok::<_, String>("Avatar changed")
+                    }
+                    CropFor::SpaceIcon(_, space) => {
+                        rest.update_space(
+                            space,
+                            &UpdateSpaceRequest {
+                                icon_id: Some(Some(picture.id)),
+                                ..UpdateSpaceRequest::default()
+                            },
+                        )
+                        .await
+                        .map_err(failed)?;
+                        Ok("Icon changed")
+                    }
+                    CropFor::Banner(_) => {
+                        let me = rest
+                            .update_me(&UpdateMeRequest {
                                 banner_id: Some(Some(picture.id)),
                                 ..UpdateMeRequest::default()
                             })
-                            .await?;
-                            Ok("Banner changed")
+                            .await
+                            .map_err(failed)?;
+                        // A server from before banners ignores the field and still says yes.
+                        if me.user.banner.as_ref().map(|b| b.id) != Some(picture.id) {
+                            return Err("this server is too old for banners".to_owned());
                         }
+                        Ok("Banner changed")
                     }
-                };
-                work.await.map_err(|e| e.to_string())
+                }
             },
             |this, result, _, cx| match result {
                 Ok(text) => {
