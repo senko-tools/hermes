@@ -17,6 +17,7 @@ pub mod known_hosts;
 pub mod logs;
 pub mod notify;
 pub mod rest;
+pub mod search_index;
 pub mod secure;
 pub mod store;
 pub mod time;

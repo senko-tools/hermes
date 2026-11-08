@@ -1245,3 +1245,65 @@ async fn a_picture_in_a_channel_has_a_sealed_preview_beside_it() {
     assert_eq!(raw[0].attachments.len(), 2, "the file and its preview");
     assert!(raw[0].attachments.iter().all(|a| !a.has_thumb));
 }
+
+#[tokio::test]
+async fn encrypted_channels_are_searched_on_the_device() {
+    let server = start_with("channel-search", true).await;
+    let (alice, _a_events, a, space, channel, invite) = channel_pair(&server).await;
+    say(&alice, &a, channel, "the blue umbrella").await;
+    say(&alice, &a, channel, "a red umbrella").await;
+
+    let search = |core: Core, inst: String, q: &'static str| async move {
+        let rest = core.rest(&inst).unwrap();
+        let mut res = core
+            .search_with(
+                &rest,
+                &inst,
+                &hermes_client_core::proto::api::SearchQuery {
+                    q: q.into(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        core.open_messages(&inst, &mut res.messages).await;
+        res.messages
+            .into_iter()
+            .map(|m| m.content)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        search(alice.clone(), a.clone(), "umbr").await,
+        ["a red umbrella", "the blue umbrella"]
+    );
+    assert_eq!(
+        search(alice.clone(), a.clone(), "blue").await,
+        ["the blue umbrella"]
+    );
+
+    // A device that joins later finds the past once its pass over the history has run.
+    let (bob, _b_events, b) = join(&server, &invite).await;
+    bob.open_channel(&b, channel).await.unwrap();
+    wait_for_window(&bob, &b, channel, "the blue umbrella").await;
+    bob.index_history(&b).await;
+    assert_eq!(
+        search(bob.clone(), b.clone(), "red").await,
+        ["a red umbrella"]
+    );
+    let _ = space;
+
+    // A deleted message is no longer found.
+    let target = alice
+        .store()
+        .instance(&a)
+        .unwrap()
+        .window(channel)
+        .unwrap()
+        .messages[1]
+        .id;
+    alice.delete_message(&a, channel, target).await.unwrap();
+    assert_eq!(
+        search(alice.clone(), a.clone(), "red").await,
+        Vec::<String>::new()
+    );
+}

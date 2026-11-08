@@ -197,7 +197,10 @@ impl Shell {
                     cx,
                     async move {
                         let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let mut res = rest.search(&request).await.map_err(|e| e.to_string())?;
+                        let mut res = core
+                            .search_with(&rest, &inst, &request)
+                            .await
+                            .map_err(|e| e.to_string())?;
                         core.open_messages(&inst, &mut res.messages).await;
                         Ok::<ResultPage, String>((
                             res.messages

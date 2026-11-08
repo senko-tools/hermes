@@ -967,6 +967,14 @@ impl Core {
                         ServerEvent::DevicesUpdate { user_id, devices } => {
                             self.devices_changed(&inst, *user_id, std::mem::take(devices));
                         }
+                        ServerEvent::MessageDelete { id, .. } => {
+                            self.index_remove(&inst, *id);
+                        }
+                        ServerEvent::MessageDeleteBulk { ids, .. } => {
+                            for id in ids.iter() {
+                                self.index_remove(&inst, *id);
+                            }
+                        }
                         ServerEvent::ChannelKeyRequest(request) => {
                             self.key_requested(&inst, request.clone());
                         }
@@ -1444,6 +1452,7 @@ impl Core {
 
     pub async fn delete_message(&self, inst: &str, channel: Id, message: Id) -> Result<()> {
         self.rest(inst)?.delete_message(channel, message).await?;
+        self.index_remove(inst, message);
         let changed = self.with_store(inst, |s| {
             s.apply(
                 ServerEvent::MessageDelete {

@@ -808,8 +808,11 @@ impl App {
             limit: Some(50),
             ..SearchQuery::default()
         };
+        let (core, searched) = (self.core.clone(), inst.clone());
         self.results(&inst, title, move |r| async move {
-            r.search(&query).await.map(|res| res.messages)
+            core.search_with(&r, &searched, &query)
+                .await
+                .map(|res| res.messages)
         });
     }
 

@@ -31,6 +31,8 @@ pub(crate) struct AccountKeys {
     /// The keys of encrypted server channels.
     pub(crate) ring: Mutex<crate::channel_keys::KeyRing>,
     pub(crate) channels: Mutex<crate::channel_keys::ChannelKeyCache>,
+    /// The words of the encrypted messages, for searching.
+    pub(crate) index: Arc<Mutex<crate::search_index::SearchIndex>>,
 }
 
 /// The keys of each instance's account, from its first `ready` on.
@@ -100,12 +102,32 @@ impl Core {
                 .join("e2ee")
                 .join(format!("{}-{me}-channels.bin", safe_file_name(inst)))
         });
+        let index_slot = format!("e2ee-index-{me}");
+        let index_key = tokens
+            .get(inst, &index_slot)
+            .and_then(|secret| e2ee::decode_key(&secret).ok())
+            .unwrap_or_else(|| {
+                let key = e2ee::new_channel_key();
+                if let Err(err) = tokens.set(inst, &index_slot, &e2ee::encode_key(&key)) {
+                    tracing::error!("could not keep this device's search index key: {err}");
+                }
+                key
+            });
+        let index_path = self.paths().map(|paths| {
+            paths
+                .dir
+                .join("e2ee")
+                .join(format!("{}-{me}-search.bin", safe_file_name(inst)))
+        });
         let keys = Arc::new(AccountKeys {
             me,
             identity,
             directory: Mutex::new(Directory::load(path)),
             ring: Mutex::new(crate::channel_keys::KeyRing::load(ring_path, wrap)),
             channels: Mutex::default(),
+            index: Arc::new(Mutex::new(crate::search_index::SearchIndex::new(
+                index_path, index_key,
+            ))),
         });
         accounts.insert(inst.to_owned(), keys.clone());
         Some(keys)
@@ -128,6 +150,7 @@ impl Core {
             // My own other devices get a copy of what I send.
             let _ = core.fetch_devices(&inst, &keys, &[keys.me], 0).await;
             core.serve_waiting_requests(&inst, &keys).await;
+            core.start_index_sync(&inst, &keys);
         });
     }
 
@@ -331,6 +354,7 @@ impl Core {
                 apply_inner(message, inner);
                 open_reactions(message, &key);
                 message.message_key = Some(key.to_string());
+                self.index_message(&keys, message);
             }
             Err(E2eeError::NotForThisDevice) => {
                 refuse(message, MessageLock::NotForThisDevice, NOT_FOR_THIS_DEVICE);
