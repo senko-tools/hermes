@@ -46,8 +46,6 @@ const VOLUME_PER_PIXEL: f64 = 0.05 / 75.;
 const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 /// The width of a waveform's bars.
 const PILL_W: f32 = 4.;
-/// The hover group of a card's download button.
-const DOWNLOAD_GROUP: &str = "media-download";
 /// The hover group of a sound card's speaker button.
 const SPEAKER_GROUP: &str = "media-speaker";
 /// The hover group of a video's seek bar: it grows under the mouse.
@@ -734,36 +732,6 @@ impl Shell {
         }
     }
 
-    /// A small download button, for a card's title row or a video's top bar.
-    fn download_button(
-        &self,
-        inst: &InstanceId,
-        a: &Attachment,
-        color: gpui_kit::Rgba,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<Div> {
-        let (inst, a) = (inst.clone(), a.clone());
-        div()
-            .id(SharedString::from(format!("download-{}", a.id)))
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .size(px(22.))
-            .rounded(px(4.))
-            .cursor_pointer()
-            .group(DOWNLOAD_GROUP)
-            .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
-            .child(
-                icon(assets::DOWNLOAD, 15., color)
-                    .group_hover(DOWNLOAD_GROUP, |s| s.text_color(theme::accent())),
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                cx.stop_propagation();
-                this.download(inst.clone(), a.clone(), cx);
-            }))
-    }
-
     /// A sound card's speaker, once the file has played: a click mutes every file, and the wheel
     /// over it sets their volume. Over the rest of a card the wheel scrolls the chat.
     fn speaker_button(
@@ -995,8 +963,7 @@ impl Shell {
                                     .children(name_record),
                             )
                             .child(meta)
-                            .children(speaker)
-                            .child(self.download_button(inst, a, theme::text_tertiary(), cx)),
+                            .children(speaker),
                     )
                     .child(match failed {
                         Some(err) => div()
@@ -1007,7 +974,6 @@ impl Shell {
                             .text_color(theme::danger())
                             .child(err)
                             .into_any_element(),
-                        // Up to the edge of the download button above it.
                         None => wave.mr(px(4.)).into_any_element(),
                     }),
             );
@@ -1047,14 +1013,8 @@ impl Shell {
             .child(icon(glyph, 18., gpui_kit::rgb(0xffffff)))
     }
 
-    /// A video's top bar: its name, length and size, and download.
-    fn video_top(
-        &self,
-        inst: &InstanceId,
-        place: Option<FilePlace>,
-        a: &Attachment,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    /// A video's top bar: its name, length and size.
+    fn video_top(&self, inst: &InstanceId, place: Option<FilePlace>, a: &Attachment) -> Div {
         let meta = match a.duration_ms {
             Some(ms) => format!("{}  ·  {}", clock(ms), human_size(a.size)),
             None => human_size(a.size),
@@ -1095,7 +1055,6 @@ impl Shell {
                     .text_color(gpui_kit::hsla(0., 0., 1., 0.75))
                     .child(meta),
             )
-            .child(self.download_button(inst, a, gpui_kit::rgb(0xffffff), cx))
     }
 
     /// A playing video's bottom bar: the seek bar, then play, time, volume and full view.
@@ -1261,7 +1220,7 @@ impl Shell {
                 }
             }))
             .when(shown > 0., |d| {
-                d.child(self.video_top(inst, place, a, cx).opacity(shown))
+                d.child(self.video_top(inst, place, a).opacity(shown))
                     .child(self.video_bottom(key, a, inst, full, cx).opacity(shown))
             })
     }
@@ -1327,7 +1286,7 @@ impl Shell {
                 .text_size(theme::caption_size())
                 .text_color(theme::danger())
                 .child(err.clone())
-                .child(self.video_top(inst, Some(place), a, cx)),
+                .child(self.video_top(inst, Some(place), a)),
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
                 let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
@@ -1343,7 +1302,7 @@ impl Shell {
                         this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
                     })),
                 )
-                .child(self.video_top(inst, Some(place), a, cx))
+                .child(self.video_top(inst, Some(place), a))
             }
         };
         self.with_file_menu(element, inst, place, a.id, cx)

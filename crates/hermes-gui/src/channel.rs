@@ -2602,7 +2602,6 @@ impl Shell {
         if crate::media::is_sound(&a.content_type, &a.filename) {
             return self.render_audio_card(inst, place, a, cx);
         }
-        let (down_inst, attachment) = (inst.clone(), a.clone());
         let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
         let card = div()
             .id(SharedString::from(format!("file-{}", a.id)))
@@ -2640,16 +2639,6 @@ impl Shell {
                             .text_color(theme::text_tertiary())
                             .child(human_size(a.size)),
                     ),
-            )
-            .child(
-                icon_button(
-                    SharedString::from(format!("download-{}", a.id)),
-                    assets::DOWNLOAD,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.download(down_inst.clone(), attachment.clone(), cx);
-                })),
             );
         self.with_file_menu(card, inst, place, a.id, cx)
             .into_any_element()
