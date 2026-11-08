@@ -23,6 +23,7 @@ mod fixtures;
 mod form;
 mod friends;
 mod images;
+mod key_settings;
 mod keybinds;
 mod keys;
 mod markup;

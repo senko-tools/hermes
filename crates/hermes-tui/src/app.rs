@@ -663,6 +663,7 @@ impl App {
                 }
             }
             CoreEvent::Error(e) => self.error(e),
+            CoreEvent::Info(_) => {}
             // The status line reads the voice state when it is drawn.
             CoreEvent::VoiceStatus(_) => self.rebuild_sidebar(),
             // Screen shares are shown in the GUI only.

@@ -689,6 +689,44 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
     redraw(&mut visual);
     assert_eq!(volume(&mut visual), after, "the plain wheel scrolls");
 
+    // The Encryption tab loads the rules and draws them.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            this.open_space_settings(
+                inst.clone(),
+                space,
+                crate::space_settings::Tab::Encryption,
+                window,
+                cx,
+            );
+        });
+    });
+    for _ in 0..200 {
+        visual.run_until_parked();
+        let loaded = visual.update(|_, cx| {
+            let this = shell.read(cx);
+            this.space_pages
+                .get(&(inst.clone(), space))
+                .is_some_and(|page| matches!(page.keys.policy, crate::results::Remote::Ready(_)))
+        });
+        if loaded {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    visual.update(|window, cx| {
+        let page = shell
+            .read(cx)
+            .space_pages
+            .get(&(inst.clone(), space))
+            .unwrap();
+        assert!(matches!(page.keys.policy, crate::results::Remote::Ready(_)));
+        window.refresh();
+        window.draw(cx).clear(cx);
+        shell.update(cx, |this, cx| this.close_space_settings(cx));
+    });
+    visual.run_until_parked();
+
     // Each kind of menu opens and draws, submenus included.
     let targets = [
         Target::Space(inst.clone(), space),

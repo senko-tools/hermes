@@ -217,6 +217,19 @@ impl InstanceStore {
     }
 
     /// The largest file the server takes, in MB (as it counts them: MiB). `None` before it said.
+    /// Whether what is written in this channel is end-to-end encrypted.
+    pub fn channel_encrypted(&self, channel: Id) -> bool {
+        let Some(c) = self.channel(channel) else {
+            return false;
+        };
+        c.kind.is_private()
+            || (c.kind.has_messages()
+                && self
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.limits.channels_encrypted))
+    }
+
     pub fn max_upload_mb(&self) -> Option<u32> {
         self.instance.as_ref().map(|i| i.limits.max_upload_mb)
     }

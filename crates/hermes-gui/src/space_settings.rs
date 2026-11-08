@@ -50,6 +50,7 @@ pub enum Tab {
     Roles,
     Channels,
     Members,
+    Encryption,
     Invites,
     Bans,
     Audit,
@@ -62,6 +63,7 @@ impl Tab {
             Tab::Roles => "Roles",
             Tab::Channels => "Channels",
             Tab::Members => "Members",
+            Tab::Encryption => "Encryption",
             Tab::Invites => "Invites",
             Tab::Bans => "Bans",
             Tab::Audit => "Audit log",
@@ -74,6 +76,7 @@ impl Tab {
             Tab::Roles => assets::SHIELD,
             Tab::Channels => assets::POUND,
             Tab::Members => assets::USERS,
+            Tab::Encryption => assets::LOCK,
             Tab::Invites => assets::LINK,
             Tab::Bans => assets::BAN,
             Tab::Audit => assets::FILE,
@@ -83,6 +86,12 @@ impl Tab {
     /// The tabs I can use in a space.
     pub fn available(s: &InstanceStore, space: Id) -> Vec<Tab> {
         let mut tabs = vec![Tab::Overview, Tab::Roles, Tab::Channels, Tab::Members];
+        if s.instance
+            .as_ref()
+            .is_some_and(|i| i.limits.channels_encrypted)
+        {
+            tabs.push(Tab::Encryption);
+        }
         if view::can_in_space(s, space, Permissions::CREATE_INVITES)
             || view::can_in_space(s, space, Permissions::MANAGE_INVITES)
         {
@@ -163,6 +172,8 @@ pub struct SpacePage {
     pub audit: Remote<Vec<AuditEntry>>,
     /// The audit log has older entries to load.
     pub audit_more: bool,
+    /// The Encryption tab.
+    pub keys: crate::key_settings::KeySettings,
     _inputs: Vec<Subscription>,
 }
 
@@ -392,6 +403,7 @@ impl Shell {
                     bans: Remote::Idle,
                     audit: Remote::Idle,
                     audit_more: false,
+                    keys: Default::default(),
                     _inputs: inputs,
                 },
             );
@@ -429,6 +441,7 @@ impl Shell {
         };
         page.tab = tab;
         match tab {
+            Tab::Encryption => self.load_key_settings(done, cx),
             Tab::Invites => {
                 if !manage_invites
                     || (!force && matches!(page.invites, Remote::Ready(_) | Remote::Loading))
@@ -997,6 +1010,7 @@ impl Shell {
             Tab::Roles => self.tab_roles(page, s, cx),
             Tab::Channels => self.tab_channels(page, s, cx),
             Tab::Members => self.tab_members(page, s, cx),
+            Tab::Encryption => self.tab_encryption(page, s, cx),
             Tab::Invites => self.tab_invites(page, s, cx),
             Tab::Bans => self.tab_bans(page, s, cx),
             Tab::Audit => self.tab_audit(page, s, cx),

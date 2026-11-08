@@ -13,14 +13,16 @@ use hermes_proto::e2ee::{
     KeyHandover, KeyPolicy, KeyPolicyOverride, KeyRequest, MAX_CHANNEL_KEYS, SealedChannelKey,
 };
 use hermes_proto::id::Id;
+use hermes_proto::permissions::Permissions;
 use zeroize::Zeroizing;
 
 use crate::config::write_atomic;
-use crate::core::{Core, CoreError, Result, now_ms};
+use crate::core::{Core, CoreError, CoreEvent, Result, now_ms};
 use crate::e2ee;
 use crate::rest;
 use crate::secure::{AccountKeys, DEVICES_MAX_AGE_MS};
 use crate::store::{Changed, HistoryAnchor};
+use crate::view;
 
 /// What the server said about a channel's keys is used for this long.
 const STATE_MAX_AGE_MS: i64 = 15_000;
@@ -132,18 +134,9 @@ fn locked(err: impl std::fmt::Display) -> CoreError {
 impl Core {
     /// Whether what is written in this channel is encrypted.
     pub fn channel_is_encrypted(&self, inst: &str, channel: Id) -> bool {
-        if self.channel_is_private(inst, channel) {
-            return true;
-        }
-        let store = self.store();
-        let Some(s) = store.instance(inst) else {
-            return false;
-        };
-        let required = s
-            .instance
-            .as_ref()
-            .is_some_and(|i| i.limits.channels_encrypted);
-        required && s.channel(channel).is_some_and(|c| c.kind.has_messages())
+        self.store()
+            .instance(inst)
+            .is_some_and(|s| s.channel_encrypted(channel))
     }
 
     fn forget_state(keys: &AccountKeys, channel: Id) {
@@ -475,8 +468,18 @@ impl Core {
             if !cache.waiting.contains(request) {
                 cache.waiting.push(request.clone());
             }
+            let new = cache.waiting.len();
             drop(cache);
             self.changed(inst, [Changed::Channel(channel)]);
+            let can_approve = self.store().instance(inst).is_some_and(|s| {
+                s.space_of(channel)
+                    .is_some_and(|space| view::can_in_space(s, space, Permissions::MANAGE_SPACE))
+            });
+            if can_approve {
+                self.emit(CoreEvent::Info(format!(
+                    "Waiting for you to share keys ({new}): Server settings, Encryption"
+                )));
+            }
             return Ok(());
         }
         self.hand_over(inst, keys, request, state).await
@@ -539,7 +542,15 @@ impl Core {
 
     /// Those waiting for someone to approve them, in channels of this instance.
     pub fn key_requests(&self, inst: &str) -> Vec<KeyRequest> {
-        self.account_keys(inst).map_or_else(Vec::new, |keys| {
+        // Called while drawing, with the store locked: account_keys would lock it again.
+        let keys = self
+            .inner
+            .accounts
+            .lock()
+            .expect("accounts")
+            .get(inst)
+            .cloned();
+        keys.map_or_else(Vec::new, |keys| {
             keys.channels.lock().expect("channel keys").waiting.clone()
         })
     }

@@ -517,6 +517,7 @@ impl Shell {
                 }
             }
             CoreEvent::Error(text) => self.error(text, cx),
+            CoreEvent::Info(text) => self.info(text, cx),
             CoreEvent::Notification { inst, notification } => {
                 self.notify(inst, notification, window, cx);
             }

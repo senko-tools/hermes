@@ -2072,7 +2072,7 @@ impl Shell {
                     )
                     .children(crate::encryption::lock_mark(
                         msg.lock,
-                        s.channel(channel).is_some_and(|c| c.kind.is_private())
+                        s.channel_encrypted(channel)
                             && msg.kind == hermes_client_core::proto::models::MessageKind::Default,
                     ))
                     .into_any_element(),

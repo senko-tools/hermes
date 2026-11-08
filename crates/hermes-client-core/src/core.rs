@@ -75,6 +75,8 @@ pub enum CoreEvent {
     },
     /// Something the user should see (failed background action).
     Error(String),
+    /// Something the user should know, that went fine.
+    Info(String),
     VoiceStatus(VoiceStatus),
     /// Someone in your voice room (you included) started or stopped speaking.
     Speaking {
