@@ -14,7 +14,8 @@ use hermes_audio::media::MediaOutput;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnimationExt as _, AnyElement, Context, Div, ObjectFit, SharedString, Window, div, img,
+    AnimationExt as _, AnyElement, Context, Div, ObjectFit, ScrollDelta, ScrollEvent, SharedString,
+    Window, div, img,
 };
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
@@ -39,6 +40,10 @@ const CACHE_BYTES: usize = 64 << 20;
 const OFF_SCREEN_FOR: Duration = Duration::from_secs(15);
 /// How often paused files are looked over.
 const SWEEP_EVERY: Duration = Duration::from_secs(5);
+/// How much the volume changes per pixel scrolled: 5 % per wheel notch (75 px, smooth-scrolled).
+const VOLUME_PER_PIXEL: f64 = 0.05 / 75.;
+/// How long the volume shows after it changed; it is saved then.
+const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 
 pub type MediaKey = (InstanceId, Id);
 
@@ -54,7 +59,6 @@ pub struct MediaItem {
     /// Measured while it plays, when it came without one.
     pub waveform: Option<Arc<Mutex<Waveform>>>,
     wave_stop: Arc<AtomicBool>,
-    pub muted: bool,
     /// Shown over the whole window.
     pub full: bool,
     /// The frame it was last drawn in (see [`Media::frame`]).
@@ -71,7 +75,6 @@ impl MediaItem {
             load: Load::Loading,
             waveform: None,
             wave_stop: Arc::new(AtomicBool::new(false)),
-            muted: false,
             full: false,
             drawn: Cell::new(0),
             hidden_since: None,
@@ -100,6 +103,10 @@ pub struct Media {
     output: Option<(String, Weak<MediaOutput>)>,
     /// Counts draws, so a card knows whether it was on screen in the last one.
     frame: u64,
+    /// The card the volume was just changed on: it shows the volume for a moment.
+    volume_shown: Option<MediaKey>,
+    /// Counts volume changes; it is saved once one stays the last for a moment.
+    volume_changes: u64,
 }
 
 impl Drop for MediaItem {
@@ -198,7 +205,7 @@ impl Shell {
             .as_ref()
             .filter(|(on, _)| *on == device)
             .and_then(|(_, output)| output.upgrade());
-        let volume = self.config.voice.output_volume as f32;
+        let volume = self.media_gain();
         let at = self.media.resume.remove(&key).map_or(0, |(at, _)| at);
         let measure = attachment.waveform.is_none()
             && !self.media.measured.contains_key(&key)
@@ -291,15 +298,85 @@ impl Shell {
         cx.notify();
     }
 
-    fn media_mute(&mut self, key: &MediaKey, cx: &mut Context<Self>) {
-        let volume = self.config.voice.output_volume as f32;
-        if let Some(item) = self.media.items.get_mut(key) {
-            item.muted = !item.muted;
-            if let Load::Ready(player) = &mut item.load {
-                player.set_volume(if item.muted { 0. } else { volume });
-            }
-            cx.notify();
+    /// The media volume as a slider position: nothing while muted.
+    fn media_gain(&self) -> f32 {
+        if self.config.voice.media_muted {
+            0.
+        } else {
+            self.config.voice.media_volume as f32
         }
+    }
+
+    /// Mutes or unmutes every sound and video file, and remembers it.
+    fn media_mute(&mut self, cx: &mut Context<Self>) {
+        let muted = !self.config.voice.media_muted;
+        self.config.voice.media_muted = muted;
+        self.persist("voice.media_muted", &muted.to_string(), cx);
+    }
+
+    /// The wheel over a played card changes the volume of every file, and shows it there.
+    fn media_wheel(&mut self, key: &MediaKey, event: &ScrollEvent, cx: &mut Context<Self>) {
+        let pixels = match event.delta {
+            ScrollDelta::Pixels(p) => f64::from(p.y.as_f32()),
+            ScrollDelta::Lines(l) => f64::from(l.y) * 75.,
+        };
+        if pixels == 0. {
+            return;
+        }
+        let voice = &mut self.config.voice;
+        voice.media_volume = (voice.media_volume + pixels * VOLUME_PER_PIXEL).clamp(0., 1.);
+        if pixels > 0. {
+            voice.media_muted = false;
+        }
+        self.media.volume_shown = Some(key.clone());
+        self.media.volume_changes += 1;
+        let change = self.media.volume_changes;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(VOLUME_SHOWN_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.media.volume_changes != change {
+                    return;
+                }
+                this.media.volume_shown = None;
+                let voice = &this.config.voice;
+                let (volume, muted) = (voice.media_volume, voice.media_muted);
+                this.persist("voice.media_volume", &format!("{volume:.3}"), cx);
+                this.persist("voice.media_muted", &muted.to_string(), cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The volume, for a moment after it changed on this card.
+    fn volume_pill(&self, key: &MediaKey) -> Option<AnyElement> {
+        if self.media.volume_shown.as_ref() != Some(key) {
+            return None;
+        }
+        let volume = self.media_gain();
+        let glyph = if volume <= 0. {
+            media_icons::VOLUME_OFF
+        } else {
+            assets::VOLUME
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(6.))
+                .right(px(6.))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(10.))
+                .bg(theme::alpha(gpui_kit::rgb(0x000000), 0.7))
+                .text_size(theme::caption_size())
+                .text_color(gpui_kit::rgb(0xffffff))
+                .child(icon(glyph, 13., gpui_kit::rgb(0xffffff)))
+                .child(format!("{:.0} %", volume * 100.))
+                .into_any_element(),
+        )
     }
 
     fn media_full(&mut self, key: &MediaKey, full: bool, cx: &mut Context<Self>) {
@@ -406,6 +483,7 @@ impl Shell {
             (viewport.height.as_f32() - 120.) / theme::scale(),
         );
         let mut busy = false;
+        let gain = self.media_gain();
         for item in self.media.items.values_mut() {
             busy |= item
                 .waveform
@@ -415,6 +493,7 @@ impl Shell {
                 busy |= matches!(item.load, Load::Loading);
                 continue;
             };
+            player.set_volume(gain);
             if let Some((w, h, _)) = player.probe.video {
                 let shown = fit(
                     (w, h),
@@ -551,13 +630,22 @@ impl Shell {
                 };
                 bar.child(pill)
             }));
+        let wheel_key = key.clone();
         div()
+            .relative()
             .flex()
             .items_center()
             .gap(px(12.))
             .mt(px(4.))
             .w(px(420.))
             .px(px(12.))
+            .when(started && item.is_some(), |card| {
+                card.on_scroll(cx.listener(move |this, event, _, cx| {
+                    cx.stop_propagation();
+                    this.media_wheel(&wheel_key, event, cx);
+                }))
+            })
+            .children(self.volume_pill(&key))
             .py(px(10.))
             .rounded(px(8.))
             .bg(theme::sidebar())
@@ -639,10 +727,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Div {
         let (position, duration, playing) = self.media_progress(key, a);
-        let muted = self.media.items.get(key).is_some_and(|i| i.muted);
+        let muted = self.media_gain() <= 0.;
         let played = position as f32 / duration as f32;
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let (mute_key, full_key) = (key.clone(), key.clone());
+        let full_key = key.clone();
         let seek = div()
             .flex()
             .flex_1()
@@ -712,7 +800,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.media_mute(&mute_key, cx);
+                    this.media_mute(cx);
                 })),
             )
             .child(
@@ -812,6 +900,7 @@ impl Shell {
                 };
                 let click_inst = inst.clone();
                 let click_a = a.clone();
+                let wheel_key = key.clone();
                 div()
                     .flex()
                     .flex_col()
@@ -819,6 +908,11 @@ impl Shell {
                         frame(w, h)
                             .id(SharedString::from(format!("video-{}", a.id)))
                             .cursor_pointer()
+                            .on_scroll(cx.listener(move |this, event, _, cx| {
+                                cx.stop_propagation();
+                                this.media_wheel(&wheel_key, event, cx);
+                            }))
+                            .children(self.volume_pill(&key))
                             .child(picture)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();

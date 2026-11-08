@@ -216,6 +216,10 @@ pub struct Voice {
     pub auto_gain: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
+    /// The volume of sound and video files in the chat, as a slider position (1.0 = 100 %).
+    pub media_volume: f64,
+    /// Sound and video files play silently.
+    pub media_muted: bool,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
     /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
@@ -243,6 +247,8 @@ impl Default for Voice {
             auto_gain: false,
             sounds: true,
             sounds_volume: 0.6,
+            media_volume: 1.0,
+            media_muted: false,
             share_screen: String::new(),
             share_resolution: "1080p".into(),
             share_fps: 60,
