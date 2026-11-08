@@ -612,6 +612,7 @@ fn run_hardware(
                         want.bitrate / 1000,
                         created.name
                     );
+                    tracing::info!("screen share encoder: {}", created.settings());
                     encoder = Some(created);
                     keyframe.store(true, Ordering::Relaxed);
                 } else if current.is_some_and(|t| t.bitrate != want.bitrate)
@@ -1152,6 +1153,178 @@ mod tests {
         let picture = decoder.decode(&key).unwrap().unwrap();
         println!("dxgi decoded in {:?}", begin.elapsed());
         assert_eq!((picture.width, picture.height), (frame.width, frame.height));
+    }
+
+    /// Whether the GPU's encoder spends the bitrate it is given and how close the pictures come
+    /// out: moving, detailed pictures at 1440p and 60 fps. Needs a screen (for its GPU), not
+    /// its content. The picture is noisy on purpose, so the PSNR is low and only comparable with
+    /// other runs of this test:
+    /// `cargo test -p hermes-gui encoder_spends -- --ignored --nocapture`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs a GPU with an H.264 encoder"]
+    #[allow(unsafe_code)]
+    fn encoder_spends_its_bitrate() {
+        use super::super::gpu_convert::GpuConvert;
+        use super::super::mf_encode::MfEncoder;
+        use windows::Win32::Graphics::Direct3D11::{
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC,
+            D3D11_USAGE_DEFAULT,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+        };
+
+        const FRAMES: usize = 300;
+        const SCROLL: usize = 11;
+        let (w, h) = (2560usize, 1440usize);
+        let monitor = pick_monitor("").unwrap();
+        let duplicator = super::super::dxgi::Duplicator::open(&monitor.name().unwrap()).unwrap();
+        let device = duplicator.device().clone();
+        let context = unsafe { device.GetImmediateContext().unwrap() };
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w as u32,
+            Height: h as u32,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }.unwrap();
+        let texture = texture.unwrap();
+
+        // A wide, detailed picture that scrolls under the frame, like a game panning; a band of
+        // it changes completely every frame.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut source = vec![255u8; 2 * w * h * 4];
+        for y in 0..h {
+            for x in 0..2 * w {
+                let shade = ((x as f32 * 0.021).sin() * (y as f32 * 0.017).cos() * 70.
+                    + (x as f32 * 0.13 + y as f32 * 0.07).sin() * 25.
+                    + 128.) as i32
+                    + (random() % 33) as i32
+                    - 16;
+                let at = (y * 2 * w + x) * 4;
+                source[at] = shade.clamp(0, 255) as u8;
+                source[at + 1] = (shade + 18).clamp(0, 255) as u8;
+                source[at + 2] = (255 - shade).clamp(0, 255) as u8;
+            }
+        }
+
+        let bitrate = hardware_bitrate(w as u32, h as u32, 60);
+        let mut convert =
+            GpuConvert::new(&device, (w as u32, h as u32), (w as u32, h as u32), 60).unwrap();
+        let mut encoder = MfEncoder::new(
+            &device,
+            duplicator.luid(),
+            (w as u32, h as u32),
+            60,
+            bitrate,
+        )
+        .unwrap();
+        let mut sizes = Vec::new();
+        let mut times = Vec::new();
+        let mut stream = Vec::new();
+        let mut references = std::collections::HashMap::new();
+        for n in 0..FRAMES {
+            let offset = (n * SCROLL) % w;
+            // The band is inside the part shown this frame.
+            for y in h / 2..h / 2 + h / 8 {
+                let row = (y * 2 * w + offset) * 4;
+                for chunk in source[row..row + w * 4].chunks_exact_mut(8) {
+                    chunk.copy_from_slice(&(random() | 0xFF00_0000_FF00_0000).to_le_bytes());
+                }
+            }
+            let start = (offset * 4) as usize;
+            unsafe {
+                context.UpdateSubresource(
+                    &texture,
+                    0,
+                    None,
+                    source[start..].as_ptr().cast(),
+                    (2 * w * 4) as u32,
+                    0,
+                );
+            }
+            // What the picture should look like, for the frames compared afterwards.
+            if (200..215).contains(&n) {
+                let mut luma = vec![0u8; w * h];
+                for (y, line) in luma.chunks_exact_mut(w).enumerate() {
+                    let row = (y * 2 * w + offset) * 4;
+                    for (out, px) in line.iter_mut().zip(source[row..].chunks_exact(4)) {
+                        let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
+                        *out = (16.5 + 0.257 * r + 0.504 * g + 0.098 * b) as u8;
+                    }
+                }
+                references.insert(n, luma);
+            }
+            let nv12 = convert.convert(&texture).unwrap();
+            let begin = Instant::now();
+            for (data, is_key) in encoder.encode(&nv12, n == 0).unwrap() {
+                if !is_key {
+                    sizes.push(data.len());
+                }
+                stream.push(data);
+            }
+            times.push(begin.elapsed());
+        }
+        times.sort();
+        // How close the picture came out, without the band that changes completely.
+        let mut decoder = super::super::codec::Decoder::software().unwrap();
+        let mut decoded = 0;
+        let (mut error, mut samples) = (0f64, 0f64);
+        for data in &stream {
+            let Some(picture) = decoder.decode(data).unwrap() else {
+                continue;
+            };
+            if let Some(reference) = references.get(&decoded) {
+                for (y, (got, want)) in picture
+                    .y()
+                    .chunks_exact(w)
+                    .zip(reference.chunks_exact(w))
+                    .enumerate()
+                {
+                    if (h / 2..h / 2 + h / 8).contains(&y) {
+                        continue;
+                    }
+                    for (a, b) in got.iter().zip(want) {
+                        let d = f64::from(*a) - f64::from(*b);
+                        error += d * d;
+                    }
+                    samples += w as f64;
+                }
+            }
+            decoded += 1;
+        }
+        let psnr = 10. * (255f64 * 255. / (error / samples.max(1.))).log10();
+        let worst = times[times.len() * 99 / 100];
+        println!("PSNR {psnr:.2} dB, encode p99 {worst:?}");
+        let total: usize = sizes.iter().sum();
+        let delivered = total as f64 * 8. * 60. / sizes.len().max(1) as f64 / 1000.;
+        println!(
+            "asked {} kbit/s, delivered {delivered:.0} kbit/s ({:.0} %), {} frames, \
+                 largest {} kB, encode median {:?}\n    {}",
+            bitrate / 1000,
+            delivered / f64::from(bitrate / 1000) * 100.,
+            sizes.len(),
+            sizes.iter().max().copied().unwrap_or(0) / 1000,
+            times[times.len() / 2],
+            encoder.settings(),
+        );
     }
 
     /// The hardware path on this machine's primary screen: capture on the GPU, convert to NV12
