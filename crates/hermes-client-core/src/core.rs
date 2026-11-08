@@ -1563,13 +1563,21 @@ pub fn content_type(filename: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "apng" => "image/apng",
         "txt" | "log" | "md" => "text/plain",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
         "mp3" => "audio/mpeg",
-        "ogg" | "opus" => "audio/ogg",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
         "json" => "application/json",
         _ => "application/octet-stream",
@@ -1593,5 +1601,8 @@ mod tests {
     fn content_types() {
         assert_eq!(content_type("Cat.PNG"), "image/png");
         assert_eq!(content_type("notes"), "application/octet-stream");
+        assert_eq!(content_type("clip.MKV"), "video/x-matroska");
+        assert_eq!(content_type("clip.mov"), "video/quicktime");
+        assert_eq!(content_type("song.flac"), "audio/flac");
     }
 }
