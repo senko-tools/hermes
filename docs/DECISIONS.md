@@ -1805,3 +1805,21 @@ Asked for by the developer.
 - **hermes-gpui replaced hermes-gui,** taking its crate name and the `hermes` binary, as the developer asked. The iced
   client, `spikes/` (throwaway Phase 0 experiments nothing used), its workflow, the `iced` and `pulldown-cmark` workspace
   dependencies and a `data/` folder that was committed by mistake (a test database and a throwaway TLS key) are gone.
+
+## 2026-11-08: Why 1440p at 60 fps smeared
+
+- **Measured (developer's share, 1440p60, NVIDIA encoder):** asked for 15.5 Mbit/s, the share ran at about
+  5.7, with 60.0 fps captured and sent, 0 frames refused and 0 lost at the server. `encoder_spends_its_bitrate`
+  (ignored test) feeds the encoder moving, detailed pictures: it delivers 101 % of its target, so the lower rate
+  was what that screen needed, not a cap. The test's picture is noisy on purpose, which limits what it can say
+  about quality.
+- **Encoder settings stay.** Raising `CommonQualityVsSpeed` from 33 to 66 or more did not improve the PSNR
+  (34.2 against 34.0 dB) and pushed the 99th percentile of encoding past 16.7 ms; 1.5x the bits gave 0.4 dB.
+  Settings applied after the media types are partly ignored (keyframe interval, buffer), so they stay before.
+- **The bug:** on the watcher, a frame lost to a full decoder queue or a timed-out stream was dropped without a
+  keyframe request, so the decoder went on without its references until the next periodic keyframe, up to 5 s.
+  Such a share now waits for a keyframe, asked for every 500 ms, as the server does for frames lost before it.
+  The decoder queue is 16 frames, and pictures a newer frame replaces are not converted to BGRA. No watcher log
+  from the session existed, so this is the leading cause rather than a confirmed one.
+- **Send buffer:** `VIDEO_SEND_WINDOW` (two of the largest frames) replaces 16 MiB, which could hide seconds of a
+  share from a slow connection instead of stepping its quality down.

@@ -68,7 +68,10 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Scrolling:** `smooth_scroll.rs` catches wheel notches at the root and replays them as eased pixel
   scrolls, 1.25x the old distance. Touchpad pixel scrolls and Ctrl+wheel pass through.
 - **Pictures:** server icons and avatars fill their shape (`ObjectFit::Cover`). Picking one opens the
-  crop view (`crop.rs`), which uploads a square PNG of at most 512 px.
+  crop view (`crop.rs`), which uploads a square PNG of at most 512 px. Avatars, banners and server
+  icons may be at most 10 MB (`PICTURE_MAX_BYTES`): the picked file, what is uploaded after
+  cropping, and on the server. Other images keep `max_upload_mb`. The crop view opens on the first
+  frame; an animation joins it once decoded.
 - **A deleted channel** reopens the most recent remaining channel of its server (a voice channel only
   shows its room); Friends opens only when the server is gone.
 - **Media (2026-11-08):** sound files get a waveform card and videos (mp4, mkv, mov, webm and more)
@@ -84,8 +87,9 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   output, and a paused file is let go after 15 s off screen or when paused files pass 64 MB; it
   plays on from where it was. The whole waveform, and a video's bar, is a seek bar: a press starts
   scrubbing, followed by window-level mouse listeners (`media_scrub_catcher`, also over the full
-  view), and the seek happens on release. The wheel over a played card sets one volume for all
-  media (`voice.media_volume`, `voice.media_muted`). Video controls sit over the picture and fade
+  view), and the seek happens on release. The wheel over a speaker button, or anywhere in the full
+  view, sets one volume for all media (`voice.media_volume`, `voice.media_muted`); over the rest of
+  a card it scrolls the chat. Sound cards get their speaker once played. Video controls sit over the picture and fade
   2 s after the mouse rests while playing. Uploads larger than the server's `max_upload_mb` are
   refused before sending (the server checks too).
 - **Animated pictures:** GIFs, animated WebP and APNG move in the chat, as avatars, server icons and
@@ -98,6 +102,8 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.
 
 ## Known risks
+- **Share smearing:** a frame lost after the server (full decoder queue, timed-out stream) holds that share
+  back until a keyframe; `read_screen` asks for one. Never hand the decoder frames after a gap.
 - **Share video:** gpui's Windows `draw_surfaces` is an empty stub, so pictures are per-frame BGRA images freed
   with `drop_image`. See DECISIONS for the numbers. A debug build converts far too slowly to judge: measure release.
   Only a mostly still screen between two clients on one PC has been measured.

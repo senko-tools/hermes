@@ -2,8 +2,8 @@ Who shares is told only on the control stream, never on the gateway: only people
 know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
 **unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
 have at most 32 such streams open at once, and both sides read them one at a time in the order
-they were opened, so frames stay in order. Both ends allow 4 MiB in flight per stream and 16 MiB
-per connection.
+they were opened, so frames stay in order. Both ends accept 4 MiB in flight per stream and 16 MiB
+per connection, and buffer at most 4 MiB to send.
 
 # Hermes protocol reference
 
