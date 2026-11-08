@@ -14,6 +14,8 @@ use gpui_kit::{
 
 /// How much further a notch goes than it did before.
 const SPEED: f32 = 1.25;
+/// The pixels of one wheel line, as gpui's lists count it (the chat is one).
+const LINE: f32 = 20.;
 /// How quickly the rest of a scroll is played back: after this many seconds about 63 % of it.
 const TAU: f32 = 0.045;
 /// Less than this many pixels left: the rest goes at once.
@@ -70,7 +72,7 @@ impl SmoothScroll {
                         return;
                     };
                     cx.stop_propagation();
-                    let line = window.line_height().as_f32() * SPEED;
+                    let line = LINE * SPEED;
                     let start = {
                         let mut s = state.borrow_mut();
                         s.left.x = merge(s.left.x, lines.x * line);
