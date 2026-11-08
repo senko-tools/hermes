@@ -126,6 +126,15 @@ impl Shell {
             )
         };
         let mut lines = Vec::new();
+        // Taken now: the left press on the entry clears the selection.
+        if matches!(target, Target::Message(..))
+            && let Some(text) = self.selected_text()
+        {
+            lines.push(run_line("Copy selection", move |this, _, cx| {
+                this.copy(text.clone(), "Text", cx);
+            }));
+            lines.push(Line::Separator);
+        }
         // The user panel's menu is also a way to the instances, which the sidebar hides.
         if matches!(target, Target::Me(_) | Target::Instances) {
             lines.extend(self.instance_lines());

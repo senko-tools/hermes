@@ -114,6 +114,8 @@ pub struct Shell {
     status_serial: u64,
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
+    /// Chat text selected with the mouse.
+    pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
     /// Where the last menu opened: what its entries open goes there too.
     pub menu_at: Point<Pixels>,
@@ -275,6 +277,7 @@ impl Shell {
             status: None,
             status_serial: 0,
             right_pressed: None,
+            selection: Default::default(),
             menu: None,
             menu_at: Point::default(),
             profile: None,
@@ -1166,6 +1169,7 @@ impl Render for Shell {
             self.title_bar = Some(bar);
         }
         self.advance_media(window);
+        self.advance_selection(window);
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
@@ -1305,6 +1309,8 @@ impl Render for Shell {
             })
             .child(self.smooth_scroll.catcher())
             .children(self.media_scrub_catcher(cx))
+            .children(self.selection_catcher(cx))
+            .when(self.selection.dragging(), |d| d.cursor_text())
             .when(on_right, |d| d.flex_row_reverse())
             .child(left)
             .child(body)

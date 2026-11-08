@@ -26,6 +26,7 @@ use hermes_client_core::proto::models::Attachment;
 use super::player::Player;
 use super::waveform::{self, BARS, Waveform};
 use crate::assets::{self, icon, media_icons};
+use crate::selection::FilePlace;
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
@@ -830,6 +831,7 @@ impl Shell {
     pub fn render_audio_card(
         &self,
         inst: &InstanceId,
+        place: FilePlace,
         a: &Attachment,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -920,6 +922,7 @@ impl Shell {
         });
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
         let speaker = item.is_some().then(|| self.speaker_button(&key, a, cx));
+        let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
         div()
             .flex()
             .items_center()
@@ -961,10 +964,13 @@ impl Shell {
                             .child(icon(media_icons::MUSIC, 14., theme::accent()))
                             .child(
                                 div()
+                                    .relative()
+                                    .cursor_text()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
-                                    .child(a.filename.clone()),
+                                    .child(name)
+                                    .children(name_record),
                             )
                             .child(meta)
                             .children(speaker)
@@ -1019,11 +1025,18 @@ impl Shell {
     }
 
     /// A video's top bar: its name, length and size, and download.
-    fn video_top(&self, inst: &InstanceId, a: &Attachment, cx: &mut Context<Self>) -> Div {
+    fn video_top(
+        &self,
+        inst: &InstanceId,
+        place: Option<FilePlace>,
+        a: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let meta = match a.duration_ms {
             Some(ms) => format!("{}  ·  {}", clock(ms), human_size(a.size)),
             None => human_size(a.size),
         };
+        let (name, name_record) = self.selectable_file_name(inst, place, &a.filename);
         div()
             .absolute()
             .top_0()
@@ -1045,10 +1058,13 @@ impl Shell {
             .text_color(gpui_kit::rgb(0xffffff))
             .child(
                 div()
+                    .relative()
+                    .when(place.is_some(), |d| d.cursor_text())
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .child(a.filename.clone()),
+                    .child(name)
+                    .children(name_record),
             )
             .child(
                 div()
@@ -1185,11 +1201,12 @@ impl Shell {
         &self,
         surface: gpui_kit::Stateful<Div>,
         key: &MediaKey,
+        place: Option<FilePlace>,
         a: &Attachment,
-        inst: &InstanceId,
         full: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<Div> {
+        let inst = &key.0;
         let bar: BarKey = (key.clone(), full);
         let playing = self.media_progress(key, a).2;
         let shown = self.controls_shown(&bar, playing);
@@ -1216,10 +1233,12 @@ impl Shell {
             })
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
-                this.media_toggle(click_inst.clone(), click_a.clone(), cx);
+                if !this.selection.dragged {
+                    this.media_toggle(click_inst.clone(), click_a.clone(), cx);
+                }
             }))
             .when(shown > 0., |d| {
-                d.child(self.video_top(inst, a, cx).opacity(shown))
+                d.child(self.video_top(inst, place, a, cx).opacity(shown))
                     .child(self.video_bottom(key, a, inst, full, cx).opacity(shown))
             })
     }
@@ -1229,6 +1248,7 @@ impl Shell {
     pub fn render_video_card(
         &self,
         inst: &InstanceId,
+        place: FilePlace,
         a: &Attachment,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1278,14 +1298,14 @@ impl Shell {
                         None => div().into_any_element(),
                     }
                 };
-                self.video_surface(card.child(picture), &key, a, inst, false, cx)
+                self.video_surface(card.child(picture), &key, Some(place), a, false, cx)
                     .into_any_element()
             }
             Some((Load::Failed(err), _)) => card
                 .text_size(theme::caption_size())
                 .text_color(theme::danger())
                 .child(err.clone())
-                .child(self.video_top(inst, a, cx))
+                .child(self.video_top(inst, Some(place), a, cx))
                 .into_any_element(),
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
@@ -1302,7 +1322,7 @@ impl Shell {
                         this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
                     })),
                 )
-                .child(self.video_top(inst, a, cx))
+                .child(self.video_top(inst, Some(place), a, cx))
                 .into_any_element()
             }
         }
@@ -1336,7 +1356,7 @@ impl Shell {
             .font_family(theme::font())
             .children(picture);
         Some(
-            gpui_kit::deferred(self.video_surface(surface, key, &attachment, &key.0, true, cx))
+            gpui_kit::deferred(self.video_surface(surface, key, None, &attachment, true, cx))
                 .with_priority(gpui_kit::base::POPUP_PRIORITY)
                 .into_any_element(),
         )

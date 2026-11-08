@@ -37,6 +37,7 @@ mod ptt;
 mod results;
 mod rows;
 mod screen;
+mod selection;
 mod settings;
 mod shell;
 mod sidebar;

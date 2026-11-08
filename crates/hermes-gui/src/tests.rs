@@ -403,6 +403,58 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         visual.run_until_parked();
     }
 
+    // Dragging over a message's text selects it, and is no click on the message.
+    let message = visual.update(|_, cx| {
+        let core = shell.read(cx).core.clone();
+        let store = core.store();
+        let window = store.instance(&inst).and_then(|s| s.window(channel));
+        window.and_then(|w| w.messages.first().map(|m| m.id))
+    });
+    let part = crate::selection::Part {
+        message: message.expect("a message"),
+        index: crate::selection::BLOCKS,
+    };
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let text = visual
+        .update(|_, cx| shell.read(cx).selection.bounds_of(part))
+        .expect("the message's text was painted");
+    let (from, to) = (
+        point(text.left() + px(1.), text.center().y),
+        point(text.right() - px(1.), text.center().y),
+    );
+    visual.simulate_mouse_move(from, None, Modifiers::none());
+    visual.simulate_mouse_down(from, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), Modifiers::none());
+    visual.simulate_mouse_up(to, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        let this = shell.read(cx);
+        assert!(this.selection.dragged, "the press became a drag");
+        assert!(!this.selection.dragging(), "the release ended it");
+        assert_eq!(this.selected_text().as_deref(), Some("hello"));
+    });
+
+    // A plain click elsewhere clears it.
+    visual.simulate_mouse_move(position, None, Modifiers::none());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.simulate_mouse_down(position, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.simulate_mouse_up(position, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert_eq!(shell.read(cx).selected_text(), None);
+    });
+
     // Each kind of menu opens and draws, submenus included.
     let targets = [
         Target::Space(inst.clone(), space),

@@ -13,7 +13,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, Entity, ExternalPaths, FontStyle, FontWeight, HighlightStyle,
     InteractiveText, ListAlignment, ListScrollEvent, ListState, MouseButton, SharedString,
-    StrikethroughStyle, StyledText, Subscription, UnderlineStyle, Window, div, img, list, rgba,
+    StrikethroughStyle, Subscription, UnderlineStyle, Window, div, img, list, rgba,
 };
 use hermes_client_core::commands::{self, SlashCommand};
 use hermes_client_core::proto::id::Id;
@@ -28,6 +28,7 @@ use crate::images::Img;
 use crate::markup::{self, Block, Link, Piece};
 use crate::menu_entries::{self, Action, Target};
 use crate::rows::{self, MessageRow, PendingRow, Row, RowKey};
+use crate::selection::{self, FilePlace, Part};
 use crate::shell::{ChannelKey, Page, Shell};
 use crate::theme::{self, px};
 
@@ -1573,6 +1574,7 @@ impl Shell {
                 .relative()
                 .flex_1()
                 .min_h_0()
+                .child(self.selection_list_marker())
                 .child(messages)
                 .when(!at_end || !live, |d| {
                     d.child(
@@ -1993,10 +1995,25 @@ impl Shell {
                             .font_weight(FontWeight::MEDIUM)
                             .child(reply.author.clone()),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(excerpt))
+                    .child({
+                        let part = Part {
+                            message: id,
+                            index: selection::REPLY,
+                        };
+                        let (text, record) = self.selectable(inst, channel, part, excerpt, vec![]);
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(text)
+                            .child(record)
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.jump_to(jump_inst.clone(), channel, reply_id, window, cx);
+                        if !this.selection.dragged {
+                            this.jump_to(jump_inst.clone(), channel, reply_id, window, cx);
+                        }
                     }))
                     .into_any_element(),
             );
@@ -2006,14 +2023,26 @@ impl Shell {
             let color = space
                 .and_then(|sp| author_color(s, sp, msg.author.id))
                 .map_or(theme::role_default(), theme::rgb_u32);
+            let part = |index| Part { message: id, index };
+            let (name, name_record) =
+                self.selectable(inst, channel, part(selection::AUTHOR), name, vec![]);
+            let (time, time_record) = self.selectable(
+                inst,
+                channel,
+                part(selection::TIME),
+                time_text.clone(),
+                vec![],
+            );
             let author = self.author_menu(
                 div()
                     .id(SharedString::from(format!("author-{id}")))
+                    .relative()
                     .cursor_pointer()
                     .text_size(theme::body_size())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(color)
-                    .child(name),
+                    .child(name)
+                    .child(name_record),
                 inst,
                 space,
                 msg.author.id,
@@ -2027,9 +2056,12 @@ impl Shell {
                     .child(author)
                     .child(
                         div()
+                            .relative()
+                            .cursor_text()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child(time_text.clone()),
+                            .child(time)
+                            .child(time_record),
                     )
                     .children(crate::encryption::lock_mark(
                         msg.lock,
@@ -2056,8 +2088,13 @@ impl Shell {
                     .into_any_element(),
             );
         }
-        for attachment in &msg.attachments {
-            body.push(self.render_attachment(inst, attachment, cx));
+        for (index, attachment) in msg.attachments.iter().enumerate() {
+            let place = FilePlace {
+                channel,
+                message: id,
+                index,
+            };
+            body.push(self.render_attachment(inst, place, attachment, cx));
         }
         if !msg.reactions.is_empty() {
             let chips = msg.reactions.iter().enumerate().map(|(n, r)| {
@@ -2134,7 +2171,7 @@ impl Shell {
         let jumped = view.is_some_and(|v| v.highlight == Some(id));
         let palette_open = view.is_some_and(|v| v.palette == Some(id));
         let highlight = m.mentions_me;
-        let click_inst = inst.clone();
+        let (click_inst, press_inst) = (inst.clone(), inst.clone());
         let target = Target::Message(inst.clone(), channel, id);
         let element = div()
             .id(SharedString::from(format!("message-{id}")))
@@ -2157,7 +2194,16 @@ impl Shell {
             .when(!selected && !jumped && !highlight, |d| {
                 d.hover(|d| d.bg(theme::hover_soft()))
             })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.text_press(&press_inst, channel, event.position, cx);
+                }),
+            )
             .on_click(cx.listener(move |this, _, window, cx| {
+                if this.selection.dragged {
+                    return;
+                }
                 let modifiers = window.modifiers();
                 let selectable = selectable_messages(this, &click_inst, channel);
                 if let Some(view) = this.chats.get_mut(&(click_inst.clone(), channel)) {
@@ -2205,7 +2251,9 @@ impl Shell {
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     cx.stop_propagation();
-                    this.open_menu(left.clone(), event.position(), window, cx);
+                    if !this.selection.dragged {
+                        this.open_menu(left.clone(), event.position(), window, cx);
+                    }
                 }),
             )
     }
@@ -2332,22 +2380,32 @@ impl Shell {
                 }
                 self.render_pieces(pieces, inst, channel, message, index, system, revealed, cx)
             }
-            Block::Code { code, .. } => div()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .p(px(8.))
-                        .rounded(px(4.))
-                        .bg(theme::code_background())
-                        .border_1()
-                        .border_color(theme::border())
-                        .text_size(theme::secondary_size())
-                        .whitespace_normal()
-                        .child(code),
-                )
-                .when(edited, |d| d.child(edited_mark()))
-                .into_any_element(),
+            Block::Code { code, .. } => {
+                let part = Part {
+                    message,
+                    index: selection::BLOCKS + index as u16,
+                };
+                let (text, record) = self.selectable(inst, channel, part, code, vec![]);
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .relative()
+                            .cursor_text()
+                            .p(px(8.))
+                            .rounded(px(4.))
+                            .bg(theme::code_background())
+                            .border_1()
+                            .border_color(theme::border())
+                            .text_size(theme::secondary_size())
+                            .whitespace_normal()
+                            .child(text)
+                            .child(record),
+                    )
+                    .when(edited, |d| d.child(edited_mark()))
+                    .into_any_element()
+            }
             Block::Quote(pieces) => div()
                 .flex()
                 .gap(px(8.))
@@ -2399,12 +2457,18 @@ impl Shell {
         if text.is_empty() {
             return div().into_any_element();
         }
-        let styled = StyledText::new(SharedString::from(text)).with_highlights(highlights);
+        let part = Part {
+            message,
+            index: selection::BLOCKS + index as u16,
+        };
+        let (styled, record) = self.selectable(inst, channel, part, text, highlights);
         let body = div()
+            .relative()
+            .cursor_text()
             .text_size(theme::body_size())
             .when(system, |d| d.text_color(theme::text_secondary()));
         if links.is_empty() {
-            return body.child(styled).into_any_element();
+            return body.child(styled).child(record).into_any_element();
         }
         let ranges: Vec<Range<usize>> = links.iter().map(|(range, _)| range.clone()).collect();
         let shell = cx.entity().downgrade();
@@ -2420,10 +2484,13 @@ impl Shell {
                 let link = link.clone();
                 let inst = inst.clone();
                 let _ = shell.update(cx, |this, cx| {
-                    this.follow_link(inst, channel, message, link, window, cx);
+                    if !this.selection.dragged {
+                        this.follow_link(inst, channel, message, link, window, cx);
+                    }
                 });
             },
         ))
+        .child(record)
         .into_any_element()
     }
 
@@ -2455,6 +2522,7 @@ impl Shell {
     fn render_attachment(
         &self,
         inst: &InstanceId,
+        place: FilePlace,
         a: &Attachment,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -2522,12 +2590,13 @@ impl Shell {
                 .into_any_element();
         }
         if crate::media::is_video(&a.content_type, &a.filename) {
-            return self.render_video_card(inst, a, cx);
+            return self.render_video_card(inst, place, a, cx);
         }
         if crate::media::is_sound(&a.content_type, &a.filename) {
-            return self.render_audio_card(inst, a, cx);
+            return self.render_audio_card(inst, place, a, cx);
         }
         let (down_inst, attachment) = (inst.clone(), a.clone());
+        let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
         div()
             .flex()
             .items_center()
@@ -2549,10 +2618,13 @@ impl Shell {
                     .min_w_0()
                     .child(
                         div()
+                            .relative()
+                            .cursor_text()
                             .truncate()
                             .text_size(theme::secondary_size())
                             .text_color(theme::link())
-                            .child(a.filename.clone()),
+                            .child(name)
+                            .children(name_record),
                     )
                     .child(
                         div()
@@ -2814,7 +2886,7 @@ const IMAGE_GROUP: &str = "chat-image";
 /// What a reply shows of the message it answers: the message itself when it is loaded (it may
 /// have been edited since), else the excerpt sent with the reply. An empty excerpt also means a
 /// message with only files, so "deleted" is said only when the loaded message says so.
-fn reply_text(loaded: Option<&ChatMessage>, excerpt: &str) -> String {
+pub(crate) fn reply_text(loaded: Option<&ChatMessage>, excerpt: &str) -> String {
     let files = |m: &ChatMessage| {
         m.attachments
             .iter()

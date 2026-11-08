@@ -22,6 +22,11 @@ impl Shell {
             cx.notify();
             return;
         }
+        let m = keystroke.modifiers;
+        if key == "c" && m.control && !m.alt && !m.shift && self.copy_selection(cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.composer_key(key, plain, window, cx) {
             cx.stop_propagation();
             cx.notify();
@@ -48,7 +53,6 @@ impl Shell {
         }
         // Typing goes to a focused text field; only combos with Ctrl, Alt or Super count there.
         let typing = window.focused(cx).is_some();
-        let m = keystroke.modifiers;
         if typing && !(m.control || m.alt || m.platform) {
             return;
         }
