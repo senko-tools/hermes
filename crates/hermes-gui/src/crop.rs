@@ -399,9 +399,12 @@ impl Shell {
 }
 
 impl Crop {
+    /// Zooms around the frame's middle: what is there stays there.
     fn set_zoom(&mut self, zoom: f32) {
-        self.zoom = zoom.clamp(1., MAX_ZOOM);
-        self.set_offset(self.offset);
+        let zoom = zoom.clamp(1., MAX_ZOOM);
+        let grow = zoom / self.zoom;
+        self.zoom = zoom;
+        self.set_offset((self.offset.0 * grow, self.offset.1 * grow));
     }
 
     fn set_offset(&mut self, offset: (f32, f32)) {
