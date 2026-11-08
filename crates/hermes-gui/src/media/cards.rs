@@ -47,6 +47,8 @@ const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 const PILL_W: f32 = 4.;
 /// The hover group of a card's download button.
 const DOWNLOAD_GROUP: &str = "media-download";
+/// The hover group of a sound card's speaker button.
+const SPEAKER_GROUP: &str = "media-speaker";
 /// The hover group of a video's seek bar: it grows under the mouse.
 const SEEK_GROUP: &str = "media-seek";
 /// A playing video's controls hide after the mouse rests this many seconds, fading this long.
@@ -339,7 +341,8 @@ impl Shell {
         self.persist("voice.media_muted", &muted.to_string(), cx);
     }
 
-    /// The wheel over a played card changes the volume of every file, and shows it there.
+    /// The wheel over a speaker button or a full view changes the volume of every file, and
+    /// shows it on that card.
     fn media_wheel(&mut self, key: &MediaKey, event: &ScrollEvent, cx: &mut Context<Self>) {
         let pixels = match event.delta {
             ScrollDelta::Pixels(p) => f64::from(p.y.as_f32()),
@@ -710,6 +713,45 @@ impl Shell {
             }))
     }
 
+    /// A sound card's speaker, once the file has played: a click mutes every file, and the wheel
+    /// over it sets their volume. Over the rest of a card the wheel scrolls the chat.
+    fn speaker_button(
+        &self,
+        key: &MediaKey,
+        a: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let glyph = if self.media_gain() <= 0. {
+            media_icons::VOLUME_OFF
+        } else {
+            assets::VOLUME
+        };
+        let wheel_key = key.clone();
+        div()
+            .id(SharedString::from(format!("speaker-{}", a.id)))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(22.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .group(SPEAKER_GROUP)
+            .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
+            .child(
+                icon(glyph, 15., theme::text_tertiary())
+                    .group_hover(SPEAKER_GROUP, |s| s.text_color(theme::accent())),
+            )
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.media_mute(cx);
+            }))
+            .on_scroll(cx.listener(move |this, event, _, cx| {
+                cx.stop_propagation();
+                this.media_wheel(&wheel_key, event, cx);
+            }))
+    }
+
     /// What a card says about a file: where it is and how long it lasts, and its size.
     fn media_meta(&self, key: &MediaKey, a: &Attachment) -> String {
         let (position, duration, _) = self.media_progress(key, a);
@@ -848,7 +890,7 @@ impl Shell {
                 .into_any_element()
         });
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let wheel_key = key.clone();
+        let speaker = item.is_some().then(|| self.speaker_button(&key, a, cx));
         div()
             .flex()
             .items_center()
@@ -862,13 +904,6 @@ impl Shell {
             .bg(theme::sidebar())
             .border_1()
             .border_color(theme::border())
-            // The wheel sets the volume once the file is loaded; before that it scrolls the chat.
-            .when(item.is_some(), |card| {
-                card.on_scroll(cx.listener(move |this, event, _, cx| {
-                    cx.stop_propagation();
-                    this.media_wheel(&wheel_key, event, cx);
-                }))
-            })
             .child(
                 play_button(
                     SharedString::from(format!("play-{}", a.id)),
@@ -903,6 +938,7 @@ impl Shell {
                                     .child(a.filename.clone()),
                             )
                             .child(meta)
+                            .children(speaker)
                             .child(self.download_button(inst, a, theme::text_tertiary(), cx)),
                     )
                     .child(match failed {
@@ -1114,7 +1150,8 @@ impl Shell {
     }
 
     /// What a video shows over its picture: its bars while they show, and it notes the mouse
-    /// moving over it. Clicking the picture plays or pauses; the wheel sets the volume.
+    /// moving over it. Clicking the picture plays or pauses. In the full view the wheel sets the
+    /// volume; in the chat it scrolls, and only the speaker button sets it.
     fn video_surface(
         &self,
         surface: gpui_kit::Stateful<Div>,
@@ -1142,10 +1179,12 @@ impl Shell {
                     cx.notify();
                 }
             }))
-            .on_scroll(cx.listener(move |this, event, _, cx| {
-                cx.stop_propagation();
-                this.media_wheel(&wheel_key, event, cx);
-            }))
+            .when(full, |d| {
+                d.on_scroll(cx.listener(move |this, event, _, cx| {
+                    cx.stop_propagation();
+                    this.media_wheel(&wheel_key, event, cx);
+                }))
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
                 this.media_toggle(click_inst.clone(), click_a.clone(), cx);
