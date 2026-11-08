@@ -188,7 +188,7 @@ impl Shell {
     /// Starts loading the avatar of everyone the store knows whose avatar is not loaded (or
     /// loading) yet. A changed avatar is a new attachment, so each is fetched once.
     pub fn load_avatars(&mut self, cx: &mut Context<Self>) {
-        let wanted: Vec<(InstanceId, Id)> = {
+        let wanted: Vec<(InstanceId, Id, String)> = {
             let store = self.core.store();
             store
                 .instances
@@ -200,12 +200,13 @@ impl Shell {
                         .filter_map(|u| u.avatar.as_ref())
                         // Server icons load the same way.
                         .chain(s.spaces.values().filter_map(|st| st.space.icon.as_ref()))
-                        .map(move |a| (inst.clone(), a.id))
+                        .map(move |a| (inst.clone(), a.id, a.filename.clone()))
                 })
-                .filter(|key| !self.images.avatars.contains_key(key))
+                .filter(|(inst, id, _)| !self.images.avatars.contains_key(&(inst.clone(), *id)))
                 .collect()
         };
-        for key in wanted {
+        for (inst, id, filename) in wanted {
+            let key = (inst, id);
             if self.images.avatars.contains_key(&key) {
                 continue; // two users with the same avatar
             }
@@ -216,7 +217,13 @@ impl Shell {
                 cx,
                 async move {
                     let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    let bytes = rest.thumbnail(id).await.map_err(|e| e.to_string())?;
+                    // The thumbnail of an animated picture is still: its original moves.
+                    let bytes = if maybe_animated("", &filename) {
+                        rest.download(id, &filename).await
+                    } else {
+                        rest.thumbnail(id).await
+                    }
+                    .map_err(|e| e.to_string())?;
                     tokio::task::spawn_blocking(move || decode(&bytes, Some(AVATAR_PIXELS)))
                         .await
                         .map_err(|e| e.to_string())?
@@ -364,7 +371,7 @@ fn initial(name: &str) -> SharedString {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A GIF of `frames` frames, `side` pixels square, each a different grey.
