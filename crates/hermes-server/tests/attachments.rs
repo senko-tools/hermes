@@ -5,6 +5,7 @@ mod common;
 use std::io::Cursor;
 
 use common::{Res, TestServer, start, start_with};
+use hermes_proto::api::PICTURE_MAX_BYTES;
 use hermes_server::config::RegistrationMode;
 use hermes_server::files;
 use hermes_server::time::now_ms;
@@ -445,6 +446,48 @@ async fn profile_banners_are_my_images_and_visible_to_everyone() {
         .await
         .ok();
     assert_eq!(me.get("banner"), None);
+}
+
+#[tokio::test]
+async fn avatars_banners_and_icons_are_limited_but_chat_images_are_not() {
+    let server = start("attachments-picture-limit", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    // A real picture, padded past its end to the wanted size.
+    let sized = |len: usize| {
+        let mut bytes = png(50, 20);
+        bytes.resize(len, 0);
+        bytes
+    };
+    let limit = PICTURE_MAX_BYTES as usize;
+    let too_big = id(&server
+        .upload(&owner, "big.png", "image/png", sized(limit + 1))
+        .await
+        .ok());
+    let fits = id(&server
+        .upload(&owner, "fits.png", "image/png", sized(limit))
+        .await
+        .ok());
+
+    let space = format!("/spaces/{space_id}");
+    for (path, field) in [
+        ("/users/@me", "avatar_id"),
+        ("/users/@me", "banner_id"),
+        (space.as_str(), "icon_id"),
+    ] {
+        let res: Res = server
+            .patch(path, Some(&owner), json!({ field: too_big }))
+            .await;
+        res.err(400, "VALIDATION_FAILED");
+        assert!(
+            res.body["error"]["fields"][field].is_string(),
+            "{}",
+            res.body
+        );
+        server
+            .patch(path, Some(&owner), json!({ field: fits }))
+            .await
+            .ok();
+    }
 }
 
 #[tokio::test]

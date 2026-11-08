@@ -142,6 +142,9 @@ pub struct UpdateMeRequest {
     pub banner_id: Patch<Id>,
 }
 
+/// The largest file an avatar, a profile banner or a server icon may be.
+pub const PICTURE_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
 impl UpdateMeRequest {
     pub const DISPLAY_NAME_CHARS: (usize, usize) = (1, 32);
     pub const STATUS_TEXT_CHARS: usize = 128;

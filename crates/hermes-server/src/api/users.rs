@@ -14,6 +14,7 @@ use hermes_proto::id::Id;
 use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
 use hermes_proto::permissions::Permissions;
 
+use super::attachments::own_picture;
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query};
 use crate::auth::{self, Auth};
@@ -175,12 +176,7 @@ pub async fn update_me(
         Some(None) => user.avatar = None,
         Some(Some(id)) if old.user.avatar.as_ref().is_some_and(|a| a.id == id) => {}
         Some(Some(id)) => {
-            let avatar = db::spaces::own_image(&state.db.read, id, auth.user_id)
-                .await?
-                .ok_or_else(|| {
-                    validate::field_error("avatar_id", "must be an image you uploaded")
-                })?;
-            user.avatar = Some(avatar);
+            user.avatar = Some(own_picture(&state, id, auth.user_id, "avatar_id").await?);
         }
     }
     match req.banner_id {
@@ -188,12 +184,7 @@ pub async fn update_me(
         Some(None) => user.banner = None,
         Some(Some(id)) if old.user.banner.as_ref().is_some_and(|a| a.id == id) => {}
         Some(Some(id)) => {
-            let banner = db::spaces::own_image(&state.db.read, id, auth.user_id)
-                .await?
-                .ok_or_else(|| {
-                    validate::field_error("banner_id", "must be an image you uploaded")
-                })?;
-            user.banner = Some(banner);
+            user.banner = Some(own_picture(&state, id, auth.user_id, "banner_id").await?);
         }
     }
     if user != old.user {

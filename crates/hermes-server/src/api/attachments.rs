@@ -13,8 +13,9 @@ use axum::http::header::{
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hermes_proto::ErrorCode;
+use hermes_proto::api::PICTURE_MAX_BYTES;
 use hermes_proto::id::Id;
-use hermes_proto::models::Attachment;
+use hermes_proto::models::{Attachment, AttachmentRef};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
@@ -122,6 +123,29 @@ pub async fn upload(
             Err(err)
         }
     }
+}
+
+/// The image `id` as an avatar, banner or server icon: `user_id` uploaded it and it is at most
+/// [`PICTURE_MAX_BYTES`]. A refusal names `field`.
+pub async fn own_picture(
+    state: &AppState,
+    id: Id,
+    user_id: Id,
+    field: &str,
+) -> ApiResult<AttachmentRef> {
+    let picture = db::spaces::own_image(&state.db.read, id, user_id)
+        .await?
+        .ok_or_else(|| validate::field_error(field, "must be an image you uploaded"))?;
+    let size = db::attachments::get(&state.db.read, id)
+        .await?
+        .map_or(0, |row| row.size);
+    if size > PICTURE_MAX_BYTES {
+        return Err(validate::field_error(
+            field,
+            format!("must be at most {} MB", PICTURE_MAX_BYTES / MIB),
+        ));
+    }
+    Ok(picture)
 }
 
 /// Streams `body` into `path`. `None` when it is larger than `max` bytes.

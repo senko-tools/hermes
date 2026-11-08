@@ -12,6 +12,7 @@ use hermes_proto::models::{AuditAction, Space};
 use hermes_proto::permissions::Permissions;
 use serde_json::{Map, Value, json};
 
+use super::attachments::own_picture;
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, audit, perms};
 use crate::auth::Auth;
@@ -121,10 +122,7 @@ pub async fn update(
         Some(None) => space.icon = None,
         Some(Some(id)) if old.icon.as_ref().is_some_and(|icon| icon.id == id) => {}
         Some(Some(id)) => {
-            let icon = db::spaces::own_image(&state.db.read, id, auth.user_id)
-                .await?
-                .ok_or_else(|| validate::field_error("icon_id", "must be an image you uploaded"))?;
-            space.icon = Some(icon);
+            space.icon = Some(own_picture(&state, id, auth.user_id, "icon_id").await?);
         }
     }
 
