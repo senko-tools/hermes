@@ -1275,7 +1275,14 @@ impl Core {
                             content: p.content.clone(),
                             nonce: p.nonce.clone(),
                             reply_to_id: p.reply_to,
-                            attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
+                            attachment_ids: p
+                                .attachments
+                                .iter()
+                                .flat_map(|a| {
+                                    let thumb = a.sealed.as_ref().and_then(|s| s.thumb.as_ref());
+                                    std::iter::once(a.id).chain(thumb.map(|t| t.id))
+                                })
+                                .collect(),
                             e2ee: None,
                             mentions: None,
                         },

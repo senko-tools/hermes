@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use hermes_proto::e2ee::{DeviceKeys, MessageLock, SealedFile};
+use hermes_proto::e2ee::{DeviceKeys, MessageLock, SealedFile, SealedThumb};
 use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, ChannelKind, Message, MessageKind};
 
@@ -379,11 +379,22 @@ impl Core {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
-        let (sealed, key, nonce, plain_size, compression) =
+        let (sealed, key, nonce, plain_size, compression, preview) =
             tokio::task::spawn_blocking(move || {
+                let preview = match crate::compress::preview(&bytes) {
+                    Some(preview) => Some(e2ee::seal_file(&preview)?),
+                    None => None,
+                };
                 let shrunk = crate::compress::shrink(bytes);
                 let (sealed, key, nonce) = e2ee::seal_file(&shrunk.bytes)?;
-                Ok::<_, E2eeError>((sealed, key, nonce, shrunk.plain_size, shrunk.compression))
+                Ok::<_, E2eeError>((
+                    sealed,
+                    key,
+                    nonce,
+                    shrunk.plain_size,
+                    shrunk.compression,
+                    preview,
+                ))
             })
             .await
             .map_err(|e| CoreError::Io(e.to_string()))?
@@ -394,6 +405,21 @@ impl Core {
             .rest(inst)?
             .upload(STORED_NAME, "application/octet-stream", sealed)
             .await?;
+        let thumb = match preview {
+            Some((sealed, key, nonce)) => {
+                let stored = self
+                    .rest(inst)?
+                    .upload(STORED_NAME, "application/octet-stream", sealed)
+                    .await?;
+                Some(SealedThumb {
+                    id: stored.id,
+                    key,
+                    nonce,
+                    stored_name: stored.filename,
+                })
+            }
+            None => None,
+        };
         let filename = path
             .file_name()
             .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
@@ -404,7 +430,7 @@ impl Core {
             size: plain_size,
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),
-            has_thumb: false,
+            has_thumb: thumb.is_some(),
             waveform: info.waveform,
             duration_ms: info.duration_ms,
             sealed: Some(SealedFile {
@@ -412,8 +438,23 @@ impl Core {
                 nonce,
                 stored_name: stored.filename,
                 compression,
+                thumb,
             }),
         })
+    }
+
+    /// The small preview of a picture. Only encrypted ones with a preview of their own, or plain
+    /// ones the server made one of.
+    pub async fn thumbnail(&self, inst: &str, attachment: &Attachment) -> Result<Vec<u8>> {
+        let rest = self.rest(inst)?;
+        let Some(thumb) = attachment.sealed.as_ref().and_then(|s| s.thumb.clone()) else {
+            return Ok(rest.thumbnail(attachment.id).await?);
+        };
+        let bytes = rest.download(thumb.id, &thumb.stored_name).await?;
+        tokio::task::spawn_blocking(move || e2ee::open_file(&bytes, &thumb.key, &thumb.nonce))
+            .await
+            .map_err(|e| CoreError::Io(e.to_string()))?
+            .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
     }
 
     /// Downloads an attachment, decrypting it if it is encrypted.
@@ -524,6 +565,7 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         key: sealed.key.clone(),
         nonce: sealed.nonce.clone(),
         compression: sealed.compression,
+        thumb: sealed.thumb.clone(),
     })
 }
 
@@ -568,7 +610,7 @@ fn apply_inner(message: &mut Message, inner: Inner) {
             size: attachment.size,
             width: attachment.width,
             height: attachment.height,
-            has_thumb: false,
+            has_thumb: attachment.thumb.is_some(),
             waveform: attachment.waveform,
             duration_ms: attachment.duration_ms,
             sealed: Some(SealedFile {
@@ -576,6 +618,7 @@ fn apply_inner(message: &mut Message, inner: Inner) {
                 nonce: attachment.nonce,
                 stored_name: on_server.filename.clone(),
                 compression: attachment.compression,
+                thumb: attachment.thumb,
             }),
         });
     }

@@ -1193,3 +1193,55 @@ async fn files_in_channels_are_encrypted_with_their_names() {
         "the plan, again and again, ".repeat(500).into_bytes()
     );
 }
+
+#[tokio::test]
+async fn a_picture_in_a_channel_has_a_sealed_preview_beside_it() {
+    let server = start_with("channel-preview", true).await;
+    let (alice, _a_events, a, _, channel, _) = channel_pair(&server).await;
+    let path = server.dir.join("photo.png");
+    let picture = image::RgbImage::from_fn(1600, 1200, |x, y| {
+        image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 239) as u8])
+    });
+    picture
+        .save_with_format(&path, image::ImageFormat::Png)
+        .unwrap();
+    let file = alice
+        .upload_to(&a, channel, &path, Default::default())
+        .await
+        .unwrap();
+    alice
+        .send_message(
+            &a,
+            channel,
+            Draft {
+                content: "look".into(),
+                reply_to: None,
+                attachments: vec![file],
+            },
+        )
+        .unwrap();
+    wait_for_window(&alice, &a, channel, "look").await;
+    let opened = alice
+        .store()
+        .instance(&a)
+        .unwrap()
+        .window(channel)
+        .unwrap()
+        .messages[0]
+        .attachments
+        .clone();
+    assert_eq!(opened.len(), 1, "the preview is no file of its own");
+    assert!(opened[0].has_thumb);
+    let preview = alice.thumbnail(&a, &opened[0]).await.unwrap();
+    let shown = image::load_from_memory(&preview).unwrap();
+    assert_eq!((shown.width(), shown.height()), (400, 300));
+
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .messages(channel, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(raw[0].attachments.len(), 2, "the file and its preview");
+    assert!(raw[0].attachments.iter().all(|a| !a.has_thumb));
+}

@@ -302,6 +302,8 @@ pub struct InnerAttachment {
     pub nonce: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<hermes_proto::e2ee::Compression>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<hermes_proto::e2ee::SealedThumb>,
 }
 
 /// What a message says, inside its envelope.

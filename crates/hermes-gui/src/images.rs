@@ -336,10 +336,14 @@ impl Shell {
         self.run(
             cx,
             async move {
-                // An encrypted picture has no thumbnail on the server: the server cannot see it.
+                // An encrypted picture may have a preview of its own; the server cannot make one.
                 // The thumbnail of an animated one is still, so its original is loaded too.
                 let animated = maybe_animated(&attachment.content_type, &attachment.filename);
-                let (bytes, max) = if attachment.sealed.is_some() || animated {
+                let no_preview = attachment
+                    .sealed
+                    .as_ref()
+                    .is_some_and(|sealed| sealed.thumb.is_none());
+                let (bytes, max) = if no_preview || animated {
                     let bytes = core.download(&inst, &attachment).await;
                     let max = if animated {
                         ANIMATED_PREVIEW
@@ -348,8 +352,8 @@ impl Shell {
                     };
                     (bytes.map_err(|e| e.to_string())?, Some(max))
                 } else {
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    (rest.thumbnail(id).await.map_err(|e| e.to_string())?, None)
+                    let bytes = core.thumbnail(&inst, &attachment).await;
+                    (bytes.map_err(|e| e.to_string())?, None)
                 };
                 tokio::task::spawn_blocking(move || decode_preview(&bytes, max))
                     .await

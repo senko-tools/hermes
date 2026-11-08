@@ -467,7 +467,10 @@ pub struct SendMessageRequest {
 
 impl SendMessageRequest {
     pub const MAX_NONCE_CHARS: usize = 64;
-    pub const MAX_ATTACHMENTS: usize = 10;
+    /// Files a message can carry.
+    pub const MAX_FILES: usize = 10;
+    /// Uploads it can link: its files, and the encrypted preview of each.
+    pub const MAX_ATTACHMENTS: usize = 2 * Self::MAX_FILES;
 }
 
 /// `PATCH /channels/{id}/messages/{mid}`.

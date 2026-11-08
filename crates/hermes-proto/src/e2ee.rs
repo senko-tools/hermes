@@ -220,6 +220,18 @@ pub struct SealedFile {
     /// What was done to the file before it was encrypted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<Compression>,
+    /// A small preview of a picture, encrypted and stored beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<SealedThumb>,
+}
+
+/// Where a picture's encrypted preview is, and its key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedThumb {
+    pub id: Id,
+    pub key: String,
+    pub nonce: String,
+    pub stored_name: String,
 }
 
 /// How a file was made smaller before it was encrypted.

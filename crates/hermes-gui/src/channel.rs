@@ -54,6 +54,8 @@ pub struct Upload {
     pub state: UploadState,
 }
 
+// A few at a time, and short-lived: not worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum UploadState {
     Uploading,
