@@ -1244,7 +1244,12 @@ impl Shell {
         });
     }
 
-    fn open_image(&mut self, inst: InstanceId, attachment: Attachment, cx: &mut Context<Self>) {
+    pub(crate) fn open_image(
+        &mut self,
+        inst: InstanceId,
+        attachment: Attachment,
+        cx: &mut Context<Self>,
+    ) {
         self.viewer = Some(Viewer {
             inst: inst.clone(),
             attachment: attachment.clone(),
@@ -2244,10 +2249,7 @@ impl Shell {
     ) -> impl IntoElement + use<> {
         let target = Target::Member(inst.clone(), space, user);
         let left = target.clone();
-        self.with_menu(element, target, cx)
-            .on_mouse_up(MouseButton::Right, |_, _, cx: &mut App| {
-                cx.stop_propagation()
-            })
+        self.with_own_menu(element, target, cx)
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     cx.stop_propagation();
@@ -2531,7 +2533,7 @@ impl Shell {
             let picture = self.images.thumbs.get(&(inst.clone(), a.id));
             if let Some(Img::Ready(image)) = picture {
                 let (open_inst, attachment) = (inst.clone(), a.clone());
-                return div()
+                let picture = div()
                     .id(SharedString::from(format!("image-{}", a.id)))
                     .relative()
                     .mt(px(4.))
@@ -2567,7 +2569,9 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.open_image(open_inst.clone(), attachment.clone(), cx);
-                    }))
+                    }));
+                return self
+                    .with_file_menu(picture, inst, place, a.id, cx)
                     .into_any_element();
             }
             let text = if matches!(picture, Some(Img::Failed)) {
@@ -2575,7 +2579,8 @@ impl Shell {
             } else {
                 "Loading…"
             };
-            return div()
+            let waiting = div()
+                .id(SharedString::from(format!("image-{}", a.id)))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -2586,7 +2591,9 @@ impl Shell {
                 .bg(theme::code_background())
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
-                .child(text)
+                .child(text);
+            return self
+                .with_file_menu(waiting, inst, place, a.id, cx)
                 .into_any_element();
         }
         if crate::media::is_video(&a.content_type, &a.filename) {
@@ -2597,7 +2604,8 @@ impl Shell {
         }
         let (down_inst, attachment) = (inst.clone(), a.clone());
         let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
-        div()
+        let card = div()
+            .id(SharedString::from(format!("file-{}", a.id)))
             .flex()
             .items_center()
             .gap(px(12.))
@@ -2642,7 +2650,8 @@ impl Shell {
                     cx.stop_propagation();
                     this.download(down_inst.clone(), attachment.clone(), cx);
                 })),
-            )
+            );
+        self.with_file_menu(card, inst, place, a.id, cx)
             .into_any_element()
     }
 

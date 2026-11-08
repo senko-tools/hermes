@@ -222,7 +222,12 @@ fn play_button(
 
 impl Shell {
     /// Play or pause; the first click loads the file.
-    fn media_toggle(&mut self, inst: InstanceId, attachment: Attachment, cx: &mut Context<Self>) {
+    pub(crate) fn media_toggle(
+        &mut self,
+        inst: InstanceId,
+        attachment: Attachment,
+        cx: &mut Context<Self>,
+    ) {
         let key = (inst.clone(), attachment.id);
         match self.media.items.get(&key).map(|i| &i.load) {
             Some(Load::Ready(player)) => {
@@ -310,6 +315,22 @@ impl Shell {
             },
         );
         cx.notify();
+    }
+
+    /// Whether this file is playing now.
+    pub(crate) fn media_playing(&self, inst: &str, id: Id) -> bool {
+        matches!(
+            self.media.items.get(&(inst.to_owned(), id)).map(|i| &i.load),
+            Some(Load::Ready(player)) if player.playing()
+        )
+    }
+
+    /// Whether this file is a video that has loaded, so the full view can show it.
+    pub(crate) fn media_can_go_full(&self, inst: &str, id: Id) -> bool {
+        matches!(
+            self.media.items.get(&(inst.to_owned(), id)).map(|i| &i.load),
+            Some(Load::Ready(player)) if player.probe.video.is_some()
+        )
     }
 
     /// Plays a loaded file; whatever else plays pauses first (they share the output).
@@ -404,7 +425,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn media_full(&mut self, key: &MediaKey, full: bool, cx: &mut Context<Self>) {
+    pub(crate) fn media_full(&mut self, key: &MediaKey, full: bool, cx: &mut Context<Self>) {
         if let Some(item) = self.media.items.get_mut(key) {
             item.full = full;
             cx.notify();
@@ -923,7 +944,8 @@ impl Shell {
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
         let speaker = item.is_some().then(|| self.speaker_button(&key, a, cx));
         let (name, name_record) = self.selectable_file_name(inst, Some(place), &a.filename);
-        div()
+        let card = div()
+            .id(SharedString::from(format!("audio-{}", a.id)))
             .flex()
             .items_center()
             .gap(px(12.))
@@ -988,7 +1010,8 @@ impl Shell {
                         // Up to the edge of the download button above it.
                         None => wave.mr(px(4.)).into_any_element(),
                     }),
-            )
+            );
+        self.with_file_menu(card, inst, place, a.id, cx)
             .into_any_element()
     }
 
@@ -1278,7 +1301,7 @@ impl Shell {
             .bg(gpui_kit::rgb(0x000000))
             .border_1()
             .border_color(theme::border());
-        match item.map(|i| (&i.load, i.full)) {
+        let element = match item.map(|i| (&i.load, i.full)) {
             Some((Load::Ready(player), full)) => {
                 let picture = if full {
                     div()
@@ -1299,14 +1322,12 @@ impl Shell {
                     }
                 };
                 self.video_surface(card.child(picture), &key, Some(place), a, false, cx)
-                    .into_any_element()
             }
             Some((Load::Failed(err), _)) => card
                 .text_size(theme::caption_size())
                 .text_color(theme::danger())
                 .child(err.clone())
-                .child(self.video_top(inst, Some(place), a, cx))
-                .into_any_element(),
+                .child(self.video_top(inst, Some(place), a, cx)),
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
                 let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
@@ -1323,9 +1344,10 @@ impl Shell {
                     })),
                 )
                 .child(self.video_top(inst, Some(place), a, cx))
-                .into_any_element()
             }
-        }
+        };
+        self.with_file_menu(element, inst, place, a.id, cx)
+            .into_any_element()
     }
 
     /// A video in full view, over the whole window.

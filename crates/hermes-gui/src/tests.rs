@@ -338,6 +338,27 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
                 .is_some_and(|w| w.pending.is_empty() && !w.messages.is_empty())
         })
         .await;
+        let notes = server.dir.join("notes.txt");
+        std::fs::write(&notes, "some notes").unwrap();
+        let file = core
+            .upload_to(&inst, channel, &notes, Default::default())
+            .await
+            .unwrap();
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                attachments: vec![file],
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+        eventually(&core, "the file is sent", |s| {
+            s.instance(&inst)
+                .and_then(|s| s.window(channel))
+                .is_some_and(|w| w.pending.is_empty() && w.messages.len() == 2)
+        })
+        .await;
         (server, inst, space.space.id, channel)
     });
 
@@ -454,6 +475,81 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
     visual.update(|_, cx| {
         assert_eq!(shell.read(cx).selected_text(), None);
     });
+
+    // A right click on a file opens the file's menu, on a name the person's, not the message's.
+    let (first, with_file) = visual.update(|_, cx| {
+        let core = shell.read(cx).core.clone();
+        let store = core.store();
+        let window = store
+            .instance(&inst)
+            .and_then(|s| s.window(channel))
+            .unwrap();
+        (window.messages[0].id, window.messages[1].clone())
+    });
+    let file_part = crate::selection::Part {
+        message: with_file.id,
+        index: crate::selection::FILES,
+    };
+    let author_part = crate::selection::Part {
+        message: first,
+        index: crate::selection::AUTHOR,
+    };
+    let right = gpui_kit::MouseButton::Right;
+    let menu_target = Target::File(
+        inst.clone(),
+        channel,
+        with_file.id,
+        with_file.attachments[0].id,
+    );
+    let person = visual.update(|_, cx| {
+        shell
+            .read(cx)
+            .core
+            .store()
+            .instance(&inst)
+            .unwrap()
+            .me_id()
+            .unwrap()
+    });
+    let wanted = [
+        (file_part, menu_target),
+        (
+            author_part,
+            Target::Member(inst.clone(), Some(space), person),
+        ),
+    ];
+    for (part, wanted) in wanted {
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        let at = visual
+            .update(|_, cx| shell.read(cx).selection.bounds_of(part))
+            .expect("drawn")
+            .center();
+        visual.simulate_mouse_move(at, None, Modifiers::none());
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        visual.simulate_mouse_down(at, right, Modifiers::none());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            assert_eq!(shell.read(cx).right_pressed.as_ref(), Some(&wanted));
+        });
+        visual.simulate_mouse_up(at, right, Modifiers::none());
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            shell.update(cx, |this, cx| {
+                assert!(this.menu.is_some(), "the menu of {wanted:?} opened");
+                this.menu = None;
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+    }
 
     // Each kind of menu opens and draws, submenus included.
     let targets = [

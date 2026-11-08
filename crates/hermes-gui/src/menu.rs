@@ -11,8 +11,10 @@ use gpui_kit::{
     div, px,
 };
 use hermes_client_core::gateway::ConnStatus;
+use hermes_client_core::proto::id::Id;
 
 use crate::menu_entries::{self, Entries, Entry, Grouped, Target};
+use crate::selection::FilePlace;
 use crate::shell::Shell;
 
 pub struct OpenMenu {
@@ -105,7 +107,95 @@ impl Shell {
         cx.notify();
     }
 
+    /// Gives a file its own menu instead of its message's.
+    pub fn with_file_menu(
+        &self,
+        element: Stateful<Div>,
+        inst: &str,
+        place: FilePlace,
+        attachment: Id,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let target = Target::File(inst.to_owned(), place.channel, place.message, attachment);
+        self.with_own_menu(element, target, cx)
+    }
+
+    /// [`Shell::with_menu`] for something inside an element with a menu of its own. gpui calls
+    /// an element's listeners last added first, so what stops the event is added before the menu.
+    pub fn with_own_menu(
+        &self,
+        element: Stateful<Div>,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let element = element
+            .on_mouse_down(MouseButton::Right, |_, _, cx: &mut App| {
+                cx.stop_propagation()
+            })
+            .on_mouse_up(MouseButton::Right, |_, _, cx: &mut App| {
+                cx.stop_propagation()
+            });
+        self.with_menu(element, target, cx)
+    }
+
+    /// The menu of a file: opening it, downloading it, copying its name.
+    fn file_lines(&self, inst: &str, channel: Id, message: Id, file: Id) -> Vec<Line> {
+        let attachment = {
+            let store = self.core.store();
+            store.instance(inst).and_then(|s| {
+                s.window(channel)?
+                    .get(message)?
+                    .attachments
+                    .iter()
+                    .find(|a| a.id == file)
+                    .cloned()
+            })
+        };
+        let Some(a) = attachment else {
+            return Vec::new();
+        };
+        let inst = inst.to_owned();
+        let mut lines = Vec::new();
+        if crate::channel::is_image(&a) {
+            let (open_inst, open) = (inst.clone(), a.clone());
+            lines.push(run_line("Open", move |this, _, cx| {
+                this.open_image(open_inst.clone(), open.clone(), cx);
+            }));
+        } else if crate::media::is_video(&a.content_type, &a.filename)
+            || crate::media::is_sound(&a.content_type, &a.filename)
+        {
+            let (play_inst, play) = (inst.clone(), a.clone());
+            let label = if self.media_playing(&inst, a.id) {
+                "Pause"
+            } else {
+                "Play"
+            };
+            lines.push(run_line(label, move |this, _, cx| {
+                this.media_toggle(play_inst.clone(), play.clone(), cx);
+            }));
+            if self.media_can_go_full(&inst, a.id) {
+                let full_inst = inst.clone();
+                let id = a.id;
+                lines.push(run_line("Full view", move |this, _, cx| {
+                    this.media_full(&(full_inst.clone(), id), true, cx);
+                }));
+            }
+        }
+        let (save_inst, save) = (inst, a.clone());
+        lines.push(run_line("Download", move |this, _, cx| {
+            this.download(save_inst.clone(), save.clone(), cx);
+        }));
+        let name = a.filename;
+        lines.push(run_line("Copy file name", move |this, _, cx| {
+            this.copy(name.clone(), "File name", cx);
+        }));
+        lines
+    }
+
     fn menu_lines(&self, target: &Target) -> Vec<Line> {
+        if let Target::File(inst, channel, message, file) = target {
+            return self.file_lines(inst, *channel, *message, *file);
+        }
         let status = target
             .inst()
             .map_or(ConnStatus::Connected, |inst| self.core.status(inst));

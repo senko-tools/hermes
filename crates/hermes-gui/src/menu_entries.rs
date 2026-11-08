@@ -21,6 +21,8 @@ pub enum Target {
     Message(InstanceId, Id, Id),
     /// Messages selected together in a channel (deleted at once): instance, channel, messages.
     Messages(InstanceId, Id, Vec<Id>),
+    /// A file in a message: instance, channel, message, attachment.
+    File(InstanceId, Id, Id, Id),
     /// A person in a member list, a voice room or a message: instance, space (`None` in a DM),
     /// user.
     Member(InstanceId, Option<Id>, Id),
@@ -44,6 +46,7 @@ impl Target {
             | Target::Channel(inst, _)
             | Target::Message(inst, ..)
             | Target::Messages(inst, ..)
+            | Target::File(inst, ..)
             | Target::Member(inst, ..)
             | Target::Role(inst, ..)
             | Target::Invite(inst, ..)
@@ -602,7 +605,7 @@ pub fn entries_with(
             }
         }
         // Selected messages have a bar of their own, not a menu.
-        Target::Messages(..) => {}
+        Target::Messages(..) | Target::File(..) => {}
         Target::Me(inst) => {
             let current = extra.presence.unwrap_or(PresenceStatus::Online);
             for (action, status) in [
