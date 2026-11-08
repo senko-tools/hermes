@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, message_id AS \"message_id!\", filename, content_type, size, width, height,\n                  has_thumb AS \"has_thumb: bool\"\n           FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id",
+  "query": "SELECT id, uploader_id, message_id, filename, content_type, size, width, height,\n                  has_thumb AS \"has_thumb: bool\", sha256, created_at, waveform, duration_ms\n           FROM attachments WHERE id = ?",
   "describe": {
     "columns": [
       {
@@ -15,8 +15,19 @@
         }
       },
       {
-        "name": "message_id!",
+        "name": "uploader_id",
         "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "uploader_id"
+          }
+        }
+      },
+      {
+        "name": "message_id",
+        "ordinal": 2,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -27,7 +38,7 @@
       },
       {
         "name": "filename",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "content_type",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "size",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "width",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "height",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,12 +93,56 @@
       },
       {
         "name": "has_thumb: bool",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "attachments",
             "name": "has_thumb"
+          }
+        }
+      },
+      {
+        "name": "sha256",
+        "ordinal": 9,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "waveform",
+        "ordinal": 11,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "waveform"
+          }
+        }
+      },
+      {
+        "name": "duration_ms",
+        "ordinal": 12,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "duration_ms"
           }
         }
       }
@@ -97,14 +152,19 @@
     },
     "nullable": [
       false,
+      false,
       true,
       false,
       false,
       false,
       true,
       true,
-      false
+      false,
+      false,
+      false,
+      true,
+      true
     ]
   },
-  "hash": "17709313b901323556880cf95868ca9433d06c3f4da859add516333a8aa42b89"
+  "hash": "49b4656a74fc3a89ffd0d3f315c4b8dcbb4feac912588a6f92630d4c2a435d68"
 }

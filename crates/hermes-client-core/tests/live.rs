@@ -729,7 +729,10 @@ async fn files_in_direct_messages_are_encrypted_with_their_names() {
     let path = server.dir.join("holiday-plans.txt");
     std::fs::write(&path, b"secret file contents").unwrap();
 
-    let attachment = alice.upload_to(&a, dm, &path, None).await.unwrap();
+    let attachment = alice
+        .upload_to(&a, dm, &path, Default::default())
+        .await
+        .unwrap();
     assert_eq!(attachment.filename, "holiday-plans.txt");
     assert_eq!(attachment.size, 20);
     alice

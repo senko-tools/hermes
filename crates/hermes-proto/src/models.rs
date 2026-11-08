@@ -220,9 +220,23 @@ pub struct Attachment {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub has_thumb: bool,
+    /// A sound's loudness from start to end, one byte (0 to 255) per bar, measured by the
+    /// client that uploaded it. Older servers and clients send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<Vec<u8>>,
+    /// How long a sound or video lasts, measured the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     /// The key of an encrypted file, from inside its message. Never on the wire.
     #[serde(skip)]
     pub sealed: Option<crate::e2ee::SealedFile>,
+}
+
+impl Attachment {
+    /// The most bytes a waveform may have.
+    pub const WAVEFORM_MAX: usize = 256;
+    /// The longest duration a file may claim: a week.
+    pub const DURATION_MAX_MS: u64 = 7 * 24 * 3600 * 1000;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

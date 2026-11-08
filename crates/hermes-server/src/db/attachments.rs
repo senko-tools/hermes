@@ -20,6 +20,9 @@ pub struct AttachmentRow {
     pub has_thumb: bool,
     pub sha256: [u8; 32],
     pub created_at: i64,
+    /// What the uploader measured of a sound or video.
+    pub waveform: Option<Vec<u8>>,
+    pub duration_ms: Option<u64>,
 }
 
 impl AttachmentRow {
@@ -32,6 +35,8 @@ impl AttachmentRow {
             width: self.width,
             height: self.height,
             has_thumb: self.has_thumb,
+            waveform: self.waveform.clone(),
+            duration_ms: self.duration_ms,
             sealed: None,
         }
     }
@@ -48,10 +53,14 @@ pub async fn insert(e: impl SqliteExecutor<'_>, row: &AttachmentRow) -> Result<(
     let size = i64::try_from(row.size).unwrap_or(i64::MAX);
     let (width, height) = (row.width.map(i64::from), row.height.map(i64::from));
     let sha256 = row.sha256.as_slice();
+    let duration_ms = row
+        .duration_ms
+        .map(|d| i64::try_from(d).unwrap_or(i64::MAX));
     sqlx::query!(
         "INSERT INTO attachments (id, uploader_id, message_id, filename, content_type, size,
-                                  width, height, has_thumb, sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                  width, height, has_thumb, sha256, created_at, waveform,
+                                  duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         uploader_id,
         message_id,
@@ -62,7 +71,9 @@ pub async fn insert(e: impl SqliteExecutor<'_>, row: &AttachmentRow) -> Result<(
         height,
         row.has_thumb,
         sha256,
-        row.created_at
+        row.created_at,
+        row.waveform,
+        duration_ms
     )
     .execute(e)
     .await?;
@@ -73,7 +84,7 @@ pub async fn get(e: impl SqliteExecutor<'_>, id: Id) -> Result<Option<Attachment
     let id = id.to_i64();
     let Some(r) = sqlx::query!(
         r#"SELECT id, uploader_id, message_id, filename, content_type, size, width, height,
-                  has_thumb AS "has_thumb: bool", sha256, created_at
+                  has_thumb AS "has_thumb: bool", sha256, created_at, waveform, duration_ms
            FROM attachments WHERE id = ?"#,
         id
     )
@@ -97,6 +108,11 @@ pub async fn get(e: impl SqliteExecutor<'_>, id: Id) -> Result<Option<Attachment
         has_thumb: r.has_thumb,
         sha256,
         created_at: r.created_at,
+        waveform: r.waveform,
+        duration_ms: r
+            .duration_ms
+            .map(|d| int(d, "attachments.duration_ms"))
+            .transpose()?,
     }))
 }
 

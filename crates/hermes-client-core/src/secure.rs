@@ -301,17 +301,20 @@ impl Core {
     }
 
     /// Uploads a file to attach in `channel`. In a DM it is encrypted first, and the server sees
-    /// neither its name nor its type. `size`: its pixels, if it is a picture.
+    /// neither its name nor its type, nor what `info` says of it.
     pub async fn upload_to(
         &self,
         inst: &str,
         channel: Id,
         path: &Path,
-        size: Option<(u32, u32)>,
+        info: FileInfo,
     ) -> Result<Attachment> {
         if !self.channel_is_private(inst, channel) {
-            return self.upload(inst, path).await;
+            return self
+                .upload_measured(inst, path, info.waveform.as_deref(), info.duration_ms)
+                .await;
         }
+        let size = info.size;
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
@@ -335,6 +338,8 @@ impl Core {
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),
             has_thumb: false,
+            waveform: info.waveform,
+            duration_ms: info.duration_ms,
             sealed: Some(SealedFile {
                 key,
                 nonce,
@@ -423,6 +428,16 @@ pub(crate) fn keys_of(keys: &AccountKeys, users: &[Id]) -> ConversationKeys {
     }
 }
 
+/// What the uploader knows of a file beyond its bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileInfo {
+    /// Its pixels, if it is a picture.
+    pub size: Option<(u32, u32)>,
+    /// A sound's loudness, a byte per bar, and how long a sound or video lasts.
+    pub waveform: Option<Vec<u8>>,
+    pub duration_ms: Option<u64>,
+}
+
 fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
     let sealed = attachment.sealed.as_ref()?;
     Some(InnerAttachment {
@@ -432,6 +447,8 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         size: attachment.size,
         width: attachment.width,
         height: attachment.height,
+        waveform: attachment.waveform.clone(),
+        duration_ms: attachment.duration_ms,
         key: sealed.key.clone(),
         nonce: sealed.nonce.clone(),
     })
@@ -465,6 +482,8 @@ fn apply_inner(message: &mut Message, inner: Inner) {
             width: attachment.width,
             height: attachment.height,
             has_thumb: false,
+            waveform: attachment.waveform,
+            duration_ms: attachment.duration_ms,
             sealed: Some(SealedFile {
                 key: attachment.key,
                 nonce: attachment.nonce,

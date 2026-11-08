@@ -222,16 +222,29 @@ impl TestServer {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Res {
-        let res = self
+        self.upload_with(token, filename, content_type, bytes, &[])
+            .await
+    }
+
+    /// [`TestServer::upload`] with more headers.
+    pub async fn upload_with(
+        &self,
+        token: &str,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> Res {
+        let mut req = self
             .client
             .post(format!("{}/attachments", self.base))
             .bearer_auth(token)
             .header("content-type", content_type)
-            .header("x-filename", filename)
-            .body(bytes)
-            .send()
-            .await
-            .unwrap();
+            .header("x-filename", filename);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        let res = req.body(bytes).send().await.unwrap();
         let status = res.status();
         let text = res.text().await.unwrap();
         let body = serde_json::from_str(&text).unwrap_or(Value::Null);

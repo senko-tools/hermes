@@ -1459,7 +1459,10 @@ impl App {
         let reply_to = self.reply_to.take();
         self.info(format!("uploading {}…", path.display()));
         tokio::spawn(async move {
-            match core.upload_to(&inst, channel, &path, None).await {
+            match core
+                .upload_to(&inst, channel, &path, Default::default())
+                .await
+            {
                 Ok(attachment) => {
                     let draft = Draft {
                         content: String::new(),

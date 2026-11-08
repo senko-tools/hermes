@@ -1122,13 +1122,19 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let picture = path.clone();
-                let size =
-                    tokio::task::spawn_blocking(move || image::image_dimensions(&picture).ok())
-                        .await
-                        .ok()
-                        .flatten();
-                core.upload_to(&inst, channel, &path, size)
+                // A picture's size, a sound's waveform and a video's length go with it.
+                let file = path.clone();
+                let info = tokio::task::spawn_blocking(move || {
+                    let (waveform, duration_ms) = crate::media::measure_file(&file);
+                    hermes_client_core::secure::FileInfo {
+                        size: image::image_dimensions(&file).ok(),
+                        waveform,
+                        duration_ms,
+                    }
+                })
+                .await
+                .unwrap_or_default();
+                core.upload_to(&inst, channel, &path, info)
                     .await
                     .map_err(|e| e.to_string())
             },
@@ -2791,6 +2797,8 @@ mod tests {
             width: w,
             height: h,
             has_thumb: true,
+            waveform: None,
+            duration_ms: None,
             sealed: None,
         }
     }

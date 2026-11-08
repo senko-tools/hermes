@@ -446,3 +446,67 @@ async fn profile_banners_are_my_images_and_visible_to_everyone() {
         .ok();
     assert_eq!(me.get("banner"), None);
 }
+
+#[tokio::test]
+async fn sounds_keep_the_waveform_and_length_their_uploader_measured() {
+    let server = start("attachments-measured", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let general = server.channel_id(&space_id, "general");
+    let measured = [("x-waveform", "00ff7f"), ("x-duration-ms", "61500")];
+
+    let sound = server
+        .upload_with(
+            &owner,
+            "song.mp3",
+            "audio/mpeg",
+            b"ID3 not really".to_vec(),
+            &measured,
+        )
+        .await
+        .ok();
+    assert_eq!(sound["waveform"], json!([0, 255, 127]));
+    assert_eq!(sound["duration_ms"], 61500);
+
+    // In the message too.
+    let message = server
+        .post(
+            &format!("/channels/{general}/messages"),
+            Some(&owner),
+            json!({ "content": "", "attachment_ids": [id(&sound)], "nonce": "n" }),
+        )
+        .await
+        .ok();
+    assert_eq!(message["attachments"][0]["waveform"], json!([0, 255, 127]));
+    assert_eq!(message["attachments"][0]["duration_ms"], 61500);
+
+    // A picture has neither, whatever is claimed.
+    let picture = server
+        .upload_with(&owner, "a.png", "image/png", png(4, 4), &measured)
+        .await
+        .ok();
+    assert_eq!(picture.get("waveform"), None);
+    assert_eq!(picture.get("duration_ms"), None);
+
+    // Nonsense is refused.
+    for bad in [
+        ("x-waveform", "0"),
+        ("x-waveform", "zz"),
+        ("x-duration-ms", "-5"),
+    ] {
+        server
+            .upload_with(&owner, "s.mp3", "audio/mpeg", b"x".to_vec(), &[bad])
+            .await
+            .err(400, "VALIDATION_FAILED");
+    }
+    let long = "ab".repeat(257);
+    server
+        .upload_with(
+            &owner,
+            "s.mp3",
+            "audio/mpeg",
+            b"x".to_vec(),
+            &[("x-waveform", &long)],
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+}

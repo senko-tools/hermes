@@ -687,13 +687,32 @@ impl Rest {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Result<Attachment> {
-        let req = self
+        self.upload_measured(filename, content_type, bytes, None, None)
+            .await
+    }
+
+    /// An upload with what was measured of a sound or video: its waveform and length.
+    pub async fn upload_measured(
+        &self,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        waveform: Option<&[u8]>,
+        duration_ms: Option<u64>,
+    ) -> Result<Attachment> {
+        let mut req = self
             .request(Method::POST, "/attachments")
             .timeout(UPLOAD_TIMEOUT)
             .header("content-type", content_type)
-            .header("x-filename", encode(filename))
-            .body(bytes);
-        Self::json(req).await
+            .header("x-filename", encode(filename));
+        if let Some(waveform) = waveform.filter(|w| !w.is_empty()) {
+            let hex: String = waveform.iter().map(|b| format!("{b:02x}")).collect();
+            req = req.header("x-waveform", hex);
+        }
+        if let Some(ms) = duration_ms {
+            req = req.header("x-duration-ms", ms.to_string());
+        }
+        Self::json(req.body(bytes)).await
     }
 
     pub async fn download(&self, attachment: Id, filename: &str) -> Result<Vec<u8>> {

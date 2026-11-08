@@ -5,6 +5,7 @@
 //! - [`capture`] / [`playback`]: the pipelines themselves, usable without devices
 //! - [`dsp`], [`codec`], [`jitter`], [`mixer`], [`sounds`]: building blocks
 //! - [`devices`]: listing and opening cpal devices
+//! - [`media`]: playing a decoded media file outside calls
 
 pub mod capture;
 pub mod codec;
@@ -12,6 +13,7 @@ pub mod devices;
 pub mod dsp;
 pub mod engine;
 pub mod jitter;
+pub mod media;
 pub mod mixer;
 pub mod playback;
 pub mod sounds;

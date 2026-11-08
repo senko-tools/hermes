@@ -37,7 +37,8 @@ const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
 /// Raw body with `Content-Type` and `X-Filename` (URL-encoded) → `Attachment`, unattached until
-/// a message (or avatar/icon) uses it.
+/// a message (or avatar/icon) uses it. A sound or video may come with what its uploader
+/// measured: `X-Waveform` (hex, a byte per bar) and `X-Duration-Ms`.
 pub async fn upload(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -56,6 +57,7 @@ pub async fn upload(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map_or_else(|| DEFAULT_CONTENT_TYPE.to_owned(), content_type);
+    let measured = measured(&headers)?;
 
     let storage = &state.config.storage;
     let max = u64::from(storage.max_upload_mb) * MIB;
@@ -107,6 +109,7 @@ pub async fn upload(
         &thumb_part,
         sha256,
         size,
+        measured,
     )
     .await;
     remove(&part);
@@ -161,6 +164,7 @@ async fn store(
     thumb_part: &FsPath,
     sha256: [u8; 32],
     size: u64,
+    measured: Measured,
 ) -> ApiResult<AttachmentRow> {
     let thumb = state
         .config
@@ -193,6 +197,12 @@ async fn store(
     let content_type = image
         .as_ref()
         .map_or(declared_type, |i| i.content_type.to_owned());
+    // Only a sound or a video has a waveform or a length.
+    let media = content_type.starts_with("audio/") || content_type.starts_with("video/");
+    let Measured {
+        waveform,
+        duration_ms,
+    } = if media { measured } else { Measured::default() };
     let row = AttachmentRow {
         id,
         uploader_id: auth.user_id,
@@ -205,9 +215,54 @@ async fn store(
         has_thumb,
         sha256,
         created_at: now_ms(),
+        waveform,
+        duration_ms,
     };
     db::attachments::insert(&state.db.write, &row).await?;
     Ok(row)
+}
+
+/// What an uploader measured of a sound or video.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Measured {
+    waveform: Option<Vec<u8>>,
+    duration_ms: Option<u64>,
+}
+
+/// Reads `X-Waveform` and `X-Duration-Ms`; either may be missing.
+fn measured(headers: &HeaderMap) -> ApiResult<Measured> {
+    let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or("?").trim());
+    let waveform = text("x-waveform")
+        .map(|hex| {
+            let bytes = (hex.len() % 2 == 0)
+                .then(|| {
+                    (0..hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                        .collect::<Option<Vec<u8>>>()
+                })
+                .flatten()
+                .filter(|b| !b.is_empty() && b.len() <= Attachment::WAVEFORM_MAX);
+            bytes.ok_or_else(|| {
+                validate::field_error(
+                    "X-Waveform",
+                    format!("must be 1 to {} bytes in hex", Attachment::WAVEFORM_MAX),
+                )
+            })
+        })
+        .transpose()?;
+    let duration_ms = text("x-duration-ms")
+        .map(|ms| {
+            ms.parse::<u64>()
+                .ok()
+                .filter(|ms| *ms <= Attachment::DURATION_MAX_MS)
+                .ok_or_else(|| validate::field_error("X-Duration-Ms", "must be milliseconds"))
+        })
+        .transpose()?;
+    Ok(Measured {
+        waveform,
+        duration_ms,
+    })
 }
 
 fn remove(path: &FsPath) {

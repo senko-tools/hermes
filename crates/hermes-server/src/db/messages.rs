@@ -232,7 +232,7 @@ pub async fn attachments(
     let ids = id_list(ids);
     sqlx::query!(
         r#"SELECT id, message_id AS "message_id!", filename, content_type, size, width, height,
-                  has_thumb AS "has_thumb: bool"
+                  has_thumb AS "has_thumb: bool", waveform, duration_ms
            FROM attachments WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY id"#,
         ids
     )
@@ -250,6 +250,11 @@ pub async fn attachments(
                 width: r.width.map(|w| int(w, "attachments.width")).transpose()?,
                 height: r.height.map(|h| int(h, "attachments.height")).transpose()?,
                 has_thumb: r.has_thumb,
+                waveform: r.waveform,
+                duration_ms: r
+                    .duration_ms
+                    .map(|d| int(d, "attachments.duration_ms"))
+                    .transpose()?,
                 sealed: None,
             },
         ))

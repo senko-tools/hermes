@@ -1489,6 +1489,17 @@ impl Core {
 
     /// Uploads a file; attach the result to a [`Draft`].
     pub async fn upload(&self, inst: &str, path: &Path) -> Result<Attachment> {
+        self.upload_measured(inst, path, None, None).await
+    }
+
+    /// [`Core::upload`] with what was measured of a sound or video.
+    pub async fn upload_measured(
+        &self,
+        inst: &str,
+        path: &Path,
+        waveform: Option<&[u8]>,
+        duration_ms: Option<u64>,
+    ) -> Result<Attachment> {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
@@ -1498,7 +1509,7 @@ impl Core {
         let content_type = content_type(&filename);
         Ok(self
             .rest(inst)?
-            .upload(&filename, content_type, bytes)
+            .upload_measured(&filename, content_type, bytes, waveform, duration_ms)
             .await?)
     }
 
