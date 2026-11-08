@@ -103,10 +103,13 @@ pub fn popup(
         Anchor::BottomLeft | Anchor::BottomRight => 1.,
         _ => -1.,
     };
+    // A gap from the click, so the button that opened it stays visible.
+    let gap = px(18.) * away;
     deferred(
         anchored()
             .anchor(anchor)
             .position(at)
+            .offset(gpui_kit::point(px(0.), -gap))
             .snap_to_window_with_margin(px(8.))
             .child(div().relative().child(card).with_animation(
                 id,
