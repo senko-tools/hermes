@@ -38,6 +38,9 @@ use sqlx::sqlite::{
 /// Name of the database file inside `storage.data_dir`.
 pub const DB_FILE: &str = "hermes.db";
 
+/// The write-ahead log is cut back to this many bytes after a checkpoint.
+const JOURNAL_SIZE_LIMIT: u64 = 4 * 1024 * 1024;
+
 /// Connections in the read pool. Writes go through a single connection (PLAN.md section 21).
 const READ_CONNECTIONS: u32 = 4;
 
@@ -71,8 +74,11 @@ impl Db {
         Ok(Self { read, write })
     }
 
-    /// Closes both pools, checkpointing the WAL.
+    /// Closes both pools, checkpointing the WAL. First lets SQLite refresh its query statistics.
     pub async fn close(&self) {
+        if let Err(err) = sqlx::query("PRAGMA optimize").execute(&self.write).await {
+            tracing::warn!("could not optimize the database: {err}");
+        }
         self.read.close().await;
         self.write.close().await;
     }
@@ -126,6 +132,8 @@ fn connect_options(path: &PathBuf) -> SqliteConnectOptions {
         .foreign_keys(true)
         .busy_timeout(Duration::from_millis(5000))
         .synchronous(SqliteSynchronous::Normal)
+        // A burst of writes must not leave a large write-ahead log behind.
+        .pragma("journal_size_limit", JOURNAL_SIZE_LIMIT.to_string())
 }
 
 /// Converts an `INTEGER` column to a narrower type, failing on out-of-range values.
