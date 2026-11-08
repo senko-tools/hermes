@@ -160,7 +160,10 @@ fn rail_morph(
                 let radius = px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * shape);
                 let fade = phase.0.clamp(0., 1.);
                 d.rounded(radius)
-                    .bg(theme::mix(theme::selected(), theme::accent(), fade))
+                    // Under a picture it would show at the rounded edge.
+                    .when(picture.is_none(), |d| {
+                        d.bg(theme::mix(theme::selected(), theme::accent(), fade))
+                    })
                     .children(picture.map(|picture| {
                         let id = SharedString::from(format!(
                             "pic-{:p}",
@@ -352,7 +355,9 @@ impl Shell {
                     } else {
                         theme::text()
                     })
-                    .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
+                    .when(!selected && picture.is_none(), |d| {
+                        d.hover(|d| d.bg(theme::hover()))
+                    })
                     .when(picture.is_none(), |d| d.child(initials(&name)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_pages(cx);
