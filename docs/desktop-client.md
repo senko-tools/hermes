@@ -61,6 +61,16 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   voice rows, tiles) has Profile, Volume…, Mute for me, and for moderators server mute/deafen,
   Move to and Disconnect, checked like the server checks them. Negative entries are red
   (`Action::is_negative`); only `is_destructive` ones are confirmed.
+- **Motion (2026-11-08):** one rail pill springs between servers; pages, settings tabs and the sidebar's
+  list fade in (`theme::enter`); popups opened by a click (share, network, volume, profile) go through
+  `modal::popup`, which opens them from the click towards the window's middle with a gap. Right-click
+  menus keep their own placement.
+- **Scrolling:** `smooth_scroll.rs` catches wheel notches at the root and replays them as eased pixel
+  scrolls, 1.25x the old distance. Touchpad pixel scrolls and Ctrl+wheel pass through.
+- **Pictures:** server icons and avatars fill their shape (`ObjectFit::Cover`). Picking one opens the
+  crop view (`crop.rs`), which uploads a square PNG of at most 512 px.
+- **A deleted channel** reopens the most recent remaining channel of its server (a voice channel only
+  shows its room); Friends opens only when the server is gone.
 - **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
   while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
