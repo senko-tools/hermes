@@ -54,6 +54,8 @@ pub struct Player {
     playing: bool,
     /// The size pictures are decoded at.
     size: (u32, u32),
+    /// A paused seek happened before the size was known: show that picture once it is.
+    want_still: bool,
     pictures: Pictures,
     audio: Option<Decoder>,
     video: Option<Decoder>,
@@ -93,6 +95,7 @@ impl Player {
             paused_at: at.min(duration_ms),
             playing: false,
             size: (0, 0),
+            want_still: false,
             pictures: Arc::default(),
             audio: None,
             video: None,
@@ -203,7 +206,42 @@ impl Player {
             self.restart(ms);
         } else {
             self.paused_at = ms;
+            self.show_still(ms);
         }
+    }
+
+    /// Decodes the one picture at `ms`, so a paused video shows where it was moved to. FFmpeg
+    /// exits after it, so a paused file still runs no decoder.
+    fn show_still(&mut self, ms: u64) {
+        self.video = None;
+        self.pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if self.probe.video.is_none() {
+            return;
+        }
+        if self.size.0 == 0 {
+            self.want_still = true;
+            return;
+        }
+        match ffmpeg::still(&self.served.url, ms, self.size.0, self.size.1) {
+            Ok(child) => {
+                self.video = Some(video_decoder(
+                    child,
+                    self.size,
+                    1.,
+                    ms,
+                    self.pictures.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!("media still: {err}"),
+        }
+    }
+
+    /// Whether a paused file's picture is still on its way, so drawing has to go on.
+    pub fn still_pending(&self) -> bool {
+        !self.playing && self.video.is_some()
     }
 
     /// The size pictures are decoded at; a change starts the video again where it is.
@@ -214,6 +252,8 @@ impl Player {
             if self.playing {
                 let at = self.position_ms();
                 self.restart_video(at);
+            } else if std::mem::take(&mut self.want_still) {
+                self.show_still(self.paused_at);
             }
         }
     }
@@ -272,6 +312,15 @@ impl Player {
             {
                 dropped.push(old);
             }
+        }
+        let empty = pictures.is_empty();
+        drop(pictures);
+        let still_done = self
+            .video
+            .as_ref()
+            .is_some_and(|d| d.done.load(Ordering::Relaxed));
+        if !self.playing && empty && still_done {
+            self.video = None;
         }
         dropped
     }

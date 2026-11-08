@@ -68,6 +68,14 @@ struct Scrub {
     fraction: f32,
 }
 
+/// What to do with a file once it has loaded.
+#[derive(Clone, Copy)]
+enum Loaded {
+    Play,
+    /// Stay paused, at this fraction of its length.
+    PausedAt(f32),
+}
+
 pub enum Load {
     Loading,
     Ready(Box<Player>),
@@ -134,6 +142,19 @@ pub struct Media {
     bars: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
     /// The video the mouse is over (inline or in the full view), and when it last moved.
     pointer: Option<(BarKey, Instant)>,
+}
+
+impl Media {
+    /// Remembers where a file that is not loaded was moved to. `false` if its length is unknown,
+    /// so it has to load first.
+    fn note_seek(&mut self, key: &MediaKey, length: Option<u64>, fraction: f32) -> bool {
+        let Some(length) = length else {
+            return false;
+        };
+        let at = (length as f32 * fraction) as u64;
+        self.resume.insert(key.clone(), (at, length));
+        true
+    }
 }
 
 impl Drop for MediaItem {
@@ -214,14 +235,20 @@ impl Shell {
             Some(Load::Loading) => {}
             Some(Load::Failed(_)) => {
                 self.media.items.remove(&key);
-                self.media_load(inst, attachment, cx);
+                self.media_load(inst, attachment, Loaded::Play, cx);
             }
-            None => self.media_load(inst, attachment, cx),
+            None => self.media_load(inst, attachment, Loaded::Play, cx),
         }
     }
 
-    /// Fetches a file and plays it once it is ready, from where it was let go.
-    fn media_load(&mut self, inst: InstanceId, attachment: Attachment, cx: &mut Context<Self>) {
+    /// Fetches a file and, once it is ready, does what `then` says, from where it was let go.
+    fn media_load(
+        &mut self,
+        inst: InstanceId,
+        attachment: Attachment,
+        then: Loaded,
+        cx: &mut Context<Self>,
+    ) {
         let key = (inst.clone(), attachment.id);
         self.media.items.insert(key.clone(), MediaItem::new());
         let core = self.core.clone();
@@ -268,7 +295,10 @@ impl Shell {
                             this.media.output = Some((device, Arc::downgrade(output)));
                         }
                         item.load = Load::Ready(Box::new(player));
-                        this.media_play(&key);
+                        match then {
+                            Loaded::Play => this.media_play(&key),
+                            Loaded::PausedAt(fraction) => this.media_seek(&key, fraction, cx),
+                        }
                     }
                     Err(err) => {
                         tracing::warn!("media {}: {err}", key.1);
@@ -319,9 +349,6 @@ impl Shell {
         };
         let ms = (player.probe.duration_ms as f32 * fraction.clamp(0., 1.)) as u64;
         player.seek(ms);
-        if !player.playing() {
-            self.media_play(key);
-        }
         cx.notify();
     }
 
@@ -491,6 +518,7 @@ impl Shell {
                 continue;
             };
             player.set_volume(gain);
+            busy |= player.still_pending();
             if let Some((w, h, _)) = player.probe.video {
                 let shown = fit(
                     (w, h),
@@ -657,7 +685,8 @@ impl Shell {
         }
     }
 
-    /// Seeks to `fraction` of a file; one not loaded yet loads and plays from there.
+    /// Seeks to `fraction` of a file, playing or paused as it was. A file not loaded yet only
+    /// notes where to start, and stays unloaded; one of unknown length has to load to find out.
     fn media_seek_to(
         &mut self,
         inst: InstanceId,
@@ -673,12 +702,12 @@ impl Shell {
                 let length = attachment
                     .duration_ms
                     .or_else(|| self.media.resume.get(&key).map(|(_, length)| *length));
-                if let Some(length) = length {
-                    let at = (length as f32 * fraction) as u64;
-                    self.media.resume.insert(key.clone(), (at, length));
-                }
                 self.media.items.remove(&key);
-                self.media_load(inst, attachment, cx);
+                if self.media.note_seek(&key, length, fraction) {
+                    cx.notify();
+                } else {
+                    self.media_load(inst, attachment, Loaded::PausedAt(fraction), cx);
+                }
             }
         }
     }
@@ -1334,6 +1363,20 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Moving the bar of a file nobody played must neither fetch it nor start it.
+    #[test]
+    fn seeking_a_file_that_is_not_loaded_only_notes_the_place() {
+        let mut media = Media::default();
+        let key: MediaKey = ("instance".to_owned(), Id(7));
+        assert!(media.note_seek(&key, Some(10_000), 0.25));
+        assert_eq!(media.resume.get(&key), Some(&(2_500, 10_000)));
+        assert!(media.items.is_empty());
+
+        let other: MediaKey = ("instance".to_owned(), Id(8));
+        assert!(!media.note_seek(&other, None, 0.25));
+        assert!(!media.resume.contains_key(&other));
+    }
 
     #[test]
     fn clocks() {

@@ -151,6 +151,20 @@ pub fn video(url: &str, from_ms: u64, width: u32, height: u32, fps: f32) -> Resu
         .map_err(missing)
 }
 
+/// Decodes the one picture at `at_ms`, as a single BGRA frame of `width` by `height` on stdout.
+pub fn still(url: &str, at_ms: u64, width: u32, height: u32) -> Result<Child, String> {
+    command("ffmpeg")
+        .args(["-nostdin", "-v", "error"])
+        .args(["-threads", VIDEO_THREADS, "-filter_threads", "1"])
+        .args(seek_args(at_ms))
+        .args(["-i", url, "-an", "-sn", "-dn", "-frames:v", "1", "-vf"])
+        .arg(format!("scale={width}:{height}:flags=bilinear"))
+        .args(["-f", "rawvideo", "-pix_fmt", "bgra", "pipe:1"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(missing)
+}
+
 /// Decodes the sound from `from_ms` as interleaved stereo `f32` at `rate`.
 pub fn audio(url: &str, from_ms: u64, rate: u32) -> Result<Child, String> {
     command("ffmpeg")
