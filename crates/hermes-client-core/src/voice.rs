@@ -1895,7 +1895,7 @@ fn transport_config() -> quinn::TransportConfig {
     transport.max_concurrent_uni_streams(32u32.into());
     transport.stream_receive_window(voice::VIDEO_STREAM_WINDOW.into());
     transport.receive_window(voice::VIDEO_CONNECTION_WINDOW.into());
-    transport.send_window(u64::from(voice::VIDEO_CONNECTION_WINDOW));
+    transport.send_window(u64::from(voice::VIDEO_SEND_WINDOW));
     transport
 }
 

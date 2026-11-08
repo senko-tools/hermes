@@ -336,6 +336,9 @@ pub const VIDEO_BURST: u32 = 10;
 /// largest frames in flight, the connection about half a second of a 4K share.
 pub const VIDEO_STREAM_WINDOW: u32 = 2 * MAX_VIDEO_FRAME as u32;
 pub const VIDEO_CONNECTION_WINDOW: u32 = 16 * 1024 * 1024;
+/// What may wait in QUIC's send buffer: two of the largest frames. Much more would hide seconds
+/// of a share from a slow connection, which should show as refused frames and a lower quality.
+pub const VIDEO_SEND_WINDOW: u32 = 2 * MAX_VIDEO_FRAME as u32;
 
 const FLAG_KEYFRAME: u8 = 1;
 
