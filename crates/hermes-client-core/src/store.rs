@@ -955,6 +955,7 @@ pub(crate) mod tests {
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         }
     }
 

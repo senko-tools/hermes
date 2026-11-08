@@ -115,11 +115,12 @@ pub async fn message_channel(
     Ok(channel.map(Id::from_i64))
 }
 
-/// Whether the upload is some user's avatar or some space's icon (visible to every user).
+/// Whether the upload is some user's avatar or banner, or some space's icon (visible to every
+/// user).
 pub async fn is_avatar_or_icon(e: impl SqliteExecutor<'_>, id: Id) -> Result<bool, sqlx::Error> {
     let id = id.to_i64();
     sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1)
+        r#"SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)
                OR EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1) AS "used!: bool""#,
         id
     )
@@ -147,7 +148,7 @@ pub async fn expired_unattached(
     sqlx::query!(
         "SELECT id, sha256, size FROM attachments a
          WHERE message_id IS NULL AND created_at < ?
-           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id)
+           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id OR banner_id = a.id)
            AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = a.id)",
         cutoff
     )
@@ -167,7 +168,7 @@ pub async fn delete_if_unused(e: impl SqliteExecutor<'_>, id: Id) -> Result<bool
     let done = sqlx::query!(
         "DELETE FROM attachments
          WHERE id = ?1 AND message_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1)
+           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)
            AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1)",
         id
     )

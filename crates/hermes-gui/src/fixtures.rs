@@ -23,6 +23,7 @@ pub fn user(id: u64, name: &str, display: Option<&str>) -> User {
         display_name: display.map(str::to_owned),
         avatar: None,
         status_text: None,
+        banner: None,
     }
 }
 

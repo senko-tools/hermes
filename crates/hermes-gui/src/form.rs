@@ -937,7 +937,7 @@ impl Shell {
                 let req = hermes_client_core::proto::api::UpdateMeRequest {
                     display_name: Some((!display.is_empty()).then_some(display)),
                     status_text: Some((!status.is_empty()).then_some(status)),
-                    avatar_id: None,
+                    ..Default::default()
                 };
                 self.form_call(cx, async move {
                     core.rest(&inst)?.update_me(&req).await?;

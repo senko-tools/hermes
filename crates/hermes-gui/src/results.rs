@@ -574,6 +574,7 @@ mod tests {
                 display_name: None,
                 avatar: None,
                 status_text: None,
+                banner: None,
             },
             content: String::new(),
             reply_to: None,

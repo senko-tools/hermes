@@ -7,11 +7,14 @@ use sqlx::SqliteConnection;
 pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<(), sqlx::Error> {
     let id = user.id.to_i64();
     let avatar_id = user.avatar.as_ref().map(|a| a.id.to_i64());
+    let banner_id = user.banner.as_ref().map(|a| a.id.to_i64());
     sqlx::query!(
-        "UPDATE users SET display_name = ?, avatar_id = ?, status_text = ? WHERE id = ?",
+        "UPDATE users SET display_name = ?, avatar_id = ?, status_text = ?, banner_id = ?
+         WHERE id = ?",
         user.display_name,
         avatar_id,
         user.status_text,
+        banner_id,
         id
     )
     .execute(conn)

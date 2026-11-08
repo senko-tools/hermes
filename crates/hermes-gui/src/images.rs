@@ -16,6 +16,8 @@ use crate::theme::{self, px};
 
 /// The largest size an avatar is drawn at, in pixels on a 2x display.
 const AVATAR_PIXELS: u32 = 192;
+/// The same for a profile banner (300 by 120 on the card).
+const BANNER_PIXELS: u32 = 640;
 
 #[derive(Clone)]
 pub enum Img {
@@ -188,24 +190,30 @@ impl Shell {
     /// Starts loading the avatar of everyone the store knows whose avatar is not loaded (or
     /// loading) yet. A changed avatar is a new attachment, so each is fetched once.
     pub fn load_avatars(&mut self, cx: &mut Context<Self>) {
-        let wanted: Vec<(InstanceId, Id, String)> = {
+        let wanted: Vec<(InstanceId, Id, String, u32)> = {
             let store = self.core.store();
             store
                 .instances
                 .iter()
                 .flat_map(|(inst, s)| {
-                    s.users
-                        .values()
-                        .chain(s.me.as_ref().map(|me| &me.user))
+                    let users = || s.users.values().chain(s.me.as_ref().map(|me| &me.user));
+                    users()
                         .filter_map(|u| u.avatar.as_ref())
                         // Server icons load the same way.
                         .chain(s.spaces.values().filter_map(|st| st.space.icon.as_ref()))
-                        .map(move |a| (inst.clone(), a.id, a.filename.clone()))
+                        .map(|a| (a, AVATAR_PIXELS))
+                        .chain(
+                            users()
+                                .filter_map(|u| u.banner.as_ref())
+                                .map(|a| (a, BANNER_PIXELS)),
+                        )
+                        .map(move |(a, max)| (inst.clone(), a.id, a.filename.clone(), max))
+                        .collect::<Vec<_>>()
                 })
-                .filter(|(inst, id, _)| !self.images.avatars.contains_key(&(inst.clone(), *id)))
+                .filter(|(inst, id, ..)| !self.images.avatars.contains_key(&(inst.clone(), *id)))
                 .collect()
         };
-        for (inst, id, filename) in wanted {
+        for (inst, id, filename, max) in wanted {
             let key = (inst, id);
             if self.images.avatars.contains_key(&key) {
                 continue; // two users with the same avatar
@@ -224,7 +232,7 @@ impl Shell {
                         rest.thumbnail(id).await
                     }
                     .map_err(|e| e.to_string())?;
-                    tokio::task::spawn_blocking(move || decode(&bytes, Some(AVATAR_PIXELS)))
+                    tokio::task::spawn_blocking(move || decode(&bytes, Some(max)))
                         .await
                         .map_err(|e| e.to_string())?
                 },
@@ -239,6 +247,15 @@ impl Shell {
                     this.images.avatars.insert(key, img);
                 },
             );
+        }
+    }
+
+    /// Someone's profile banner, once loaded.
+    pub fn banner_picture(&self, inst: &str, user: Option<&User>) -> Option<Arc<RenderImage>> {
+        let banner = user?.banner.as_ref()?;
+        match self.images.avatars.get(&(inst.to_owned(), banner.id)) {
+            Some(Img::Ready(picture)) => Some(picture.shown(self.focused)),
+            _ => None,
         }
     }
 

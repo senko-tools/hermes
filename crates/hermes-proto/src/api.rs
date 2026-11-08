@@ -133,6 +133,13 @@ pub struct UpdateMeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub status_text: Patch<String>,
+    /// The profile banner, from an image upload.
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub banner_id: Patch<Id>,
 }
 
 impl UpdateMeRequest {
@@ -577,6 +584,7 @@ mod tests {
                     display_name: None,
                     avatar: None,
                     status_text: None,
+                    banner: None,
                 },
                 instance_admin: true,
             },

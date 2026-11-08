@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.dm_from, u.message_requests AS \"message_requests: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id",
+  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.dm_from, u.message_requests AS \"message_requests: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\",\n                  u.banner_id, b.filename AS \"banner_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id\n                        LEFT JOIN attachments b ON b.id = u.banner_id",
   "describe": {
     "columns": [
       {
@@ -112,6 +112,28 @@
             "name": "filename"
           }
         }
+      },
+      {
+        "name": "banner_id",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "banner_id"
+          }
+        }
+      },
+      {
+        "name": "banner_filename?",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
       }
     ],
     "parameters": {
@@ -127,8 +149,10 @@
       false,
       false,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "ba93607f83259c523d7c8d060025c36a24a14d3e5e3356869a9c2f1983386fa0"
+  "hash": "e6addac7bc703b92a47cf8a86a1cffb21ae0e94319c111c25c26ff5474e2ad9c"
 }

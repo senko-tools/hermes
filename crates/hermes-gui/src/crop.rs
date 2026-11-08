@@ -1,4 +1,4 @@
-//! The crop view shown after picking a server icon or an avatar: the picture under a fixed
+//! The crop view shown after picking an avatar, a banner or a server icon: the picture under a fixed
 //! frame, dragged to move and scrolled (or slid) to zoom. Saving crops it and uploads that: a
 //! PNG, or a GIF of every frame cropped alike when the picture is animated.
 
@@ -31,6 +31,8 @@ const MAX_ZOOM: f32 = 5.;
 pub enum CropFor {
     Avatar(InstanceId),
     SpaceIcon(InstanceId, Id),
+    /// My profile banner, 5:2.
+    Banner(InstanceId),
 }
 
 /// The frame a picture is cropped to.
@@ -65,12 +67,19 @@ impl CropFor {
                 still: (512, 512),
                 moving: (256, 256),
             },
+            CropFor::Banner(_) => Shape {
+                width: 400.,
+                height: 160.,
+                radius: 12.,
+                still: (1000, 400),
+                moving: (600, 240),
+            },
         }
     }
 
     fn inst(&self) -> &InstanceId {
         match self {
-            CropFor::Avatar(inst) | CropFor::SpaceIcon(inst, _) => inst,
+            CropFor::Avatar(inst) | CropFor::SpaceIcon(inst, _) | CropFor::Banner(inst) => inst,
         }
     }
 }
@@ -230,6 +239,7 @@ impl Shell {
         let title = match purpose {
             CropFor::Avatar(_) => "Choose a picture",
             CropFor::SpaceIcon(..) => "Choose a server icon",
+            CropFor::Banner(_) => "Choose a banner",
         };
         self.run(
             cx,
@@ -347,6 +357,14 @@ impl Shell {
                             )
                             .await?;
                             Ok("Icon changed")
+                        }
+                        CropFor::Banner(_) => {
+                            rest.update_me(&UpdateMeRequest {
+                                banner_id: Some(Some(picture.id)),
+                                ..UpdateMeRequest::default()
+                            })
+                            .await?;
+                            Ok("Banner changed")
                         }
                     }
                 };
@@ -483,6 +501,7 @@ impl Shell {
         let title = match crop.purpose {
             CropFor::Avatar(_) => "Crop your picture",
             CropFor::SpaceIcon(..) => "Crop the server icon",
+            CropFor::Banner(_) => "Crop your banner",
         };
         let card = div()
             .flex()
@@ -579,6 +598,16 @@ mod tests {
         assert_eq!(
             crop_rect(square(), (200, 200), 2., (0., 0.)),
             (50, 50, 100, 100)
+        );
+    }
+
+    #[test]
+    fn a_banner_crops_five_by_two() {
+        let banner = CropFor::Banner(String::new()).shape();
+        // A square picture: its full width, and the middle 2/5 of its height.
+        assert_eq!(
+            crop_rect(banner, (500, 500), 1., (0., 0.)),
+            (0, 150, 500, 200)
         );
     }
 

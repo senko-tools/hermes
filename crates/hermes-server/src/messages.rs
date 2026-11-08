@@ -119,6 +119,7 @@ fn author(cache: &Cache, user_id: Id) -> User {
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         },
         |u| u.user.clone(),
     )

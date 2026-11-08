@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, sha256, size FROM attachments a\n         WHERE message_id IS NULL AND created_at < ?\n           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id)\n           AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = a.id)",
+  "query": "SELECT id, sha256, size FROM attachments a\n         WHERE message_id IS NULL AND created_at < ?\n           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id OR banner_id = a.id)\n           AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = a.id)",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "641f07564c10130d024f47eac1139baf0b17600445aa31f5298cf0fd7cc3e89b"
+  "hash": "cd8ef75afb458103660a1831edae1bc3078df2b8bfdee3756645010921cbcd37"
 }

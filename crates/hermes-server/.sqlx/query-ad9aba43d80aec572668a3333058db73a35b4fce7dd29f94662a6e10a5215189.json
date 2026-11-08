@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1)\n               OR EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1) AS \"used!: bool\"",
+  "query": "SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)\n               OR EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1) AS \"used!: bool\"",
   "describe": {
     "columns": [
       {
@@ -17,5 +17,5 @@
       false
     ]
   },
-  "hash": "1e8c6c8c5138798fc3a72a20216053ba97034fd26f33455d55bebea0ecf1436b"
+  "hash": "ad9aba43d80aec572668a3333058db73a35b4fce7dd29f94662a6e10a5215189"
 }

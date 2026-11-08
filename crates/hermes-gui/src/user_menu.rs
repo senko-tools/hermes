@@ -198,6 +198,7 @@ impl Shell {
             })
         });
         let avatar = self.avatar_with_status(&inst, found, &name, 80., s.status(user));
+        let banner = self.banner_picture(&inst, found);
         drop(store);
 
         let section = |title: &'static str| {
@@ -367,10 +368,18 @@ impl Shell {
                 .child(
                     // gpui clips to the card's box, not its rounded corners: the band rounds its
                     // own (the card's radius less its border).
+                    // A banner is 5:2 across the card; without one, a shorter band of colour.
                     div()
-                        .h(px(64.))
+                        .h(px(if banner.is_some() { 119.2 } else { 64. }))
                         .rounded_t(px(9.))
-                        .bg(theme::mix(theme::sidebar(), band, 0.75)),
+                        .overflow_hidden()
+                        .bg(theme::mix(theme::sidebar(), band, 0.75))
+                        .children(banner.map(|picture| {
+                            gpui_kit::img(picture)
+                                .size_full()
+                                .rounded_t(px(9.))
+                                .object_fit(gpui_kit::ObjectFit::Cover)
+                        })),
                 )
                 .child(
                     div()

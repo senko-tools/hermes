@@ -24,6 +24,9 @@ pub struct User {
     pub display_name: Option<String>,
     pub avatar: Option<AttachmentRef>,
     pub status_text: Option<String>,
+    /// The wide picture at the top of the profile (5:2). Older servers send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<AttachmentRef>,
 }
 
 impl User {
@@ -527,6 +530,7 @@ pub(crate) mod tests {
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         }
     }
 

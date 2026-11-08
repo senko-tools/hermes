@@ -918,6 +918,47 @@ impl Shell {
                     )
                 }),
         ));
+        let has_banner = me.user.banner.is_some();
+        let (banner_inst, unbanner_inst) = (inst.clone(), inst.clone());
+        account_rows.push(setting(
+            "Banner",
+            "The wide picture at the top of your profile.",
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Button::new("account-banner")
+                        .cursor_pointer()
+                        .label(if has_banner { "Change…" } else { "Upload…" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_picture(
+                                crate::crop::CropFor::Banner(banner_inst.clone()),
+                                cx,
+                            );
+                        })),
+                )
+                .when(has_banner, |d| {
+                    d.child(
+                        Button::new("account-banner-remove")
+                            .cursor_pointer()
+                            .label("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.call_status(
+                                    &unbanner_inst,
+                                    "Banner removed",
+                                    |r| async move {
+                                        r.update_me(&UpdateMeRequest {
+                                            banner_id: Some(None),
+                                            ..UpdateMeRequest::default()
+                                        })
+                                        .await
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                }),
+        ));
         let password_inst = inst.clone();
         account_rows.push(setting(
             "Password",

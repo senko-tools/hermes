@@ -79,8 +79,10 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
         r#"SELECT u.id, u.username, u.display_name, u.status_text,
                   u.instance_admin AS "instance_admin: bool", u.disabled AS "disabled: bool",
                   u.dm_from, u.message_requests AS "message_requests: bool",
-                  u.avatar_id, a.filename AS "avatar_filename?"
-           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id"#
+                  u.avatar_id, a.filename AS "avatar_filename?",
+                  u.banner_id, b.filename AS "banner_filename?"
+           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id
+                        LEFT JOIN attachments b ON b.id = u.banner_id"#
     )
     .fetch_all(pool)
     .await?
@@ -95,6 +97,7 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
                 display_name: r.display_name,
                 avatar: attachment(r.avatar_id, r.avatar_filename),
                 status_text: r.status_text,
+                banner: attachment(r.banner_id, r.banner_filename),
             },
             instance_admin: r.instance_admin,
             disabled: r.disabled,

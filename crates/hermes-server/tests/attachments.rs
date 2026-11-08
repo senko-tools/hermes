@@ -394,3 +394,55 @@ async fn cleanup_deletes_only_old_unattached_uploads() {
     }
     assert_eq!(files::cleanup(&server.state, now_ms()).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn profile_banners_are_my_images_and_visible_to_everyone() {
+    let server = start("attachments-banner", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (outsider, _) = server.register("outsider", None).await;
+    let (mut ws, _) = server.identify(&owner).await;
+
+    let banner = id(&server
+        .upload(&alice, "wide.png", "image/png", png(50, 20))
+        .await
+        .ok());
+    let me = server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": banner }))
+        .await
+        .ok();
+    assert_eq!(
+        me["banner"],
+        json!({ "id": banner, "filename": "wide.png" })
+    );
+    let event = ws.recv_op("user_update").await;
+    assert_eq!(event["d"]["id"], alice_id);
+    assert_eq!(event["d"]["banner"]["id"], banner.as_str());
+    let path = format!("/attachments/{banner}/wide.png");
+    assert_eq!(status(&server, &path, Some(&outsider)).await, 200);
+
+    // Only an image I uploaded.
+    let theirs = id(&server
+        .upload(&owner, "theirs.png", "image/png", png(50, 20))
+        .await
+        .ok());
+    server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": theirs }))
+        .await
+        .err(400, "VALIDATION_FAILED");
+    let text = id(&server
+        .upload(&alice, "notes.txt", "text/plain", b"hi".to_vec())
+        .await
+        .ok());
+    server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": text }))
+        .await
+        .err(400, "VALIDATION_FAILED");
+
+    // Cleared with null; the avatar is untouched.
+    let me = server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": null }))
+        .await
+        .ok();
+    assert_eq!(me.get("banner"), None);
+}

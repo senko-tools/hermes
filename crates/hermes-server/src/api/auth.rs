@@ -172,6 +172,7 @@ pub async fn register(
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         },
         instance_admin: first_user,
         disabled: false,

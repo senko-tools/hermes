@@ -183,6 +183,19 @@ pub async fn update_me(
             user.avatar = Some(avatar);
         }
     }
+    match req.banner_id {
+        None => {}
+        Some(None) => user.banner = None,
+        Some(Some(id)) if old.user.banner.as_ref().is_some_and(|a| a.id == id) => {}
+        Some(Some(id)) => {
+            let banner = db::spaces::own_image(&state.db.read, id, auth.user_id)
+                .await?
+                .ok_or_else(|| {
+                    validate::field_error("banner_id", "must be an image you uploaded")
+                })?;
+            user.banner = Some(banner);
+        }
+    }
     if user != old.user {
         let mut tx = state.db.write.begin().await?;
         db::users::update_profile(&mut tx, &user).await?;
