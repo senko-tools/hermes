@@ -1947,11 +1947,8 @@ impl Shell {
         );
         let mut body: Vec<AnyElement> = Vec::new();
         if let Some(reply) = &m.reply {
-            let excerpt = if reply.excerpt.is_empty() {
-                "original message deleted".to_owned()
-            } else {
-                reply.excerpt.replace('\n', " ")
-            };
+            let loaded = s.window(channel).and_then(|w| w.get(reply.id));
+            let excerpt = reply_text(loaded, &reply.excerpt);
             let (jump_inst, reply_id) = (inst.clone(), reply.id);
             body.push(
                 div()
@@ -2755,6 +2752,27 @@ pub fn icon_button(
 /// The hover group of [`icon_button`]: the innermost one wins, so one name serves them all.
 const ICON_BUTTON: &str = "icon-button";
 
+/// What a reply shows of the message it answers: the message itself when it is loaded (it may
+/// have been edited since), else the excerpt sent with the reply. An empty excerpt also means a
+/// message with only files, so "deleted" is said only when the loaded message says so.
+fn reply_text(loaded: Option<&ChatMessage>, excerpt: &str) -> String {
+    let files = |m: &ChatMessage| {
+        m.attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let text = match loaded {
+        Some(m) if m.deleted => return "original message deleted".to_owned(),
+        Some(m) if m.content.trim().is_empty() && !m.attachments.is_empty() => files(m),
+        Some(m) => m.content.chars().take(100).collect(),
+        None if excerpt.is_empty() => return "original message".to_owned(),
+        None => excerpt.to_owned(),
+    };
+    text.replace('\n', " ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2770,6 +2788,46 @@ mod tests {
             has_thumb: true,
             sealed: None,
         }
+    }
+
+    fn message(content: &str, files: Vec<Attachment>, deleted: bool) -> ChatMessage {
+        ChatMessage {
+            id: Id(9 << 22),
+            channel_id: Id(1),
+            author: crate::fixtures::user(2, "a", None),
+            content: content.into(),
+            reply_to: None,
+            edited_at: None,
+            deleted,
+            pinned: false,
+            kind: hermes_client_core::proto::models::MessageKind::Default,
+            attachments: files,
+            reactions: vec![],
+            mentions: Default::default(),
+            nonce: None,
+            e2ee: None,
+            lock: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_reply_shows_the_loaded_message() {
+        let edited = message("new\ntext", vec![], false);
+        assert_eq!(reply_text(Some(&edited), "old"), "new text");
+    }
+
+    #[test]
+    fn a_reply_to_a_picture_names_the_file_instead_of_saying_deleted() {
+        let picture = message("", vec![attachment(None, None)], false);
+        assert_eq!(reply_text(Some(&picture), ""), "a.png");
+        assert_eq!(reply_text(None, ""), "original message");
+    }
+
+    #[test]
+    fn only_a_deleted_message_is_called_deleted() {
+        let gone = message("", vec![], true);
+        assert_eq!(reply_text(Some(&gone), "kept"), "original message deleted");
+        assert_eq!(reply_text(None, "kept"), "kept");
     }
 
     #[test]
