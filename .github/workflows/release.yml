@@ -5,8 +5,8 @@ name: release
 #   - hermes-server for x86_64 and aarch64 Linux (static musl) and x86_64 Windows
 #   - the Docker image ghcr.io/senko-tools/hermes-server (amd64 + arm64)
 #   - Hermes-Setup-<version>.exe (NSIS installer with hermes:// links, built by cargo-packager from
-#     crates/hermes-gui/Packager.toml), Hermes-<version>-portable.zip (GUI + TUI for Windows) and
-#     hermes-tui for Windows and Linux
+#     crates/hermes-gui/Packager.toml), Hermes-<version>-portable.zip (GUI + TUI for Windows), both
+#     with an LGPL FFmpeg for sound and video files, and hermes-tui for Windows and Linux
 #   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
 # macOS builds are left out for now.
 #
@@ -119,6 +119,27 @@ jobs:
             echo "OpenH264 was built without NASM" >&2
             exit 1
           fi
+      - name: FFmpeg
+        # Plays sound and video files in the chat; the installer and the portable zip carry it next
+        # to hermes.exe. BtbN's LGPL build with shared libraries (ffmpeg.exe and ffprobe.exe share
+        # one set of DLLs). Only an LGPL build may ship with Hermes.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FFMPEG_ZIP: ffmpeg-n8.1-latest-win64-lgpl-shared-8.1.zip
+        run: |
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$FFMPEG_ZIP" --dir ffdl
+          7z x -bso0 "ffdl/$FFMPEG_ZIP" -offdl
+          src=$(echo ffdl/ffmpeg-*/)
+          mkdir -p target/ffmpeg
+          cp "$src"bin/ffmpeg.exe "$src"bin/ffprobe.exe "$src"bin/*.dll target/ffmpeg/
+          cp "$src"LICENSE.txt target/ffmpeg/FFMPEG-LICENSE.txt
+          version=$(target/ffmpeg/ffmpeg.exe -hide_banner -version)
+          echo "$version" | head -1
+          if echo "$version" | grep -q -- "--enable-gpl"; then
+            echo "this FFmpeg build is GPL, not LGPL" >&2
+            exit 1
+          fi
+          ls -l target/ffmpeg
       - name: cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
       - name: Installer
@@ -131,7 +152,7 @@ jobs:
           mkdir -p dist stage/server stage/portable stage/tui
           r=target/release
           cp "$r/hermes-server.exe" LICENSE-AGPL-3.0 stage/server/
-          cp "$r/hermes.exe" "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/portable/
+          cp "$r/hermes.exe" "$r/hermes-tui.exe" LICENSE-GPL-3.0 target/ffmpeg/* stage/portable/
           cp "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/tui/
           (cd stage/server && 7z a -tzip -bso0 "../../dist/hermes-server-x86_64-pc-windows-msvc.zip" .)
           (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)

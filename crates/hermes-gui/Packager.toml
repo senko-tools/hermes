@@ -23,6 +23,10 @@ binaries = [
   { path = "hermes-tui", main = false },
 ]
 deep-link-protocols = [{ schemes = ["hermes"] }]
+# FFmpeg (an LGPL build) plays sound and video files: `ffmpeg.exe`, `ffprobe.exe`, their DLLs
+# and FFMPEG-LICENSE.txt next to hermes.exe, where the app looks first. The release workflow
+# puts them in target/ffmpeg.
+resources = [{ src = "../../target/ffmpeg/*", target = "." }]
 
 [nsis]
 installer-mode = "currentUser"

@@ -71,6 +71,18 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   crop view (`crop.rs`), which uploads a square PNG of at most 512 px.
 - **A deleted channel** reopens the most recent remaining channel of its server (a voice channel only
   shows its room); Friends opens only when the server is gone.
+- **Media (2026-11-08):** sound files get a waveform card and videos (mp4, mkv, mov, webm and more)
+  an inline player with full view; nothing loads before play is clicked, and videos keep playing
+  while the window is unfocused. `src/media/` runs `ffmpeg`/`ffprobe` as child processes (beside
+  `hermes.exe` first, then the PATH) and hands them the file from memory over a loopback-only HTTP
+  address with range requests, so decrypted DM media never touches disk. The sender's client
+  measures a sound's waveform and a file's length (`Attachment.waveform`, `duration_ms`); without
+  them the waveform grows in while the file plays. The release bundles BtbN's LGPL FFmpeg build;
+  on Linux FFmpeg must be installed (`apt install ffmpeg`). Installers built by hand need it in
+  `target/ffmpeg` (see `release.yml`).
+- **Animated pictures:** GIFs, animated WebP and APNG move in the chat, as avatars, server icons and
+  profile banners, only while the window has the focus. An `img` needs an `.id(...)` for gpui to
+  step through its frames.
 - **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
   while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
