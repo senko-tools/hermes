@@ -44,6 +44,7 @@ pub const KEYBOARD: &str = "keyboard";
 pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";
 pub const SHIELD: &str = "shield-account";
+pub const COPY: &str = "content-copy";
 pub const BELL: &str = "bell-outline";
 pub const LINK: &str = "link-variant";
 pub const BAN: &str = "cancel";
