@@ -91,8 +91,11 @@ pub async fn upload(
             return Err(err);
         }
     };
-    let quota = u64::from(storage.max_total_storage_gb) * GIB;
-    if !state.files.reserve(size, quota) {
+    if let Err(err) = check_user_quota(&state, auth.user_id, size).await {
+        remove(&part);
+        return Err(err);
+    }
+    if !state.files.reserve(size, total_quota(&state)) {
         remove(&part);
         return Err(Error::new(
             ErrorCode::StorageFull,
@@ -123,6 +126,35 @@ pub async fn upload(
             Err(err)
         }
     }
+}
+
+/// What uploads may take up in all (0 = no limit), leaving room for the database if it counts.
+fn total_quota(state: &AppState) -> u64 {
+    let storage = &state.config.storage;
+    let quota = u64::from(storage.max_total_storage_gb) * GIB;
+    if quota == 0 || !storage.limit_includes_messages {
+        return quota;
+    }
+    // Never 0, which would mean no limit.
+    quota
+        .saturating_sub(db::database_size(&storage.data_dir))
+        .max(1)
+}
+
+/// Refuses an upload of `size` bytes that takes `user` past `storage.max_user_storage_mb`.
+async fn check_user_quota(state: &AppState, user: Id, size: u64) -> ApiResult<()> {
+    let limit_mb = state.config.storage.max_user_storage_mb;
+    if limit_mb == 0 {
+        return Ok(());
+    }
+    let used = db::attachments::total_size_of(&state.db.read, user).await?;
+    if used.saturating_add(size) > u64::from(limit_mb) * MIB {
+        return Err(Error::new(
+            ErrorCode::StorageFull,
+            format!("You have used all of your {limit_mb} MB of storage on this server"),
+        ));
+    }
+    Ok(())
 }
 
 /// The image `id` as an avatar, banner or server icon: `user_id` uploaded it and it is at most

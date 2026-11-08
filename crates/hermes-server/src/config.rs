@@ -119,6 +119,10 @@ pub struct StorageConfig {
     pub max_upload_mb: u32,
     /// 0 = unlimited.
     pub max_total_storage_gb: u32,
+    /// What one person's uploads may take up in all. 0 = unlimited.
+    pub max_user_storage_mb: u32,
+    /// Whether the database (the text of messages) counts towards `max_total_storage_gb`.
+    pub limit_includes_messages: bool,
     pub thumbnails: bool,
 }
 
@@ -128,6 +132,8 @@ impl Default for StorageConfig {
             data_dir: PathBuf::from("./data"),
             max_upload_mb: 25,
             max_total_storage_gb: 0,
+            max_user_storage_mb: 0,
+            limit_includes_messages: false,
             thumbnails: true,
         }
     }

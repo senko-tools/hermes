@@ -153,6 +153,18 @@ pub async fn total_size(e: impl SqliteExecutor<'_>) -> Result<u64, sqlx::Error> 
     int(total, "SUM(attachments.size)")
 }
 
+/// Bytes of all uploads of `user`.
+pub async fn total_size_of(e: impl SqliteExecutor<'_>, user: Id) -> Result<u64, sqlx::Error> {
+    let id = user.to_i64();
+    let total = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(size), 0) AS "total!: i64" FROM attachments WHERE uploader_id = ?"#,
+        id
+    )
+    .fetch_one(e)
+    .await?;
+    int(total, "SUM(attachments.size)")
+}
+
 /// An upload to delete: `(id, sha256, size)`.
 pub type Expired = (Id, [u8; 32], u64);
 

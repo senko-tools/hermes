@@ -30,6 +30,8 @@ key_file = ""                       # mode = "files": PEM private key
 data_dir = "./data"                 # hermes.db, files/, certs/ live here
 max_upload_mb = 25
 max_total_storage_gb = 0            # 0 = unlimited; uploads rejected when exceeded
+max_user_storage_mb = 0             # what one person's uploads may take up in all; 0 = unlimited
+limit_includes_messages = false     # true: the database (message text) counts towards max_total_storage_gb
 thumbnails = true
 
 [registration]

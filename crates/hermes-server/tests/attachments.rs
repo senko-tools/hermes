@@ -312,6 +312,57 @@ async fn storage_quota() {
 }
 
 #[tokio::test]
+async fn one_person_cannot_pass_their_storage() {
+    let server = start_with("attachments-user-quota", RegistrationMode::Open, |state| {
+        state.config.storage.max_user_storage_mb = 1;
+    })
+    .await;
+    const MIB: usize = 1024 * 1024;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    server
+        .upload(&alice, "a", "text/plain", vec![1; MIB - 10])
+        .await
+        .ok();
+    let used = server.state.files.used();
+    server
+        .upload(&alice, "b", "text/plain", vec![1; 11])
+        .await
+        .err(507, "STORAGE_FULL");
+    assert_eq!(
+        server.state.files.used(),
+        used,
+        "a refused upload is not counted"
+    );
+    server
+        .upload(&alice, "c", "text/plain", vec![1; 10])
+        .await
+        .ok();
+    // Someone else has their own allowance.
+    server
+        .upload(&owner, "d", "text/plain", vec![1; 11])
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn text_counts_towards_the_limit_only_when_asked_to() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let server = start_with("attachments-text-quota", RegistrationMode::Open, |state| {
+        state.config.storage.max_total_storage_gb = 1;
+        state.config.storage.limit_includes_messages = true;
+        assert!(state.files.reserve(GIB - 10, 0));
+    })
+    .await;
+    let (owner, _, _) = server.owner().await;
+    // The database is far larger than the 10 bytes left, so nothing fits.
+    server
+        .upload(&owner, "a", "text/plain", vec![1; 5])
+        .await
+        .err(507, "STORAGE_FULL");
+}
+
+#[tokio::test]
 async fn thumbnails_can_be_disabled() {
     let server = start_with("attachments-nothumbs", RegistrationMode::Open, |state| {
         state.config.storage.thumbnails = false;

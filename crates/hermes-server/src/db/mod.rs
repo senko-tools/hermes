@@ -78,6 +78,15 @@ impl Db {
     }
 }
 
+/// Bytes the database takes up on disk, its write-ahead log included.
+pub fn database_size(data_dir: &Path) -> u64 {
+    [DB_FILE.to_owned(), format!("{DB_FILE}-wal")]
+        .iter()
+        .filter_map(|name| std::fs::metadata(data_dir.join(name)).ok())
+        .map(|file| file.len())
+        .sum()
+}
+
 /// Writes a consistent copy of `<data_dir>/hermes.db` to `output` with `VACUUM INTO`, which is
 /// safe while the server runs (WAL). Fails if `output` exists or the database does not.
 pub async fn backup(data_dir: &Path, output: &Path) -> Result<(), sqlx::Error> {
