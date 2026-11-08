@@ -152,6 +152,8 @@ pub struct Shell {
     pub viewer: Option<Viewer>,
     /// The safety number of a conversation.
     pub keys_dialog: Option<crate::encryption::KeysDialog>,
+    /// A picked picture being cropped before it is uploaded.
+    pub crop: Option<crate::crop::Crop>,
     /// Local UTC offset for timestamps, read once at startup.
     pub utc_offset: i64,
     pub next_upload: u64,
@@ -286,6 +288,7 @@ impl Shell {
             new_dm: None,
             viewer: None,
             keys_dialog: None,
+            crop: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,

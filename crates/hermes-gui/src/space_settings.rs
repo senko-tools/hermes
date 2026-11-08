@@ -557,36 +557,7 @@ impl Shell {
     }
 
     fn pick_space_icon(&mut self, inst: InstanceId, space: Id, cx: &mut Context<Self>) {
-        let core = self.core.clone();
-        self.run(
-            cx,
-            async move {
-                let Some(file) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a server icon")
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                    .pick_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let icon = core.upload(&inst, file.path()).await?;
-                core.rest(&inst)?
-                    .update_space(
-                        space,
-                        &UpdateSpaceRequest {
-                            icon_id: Some(Some(icon.id)),
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                Ok::<_, CoreError>(Some(()))
-            },
-            |this, result, _, cx| match result {
-                Ok(Some(())) => this.info("Icon changed", cx),
-                Ok(None) => {}
-                Err(err) => this.error(format!("could not change the icon: {err}"), cx),
-            },
-        );
+        self.pick_picture(crate::crop::CropFor::SpaceIcon(inst, space), cx);
     }
 
     // ---- roles --------------------------------------------------------------------------------
@@ -1077,10 +1048,12 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .children(
-                        picture
-                            .map(|picture| gpui_kit::img(picture).size(px(40.)).rounded(px(10.))),
-                    )
+                    .children(picture.map(|picture| {
+                        gpui_kit::img(picture)
+                            .size(px(40.))
+                            .rounded(px(10.))
+                            .object_fit(gpui_kit::ObjectFit::Cover)
+                    }))
                     .child(
                         Button::new("space-icon")
                             .cursor_pointer()

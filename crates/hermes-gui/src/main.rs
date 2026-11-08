@@ -13,6 +13,7 @@ mod assets;
 mod channel;
 mod collapsed;
 mod command_bar;
+mod crop;
 mod desktop;
 mod desktop_shell;
 mod drag;

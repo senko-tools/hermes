@@ -171,6 +171,7 @@ impl Shell {
                 .flex_shrink_0()
                 .size(px(size))
                 .rounded(px(size / 2.))
+                .object_fit(gpui_kit::ObjectFit::Cover)
                 .into_any_element();
         }
         div()

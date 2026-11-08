@@ -165,6 +165,7 @@ fn rail_morph(
                             .inset_0()
                             .size_full()
                             .rounded(radius)
+                            .object_fit(gpui_kit::ObjectFit::Cover)
                     }))
             },
         )

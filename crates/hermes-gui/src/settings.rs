@@ -15,7 +15,7 @@ use hermes_client_core::audio::AudioDevices;
 use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
-use hermes_client_core::{CoreError, InstanceId, time};
+use hermes_client_core::{InstanceId, time};
 
 use crate::assets::{self, icon};
 use crate::keybinds::{ACTIONS, Action, Keybinds};
@@ -714,33 +714,7 @@ impl Shell {
     }
 
     fn pick_avatar(&mut self, inst: InstanceId, cx: &mut Context<Self>) {
-        let core = self.core.clone();
-        self.run(
-            cx,
-            async move {
-                let Some(file) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a picture")
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                    .pick_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let avatar = core.upload(&inst, file.path()).await?;
-                core.rest(&inst)?
-                    .update_me(&UpdateMeRequest {
-                        avatar_id: Some(Some(avatar.id)),
-                        ..UpdateMeRequest::default()
-                    })
-                    .await?;
-                Ok::<_, CoreError>(Some(()))
-            },
-            |this, result, _, cx| match result {
-                Ok(Some(())) => this.info("Avatar changed", cx),
-                Ok(None) => {}
-                Err(err) => this.error(format!("could not change it: {err}"), cx),
-            },
-        );
+        self.pick_picture(crate::crop::CropFor::Avatar(inst), cx);
     }
 
     fn revoke_sessions(&mut self, ids: Vec<Id>, cx: &mut Context<Self>) {

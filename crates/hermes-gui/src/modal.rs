@@ -86,6 +86,7 @@ impl Shell {
         out.extend(self.render_profile(cx));
         out.extend(self.render_share_menu(cx));
         out.extend(self.render_command_bar(cx));
+        out.extend(self.render_crop(cx));
         out.extend(self.render_confirm(cx));
         out
     }

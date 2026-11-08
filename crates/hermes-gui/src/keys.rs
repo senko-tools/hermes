@@ -93,7 +93,7 @@ impl Shell {
 
     /// Closes the top dialog, menu or page. `false` if none is open.
     fn close_top(&mut self) -> bool {
-        if self.keys_dialog.take().is_some() {
+        if self.keys_dialog.take().is_some() || self.crop.take().is_some() {
             return true;
         }
         if self.viewer.take().is_some()
@@ -136,6 +136,7 @@ impl Shell {
     /// Whether a dialog covers the window.
     pub fn dialog_open(&self) -> bool {
         self.viewer.is_some()
+            || self.crop.is_some()
             || self.confirm.is_some()
             || self.form.is_some()
             || self.new_dm.is_some()
