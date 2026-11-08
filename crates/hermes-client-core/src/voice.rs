@@ -44,6 +44,9 @@ const SCREEN_QUEUE: usize = 8;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the screen share transport's numbers are logged.
 const SCREEN_STATS_EVERY: Duration = Duration::from_secs(10);
+/// While a share waits for a keyframe here, how often to ask again (the server may have dropped
+/// a request that came too soon after another).
+const KEYFRAME_ASK_GAP: Duration = Duration::from_millis(500);
 /// How often who is in the room is compared with who has my sender key.
 const REKEY_CHECK: Duration = Duration::from_millis(250);
 /// A new sender key goes around this long before it is used, so nobody misses packets.
@@ -1634,6 +1637,7 @@ impl Core {
     /// those of watched sharers to the sink.
     async fn read_screen(self, conn: quinn::Connection, generation: u64) {
         let mut stats = TransportStats::new("received");
+        let mut holes: HashMap<u16, Instant> = HashMap::new();
         loop {
             let Ok(mut stream) = conn.accept_uni().await else {
                 return;
@@ -1644,6 +1648,17 @@ impl Core {
                     .await;
             let Ok(Ok(data)) = read else {
                 stats.failed += 1;
+                // Whose frame it was is unknown: every watched share may have a hole now.
+                let watched = self.with_session(generation, |s| {
+                    s.watching
+                        .iter()
+                        .filter_map(|id| Some((*id, *s.participants.get(id)?)))
+                        .collect::<Vec<_>>()
+                });
+                for (sender, user) in watched.unwrap_or_default() {
+                    holes.insert(sender, Instant::now());
+                    self.request_keyframe(user);
+                }
                 continue;
             };
             let Ok(header) = VideoHeader::decode(&data) else {
@@ -1676,6 +1691,23 @@ impl Core {
                 stats.skipped += 1;
                 continue;
             };
+            match past_hole(
+                &mut holes,
+                header.sender_id,
+                header.keyframe,
+                Instant::now(),
+            ) {
+                PastHole::Pass => {}
+                PastHole::Skip => {
+                    stats.skipped += 1;
+                    continue;
+                }
+                PastHole::SkipAndAsk => {
+                    stats.skipped += 1;
+                    self.request_keyframe(user);
+                    continue;
+                }
+            }
             let sink = self
                 .voice()
                 .screen_sink
@@ -1692,10 +1724,46 @@ impl Core {
                 };
                 if sink.try_send(frame).is_err() {
                     stats.skipped += 1;
+                    holes.insert(header.sender_id, Instant::now());
+                    self.request_keyframe(user);
                 }
             }
             stats.maybe_log();
         }
+    }
+}
+
+/// What to do with a frame of a share that may have lost frames here.
+#[derive(Debug, PartialEq, Eq)]
+enum PastHole {
+    /// Hand it to the decoder.
+    Pass,
+    /// A frame is missing before it, so it would only draw garbage.
+    Skip,
+    /// The same, and it is time to ask for a keyframe again.
+    SkipAndAsk,
+}
+
+/// Decides for one frame of `sender`. `holes` holds the sharers who lost a frame here and when a
+/// keyframe was last asked of them; their pictures wait for that keyframe, as the server's
+/// `resync` does for frames lost before they get here.
+fn past_hole(
+    holes: &mut HashMap<u16, Instant>,
+    sender: u16,
+    keyframe: bool,
+    now: Instant,
+) -> PastHole {
+    if keyframe {
+        holes.remove(&sender);
+        return PastHole::Pass;
+    }
+    match holes.get_mut(&sender) {
+        None => PastHole::Pass,
+        Some(asked) if now.duration_since(*asked) >= KEYFRAME_ASK_GAP => {
+            *asked = now;
+            PastHole::SkipAndAsk
+        }
+        Some(_) => PastHole::Skip,
     }
 }
 
@@ -1863,6 +1931,29 @@ async fn read_frames(mut recv: quinn::RecvStream, frames: mpsc::Sender<ServerCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_share_that_lost_a_frame_waits_for_a_keyframe() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut holes = HashMap::new();
+        // Nothing lost: everything passes.
+        assert_eq!(past_hole(&mut holes, 1, false, at(0)), PastHole::Pass);
+
+        holes.insert(1, at(0));
+        assert_eq!(past_hole(&mut holes, 1, false, at(100)), PastHole::Skip);
+        // Other sharers are not affected.
+        assert_eq!(past_hole(&mut holes, 2, false, at(100)), PastHole::Pass);
+        // Asks again now and then, not for every frame.
+        assert_eq!(
+            past_hole(&mut holes, 1, false, at(500)),
+            PastHole::SkipAndAsk
+        );
+        assert_eq!(past_hole(&mut holes, 1, false, at(600)), PastHole::Skip);
+        // The keyframe ends the wait.
+        assert_eq!(past_hole(&mut holes, 1, true, at(700)), PastHole::Pass);
+        assert_eq!(past_hole(&mut holes, 1, false, at(720)), PastHole::Pass);
+    }
 
     #[test]
     fn settings_map_both_ways() {

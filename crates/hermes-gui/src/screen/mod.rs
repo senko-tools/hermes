@@ -34,8 +34,9 @@ use image::Frame;
 
 use crate::shell::Shell;
 
-/// Frames waiting for the decoder; more are dropped (the decoder then asks for a keyframe).
-const DECODE_QUEUE: usize = 8;
+/// Frames waiting for the decoder (about a quarter of a second at 60 fps); past that the frame is
+/// lost, and `hermes-client-core` holds that share back until a keyframe it asks for.
+const DECODE_QUEUE: usize = 16;
 
 /// A sharer is asked for a keyframe at most this often by this window (the server limits it too,
 /// but each request is a control message).
@@ -54,7 +55,8 @@ pub struct Share {
 struct DecodeStats {
     frames: u32,
     pictures: u32,
-    /// Decoded, but the window was still busy with the picture before.
+    /// Decoded, but never shown: a newer frame was already waiting, or the window was still busy
+    /// with the picture before.
     unshown: u32,
     errors: u32,
     /// Time frames waited between arriving and being decoded, decoding took, and turning the
@@ -70,7 +72,7 @@ impl DecodeStats {
         let per = |us: u64, n: u32| us as f64 / 1000.0 / f64::from(n.max(1));
         tracing::info!(
             "screen share of {user} (decoding): {:.1} fps in, {:.1} pictures/s out, {} not shown \
-             (window busy), {} errors, {:.1} ms waiting, {:.1} ms to decode (slowest {:.1} ms), \
+             (too late), {} errors, {:.1} ms waiting, {:.1} ms to decode (slowest {:.1} ms), \
              {:.1} ms to convert",
             f64::from(self.frames) / secs,
             f64::from(self.pictures) / secs,
@@ -467,6 +469,12 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
         s.decode_us += took;
         s.slowest_decode_us = s.slowest_decode_us.max(took);
         match decoded {
+            // Every frame is decoded, for the frames after it, but colours are worked out only
+            // for the newest: falling behind then costs pictures, never frames.
+            Ok(Some(_)) if !frames.is_empty() => {
+                s.pictures += 1;
+                s.unshown += 1;
+            }
             Ok(Some(picture)) => {
                 s.pictures += 1;
                 let convert = std::time::Instant::now();
