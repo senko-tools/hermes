@@ -3,9 +3,13 @@
 //! Nothing decrypted is written to disk this way.
 
 use std::collections::HashMap;
-use std::io::{BufRead as _, BufReader, Write as _};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
+
+/// How long a finished connection waits for the other side to close it.
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 struct Server {
     port: u16,
@@ -75,9 +79,10 @@ fn start() -> Result<Arc<Server>, String> {
                 let _ = std::thread::Builder::new()
                     .name("media-serve-conn".into())
                     .spawn(move || {
-                        if let Err(err) = answer(&server, stream) {
+                        if let Err(err) = answer(&server, &stream) {
                             tracing::debug!("media serve: {err}");
                         }
+                        close(&stream);
                     });
             }
         })
@@ -85,9 +90,18 @@ fn start() -> Result<Arc<Server>, String> {
     Ok(server)
 }
 
-/// Answers one request, then closes the connection.
-fn answer(server: &Server, stream: TcpStream) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+/// Ends a connection in order: says it is done sending, then waits for the other side to finish.
+/// Just dropping the socket can reset it on Windows before the reader has got the last bytes.
+fn close(mut stream: &TcpStream) {
+    let _ = stream.shutdown(Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(CLOSE_WAIT));
+    let mut rest = [0u8; 512];
+    while matches!(stream.read(&mut rest), Ok(n) if n > 0) {}
+}
+
+/// Answers one request.
+fn answer(server: &Server, stream: &TcpStream) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
@@ -170,7 +184,6 @@ fn parse_range(value: &str, len: u64) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read as _;
 
     #[test]
     fn ranges() {
