@@ -80,6 +80,14 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   them the waveform grows in while the file plays. The release bundles BtbN's LGPL FFmpeg build;
   on Linux FFmpeg must be installed (`apt install ffmpeg`). Installers built by hand need it in
   `target/ffmpeg` (see `release.yml`).
+  A paused file runs no FFmpeg process (they start again where it was), all files share one sound
+  output, and a paused file is let go after 15 s off screen or when paused files pass 64 MB; it
+  plays on from where it was. The whole waveform, and a video's bar, is a seek bar: a press starts
+  scrubbing, followed by window-level mouse listeners (`media_scrub_catcher`, also over the full
+  view), and the seek happens on release. The wheel over a played card sets one volume for all
+  media (`voice.media_volume`, `voice.media_muted`). Video controls sit over the picture and fade
+  2 s after the mouse rests while playing. Uploads larger than the server's `max_upload_mb` are
+  refused before sending (the server checks too).
 - **Animated pictures:** GIFs, animated WebP and APNG move in the chat, as avatars, server icons and
   profile banners, only while the window has the focus. An `img` needs an `.id(...)` for gpui to
   step through its frames.
