@@ -124,7 +124,7 @@ impl Shell {
                     .map_err(|e| e.to_string())?;
                 tokio::task::spawn_blocking(move || {
                     let source = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-                    let preview = crate::images::decode(&bytes, Some(1024))?;
+                    let preview = crate::images::decode(&bytes, Some(1024))?.still;
                     Ok(Some((Arc::new(source), preview)))
                 })
                 .await

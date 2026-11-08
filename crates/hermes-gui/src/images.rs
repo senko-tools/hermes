@@ -20,8 +20,39 @@ const AVATAR_PIXELS: u32 = 192;
 #[derive(Clone)]
 pub enum Img {
     Loading,
-    Ready(Arc<RenderImage>),
+    Ready(Picture),
     Failed,
+}
+
+/// A decoded picture: its first frame, and all of them when it is animated.
+#[derive(Clone)]
+pub struct Picture {
+    pub still: Arc<RenderImage>,
+    pub moving: Option<Arc<RenderImage>>,
+}
+
+impl Picture {
+    /// What to draw: the animation only while `animate` (the window has the focus).
+    pub fn shown(&self, animate: bool) -> Arc<RenderImage> {
+        match (&self.moving, animate) {
+            (Some(moving), true) => moving.clone(),
+            _ => self.still.clone(),
+        }
+    }
+}
+
+/// How many bytes of decoded frames one animation may hold; a longer one is made smaller.
+const ANIMATION_BUDGET: usize = 96 << 20;
+/// Below this many pixels on its long side an animation stays still instead.
+const ANIMATION_MIN_SIDE: u32 = 48;
+
+/// Whether an attachment may be animated: its original is loaded instead of the still thumbnail.
+pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    matches!(content_type, "image/gif" | "image/webp" | "image/apng")
+        || [".gif", ".webp", ".apng"]
+            .iter()
+            .any(|e| lower.ends_with(e))
 }
 
 #[derive(Default)]
@@ -34,7 +65,27 @@ pub struct Images {
 /// The size encrypted pictures are made into previews at, here on the device.
 const SEALED_PREVIEW: u32 = 800;
 
-pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Arc<RenderImage>, String> {
+pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
+    let moving = match animation_frames(bytes, max) {
+        Ok(Some(frames)) => Some(frames),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::debug!("not animated: {err}");
+            None
+        }
+    };
+    if let Some(frames) = moving {
+        let still = Frame::from_parts(
+            frames[0].buffer().clone(),
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(0, 1),
+        );
+        return Ok(Picture {
+            still: Arc::new(RenderImage::new(vec![still])),
+            moving: Some(Arc::new(RenderImage::new(frames))),
+        });
+    }
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let image = match max {
         Some(max) if image.width() > max || image.height() > max => {
@@ -43,10 +94,94 @@ pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Arc<RenderImage>, String
         _ => image,
     };
     let mut pixels = image.to_rgba8();
+    to_bgra(&mut pixels);
+    Ok(Picture {
+        still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+        moving: None,
+    })
+}
+
+/// gpui wants BGRA.
+fn to_bgra(pixels: &mut image::RgbaImage) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Ok(Arc::new(RenderImage::new(vec![Frame::new(pixels)])))
+}
+
+/// The frames of an animated GIF, WebP or PNG, at most `max` pixels on a side and within
+/// [`ANIMATION_BUDGET`], in BGRA. `None`: one frame only, or too long to keep moving.
+pub fn animation_frames(bytes: &[u8], max: Option<u32>) -> Result<Option<Vec<Frame>>, String> {
+    frames_within(bytes, max, ANIMATION_BUDGET)
+}
+
+fn frames_within(
+    bytes: &[u8],
+    max: Option<u32>,
+    budget: usize,
+) -> Result<Option<Vec<Frame>>, String> {
+    use image::AnimationDecoder as _;
+    use std::io::Cursor;
+    let err = |e: image::ImageError| e.to_string();
+    let frames: image::Frames<'_> = match image::guess_format(bytes).map_err(err)? {
+        image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+            .map_err(err)?
+            .into_frames(),
+        image::ImageFormat::WebP => {
+            let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).map_err(err)?;
+            if !decoder.has_animation() {
+                return Ok(None);
+            }
+            decoder.into_frames()
+        }
+        image::ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).map_err(err)?;
+            if !decoder.is_apng().map_err(err)? {
+                return Ok(None);
+            }
+            decoder.apng().map_err(err)?.into_frames()
+        }
+        _ => return Ok(None),
+    };
+    let mut side = max.unwrap_or(u32::MAX);
+    let mut out: Vec<Frame> = Vec::new();
+    let mut bytes_used = 0usize;
+    for frame in frames {
+        let frame = frame.map_err(err)?;
+        let delay = frame.delay();
+        let mut pixels = fit(frame.into_buffer(), side);
+        bytes_used += pixels.as_raw().len();
+        // Over the budget: everything so far and everything after at half the size.
+        while bytes_used > budget {
+            side = pixels.width().max(pixels.height()) / 2;
+            if side < ANIMATION_MIN_SIDE {
+                return Ok(None);
+            }
+            for f in &mut out {
+                let smaller = fit(f.buffer().clone(), side);
+                *f = Frame::from_parts(smaller, 0, 0, f.delay());
+            }
+            pixels = fit(pixels, side);
+            bytes_used = out.iter().map(|f| f.buffer().as_raw().len()).sum::<usize>()
+                + pixels.as_raw().len();
+        }
+        to_bgra(&mut pixels);
+        out.push(Frame::from_parts(pixels, 0, 0, delay));
+    }
+    Ok((out.len() > 1).then_some(out))
+}
+
+/// `pixels` made to fit `side` on its long side, keeping its shape.
+fn fit(pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
+    let (w, h) = pixels.dimensions();
+    if w <= side && h <= side {
+        return pixels;
+    }
+    let scale = side as f32 / w.max(h) as f32;
+    let (nw, nh) = (
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+    );
+    image::imageops::resize(&pixels, nw, nh, image::imageops::FilterType::Triangle)
 }
 
 impl Shell {
@@ -112,7 +247,7 @@ impl Shell {
             .as_ref()?
             .id;
         match self.images.avatars.get(&(inst.to_owned(), icon)) {
-            Some(Img::Ready(image)) => Some(image.clone()),
+            Some(Img::Ready(picture)) => Some(picture.shown(self.focused)),
             _ => None,
         }
     }
@@ -137,7 +272,9 @@ impl Shell {
             cx,
             async move {
                 // An encrypted picture has no thumbnail on the server: the server cannot see it.
-                let (bytes, max) = if attachment.sealed.is_some() {
+                // The thumbnail of an animated one is still, so its original is loaded too.
+                let animated = maybe_animated(&attachment.content_type, &attachment.filename);
+                let (bytes, max) = if attachment.sealed.is_some() || animated {
                     let bytes = core.download(&inst, &attachment).await;
                     (bytes.map_err(|e| e.to_string())?, Some(SEALED_PREVIEW))
                 } else {
@@ -166,8 +303,8 @@ impl Shell {
         let picture = user
             .and_then(|u| u.avatar.as_ref())
             .and_then(|a| self.images.avatars.get(&(inst.to_owned(), a.id)));
-        if let Some(Img::Ready(image)) = picture {
-            return img(image.clone())
+        if let Some(Img::Ready(picture)) = picture {
+            return img(picture.shown(self.focused))
                 .flex_shrink_0()
                 .size(px(size))
                 .rounded(px(size / 2.))
@@ -224,4 +361,65 @@ fn initial(name: &str) -> SharedString {
         .map(|c| c.to_uppercase().collect::<String>())
         .unwrap_or_default()
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A GIF of `frames` frames, `side` pixels square, each a different grey.
+    pub fn gif(frames: u8, side: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Infinite)
+                .unwrap();
+            let frames = (0..frames).map(|n| {
+                let pixels = image::RgbaImage::from_pixel(
+                    side,
+                    side,
+                    image::Rgba([n.wrapping_mul(20), 0, 0, 255]),
+                );
+                Frame::from_parts(pixels, 0, 0, image::Delay::from_numer_denom_ms(50, 1))
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        bytes
+    }
+
+    #[test]
+    fn an_animated_gif_keeps_its_frames_and_a_still_first_one() {
+        let picture = decode(&gif(3, 16), None).unwrap();
+        assert_eq!(picture.moving.as_ref().unwrap().frame_count(), 3);
+        assert_eq!(picture.still.frame_count(), 1);
+    }
+
+    #[test]
+    fn a_one_frame_gif_is_still() {
+        assert!(decode(&gif(1, 16), None).unwrap().moving.is_none());
+    }
+
+    #[test]
+    fn a_long_animation_is_made_smaller_to_fit_the_budget() {
+        // 30 frames of 200 px: 4.8 MB at full size, against a 1 MB budget.
+        let frames = frames_within(&gif(30, 200), None, 1 << 20)
+            .unwrap()
+            .unwrap();
+        let total: usize = frames.iter().map(|f| f.buffer().as_raw().len()).sum();
+        assert!(total <= 1 << 20, "{total}");
+        assert_eq!(frames.len(), 30);
+        assert!(
+            frames
+                .iter()
+                .all(|f| f.buffer().width() == frames[0].buffer().width())
+        );
+    }
+
+    #[test]
+    fn gifs_and_webps_may_be_animated() {
+        assert!(maybe_animated("image/gif", "a"));
+        assert!(maybe_animated("application/octet-stream", "Party.GIF"));
+        assert!(!maybe_animated("image/png", "a.png"));
+    }
 }

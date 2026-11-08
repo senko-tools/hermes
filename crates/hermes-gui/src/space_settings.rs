@@ -1039,7 +1039,7 @@ impl Shell {
             // Read from the image cache, not through the store again (it is held here).
             let picture = st.space.icon.as_ref().and_then(|icon| {
                 match self.images.avatars.get(&(inst.clone(), icon.id)) {
-                    Some(crate::images::Img::Ready(image)) => Some(image.clone()),
+                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.focused)),
                     _ => None,
                 }
             });

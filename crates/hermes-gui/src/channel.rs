@@ -1265,7 +1265,7 @@ impl Shell {
     pub fn render_viewer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let viewer = self.viewer.as_ref()?;
         let content = match &viewer.image {
-            Img::Ready(image) => img(image.clone())
+            Img::Ready(picture) => img(picture.shown(self.focused))
                 .max_w_full()
                 .max_h_full()
                 .object_fit(gpui_kit::ObjectFit::Contain)
@@ -2444,7 +2444,12 @@ impl Shell {
                     .rounded(px(6.))
                     .overflow_hidden()
                     .cursor_pointer()
-                    .child(img(image.clone()).w(px(w)).h(px(h)).rounded(px(6.)))
+                    .child(
+                        img(image.shown(self.focused))
+                            .w(px(w))
+                            .h(px(h))
+                            .rounded(px(6.)),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.open_image(open_inst.clone(), attachment.clone(), cx);
