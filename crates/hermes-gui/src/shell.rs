@@ -162,6 +162,8 @@ pub struct Shell {
     pub rail_pill_slot: std::cell::Cell<f32>,
     /// Plays mouse-wheel notches back smoothly.
     pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
+    /// Sound and video files that were clicked: loading, playing or paused.
+    pub media: crate::media::cards::Media,
     /// A picked picture being cropped before it is uploaded.
     pub crop: Option<crate::crop::Crop>,
     /// Local UTC offset for timestamps, read once at startup.
@@ -302,6 +304,7 @@ impl Shell {
             rail_pill_slot: std::cell::Cell::new(0.),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
             crop: None,
+            media: HashMap::new(),
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,
@@ -1161,6 +1164,7 @@ impl Render for Shell {
             crate::desktop::window::set_title_bar(window, bar);
             self.title_bar = Some(bar);
         }
+        self.advance_media(window);
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }

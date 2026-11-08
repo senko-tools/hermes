@@ -26,8 +26,6 @@ mod images;
 mod keybinds;
 mod keys;
 mod markup;
-// The cards that play media are not in yet (round 11, steps 6 and 8).
-#[allow(dead_code)]
 mod media;
 mod members;
 mod menu;

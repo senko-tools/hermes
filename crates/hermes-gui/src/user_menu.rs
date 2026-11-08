@@ -379,6 +379,7 @@ impl Shell {
                                 .size_full()
                                 .rounded_t(px(9.))
                                 .object_fit(gpui_kit::ObjectFit::Cover)
+                                .id("profile-banner")
                         })),
                 )
                 .child(

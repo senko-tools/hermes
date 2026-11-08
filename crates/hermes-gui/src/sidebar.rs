@@ -162,12 +162,17 @@ fn rail_morph(
                 d.rounded(radius)
                     .bg(theme::mix(theme::selected(), theme::accent(), fade))
                     .children(picture.map(|picture| {
+                        let id = SharedString::from(format!(
+                            "pic-{:p}",
+                            std::sync::Arc::as_ptr(&picture)
+                        ));
                         gpui_kit::img(picture)
                             .absolute()
                             .inset_0()
                             .size_full()
                             .rounded(radius)
                             .object_fit(gpui_kit::ObjectFit::Cover)
+                            .id(id)
                     }))
             },
         )

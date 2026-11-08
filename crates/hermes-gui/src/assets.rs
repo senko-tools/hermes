@@ -45,9 +45,8 @@ pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";
 pub const SHIELD: &str = "shield-account";
 pub const COPY: &str = "content-copy";
-// For the media cards, which are not in yet.
-#[allow(dead_code)]
-mod media_icons {
+/// The media cards' icons.
+pub mod media_icons {
     pub const PLAY: &str = "play";
     pub const PAUSE: &str = "pause";
     pub const VOLUME_OFF: &str = "volume-off";

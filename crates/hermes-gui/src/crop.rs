@@ -411,7 +411,8 @@ impl Shell {
                     .top(px((area_h - shown.1) / 2. + oy))
                     .w(px(shown.0))
                     .h(px(shown.1))
-                    .object_fit(ObjectFit::Fill),
+                    .object_fit(ObjectFit::Fill)
+                    .id("crop-picture"),
             )
             .child(
                 div()

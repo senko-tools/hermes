@@ -1,6 +1,7 @@
 //! Sound and video files in the chat, played with FFmpeg: [`ffmpeg`] runs it, [`serve`] hands it
 //! the file from memory, [`player`] plays one file and [`waveform`] measures a sound's levels.
 
+pub mod cards;
 pub mod ffmpeg;
 pub mod player;
 pub mod serve;

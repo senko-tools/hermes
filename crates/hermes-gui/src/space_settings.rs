@@ -1056,6 +1056,7 @@ impl Shell {
                             .size(px(40.))
                             .rounded(px(10.))
                             .object_fit(gpui_kit::ObjectFit::Cover)
+                            .id("space-icon-picture")
                     }))
                     .child(
                         Button::new("space-icon")

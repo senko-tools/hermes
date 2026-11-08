@@ -93,7 +93,10 @@ impl Shell {
 
     /// Closes the top dialog, menu or page. `false` if none is open.
     fn close_top(&mut self) -> bool {
-        if self.keys_dialog.take().is_some() || self.crop.take().is_some() {
+        if self.keys_dialog.take().is_some()
+            || self.crop.take().is_some()
+            || self.close_media_full()
+        {
             return true;
         }
         if self.viewer.take().is_some()

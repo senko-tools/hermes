@@ -333,6 +333,11 @@ impl Shell {
                 .size(px(size))
                 .rounded(px(size / 2.))
                 .object_fit(gpui_kit::ObjectFit::Cover)
+                // An id lets gpui step through an animation's frames.
+                .id(SharedString::from(format!(
+                    "pic-{:p}",
+                    Arc::as_ptr(&picture.still)
+                )))
                 .into_any_element();
         }
         div()

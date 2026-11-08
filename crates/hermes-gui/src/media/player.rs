@@ -245,19 +245,6 @@ impl Player {
         }
         dropped
     }
-
-    /// Everything still held on the GPU, when the player goes away.
-    pub fn take_pictures(&mut self) -> Vec<Arc<RenderImage>> {
-        let mut out: Vec<_> = self.current.take().into_iter().collect();
-        out.extend(
-            self.pictures
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .drain(..)
-                .map(|(_, p)| p),
-        );
-        out
-    }
 }
 
 /// Reads stereo samples from `child` into the output while it has room.

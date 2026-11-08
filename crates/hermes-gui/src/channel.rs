@@ -1275,6 +1275,7 @@ impl Shell {
                 .max_w_full()
                 .max_h_full()
                 .object_fit(gpui_kit::ObjectFit::Contain)
+                .id("viewer-picture")
                 .into_any_element(),
             Img::Failed => "Image not available".into_any_element(),
             Img::Loading => "Loading…".into_any_element(),
@@ -2454,7 +2455,8 @@ impl Shell {
                         img(image.shown(self.focused))
                             .w(px(w))
                             .h(px(h))
-                            .rounded(px(6.)),
+                            .rounded(px(6.))
+                            .id(SharedString::from(format!("image-pic-{}", a.id))),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -2480,6 +2482,12 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .child(text)
                 .into_any_element();
+        }
+        if crate::media::is_video(&a.content_type, &a.filename) {
+            return self.render_video_card(inst, a, cx);
+        }
+        if crate::media::is_sound(&a.content_type, &a.filename) {
+            return self.render_audio_card(inst, a, cx);
         }
         let (down_inst, attachment) = (inst.clone(), a.clone());
         div()
