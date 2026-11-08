@@ -61,7 +61,7 @@ pub async fn join(
     let Some(info) = state.voice.endpoint().cloned() else {
         return Err(disabled());
     };
-    let (bypass_limit, user_limit) = {
+    let (bypass_limit, user_limit, in_a_server) = {
         let cache = state.cache();
         let access = perms::channel(&cache, req.channel_id, auth.user_id)?;
         if !access.channel.kind.has_voice() {
@@ -74,6 +74,7 @@ pub async fn join(
         (
             access.perms.contains(Permissions::MOVE_MEMBERS),
             access.channel.user_limit.unwrap_or(0),
+            !access.channel.kind.is_private(),
         )
     };
     let others = state.voice.room_size(req.channel_id, auth.user_id);
@@ -83,6 +84,9 @@ pub async fn join(
             ErrorCode::VoiceFull,
             "This voice channel is full",
         ));
+    }
+    if in_a_server {
+        crate::gateway::last_online::active(&state, auth.user_id);
     }
     let token = state.voice.issue(
         auth.user_id,

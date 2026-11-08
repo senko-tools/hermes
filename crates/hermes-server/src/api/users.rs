@@ -215,24 +215,29 @@ pub async fn get(
     auth: Auth,
     Path(user_id): Path<Id>,
 ) -> ApiResult<Json<UserProfile>> {
-    let cache = state.cache();
-    let visible =
-        user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
-    let user = cache
-        .users
-        .get(&user_id)
-        .filter(|_| visible)
-        .ok_or_else(|| Error::not_found("user"))?;
-    let mut mutual_space_ids: Vec<Id> = cache
-        .spaces
-        .values()
-        .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
-        .map(|s| s.space.id)
-        .collect();
-    mutual_space_ids.sort();
+    let (user, mutual_space_ids) = {
+        let cache = state.cache();
+        let visible =
+            user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
+        let user = cache
+            .users
+            .get(&user_id)
+            .filter(|_| visible)
+            .ok_or_else(|| Error::not_found("user"))?;
+        let mut mutual_space_ids: Vec<Id> = cache
+            .spaces
+            .values()
+            .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
+            .map(|s| s.space.id)
+            .collect();
+        mutual_space_ids.sort();
+        (user.user.clone(), mutual_space_ids)
+    };
+    let last_online_at = db::users::last_online(&state.db.read, user_id).await?;
     Ok(Json(UserProfile {
-        user: user.user.clone(),
+        user,
         mutual_space_ids,
+        last_online_at,
     }))
 }
 

@@ -2,7 +2,7 @@
 
 use hermes_proto::id::Id;
 use hermes_proto::models::{DmFrom, NotificationLevel, NotificationSetting, PrivacySettings, User};
-use sqlx::SqliteConnection;
+use sqlx::{SqliteConnection, SqlitePool};
 
 pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<(), sqlx::Error> {
     let id = user.id.to_i64();
@@ -20,6 +20,32 @@ pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// Notes that `users` were online at `at`; an earlier time never replaces a later one.
+pub async fn set_last_online(pool: &SqlitePool, users: &[Id], at: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for user in users {
+        let id = user.to_i64();
+        sqlx::query!(
+            "UPDATE users SET last_online_at = ?1
+             WHERE id = ?2 AND (last_online_at IS NULL OR last_online_at < ?1)",
+            at,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// When `user` was last online, if known.
+pub async fn last_online(pool: &SqlitePool, user: Id) -> Result<Option<i64>, sqlx::Error> {
+    let id = user.to_i64();
+    sqlx::query_scalar!("SELECT last_online_at FROM users WHERE id = ?", id)
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
 }
 
 /// Stores `users.username`, the whole handle.

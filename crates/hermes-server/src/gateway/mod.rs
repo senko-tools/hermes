@@ -2,6 +2,7 @@
 //! snapshot. One task per connection reads client ops and writes queued frames with `select!`.
 
 pub mod bus;
+pub mod last_online;
 pub mod presence;
 pub mod ready;
 pub mod visibility;

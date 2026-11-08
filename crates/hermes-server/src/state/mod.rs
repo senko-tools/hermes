@@ -43,6 +43,8 @@ pub struct AppState {
     pub message_limiter: KeyedLimiter<(Id, Id)>,
     /// Uploaded files on disk.
     pub files: Files,
+    /// Who has been visibly online since when.
+    pub last_online: crate::gateway::last_online::LastOnline,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
     /// Voice rooms, join tokens and the QUIC endpoint's address.
@@ -69,6 +71,7 @@ impl AppState {
             slowmode: Slowmode::default(),
             message_limiter: KeyedLimiter::default(),
             files,
+            last_online: Default::default(),
             gateway: Gateway::default(),
             voice,
             fingerprint: None,

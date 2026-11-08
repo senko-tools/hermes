@@ -34,6 +34,7 @@ pub async fn run(
     let app = api::router(state.clone());
     let cleanup = tokio::spawn(files::cleanup_task(state.clone()));
     let refresh = tokio::spawn(crate::users::refresh_task(state.clone()));
+    let last_online = tokio::spawn(crate::gateway::last_online::flush_task(state.clone()));
     let calls = state
         .voice
         .take_after()
@@ -76,6 +77,7 @@ pub async fn run(
     };
     cleanup.abort();
     refresh.abort();
+    last_online.abort();
     if let Some(quic) = &quic {
         quic.close(0u32.into(), b"server restarting");
         let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
@@ -85,6 +87,9 @@ pub async fn run(
     }
     if let Some(reload) = reload {
         reload.abort();
+    }
+    if let Err(err) = crate::gateway::last_online::flush(&state).await {
+        tracing::warn!("could not note who was last online: {err}");
     }
     state.db.close().await;
     if result.is_ok() {

@@ -15,6 +15,42 @@ fn bits(p: Permissions) -> String {
     p.bits().to_string()
 }
 
+/// Going into a server's voice channel counts as being online even while invisible; a DM call
+/// does not.
+#[tokio::test]
+async fn joining_voice_in_a_server_updates_last_online() {
+    let server = start("voice-last-online", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "General");
+    let (mut ws, _) = server.identify(&alice).await;
+    ws.send(json!({ "op": "presence_update", "d": { "status": "invisible" } }))
+        .await;
+    let seen = async || {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        server
+            .get(&format!("/users/{alice_id}"), Some(&owner))
+            .await
+            .ok()["last_online_at"]
+            .clone()
+    };
+    let dm = server
+        .post("/dms", Some(&alice), json!({ "recipient_ids": [owner_id] }))
+        .await
+        .ok();
+    server
+        .post(
+            "/voice/join",
+            Some(&alice),
+            json!({ "channel_id": dm["id"] }),
+        )
+        .await
+        .ok();
+    assert!(seen().await.is_null(), "a DM call does not count");
+    server.voice_token(&alice, &general).await;
+    assert!(seen().await.is_i64(), "a server's voice channel does");
+}
+
 #[tokio::test]
 async fn join_checks_permissions_and_returns_the_endpoint() {
     let server = start("voice-join", RegistrationMode::Open).await;

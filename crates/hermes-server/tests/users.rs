@@ -7,6 +7,63 @@ use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
 
+/// When `user` was last online, as `viewer` sees it, once a write has had the time to land.
+async fn last_online(server: &TestServer, viewer: &str, user: &str) -> Value {
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    server
+        .get(&format!("/users/{user}"), Some(viewer))
+        .await
+        .ok()["last_online_at"]
+        .clone()
+}
+
+#[tokio::test]
+async fn last_online_counts_being_visible_and_server_activity_only() {
+    use hermes_server::gateway::last_online::MIN_VISIBLE_MS;
+
+    let server = start("users-last-online", RegistrationMode::InviteOnly).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let id = alice_id.parse().unwrap();
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // Connecting and going invisible at once leaves nothing.
+    let (mut ws, _) = server.identify(&alice).await;
+    ws.send(json!({ "op": "presence_update", "d": { "status": "invisible" } }))
+        .await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // While invisible, a DM does not count.
+    let dm = server
+        .post("/dms", Some(&alice), json!({ "recipient_ids": [owner_id] }))
+        .await
+        .ok();
+    send(&server, &alice, dm["id"].as_str().unwrap(), "psst").await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // Writing in a server does.
+    send(&server, &alice, &general, "hello").await;
+    let written = last_online(&server, &owner, &alice_id).await;
+    assert!(written.is_i64(), "{written}");
+
+    // Idle after being visible long enough: the moment it ended counts, and idling adds nothing.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    ws.send(json!({ "op": "presence_update", "d": { "status": "online" } }))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    server.state.last_online.backdate(id, MIN_VISIBLE_MS);
+    ws.send(json!({ "op": "presence_update", "d": { "status": "idle" } }))
+        .await;
+    let idle_at = last_online(&server, &owner, &alice_id).await;
+    assert!(
+        idle_at.as_i64() > written.as_i64(),
+        "{idle_at} after {written}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, idle_at);
+}
+
 async fn send(server: &TestServer, token: &str, channel: &str, content: &str) -> Value {
     server
         .post(

@@ -156,6 +156,10 @@ pub struct UserProfile {
     #[serde(flatten)]
     pub user: User,
     pub mutual_space_ids: Vec<Id>,
+    /// When they were last online (Unix ms), if known. Being idle or invisible does not count,
+    /// except for writing in a server or going into a server's voice channel.
+    #[serde(default)]
+    pub last_online_at: Option<i64>,
 }
 
 /// `PUT /users/@me/notification-settings/{target_id}`.

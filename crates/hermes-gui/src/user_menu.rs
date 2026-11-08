@@ -7,7 +7,7 @@ use gpui_kit::{AnyElement, Context, FontWeight, Pixels, Point, SharedString, Win
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::api::VoiceStatePatchRequest;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::ChannelKind;
+use hermes_client_core::proto::models::{ChannelKind, Status};
 use hermes_client_core::view;
 
 use crate::menu::{Line, run_line};
@@ -21,6 +21,8 @@ pub struct ProfileCard {
     pub space: Option<Id>,
     pub user: Id,
     pub at: Point<Pixels>,
+    /// When they were last online, once the server has said.
+    pub last_online: Option<i64>,
 }
 
 impl Shell {
@@ -47,7 +49,9 @@ impl Shell {
                     space,
                     user,
                     at: self.menu_at,
+                    last_online: None,
                 });
+                self.fetch_last_online(cx);
                 cx.notify();
             }
             Action::Volume => {
@@ -148,6 +152,30 @@ impl Shell {
             .collect()
     }
 
+    /// Asks the server when the person on the open profile card was last online.
+    fn fetch_last_online(&mut self, cx: &mut Context<Self>) {
+        let Some(card) = &self.profile else {
+            return;
+        };
+        let (inst, user) = (card.inst.clone(), card.user);
+        let Ok(rest) = self.core.rest(&inst) else {
+            return;
+        };
+        self.run(
+            cx,
+            async move { rest.user(user).await },
+            move |this, result, _, cx| match result {
+                Ok(profile) => {
+                    if let Some(card) = this.profile.as_mut().filter(|c| c.user == user) {
+                        card.last_online = profile.last_online_at;
+                        cx.notify();
+                    }
+                }
+                Err(err) => tracing::debug!("could not fetch {user}'s profile: {err}"),
+            },
+        );
+    }
+
     /// The profile card: a band in their top role's colour, their picture over it, names and
     /// status, and when they joined this server, where they talk, and their roles.
     pub fn render_profile(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -185,6 +213,13 @@ impl Shell {
             .iter()
             .find_map(|(_, color)| *color)
             .unwrap_or_else(theme::accent);
+        let looks_online = matches!(s.status(user), Status::Online | Status::Dnd);
+        let last_online = if looks_online {
+            Some("Online now".to_owned())
+        } else {
+            card.last_online
+                .map(|at| last_online_text(hermes_client_core::now_ms(), at, self.utc_offset))
+        };
         let in_voice = s.voice_states.get(&user).and_then(|v| {
             let channel = s.channel(v.channel_id)?;
             let place = s
@@ -237,6 +272,17 @@ impl Shell {
                     .gap(px(2.))
                     .child(section("Member since"))
                     .child(joined)
+                    .into_any_element(),
+            );
+        }
+        if let Some(last_online) = last_online {
+            details.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(section("Last online"))
+                    .child(last_online)
                     .into_any_element(),
             );
         }
@@ -433,6 +479,25 @@ impl Shell {
 }
 
 /// A date like `Mar 4, 2026`.
+/// How long ago someone was last online; past a week, the date.
+fn last_online_text(now: i64, at: i64, offset_secs: i64) -> String {
+    const MINUTE: i64 = 60_000;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    let ago = (now - at).max(0);
+    let count = |n: i64, unit: &str| {
+        let plural = if n == 1 { "" } else { "s" };
+        format!("{n} {unit}{plural} ago")
+    };
+    match ago {
+        _ if ago < MINUTE => "Just now".to_owned(),
+        _ if ago < HOUR => count(ago / MINUTE, "minute"),
+        _ if ago < DAY => count(ago / HOUR, "hour"),
+        _ if ago < 7 * DAY => count(ago / DAY, "day"),
+        _ => long_date(at, offset_secs),
+    }
+}
+
 fn long_date(unix_ms: i64, offset_secs: i64) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -449,6 +514,22 @@ fn long_date(unix_ms: i64, offset_secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn last_online_reads_as_time_ago_then_a_date() {
+        const MINUTE: i64 = 60_000;
+        let now = 100 * 24 * 60 * MINUTE;
+        let ago = |ms| last_online_text(now, now - ms, 0);
+        assert_eq!(ago(30_000), "Just now");
+        assert_eq!(ago(MINUTE), "1 minute ago");
+        assert_eq!(ago(59 * MINUTE), "59 minutes ago");
+        assert_eq!(ago(2 * 60 * MINUTE), "2 hours ago");
+        assert_eq!(ago(3 * 24 * 60 * MINUTE), "3 days ago");
+        assert_eq!(ago(8 * 24 * 60 * MINUTE), "Apr 3, 1970");
+        assert_eq!(last_online_text(now, now + 5, 0), "Just now");
+    }
+
     #[test]
     fn dates_read_like_words() {
         // 2026-03-04 12:00 UTC.
