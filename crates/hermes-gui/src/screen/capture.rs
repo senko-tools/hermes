@@ -1245,11 +1245,11 @@ mod tests {
             // The band is inside the part shown this frame.
             for y in h / 2..h / 2 + h / 8 {
                 let row = (y * 2 * w + offset) * 4;
-                for chunk in source[row..row + w * 4].chunks_exact_mut(8) {
+                for chunk in source[row..row + w * 4].as_chunks_mut::<8>().0 {
                     chunk.copy_from_slice(&(random() | 0xFF00_0000_FF00_0000).to_le_bytes());
                 }
             }
-            let start = (offset * 4) as usize;
+            let start = offset * 4;
             unsafe {
                 context.UpdateSubresource(
                     &texture,
@@ -1265,7 +1265,7 @@ mod tests {
                 let mut luma = vec![0u8; w * h];
                 for (y, line) in luma.chunks_exact_mut(w).enumerate() {
                     let row = (y * 2 * w + offset) * 4;
-                    for (out, px) in line.iter_mut().zip(source[row..].chunks_exact(4)) {
+                    for (out, px) in line.iter_mut().zip(source[row..].as_chunks::<4>().0) {
                         let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
                         *out = (16.5 + 0.257 * r + 0.504 * g + 0.098 * b) as u8;
                     }
