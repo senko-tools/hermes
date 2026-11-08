@@ -227,6 +227,7 @@ mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         }
     }
 

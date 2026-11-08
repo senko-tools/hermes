@@ -4,6 +4,7 @@
 //! engine.
 
 pub mod address;
+pub mod channel_keys;
 pub mod commands;
 pub mod compress;
 pub mod config;

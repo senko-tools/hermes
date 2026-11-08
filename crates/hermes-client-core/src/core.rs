@@ -15,6 +15,7 @@ use std::time::Duration;
 use hermes_proto::api::{HistoryQuery, InstanceResponse, LoginRequest, RegisterRequest};
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
+use hermes_proto::markup;
 use hermes_proto::models::{Attachment, Invite, Message, PresenceStatus};
 use hermes_proto::{ErrorCode, PROTOCOL_VERSION};
 use tokio::sync::{Notify, mpsc};
@@ -966,6 +967,21 @@ impl Core {
                         ServerEvent::DevicesUpdate { user_id, devices } => {
                             self.devices_changed(&inst, *user_id, std::mem::take(devices));
                         }
+                        ServerEvent::ChannelKeyRequest(request) => {
+                            self.key_requested(&inst, request.clone());
+                        }
+                        ServerEvent::ChannelKeysDelivered { channel_id } => {
+                            self.keys_delivered(&inst, *channel_id);
+                        }
+                        ServerEvent::ChannelKeyEpoch { channel_id, .. } => {
+                            self.key_epoch_changed(&inst, *channel_id);
+                        }
+                        ServerEvent::ReactionAdd(reaction)
+                        | ServerEvent::ReactionRemove(reaction) => {
+                            if !self.open_reaction_event(&inst, reaction) {
+                                continue;
+                            }
+                        }
                         _ => {}
                     }
                     self.dispatch(&inst, *event);
@@ -1229,6 +1245,8 @@ impl Core {
     /// Sends queued messages one at a time, in order, while connected.
     async fn outbox(self, inst: InstanceId, handle: Arc<InstanceHandle>) {
         let mut connected = handle.connected.subscribe();
+        // Times in a row the channel had a newer key than the message was sealed with.
+        let mut conflicts = 0u8;
         loop {
             // Stop when the instance was removed or replaced.
             if !self.handle(&inst).is_some_and(|h| Arc::ptr_eq(&h, &handle)) {
@@ -1259,6 +1277,7 @@ impl Core {
                             reply_to_id: p.reply_to,
                             attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
                             e2ee: None,
+                            mentions: None,
                         },
                         p.attachments.clone(),
                     )
@@ -1268,8 +1287,8 @@ impl Core {
                 continue; // discarded meanwhile
             };
             self.changed(&inst, [Changed::Messages(channel)]);
-            // What goes to a DM leaves this device sealed, or not at all.
-            if self.channel_is_private(&inst, channel) {
+            // What is encrypted here leaves this device sealed, or not at all.
+            if self.channel_is_encrypted(&inst, channel) {
                 match self
                     .seal(
                         &inst,
@@ -1281,6 +1300,9 @@ impl Core {
                     .await
                 {
                     Ok(envelope) => {
+                        if !self.channel_is_private(&inst, channel) {
+                            request.mentions = Some(markup::extract_mentions(&request.content));
+                        }
                         request.content.clear();
                         request.e2ee = Some(envelope);
                     }
@@ -1308,6 +1330,7 @@ impl Core {
             }
             match handle.rest.send_message(channel, &request).await {
                 Ok(mut message) => {
+                    conflicts = 0;
                     self.open_message(&inst, &mut message).await;
                     let id = message.id;
                     self.with_store(&inst, |s| s.resolve_pending(local_id, message));
@@ -1316,6 +1339,22 @@ impl Core {
                         [Changed::Messages(channel), Changed::ReadState(channel)],
                     );
                     self.mark_read(&inst, channel, id);
+                }
+                // The channel moved to a newer key meanwhile: sealed again under that one.
+                Err(rest::Error::Api(err))
+                    if err.code == ErrorCode::Conflict
+                        && request.e2ee.is_some()
+                        && conflicts < 3 =>
+                {
+                    conflicts += 1;
+                    self.key_epoch_changed(&inst, channel);
+                    handle
+                        .outbox
+                        .queue
+                        .lock()
+                        .expect("outbox")
+                        .push_front((channel, local_id));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 Err(rest::Error::Api(err)) if err.code == ErrorCode::RateLimited => {
                     handle
@@ -1356,7 +1395,7 @@ impl Core {
         message: Id,
         content: &str,
     ) -> Result<()> {
-        let request = if self.channel_is_private(inst, channel) {
+        let request = if self.channel_is_encrypted(inst, channel) {
             let (attachments, reply_to) = {
                 let store = self.store();
                 let found = store
@@ -1374,11 +1413,14 @@ impl Core {
             hermes_proto::api::EditMessageRequest {
                 content: String::new(),
                 e2ee: Some(envelope),
+                mentions: (!self.channel_is_private(inst, channel))
+                    .then(|| markup::extract_mentions(content)),
             }
         } else {
             hermes_proto::api::EditMessageRequest {
                 content: content.to_owned(),
                 e2ee: None,
+                mentions: None,
             }
         };
         let mut updated = self
@@ -1409,11 +1451,52 @@ impl Core {
     }
 
     pub async fn react(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.react(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.react(channel, message, &emoji).await?)
     }
 
     pub async fn unreact(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.unreact(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.unreact(channel, message, &emoji).await?)
+    }
+
+    /// An emoji as the server gets it on this message: sealed if the message is.
+    fn reaction_form(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> String {
+        let store = self.store();
+        let key = store
+            .instance(inst)
+            .and_then(|s| s.window(channel)?.get(message)?.message_key.clone());
+        match key {
+            Some(key) => crate::e2ee::seal_reaction(&key, emoji).unwrap_or_else(|err| {
+                tracing::warn!("could not seal a reaction: {err}");
+                emoji.to_owned()
+            }),
+            None => emoji.to_owned(),
+        }
+    }
+
+    /// Opens a reaction from the gateway. `false` if this client cannot show it.
+    fn open_reaction_event(
+        &self,
+        inst: &str,
+        reaction: &mut hermes_proto::gateway::ReactionEvent,
+    ) -> bool {
+        if !reaction.emoji.starts_with(crate::e2ee::REACTION_PREFIX) {
+            return true;
+        }
+        let store = self.store();
+        let opened = store
+            .instance(inst)
+            .and_then(|s| s.window(reaction.channel_id)?.get(reaction.message_id))
+            .and_then(|m| m.message_key.as_deref())
+            .and_then(|key| crate::e2ee::open_reaction(key, &reaction.emoji));
+        match opened {
+            Some(emoji) => {
+                reaction.emoji = emoji;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Marks a channel read up to `message`: shown at once, sent to the server after 1 s

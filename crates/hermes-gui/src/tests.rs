@@ -45,6 +45,7 @@ async fn start(name: &str) -> Server {
     config.storage.data_dir = dir.join("data");
     config.tls.mode = TlsMode::SelfSigned;
     config.registration.mode = RegistrationMode::InviteOnly;
+    config.privacy.require_channel_encryption = false;
     let tls = hermes_server::tls::load(&config).unwrap();
     let fp = *tls.fingerprint().unwrap();
     let mut state = AppState::load(config).await.unwrap();

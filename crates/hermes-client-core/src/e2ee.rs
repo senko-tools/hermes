@@ -22,7 +22,7 @@ use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, XChaCha20Poly1305};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
 use hermes_proto::e2ee::{
-    DeviceKeys, Envelope, RegisterDeviceRequest, VERSION, VoiceKey, WrappedKey,
+    DeviceKeys, Envelope, RegisterDeviceRequest, SealedChannelKey, VERSION, VoiceKey, WrappedKey,
 };
 use hermes_proto::id::Id;
 use hermes_proto::voice::{AudioHeader, AudioKind, HEADER_LEN, MAX_DATAGRAM, VIDEO_HEADER_LEN};
@@ -41,6 +41,15 @@ const VOICE_SIG: &[u8] = b"hermes-e2ee/v1/voice-key";
 const DEVICE_SIG: &[u8] = b"hermes-e2ee/v1/device";
 const SAFETY: &[u8] = b"hermes-e2ee/v1/safety-number";
 const FILE_AAD: &[u8] = b"hermes-e2ee/v1/file";
+const CHANNEL_MESSAGE_SIG: &[u8] = b"hermes-e2ee/v1/channel-message";
+const CHANNEL_WRAP_AAD: &[u8] = b"hermes-e2ee/v1/channel-wrap";
+const CHANNEL_KEY_SIG: &[u8] = b"hermes-e2ee/v1/channel-key";
+const REACTION_INFO: &[u8] = b"hermes-e2ee/v1/reaction";
+const LOCAL_AAD: &[u8] = b"hermes-e2ee/v1/local";
+/// A sealed reaction starts with this, so it cannot be mistaken for an emoji.
+pub const REACTION_PREFIX: &str = "e2-";
+/// Reactions are padded to this many bytes: which emoji it is should not show in its length.
+const REACTION_PADDING: usize = 48;
 /// Message plaintext is padded to a multiple of this, so its length says little.
 const MESSAGE_PADDING: usize = 256;
 /// Voice plaintext is padded to a multiple of this: the size of an Opus frame follows what is said.
@@ -352,6 +361,27 @@ fn message_aad(channel: Id, author: Id, device: &str) -> Vec<u8> {
 
 /// Encrypts a message for `devices` and signs it. `devices` must include my own, or I cannot read
 /// it back.
+/// A message as bytes to encrypt: its length, its JSON, and padding.
+fn padded(inner: &Inner) -> Result<Zeroizing<Vec<u8>>, E2eeError> {
+    let json = Zeroizing::new(serde_json::to_vec(inner).map_err(|_| E2eeError::Malformed)?);
+    let mut plain = Zeroizing::new(Vec::with_capacity(json.len() + 4 + MESSAGE_PADDING));
+    plain.extend_from_slice(&(json.len() as u32).to_be_bytes());
+    plain.extend_from_slice(&json);
+    let padded = plain.len().next_multiple_of(MESSAGE_PADDING);
+    plain.resize(padded, 0);
+    Ok(plain)
+}
+
+/// Undoes [`padded`].
+fn unpadded(plain: &[u8]) -> Result<Inner, E2eeError> {
+    if plain.len() < 4 {
+        return Err(E2eeError::Malformed);
+    }
+    let len = u32::from_be_bytes([plain[0], plain[1], plain[2], plain[3]]) as usize;
+    let json = plain.get(4..4 + len).ok_or(E2eeError::Malformed)?;
+    serde_json::from_slice(json).map_err(|_| E2eeError::Malformed)
+}
+
 pub fn seal_message(
     identity: &Identity,
     author: Id,
@@ -359,12 +389,7 @@ pub fn seal_message(
     devices: &[DeviceKeys],
     inner: &Inner,
 ) -> Result<Envelope, E2eeError> {
-    let json = Zeroizing::new(serde_json::to_vec(inner).map_err(|_| E2eeError::Malformed)?);
-    let mut plain = Zeroizing::new(Vec::with_capacity(json.len() + 4 + MESSAGE_PADDING));
-    plain.extend_from_slice(&(json.len() as u32).to_be_bytes());
-    plain.extend_from_slice(&json);
-    let padded = plain.len().next_multiple_of(MESSAGE_PADDING);
-    plain.resize(padded, 0);
+    let plain = padded(inner)?;
 
     let key = Zeroizing::new(random::<32>());
     let nonce: [u8; 24] = random();
@@ -417,7 +442,18 @@ pub fn open_message(
     sender: &DeviceKeys,
     envelope: &Envelope,
 ) -> Result<Inner, E2eeError> {
-    if envelope.v != VERSION || envelope.device != sender.device_id {
+    open_message_keyed(identity, author, channel, sender, envelope).map(|(inner, _)| inner)
+}
+
+/// [`open_message`], and the message's key, encoded: reactions are sealed with it.
+pub fn open_message_keyed(
+    identity: &Identity,
+    author: Id,
+    channel: Id,
+    sender: &DeviceKeys,
+    envelope: &Envelope,
+) -> Result<(Inner, Zeroizing<String>), E2eeError> {
+    if envelope.v != VERSION || envelope.device != sender.device_id || envelope.epoch.is_some() {
         return Err(E2eeError::Malformed);
     }
     let digest = message_transcript(
@@ -446,12 +482,326 @@ pub fn open_message(
             )
             .map_err(|_| E2eeError::Tampered)?,
     );
-    if plain.len() < 4 {
+    Ok((unpadded(&plain)?, encode_key(&key)))
+}
+
+fn channel_digest(envelope_digest: &[u8], epoch: u32) -> Vec<u8> {
+    transcript(
+        CHANNEL_MESSAGE_SIG,
+        &[envelope_digest, &epoch.to_be_bytes()],
+    )
+}
+
+fn channel_wrap_aad(channel: Id, epoch: u32) -> Vec<u8> {
+    transcript(
+        CHANNEL_WRAP_AAD,
+        &[&channel.0.to_be_bytes(), &epoch.to_be_bytes()],
+    )
+}
+
+/// A new key for a channel.
+pub fn new_channel_key() -> Zeroizing<[u8; 32]> {
+    Zeroizing::new(random::<32>())
+}
+
+pub fn encode_key(key: &[u8; 32]) -> Zeroizing<String> {
+    Zeroizing::new(b64(key))
+}
+
+pub fn decode_key(text: &str) -> Result<Zeroizing<[u8; 32]>, E2eeError> {
+    unb64_array::<32>(text).map(Zeroizing::new)
+}
+
+/// Seals a message for a server channel: under a random key of its own, which is itself sealed
+/// under the channel's current key.
+pub fn seal_channel_message(
+    identity: &Identity,
+    author: Id,
+    channel: Id,
+    epoch: u32,
+    epoch_key: &[u8; 32],
+    inner: &Inner,
+) -> Result<Envelope, E2eeError> {
+    let plain = padded(inner)?;
+    let key = Zeroizing::new(random::<32>());
+    let nonce: [u8; 24] = random();
+    let aad = message_aad(channel, author, &identity.device_id);
+    let ciphertext = XChaCha20Poly1305::new(&(*key).into())
+        .encrypt(
+            &nonce.into(),
+            Payload {
+                msg: &plain,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| E2eeError::Malformed)?;
+    let wrap_nonce: [u8; 24] = random();
+    let wrapped = XChaCha20Poly1305::new(&(*epoch_key).into())
+        .encrypt(
+            &wrap_nonce.into(),
+            Payload {
+                msg: key.as_slice(),
+                aad: &channel_wrap_aad(channel, epoch),
+            },
+        )
+        .map_err(|_| E2eeError::Malformed)?;
+    let keys = vec![WrappedKey {
+        device: String::new(),
+        key: b64(&[wrap_nonce.as_slice(), &wrapped].concat()),
+    }];
+    let (nonce, ciphertext) = (b64(&nonce), b64(&ciphertext));
+    let digest = message_transcript(
+        channel,
+        author,
+        &identity.device_id,
+        "",
+        &nonce,
+        &ciphertext,
+        &keys,
+    );
+    let signature = identity.sign.sign(&channel_digest(&digest, epoch));
+    Ok(Envelope {
+        v: VERSION,
+        device: identity.device_id.clone(),
+        eph: String::new(),
+        nonce,
+        ciphertext,
+        keys,
+        sig: b64(&signature.to_bytes()),
+        epoch: Some(epoch),
+    })
+}
+
+/// Checks and decrypts a message of a server channel, with the key of its epoch. Also gives the
+/// message's own key, encoded: reactions are sealed with it.
+pub fn open_channel_message(
+    author: Id,
+    channel: Id,
+    sender: &DeviceKeys,
+    envelope: &Envelope,
+    epoch_key: &[u8; 32],
+) -> Result<(Inner, Zeroizing<String>), E2eeError> {
+    let epoch = envelope.epoch.ok_or(E2eeError::Malformed)?;
+    if envelope.v != VERSION || envelope.device != sender.device_id {
         return Err(E2eeError::Malformed);
     }
-    let len = u32::from_be_bytes([plain[0], plain[1], plain[2], plain[3]]) as usize;
-    let json = plain.get(4..4 + len).ok_or(E2eeError::Malformed)?;
-    serde_json::from_slice(json).map_err(|_| E2eeError::Malformed)
+    let digest = message_transcript(
+        channel,
+        author,
+        &envelope.device,
+        &envelope.eph,
+        &envelope.nonce,
+        &envelope.ciphertext,
+        &envelope.keys,
+    );
+    verify(sender, &channel_digest(&digest, epoch), &envelope.sig)?;
+    let [wrapped] = envelope.keys.as_slice() else {
+        return Err(E2eeError::Malformed);
+    };
+    let wrapped = unb64(&wrapped.key)?;
+    if wrapped.len() < 24 {
+        return Err(E2eeError::Malformed);
+    }
+    let (wrap_nonce, wrapped) = wrapped.split_at(24);
+    let wrap_nonce: [u8; 24] = wrap_nonce.try_into().map_err(|_| E2eeError::Malformed)?;
+    let opened = Zeroizing::new(
+        XChaCha20Poly1305::new(&(*epoch_key).into())
+            .decrypt(
+                &wrap_nonce.into(),
+                Payload {
+                    msg: wrapped,
+                    aad: &channel_wrap_aad(channel, epoch),
+                },
+            )
+            .map_err(|_| E2eeError::Tampered)?,
+    );
+    let key: [u8; 32] = opened
+        .as_slice()
+        .try_into()
+        .map_err(|_| E2eeError::Tampered)?;
+    let key = Zeroizing::new(key);
+    let nonce: [u8; 24] = unb64_array(&envelope.nonce)?;
+    let ciphertext = unb64(&envelope.ciphertext)?;
+    let aad = message_aad(channel, author, &envelope.device);
+    let plain = Zeroizing::new(
+        XChaCha20Poly1305::new(&(*key).into())
+            .decrypt(
+                &nonce.into(),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| E2eeError::Tampered)?,
+    );
+    Ok((unpadded(&plain)?, encode_key(&key)))
+}
+
+fn channel_key_transcript(channel: Id, sealed: &SealedChannelKey) -> Vec<u8> {
+    transcript(
+        CHANNEL_KEY_SIG,
+        &[
+            &channel.0.to_be_bytes(),
+            &sealed.epoch.to_be_bytes(),
+            &sealed.user_id.0.to_be_bytes(),
+            sealed.device.as_bytes(),
+            &sealed.sender_id.0.to_be_bytes(),
+            sealed.sender_device.as_bytes(),
+            sealed.eph.as_bytes(),
+            sealed.key.as_bytes(),
+        ],
+    )
+}
+
+/// Seals a channel's key of one epoch for one device, and signs that.
+pub fn seal_channel_key(
+    identity: &Identity,
+    me: Id,
+    channel: Id,
+    epoch: u32,
+    key: &[u8; 32],
+    user: Id,
+    device: &DeviceKeys,
+) -> Result<SealedChannelKey, E2eeError> {
+    let (eph, wrapped) = wrap_for(key, std::slice::from_ref(device))?;
+    let wrapped = wrapped.into_iter().next().ok_or(E2eeError::Malformed)?;
+    let mut sealed = SealedChannelKey {
+        epoch,
+        user_id: user,
+        device: device.device_id.clone(),
+        sender_id: me,
+        sender_device: identity.device_id.clone(),
+        eph: b64(&eph),
+        key: wrapped.key,
+        sig: String::new(),
+    };
+    let signature = identity
+        .sign
+        .sign(&channel_key_transcript(channel, &sealed));
+    sealed.sig = b64(&signature.to_bytes());
+    Ok(sealed)
+}
+
+/// Checks and opens a channel's key handed to this device. `sender` is its pinned device.
+pub fn open_channel_key(
+    identity: &Identity,
+    channel: Id,
+    sealed: &SealedChannelKey,
+    sender: &DeviceKeys,
+) -> Result<Zeroizing<[u8; 32]>, E2eeError> {
+    if sealed.sender_device != sender.device_id || sealed.device != identity.device_id {
+        return Err(E2eeError::Malformed);
+    }
+    verify(
+        sender,
+        &channel_key_transcript(channel, sealed),
+        &sealed.sig,
+    )?;
+    let eph: [u8; 32] = unb64_array(&sealed.eph)?;
+    identity.unwrap(
+        &eph,
+        &[WrappedKey {
+            device: sealed.device.clone(),
+            key: sealed.key.clone(),
+        }],
+    )
+}
+
+fn reaction_cipher(
+    message_key: &[u8; 32],
+) -> Result<(XChaCha20Poly1305, Zeroizing<[u8; 32]>), E2eeError> {
+    let mut key = Zeroizing::new([0u8; 32]);
+    Hkdf::<Sha256>::new(None, message_key)
+        .expand(REACTION_INFO, key.as_mut())
+        .map_err(|_| E2eeError::Malformed)?;
+    Ok((XChaCha20Poly1305::new(&(*key).into()), key))
+}
+
+/// The nonce of a reaction: fixed by its emoji, so the same emoji always seals the same way and
+/// the server can count it without knowing which one it is.
+fn reaction_nonce(key: &[u8; 32], padded: &[u8]) -> [u8; 24] {
+    let digest = transcript(REACTION_INFO, &[key, padded]);
+    let mut nonce = [0u8; 24];
+    nonce.copy_from_slice(&digest[..24]);
+    nonce
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// `emoji` as the server gets it for a message sealed with `message_key`.
+pub fn seal_reaction(message_key: &str, emoji: &str) -> Result<String, E2eeError> {
+    let message_key = decode_key(message_key)?;
+    if emoji.len() >= REACTION_PADDING {
+        return Err(E2eeError::Malformed);
+    }
+    let mut padded = emoji.as_bytes().to_vec();
+    padded.resize(REACTION_PADDING, 0);
+    let (cipher, key) = reaction_cipher(&message_key)?;
+    let nonce = reaction_nonce(&key, &padded);
+    let sealed = cipher
+        .encrypt(&nonce.into(), padded.as_slice())
+        .map_err(|_| E2eeError::Malformed)?;
+    Ok(format!("{REACTION_PREFIX}{}{}", hex(&nonce), hex(&sealed)))
+}
+
+/// The emoji in a sealed reaction. `None` if it is not one this message's key sealed.
+pub fn open_reaction(message_key: &str, token: &str) -> Option<String> {
+    let message_key = decode_key(message_key).ok()?;
+    let bytes = hex_decode(token.strip_prefix(REACTION_PREFIX)?)?;
+    if bytes.len() < 24 {
+        return None;
+    }
+    let (nonce, sealed) = bytes.split_at(24);
+    let nonce: [u8; 24] = nonce.try_into().ok()?;
+    let (cipher, key) = reaction_cipher(&message_key).ok()?;
+    let padded = cipher.decrypt(&nonce.into(), sealed).ok()?;
+    if reaction_nonce(&key, &padded) != nonce {
+        return None;
+    }
+    let end = padded.iter().position(|b| *b == 0)?;
+    String::from_utf8(padded[..end].to_vec()).ok()
+}
+
+/// Encrypts something kept on this device: `nonce || ciphertext`.
+pub fn seal_local(key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, E2eeError> {
+    let nonce: [u8; 24] = random();
+    let sealed = XChaCha20Poly1305::new(&(*key).into())
+        .encrypt(
+            &nonce.into(),
+            Payload {
+                msg: plain,
+                aad: LOCAL_AAD,
+            },
+        )
+        .map_err(|_| E2eeError::Malformed)?;
+    Ok([nonce.as_slice(), &sealed].concat())
+}
+
+/// Undoes [`seal_local`].
+pub fn open_local(key: &[u8; 32], sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, E2eeError> {
+    if sealed.len() < 24 {
+        return Err(E2eeError::Malformed);
+    }
+    let (nonce, rest) = sealed.split_at(24);
+    let nonce: [u8; 24] = nonce.try_into().map_err(|_| E2eeError::Malformed)?;
+    XChaCha20Poly1305::new(&(*key).into())
+        .decrypt(
+            &nonce.into(),
+            Payload {
+                msg: rest,
+                aad: LOCAL_AAD,
+            },
+        )
+        .map(Zeroizing::new)
+        .map_err(|_| E2eeError::Tampered)
 }
 
 /// Encrypts a file with a key of its own: `(sealed bytes, key, nonce)`.
@@ -1444,5 +1794,100 @@ mod tests {
             b.open_video(3, &flipped, &wire[VIDEO_HEADER_LEN..])
                 .is_none()
         );
+    }
+
+    fn hello() -> Inner {
+        Inner {
+            content: "hello".into(),
+            ..Inner::default()
+        }
+    }
+
+    #[test]
+    fn a_channel_message_opens_only_with_its_key_channel_and_author() {
+        let alice = Identity::generate();
+        let sender = alice.public(ALICE);
+        let key = new_channel_key();
+        let env = seal_channel_message(&alice, ALICE, CHANNEL, 3, &key, &hello()).unwrap();
+        assert_eq!(env.epoch, Some(3));
+        let (inner, _) = open_channel_message(ALICE, CHANNEL, &sender, &env, &key).unwrap();
+        assert_eq!(inner, hello());
+
+        let other = new_channel_key();
+        assert_eq!(
+            open_channel_message(ALICE, CHANNEL, &sender, &env, &other).unwrap_err(),
+            E2eeError::Tampered
+        );
+        assert_eq!(
+            open_channel_message(ALICE, Id(101), &sender, &env, &key).unwrap_err(),
+            E2eeError::Tampered
+        );
+        assert_eq!(
+            open_channel_message(EVE, CHANNEL, &sender, &env, &key).unwrap_err(),
+            E2eeError::Tampered
+        );
+        // Claiming another key number breaks the signature.
+        let mut moved = env.clone();
+        moved.epoch = Some(4);
+        assert_eq!(
+            open_channel_message(ALICE, CHANNEL, &sender, &moved, &key).unwrap_err(),
+            E2eeError::Tampered
+        );
+    }
+
+    #[test]
+    fn a_channel_key_opens_only_for_its_device_and_with_its_signature() {
+        let (alice, bob, eve) = (
+            Identity::generate(),
+            Identity::generate(),
+            Identity::generate(),
+        );
+        let sender = alice.public(ALICE);
+        let key = new_channel_key();
+        let sealed =
+            seal_channel_key(&alice, ALICE, CHANNEL, 1, &key, BOB, &bob.public(BOB)).unwrap();
+        assert_eq!(
+            *open_channel_key(&bob, CHANNEL, &sealed, &sender).unwrap(),
+            *key
+        );
+        assert!(open_channel_key(&eve, CHANNEL, &sealed, &sender).is_err());
+        assert_eq!(
+            open_channel_key(&bob, Id(101), &sealed, &sender).unwrap_err(),
+            E2eeError::Tampered
+        );
+        let mut older = sealed.clone();
+        older.epoch = 2;
+        assert_eq!(
+            open_channel_key(&bob, CHANNEL, &older, &sender).unwrap_err(),
+            E2eeError::Tampered
+        );
+    }
+
+    #[test]
+    fn a_reaction_seals_the_same_way_every_time_and_only_for_its_message() {
+        let key = encode_key(&new_channel_key());
+        let other = encode_key(&new_channel_key());
+        let token = seal_reaction(&key, "\u{1F44D}").unwrap();
+        assert_eq!(token, seal_reaction(&key, "\u{1F44D}").unwrap());
+        assert_ne!(token, seal_reaction(&other, "\u{1F44D}").unwrap());
+        assert_eq!(
+            token.len(),
+            seal_reaction(&key, "\u{1F469}\u{200D}\u{1F4BB}")
+                .unwrap()
+                .len(),
+            "the length says nothing of which emoji it is"
+        );
+        assert_eq!(open_reaction(&key, &token).as_deref(), Some("\u{1F44D}"));
+        assert_eq!(open_reaction(&other, &token), None);
+        assert_eq!(open_reaction(&key, "\u{1F44D}"), None);
+    }
+
+    #[test]
+    fn what_is_kept_on_this_device_opens_only_with_its_key() {
+        let key = new_channel_key();
+        let sealed = seal_local(&key, b"keys").unwrap();
+        assert_eq!(open_local(&key, &sealed).unwrap().as_slice(), b"keys");
+        assert!(open_local(&new_channel_key(), &sealed).is_err());
+        assert!(open_local(&key, &sealed[..10]).is_err());
     }
 }

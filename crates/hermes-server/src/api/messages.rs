@@ -150,6 +150,21 @@ fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<Strin
     Ok(Some(json))
 }
 
+/// A sealed reaction: `e2-` and hex, long enough to hold one and short enough to store.
+fn is_sealed_reaction(emoji: &str) -> bool {
+    emoji.strip_prefix("e2-").is_some_and(|hex| {
+        (48..=256).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
+/// A reaction has to be an emoji, or one sealed by a client.
+fn check_emoji(emoji: &str) -> ApiResult<()> {
+    if emojis::get(emoji).is_none() && !is_sealed_reaction(emoji) {
+        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
+    }
+    Ok(())
+}
+
 /// What a message mentions: read from its text, or as told for an encrypted one.
 fn mentions_of(content: &str, encrypted: bool, told: Option<&Mentions>) -> Mentions {
     if encrypted {
@@ -506,9 +521,7 @@ pub async fn add_reaction(
     auth: Auth,
     Path((channel_id, message_id, emoji)): Path<(Id, Id, String)>,
 ) -> ApiResult<StatusCode> {
-    if emojis::get(&emoji).is_none() {
-        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
-    }
+    check_emoji(&emoji)?;
     let t = target(
         &state.cache(),
         channel_id,

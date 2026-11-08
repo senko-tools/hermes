@@ -287,6 +287,10 @@ pub struct Message {
     /// How the client found this message. Never on the wire.
     #[serde(skip)]
     pub lock: crate::e2ee::MessageLock,
+    /// The key this message was sealed with, once opened: reactions are sealed with it too.
+    /// Never on the wire.
+    #[serde(skip)]
+    pub message_key: Option<String>,
 }
 
 impl Message {
@@ -626,6 +630,7 @@ pub(crate) mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         };
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value.get("nonce").is_none());

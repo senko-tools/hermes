@@ -9,7 +9,7 @@ use std::time::Duration;
 use hermes_client_core::address::{Fingerprint, HostPort, InviteLink};
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::api::CreateInviteRequest;
-use hermes_client_core::proto::e2ee::MessageLock;
+use hermes_client_core::proto::e2ee::{KeyHandover, KeyPolicy, MessageLock};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::store::{Changed, PendingState};
 use hermes_client_core::{
@@ -37,6 +37,10 @@ impl Drop for TestServer {
 }
 
 async fn start(name: &str) -> TestServer {
+    start_with(name, false).await
+}
+
+async fn start_with(name: &str, encrypted_channels: bool) -> TestServer {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let dir = std::env::temp_dir().join(format!("hermes-cc-live-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -48,6 +52,7 @@ async fn start(name: &str) -> TestServer {
     config.limits.requests_per_second = 100_000;
     config.limits.login_attempts_per_minute = 100_000;
     config.limits.messages_per_5s = 100_000;
+    config.privacy.require_channel_encryption = encrypted_channels;
     let tls = hermes_server::tls::load(&config).unwrap();
     let fp = *tls.fingerprint().unwrap();
     let mut state = AppState::load(config).await.unwrap();
@@ -358,6 +363,7 @@ async fn offline_messages_queue_and_missed_events_replay_on_resume() {
                     reply_to_id: None,
                     attachment_ids: vec![],
                     e2ee: None,
+                    mentions: None,
                 },
             )
             .await
@@ -904,4 +910,286 @@ async fn nothing_is_sent_in_clear_to_someone_without_keys() {
         .unwrap();
     assert!(raw.iter().all(|m| !m.content.contains("to nobody")));
     let _ = a_events.try_recv();
+}
+
+/// Alice, with the first server, and Bob, who has joined it.
+async fn channel_pair(server: &TestServer) -> (Core, CoreEvents, InstanceId, Id, Id, String) {
+    let (alice, mut alice_events) = core();
+    let a = sign_up(
+        server,
+        &alice,
+        &mut alice_events,
+        "alice",
+        Some(&server.setup_code),
+    )
+    .await;
+    let (space, channel) = general(&alice, &a);
+    let invite = alice
+        .rest(&a)
+        .unwrap()
+        .create_invite(space, &CreateInviteRequest::default())
+        .await
+        .unwrap();
+    let alice_id = alice.store().instance(&a).unwrap().me_id().unwrap();
+    wait_for_device(&alice, &a, alice_id).await;
+    alice.open_channel(&a, channel).await.unwrap();
+    (alice, alice_events, a, space, channel, invite.code)
+}
+
+async fn join(server: &TestServer, invite: &str) -> (Core, CoreEvents, InstanceId) {
+    let (bob, mut events) = core();
+    let b = sign_up(server, &bob, &mut events, "bob", Some(invite)).await;
+    let bob_id = bob.store().instance(&b).unwrap().me_id().unwrap();
+    wait_for_device(&bob, &b, bob_id).await;
+    (bob, events, b)
+}
+
+/// Sends and waits for the server to have it.
+async fn say(core: &Core, inst: &str, channel: Id, text: &str) {
+    core.send_message(inst, channel, draft(text)).unwrap();
+    wait_for_window(core, inst, channel, text).await;
+}
+
+fn shown(core: &Core, inst: &str, channel: Id) -> Vec<String> {
+    core.store()
+        .instance(inst)
+        .and_then(|s| s.window(channel))
+        .map(|w| w.messages.iter().map(|m| m.content.clone()).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_channel_is_sealed_and_a_new_member_can_read_its_past() {
+    let server = start_with("channel-e2ee", true).await;
+    let (alice, _a_events, a, _, channel, invite) = channel_pair(&server).await;
+    say(&alice, &a, channel, "written before bob").await;
+
+    // The server has only ciphertext.
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .messages(channel, &Default::default())
+        .await
+        .unwrap();
+    assert!(raw.iter().all(|m| m.content.is_empty() && m.e2ee.is_some()));
+    assert_eq!(raw[0].e2ee.as_ref().unwrap().epoch, Some(1));
+
+    let (bob, _b_events, b) = join(&server, &invite).await;
+    bob.open_channel(&b, channel).await.unwrap();
+    wait_for_window(&bob, &b, channel, "written before bob").await;
+    say(&bob, &b, channel, "hello from bob").await;
+    wait_for_window(&alice, &a, channel, "hello from bob").await;
+
+    // A reaction is counted by the server without being readable to it.
+    let message = bob
+        .store()
+        .instance(&b)
+        .unwrap()
+        .window(channel)
+        .unwrap()
+        .messages[0]
+        .id;
+    bob.react(&b, channel, message, "👍").await.unwrap();
+    alice.react(&a, channel, message, "👍").await.unwrap();
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .messages(channel, &Default::default())
+        .await
+        .unwrap();
+    let sealed = raw
+        .iter()
+        .find(|m| m.id == message)
+        .unwrap()
+        .reactions
+        .clone();
+    assert_eq!(sealed.len(), 1, "the same emoji seals the same: {sealed:?}");
+    assert_eq!(sealed[0].count, 2);
+    assert!(sealed[0].emoji.starts_with("e2-"));
+    eventually(&alice, "the reaction shows as an emoji", |s| {
+        s.instance(&a)
+            .and_then(|s| s.window(channel))
+            .and_then(|w| w.get(message))
+            .is_some_and(|m| m.reactions.iter().any(|r| r.emoji == "👍" && r.count == 2))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn where_the_past_is_hidden_a_new_member_gets_only_what_comes_after() {
+    let server = start_with("channel-hidden", true).await;
+    let (alice, _a_events, a, space, channel, invite) = channel_pair(&server).await;
+    alice
+        .set_space_key_policy(
+            &a,
+            space,
+            KeyPolicy {
+                handover: KeyHandover::Automatic,
+                new_members_read_history: false,
+            },
+        )
+        .await
+        .unwrap();
+    say(&alice, &a, channel, "the secret past").await;
+
+    let (bob, _b_events, b) = join(&server, &invite).await;
+    bob.open_channel(&b, channel).await.unwrap();
+    let keys_for_bob = async {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let raw = bob.rest(&b).unwrap();
+            let device = bob.my_device_id(&b).unwrap();
+            if !raw
+                .channel_keys(channel, &device)
+                .await
+                .unwrap()
+                .keys
+                .is_empty()
+            {
+                return;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "no key for bob");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    keys_for_bob.await;
+    say(&alice, &a, channel, "after bob came").await;
+    wait_for_window(&bob, &b, channel, "after bob came").await;
+    assert!(
+        !shown(&bob, &b, channel)
+            .iter()
+            .any(|t| t == "the secret past"),
+        "{:?}",
+        shown(&bob, &b, channel)
+    );
+    let old = bob
+        .store()
+        .instance(&b)
+        .unwrap()
+        .window(channel)
+        .unwrap()
+        .messages[0]
+        .lock;
+    assert_eq!(old, MessageLock::NotForThisDevice);
+}
+
+#[tokio::test]
+async fn someone_who_leaves_loses_the_keys_of_what_comes_after() {
+    let server = start_with("channel-rotate", true).await;
+    let (alice, _a_events, a, space, channel, invite) = channel_pair(&server).await;
+    say(&alice, &a, channel, "with bob").await;
+    let (bob, _b_events, b) = join(&server, &invite).await;
+    bob.open_channel(&b, channel).await.unwrap();
+    wait_for_window(&bob, &b, channel, "with bob").await;
+    let bob_id = bob.store().instance(&b).unwrap().me_id().unwrap();
+
+    alice.rest(&a).unwrap().kick(space, bob_id).await.unwrap();
+    // Past what clients remember of the channel's keys.
+    tokio::time::sleep(Duration::from_millis(16_000)).await;
+    say(&alice, &a, channel, "without bob").await;
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .messages(channel, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(raw.last().unwrap().e2ee.as_ref().unwrap().epoch, Some(2));
+    let device = alice.my_device_id(&a).unwrap();
+    let keys = alice
+        .rest(&a)
+        .unwrap()
+        .channel_keys(channel, &device)
+        .await
+        .unwrap();
+    assert_eq!(keys.current_epoch, 2);
+    assert!(!keys.rotate_needed);
+    let _ = bob;
+}
+
+#[tokio::test]
+async fn in_an_approved_channel_nobody_gets_in_until_someone_approves() {
+    let server = start_with("channel-approved", true).await;
+    let (alice, _a_events, a, space, channel, invite) = channel_pair(&server).await;
+    alice
+        .set_space_key_policy(
+            &a,
+            space,
+            KeyPolicy {
+                handover: KeyHandover::Approved,
+                new_members_read_history: true,
+            },
+        )
+        .await
+        .unwrap();
+    say(&alice, &a, channel, "members only").await;
+
+    let (bob, _b_events, b) = join(&server, &invite).await;
+    bob.open_channel(&b, channel).await.unwrap();
+    bob.load_history(
+        &b,
+        channel,
+        hermes_client_core::store::HistoryAnchor::Latest,
+    )
+    .await
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let request = loop {
+        if let Some(request) = alice.key_requests(&a).into_iter().next() {
+            break request;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no request arrived");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(!shown(&bob, &b, channel).iter().any(|t| t == "members only"));
+
+    alice.approve_key_request(&a, &request).await.unwrap();
+    assert!(alice.key_requests(&a).is_empty());
+    wait_for_window(&bob, &b, channel, "members only").await;
+}
+
+#[tokio::test]
+async fn files_in_channels_are_encrypted_with_their_names() {
+    let server = start_with("channel-files", true).await;
+    let (alice, _a_events, a, _, channel, _) = channel_pair(&server).await;
+    let path = server.dir.join("secret plan.txt");
+    std::fs::write(&path, "the plan, again and again, ".repeat(500)).unwrap();
+    let file = alice
+        .upload_to(&a, channel, &path, Default::default())
+        .await
+        .unwrap();
+    assert!(file.sealed.is_some());
+    alice
+        .send_message(
+            &a,
+            channel,
+            Draft {
+                content: "here".into(),
+                reply_to: None,
+                attachments: vec![file],
+            },
+        )
+        .unwrap();
+    wait_for_window(&alice, &a, channel, "here").await;
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .messages(channel, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(raw[0].attachments[0].filename, "encrypted.bin");
+    let opened = alice
+        .store()
+        .instance(&a)
+        .unwrap()
+        .window(channel)
+        .unwrap()
+        .messages[0]
+        .attachments[0]
+        .clone();
+    assert_eq!(opened.filename, "secret plan.txt");
+    let bytes = alice.download(&a, &opened).await.unwrap();
+    assert_eq!(
+        bytes,
+        "the plan, again and again, ".repeat(500).into_bytes()
+    );
 }

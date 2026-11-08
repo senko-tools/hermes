@@ -939,7 +939,10 @@ impl InstanceStore {
                 vec![C::Relationships]
             }
             // Handled before this: public keys are not part of the store.
-            ServerEvent::DevicesUpdate { .. } => vec![],
+            ServerEvent::DevicesUpdate { .. }
+            | ServerEvent::ChannelKeyRequest(_)
+            | ServerEvent::ChannelKeysDelivered { .. }
+            | ServerEvent::ChannelKeyEpoch { .. } => vec![],
         }
     }
 
@@ -1008,6 +1011,7 @@ pub(crate) mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         }
     }
 

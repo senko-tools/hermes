@@ -87,6 +87,7 @@ pub async fn to_wire(
             nonce: None,
             e2ee: e2ee_of(r.e2ee.as_deref()),
             lock: MessageLock::Plain,
+            message_key: None,
         })
         .collect())
 }

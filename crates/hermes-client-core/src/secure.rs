@@ -28,6 +28,9 @@ pub(crate) struct AccountKeys {
     pub(crate) me: Id,
     pub(crate) identity: Identity,
     pub(crate) directory: Mutex<Directory>,
+    /// The keys of encrypted server channels.
+    pub(crate) ring: Mutex<crate::channel_keys::KeyRing>,
+    pub(crate) channels: Mutex<crate::channel_keys::ChannelKeyCache>,
 }
 
 /// The keys of each instance's account, from its first `ready` on.
@@ -80,10 +83,29 @@ impl Core {
                 .join("e2ee")
                 .join(format!("{}-{me}.json", safe_file_name(inst)))
         });
+        let ring_slot = format!("e2ee-ring-{me}");
+        let wrap = tokens
+            .get(inst, &ring_slot)
+            .and_then(|secret| e2ee::decode_key(&secret).ok())
+            .unwrap_or_else(|| {
+                let wrap = e2ee::new_channel_key();
+                if let Err(err) = tokens.set(inst, &ring_slot, &e2ee::encode_key(&wrap)) {
+                    tracing::error!("could not keep this device's channel key ring: {err}");
+                }
+                wrap
+            });
+        let ring_path = self.paths().map(|paths| {
+            paths
+                .dir
+                .join("e2ee")
+                .join(format!("{}-{me}-channels.bin", safe_file_name(inst)))
+        });
         let keys = Arc::new(AccountKeys {
             me,
             identity,
             directory: Mutex::new(Directory::load(path)),
+            ring: Mutex::new(crate::channel_keys::KeyRing::load(ring_path, wrap)),
+            channels: Mutex::default(),
         });
         accounts.insert(inst.to_owned(), keys.clone());
         Some(keys)
@@ -105,6 +127,7 @@ impl Core {
             }
             // My own other devices get a copy of what I send.
             let _ = core.fetch_devices(&inst, &keys, &[keys.me], 0).await;
+            core.serve_waiting_requests(&inst, &keys).await;
         });
     }
 
@@ -223,7 +246,6 @@ impl Core {
         let keys = self
             .account_keys(inst)
             .ok_or_else(|| CoreError::Voice("Not signed in yet".into()))?;
-        let devices = self.devices_for(inst, &keys, channel).await?;
         let reply_excerpt = reply_to.and_then(|id| {
             let store = self.store();
             let window = store.instance(inst)?.window(channel)?;
@@ -236,8 +258,14 @@ impl Core {
             reply_to,
             reply_excerpt,
         };
-        e2ee::seal_message(&keys.identity, keys.me, channel, &devices, &inner)
-            .map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
+        let sealed = if self.channel_is_private(inst, channel) {
+            let devices = self.devices_for(inst, &keys, channel).await?;
+            e2ee::seal_message(&keys.identity, keys.me, channel, &devices, &inner)
+        } else {
+            let (epoch, key) = self.key_for_sending(inst, &keys, channel).await?;
+            e2ee::seal_channel_message(&keys.identity, keys.me, channel, epoch, &key, &inner)
+        };
+        sealed.map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
     }
 
     /// Opens a message from the server in place: `content` and the attachments become what the
@@ -275,14 +303,35 @@ impl Core {
             refuse(message, MessageLock::Tampered, TAMPERED);
             return;
         };
-        match e2ee::open_message(
-            &keys.identity,
-            author,
-            message.channel_id,
-            &sender,
-            &envelope,
-        ) {
-            Ok(inner) => apply_inner(message, inner),
+        let opened = match envelope.epoch {
+            Some(epoch) => {
+                let key = self
+                    .key_for_reading(inst, &keys, message.channel_id, epoch)
+                    .await;
+                let Some(key) = key else {
+                    refuse(
+                        message,
+                        MessageLock::NotForThisDevice,
+                        crate::channel_keys::WAITING_FOR_KEYS,
+                    );
+                    return;
+                };
+                e2ee::open_channel_message(author, message.channel_id, &sender, &envelope, &key)
+            }
+            None => e2ee::open_message_keyed(
+                &keys.identity,
+                author,
+                message.channel_id,
+                &sender,
+                &envelope,
+            ),
+        };
+        match opened {
+            Ok((inner, key)) => {
+                apply_inner(message, inner);
+                open_reactions(message, &key);
+                message.message_key = Some(key.to_string());
+            }
             Err(E2eeError::NotForThisDevice) => {
                 refuse(message, MessageLock::NotForThisDevice, NOT_FOR_THIS_DEVICE);
             }
@@ -316,7 +365,7 @@ impl Core {
                 .and_then(|s| s.upload_refusal(size))
                 .map_or(Ok(()), |why| Err(CoreError::Io(why)))
         };
-        if !self.channel_is_private(inst, channel) {
+        if !self.channel_is_encrypted(inst, channel) {
             let size = tokio::fs::metadata(path)
                 .await
                 .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?
@@ -476,6 +525,20 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         nonce: sealed.nonce.clone(),
         compression: sealed.compression,
     })
+}
+
+/// Replaces sealed reactions by their emoji; ones this message's key did not seal are dropped.
+fn open_reactions(message: &mut Message, key: &str) {
+    message.reactions.retain_mut(|reaction| {
+        match e2ee::open_reaction(key, &reaction.emoji) {
+            Some(emoji) => {
+                reaction.emoji = emoji;
+                true
+            }
+            // From before reactions were sealed.
+            None => !reaction.emoji.starts_with(e2ee::REACTION_PREFIX),
+        }
+    });
 }
 
 fn refuse(message: &mut Message, lock: MessageLock, text: &str) {

@@ -15,7 +15,11 @@ use hermes_proto::api::{
     UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
     VoiceStatePatchRequest,
 };
-use hermes_proto::e2ee::{DeviceQuery, RegisterDeviceRequest, UserDevices};
+use hermes_proto::e2ee::{
+    ChannelKeysResponse, DeliverKeysRequest, DeviceQuery, KeyMembers, KeyPolicy, KeyPolicyOverride,
+    KeyRequest, RegisterDeviceRequest, RequestKeysRequest, SealedChannelKey, StartEpochRequest,
+    UserDevices,
+};
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
 use hermes_proto::models::Relationship;
@@ -250,6 +254,93 @@ impl Rest {
             user_ids: users.to_vec(),
         };
         self.call(Method::POST, "/users/devices", Some(&req)).await
+    }
+
+    pub async fn channel_keys(&self, channel: Id, device: &str) -> Result<ChannelKeysResponse> {
+        self.get(&format!(
+            "/channels/{channel}/keys?device={}",
+            encode(device)
+        ))
+        .await
+    }
+
+    pub async fn channel_key_members(&self, channel: Id) -> Result<KeyMembers> {
+        self.get(&format!("/channels/{channel}/keys/members")).await
+    }
+
+    pub async fn start_channel_epoch(
+        &self,
+        channel: Id,
+        epoch: u32,
+        keys: Vec<SealedChannelKey>,
+    ) -> Result<()> {
+        let req = StartEpochRequest { epoch, keys };
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/keys/epochs"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn deliver_channel_keys(
+        &self,
+        channel: Id,
+        keys: Vec<SealedChannelKey>,
+    ) -> Result<()> {
+        let req = DeliverKeysRequest { keys };
+        self.empty(
+            Method::PUT,
+            &format!("/channels/{channel}/keys"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn request_channel_keys(&self, channel: Id, device: &str) -> Result<()> {
+        let req = RequestKeysRequest {
+            device: device.to_owned(),
+        };
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/keys/requests"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn waiting_key_requests(&self) -> Result<Vec<KeyRequest>> {
+        self.get("/users/@me/key-requests").await
+    }
+
+    pub async fn space_key_policy(&self, space: Id) -> Result<KeyPolicy> {
+        self.get(&format!("/spaces/{space}/key-policy")).await
+    }
+
+    pub async fn set_space_key_policy(&self, space: Id, policy: KeyPolicy) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/spaces/{space}/key-policy"),
+            Some(&policy),
+        )
+        .await
+    }
+
+    pub async fn channel_key_policy(&self, channel: Id) -> Result<KeyPolicyOverride> {
+        self.get(&format!("/channels/{channel}/key-policy")).await
+    }
+
+    pub async fn set_channel_key_policy(
+        &self,
+        channel: Id,
+        policy: KeyPolicyOverride,
+    ) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/channels/{channel}/key-policy"),
+            Some(&policy),
+        )
+        .await
     }
 
     /// Changes my username (not my display name); needs my password.
