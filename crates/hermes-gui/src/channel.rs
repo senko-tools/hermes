@@ -2445,18 +2445,36 @@ impl Shell {
                 let (open_inst, attachment) = (inst.clone(), a.clone());
                 return div()
                     .id(SharedString::from(format!("image-{}", a.id)))
+                    .relative()
                     .mt(px(4.))
                     .w(px(w))
                     .h(px(h))
                     .rounded(px(6.))
                     .overflow_hidden()
                     .cursor_pointer()
+                    .group(IMAGE_GROUP)
                     .child(
                         img(image.shown(self.focused))
                             .w(px(w))
                             .h(px(h))
                             .rounded(px(6.))
                             .id(SharedString::from(format!("image-pic-{}", a.id))),
+                    )
+                    // What opening or saving it downloads, under the mouse.
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom(px(6.))
+                            .right(px(6.))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(8.))
+                            .bg(gpui_kit::hsla(0., 0., 0., 0.65))
+                            .text_size(theme::caption_size())
+                            .text_color(gpui_kit::rgb(0xffffff))
+                            .opacity(0.)
+                            .group_hover(IMAGE_GROUP, |s| s.opacity(1.))
+                            .child(human_size(a.size)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -2770,6 +2788,8 @@ pub fn icon_button(
 
 /// The hover group of [`icon_button`]: the innermost one wins, so one name serves them all.
 const ICON_BUTTON: &str = "icon-button";
+/// The hover group of a picture in the chat: its size shows under the mouse.
+const IMAGE_GROUP: &str = "chat-image";
 
 /// What a reply shows of the message it answers: the message itself when it is loaded (it may
 /// have been edited since), else the excerpt sent with the reply. An empty excerpt also means a

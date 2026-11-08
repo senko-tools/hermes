@@ -26,12 +26,9 @@ use hermes_client_core::proto::models::Attachment;
 use super::player::Player;
 use super::waveform::{self, BARS, Waveform};
 use crate::assets::{self, icon, media_icons};
-use crate::channel::icon_button;
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
-/// How many steps the video's seek bar has.
-const SEEK_STEPS: usize = 100;
 /// The inline video's box, like a picture's.
 const VIDEO_W: f32 = 400.;
 const VIDEO_H: f32 = 300.;
@@ -50,6 +47,11 @@ const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 const PILL_W: f32 = 4.;
 /// The hover group of a card's download button.
 const DOWNLOAD_GROUP: &str = "media-download";
+/// The hover group of a video's seek bar: it grows under the mouse.
+const SEEK_GROUP: &str = "media-seek";
+/// A playing video's controls hide after the mouse rests this many seconds, fading this long.
+const CONTROLS_IDLE: f32 = 2.;
+const CONTROLS_FADE: f32 = 0.25;
 
 pub type MediaKey = (InstanceId, Id);
 /// A seek bar: a file's, and whether it is the one in the full view.
@@ -128,6 +130,8 @@ pub struct Media {
     scrub: Option<Scrub>,
     /// Where each seek bar was drawn last.
     bars: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
+    /// The video the mouse is over (inline or in the full view), and when it last moved.
+    pointer: Option<(BarKey, Instant)>,
 }
 
 impl Drop for MediaItem {
@@ -367,37 +371,6 @@ impl Shell {
         })
         .detach();
         cx.notify();
-    }
-
-    /// The volume, for a moment after it changed on this card.
-    fn volume_pill(&self, key: &MediaKey) -> Option<AnyElement> {
-        if self.media.volume_shown.as_ref() != Some(key) {
-            return None;
-        }
-        let volume = self.media_gain();
-        let glyph = if volume <= 0. {
-            media_icons::VOLUME_OFF
-        } else {
-            assets::VOLUME
-        };
-        Some(
-            div()
-                .absolute()
-                .top(px(6.))
-                .right(px(6.))
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .px(px(8.))
-                .py(px(2.))
-                .rounded(px(10.))
-                .bg(theme::alpha(gpui_kit::rgb(0x000000), 0.7))
-                .text_size(theme::caption_size())
-                .text_color(gpui_kit::rgb(0xffffff))
-                .child(icon(glyph, 13., gpui_kit::rgb(0xffffff)))
-                .child(format!("{:.0} %", volume * 100.))
-                .into_any_element(),
-        )
     }
 
     fn media_full(&mut self, key: &MediaKey, full: bool, cx: &mut Context<Self>) {
@@ -948,128 +921,63 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The controls under a playing video: play, time, the seek bar, sound and full view.
-    fn video_controls(
-        &self,
-        key: &MediaKey,
-        a: &Attachment,
-        inst: &InstanceId,
-        full: bool,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let (position, duration, playing) = self.media_progress(key, a);
-        let muted = self.media_gain() <= 0.;
-        let played = position as f32 / duration as f32;
-        let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let full_key = key.clone();
-        let seek = div()
-            .flex()
-            .flex_1()
-            .h(px(16.))
-            .items_center()
-            .children((0..SEEK_STEPS).map(|i| {
-                let seek_key = key.clone();
-                let done = (i as f32 + 0.5) / SEEK_STEPS as f32 <= played;
-                div()
-                    .id(SharedString::from(format!("seek-{}-{i}", a.id)))
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .child(div().w_full().h(px(4.)).bg(if done {
-                        theme::accent()
-                    } else {
-                        theme::alpha(theme::text_tertiary(), 0.4)
-                    }))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.media_seek(&seek_key, (i as f32 + 0.5) / SEEK_STEPS as f32, cx);
-                    }))
-            }));
-        div()
-            .flex()
-            .items_center()
-            .gap(px(10.))
-            .px(px(10.))
-            .py(px(6.))
-            .bg(theme::sidebar())
-            .text_size(theme::caption_size())
-            .text_color(theme::text_secondary())
-            .child(
-                div()
-                    .id(SharedString::from(format!("vplay-{}-{full}", a.id)))
-                    .cursor_pointer()
-                    .child(icon(
-                        if playing {
-                            media_icons::PAUSE
-                        } else {
-                            media_icons::PLAY
-                        },
-                        20.,
-                        theme::text(),
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
-                    })),
-            )
-            .child(div().flex_shrink_0().child(format!(
-                "{} / {}",
-                clock(position),
-                clock(duration)
-            )))
-            .child(seek)
-            .child(
-                icon_button(
-                    SharedString::from(format!("vmute-{}-{full}", a.id)),
-                    if muted {
-                        media_icons::VOLUME_OFF
-                    } else {
-                        assets::VOLUME
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.media_mute(cx);
-                })),
-            )
-            .child(
-                icon_button(
-                    SharedString::from(format!("vfull-{}-{full}", a.id)),
-                    if full {
-                        media_icons::FULLSCREEN_EXIT
-                    } else {
-                        media_icons::FULLSCREEN
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.media_full(&full_key, !full, cx);
-                })),
-            )
+    /// How visible a video's controls are, from 0 to 1: fully while it is paused, its seek bar
+    /// is held, its volume just changed or the mouse moves over it; then they fade out.
+    fn controls_shown(&self, bar: &BarKey, playing: bool) -> f32 {
+        let held = self.media.scrub.as_ref().is_some_and(|s| s.bar == *bar);
+        let volume = self.media.volume_shown.as_ref() == Some(&bar.0);
+        if !playing || held || volume {
+            return 1.;
+        }
+        match &self.media.pointer {
+            Some((over, moved)) if over == bar => {
+                let idle = moved.elapsed().as_secs_f32();
+                (1. - (idle - CONTROLS_IDLE) / CONTROLS_FADE).clamp(0., 1.)
+            }
+            _ => 0.,
+        }
     }
 
-    /// A video: a card with play until clicked, then the player inline.
-    pub fn render_video_card(
-        &self,
-        inst: &InstanceId,
-        a: &Attachment,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let key: MediaKey = (inst.clone(), a.id);
-        self.media_drawn(&key);
-        let item = self.media.items.get(&key);
-        let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let (down_inst, down_a) = (inst.clone(), a.clone());
-        let caption = div()
+    /// A round button on a video, in white.
+    fn overlay_button(id: SharedString, glyph: &'static str) -> gpui_kit::Stateful<Div> {
+        div()
+            .id(id)
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(28.))
+            .rounded(px(14.))
+            .cursor_pointer()
+            .hover(|d| d.bg(gpui_kit::hsla(0., 0., 1., 0.16)))
+            .child(icon(glyph, 18., gpui_kit::rgb(0xffffff)))
+    }
+
+    /// A video's top bar: its name, length and size, and download.
+    fn video_top(&self, inst: &InstanceId, a: &Attachment, cx: &mut Context<Self>) -> Div {
+        let meta = match a.duration_ms {
+            Some(ms) => format!("{}  ·  {}", clock(ms), human_size(a.size)),
+            None => human_size(a.size),
+        };
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
             .flex()
             .items_center()
             .gap(px(8.))
-            .px(px(10.))
-            .py(px(6.))
+            .pl(px(12.))
+            .pr(px(6.))
+            .pt(px(6.))
+            .pb(px(18.))
+            .bg(gpui_kit::linear_gradient(
+                180.,
+                gpui_kit::linear_color_stop(gpui_kit::hsla(0., 0., 0., 0.7), 0.),
+                gpui_kit::linear_color_stop(gpui_kit::hsla(0., 0., 0., 0.), 1.),
+            ))
             .text_size(theme::caption_size())
-            .text_color(theme::text_secondary())
+            .text_color(gpui_kit::rgb(0xffffff))
             .child(
                 div()
                     .flex_1()
@@ -1080,37 +988,210 @@ impl Shell {
             .child(
                 div()
                     .flex_shrink_0()
-                    .text_color(theme::text_tertiary())
-                    .child(human_size(a.size)),
+                    .text_color(gpui_kit::hsla(0., 0., 1., 0.75))
+                    .child(meta),
             )
+            .child(self.download_button(inst, a, gpui_kit::rgb(0xffffff), cx))
+    }
+
+    /// A playing video's bottom bar: the seek bar, then play, time, volume and full view.
+    fn video_bottom(
+        &self,
+        key: &MediaKey,
+        a: &Attachment,
+        inst: &InstanceId,
+        full: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (position, duration, playing) = self.media_progress(key, a);
+        let played = (position as f32 / duration as f32).clamp(0., 1.);
+        let muted = self.media_gain() <= 0.;
+        let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
+        let (full_key, wheel_key) = (key.clone(), key.clone());
+        let id = |what: &str| SharedString::from(format!("{what}-{}-{full}", a.id));
+        let seek = self
+            .seek_area((key.clone(), full), inst, a, cx)
+            .flex()
+            .items_center()
+            .w_full()
+            .h(px(14.))
+            .group(SEEK_GROUP)
             .child(
-                icon_button(
-                    SharedString::from(format!("download-{}", a.id)),
-                    assets::DOWNLOAD,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.download(down_inst.clone(), down_a.clone(), cx);
-                })),
+                div()
+                    .relative()
+                    .w_full()
+                    .h(px(3.))
+                    .rounded(px(2.))
+                    .bg(gpui_kit::hsla(0., 0., 1., 0.3))
+                    .group_hover(SEEK_GROUP, |s| s.h(px(5.)))
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .h_full()
+                            .w(gpui_kit::relative(played))
+                            .rounded(px(2.))
+                            .bg(theme::accent()),
+                    ),
             );
-        let frame = |w: f32, h: f32| {
-            div()
-                .relative()
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(w))
-                .h(px(h))
-                .bg(gpui_kit::rgb(0x000000))
+        let volume = Self::overlay_button(
+            id("vmute"),
+            if muted {
+                media_icons::VOLUME_OFF
+            } else {
+                assets::VOLUME
+            },
+        )
+        .on_click(cx.listener(|this, _, _, cx| {
+            cx.stop_propagation();
+            this.media_mute(cx);
+        }))
+        .on_scroll(cx.listener(move |this, event, _, cx| {
+            cx.stop_propagation();
+            this.media_wheel(&wheel_key, event, cx);
+        }));
+        div()
+            .absolute()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .flex()
+            .flex_col()
+            .px(px(10.))
+            .pt(px(22.))
+            .pb(px(4.))
+            .bg(gpui_kit::linear_gradient(
+                0.,
+                gpui_kit::linear_color_stop(gpui_kit::hsla(0., 0., 0., 0.75), 0.),
+                gpui_kit::linear_color_stop(gpui_kit::hsla(0., 0., 0., 0.), 1.),
+            ))
+            .text_size(theme::caption_size())
+            .text_color(gpui_kit::rgb(0xffffff))
+            .child(seek)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        Self::overlay_button(
+                            id("vplay"),
+                            if playing {
+                                media_icons::PAUSE
+                            } else {
+                                media_icons::PLAY
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
+                        })),
+                    )
+                    .child(div().flex_shrink_0().ml(px(2.)).child(format!(
+                        "{} / {}",
+                        clock(position),
+                        clock(duration)
+                    )))
+                    .child(div().flex_1())
+                    .children(self.volume_meta(key))
+                    .child(volume)
+                    .child(
+                        Self::overlay_button(
+                            id("vfull"),
+                            if full {
+                                media_icons::FULLSCREEN_EXIT
+                            } else {
+                                media_icons::FULLSCREEN
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.media_full(&full_key, !full, cx);
+                        })),
+                    ),
+            )
+    }
+
+    /// What a video shows over its picture: its bars while they show, and it notes the mouse
+    /// moving over it. Clicking the picture plays or pauses; the wheel sets the volume.
+    fn video_surface(
+        &self,
+        surface: gpui_kit::Stateful<Div>,
+        key: &MediaKey,
+        a: &Attachment,
+        inst: &InstanceId,
+        full: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let bar: BarKey = (key.clone(), full);
+        let playing = self.media_progress(key, a).2;
+        let shown = self.controls_shown(&bar, playing);
+        let (moved, left) = (bar.clone(), bar);
+        let (click_inst, click_a) = (inst.clone(), a.clone());
+        let wheel_key = key.clone();
+        surface
+            .cursor_pointer()
+            .on_mouse_move(cx.listener(move |this, _: &MouseMoveEvent, _, cx| {
+                this.media.pointer = Some((moved.clone(), Instant::now()));
+                cx.notify();
+            }))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if !hovered && this.media.pointer.as_ref().is_some_and(|(b, _)| *b == left) {
+                    this.media.pointer = None;
+                    cx.notify();
+                }
+            }))
+            .on_scroll(cx.listener(move |this, event, _, cx| {
+                cx.stop_propagation();
+                this.media_wheel(&wheel_key, event, cx);
+            }))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.media_toggle(click_inst.clone(), click_a.clone(), cx);
+            }))
+            .when(shown > 0., |d| {
+                d.child(self.video_top(inst, a, cx).opacity(shown))
+                    .child(self.video_bottom(key, a, inst, full, cx).opacity(shown))
+            })
+    }
+
+    /// A video: the picture with play until clicked, then the player inline, its controls over
+    /// it. Its name and size show at the top, so it is clear what clicking loads.
+    pub fn render_video_card(
+        &self,
+        inst: &InstanceId,
+        a: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let key: MediaKey = (inst.clone(), a.id);
+        self.media_drawn(&key);
+        let item = self.media.items.get(&key);
+        let shape = match (item.map(|i| &i.load), a.width, a.height) {
+            (Some(Load::Ready(player)), ..) => player.probe.video,
+            (_, Some(w), Some(h)) => Some((w, h, 0.)),
+            _ => None,
         };
-        let body = match item.map(|i| (&i.load, i.full)) {
+        let (w, h) = shape.map_or((VIDEO_W, VIDEO_W * 9. / 16.), |(w, h, _)| {
+            let (w, h) = fit((w, h), (VIDEO_W, VIDEO_H));
+            (w.max(240.), h.max(135.))
+        });
+        let card = div()
+            .id(SharedString::from(format!("video-{}", a.id)))
+            .relative()
+            .flex()
+            .items_center()
+            .justify_center()
+            .mt(px(4.))
+            .w(px(w))
+            .h(px(h))
+            .rounded(px(8.))
+            .overflow_hidden()
+            .bg(gpui_kit::rgb(0x000000))
+            .border_1()
+            .border_color(theme::border());
+        match item.map(|i| (&i.load, i.full)) {
             Some((Load::Ready(player), full)) => {
-                let (w, h) = player
-                    .probe
-                    .video
-                    .map_or((VIDEO_W, VIDEO_H * 0.75), |(w, h, _)| {
-                        fit((w, h), (VIDEO_W, VIDEO_H))
-                    });
                 let picture = if full {
                     div()
                         .text_size(theme::caption_size())
@@ -1129,66 +1210,34 @@ impl Shell {
                         None => div().into_any_element(),
                     }
                 };
-                let click_inst = inst.clone();
-                let click_a = a.clone();
-                let wheel_key = key.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        frame(w, h)
-                            .id(SharedString::from(format!("video-{}", a.id)))
-                            .cursor_pointer()
-                            .on_scroll(cx.listener(move |this, event, _, cx| {
-                                cx.stop_propagation();
-                                this.media_wheel(&wheel_key, event, cx);
-                            }))
-                            .children(self.volume_pill(&key))
-                            .child(picture)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                this.media_toggle(click_inst.clone(), click_a.clone(), cx);
-                            })),
-                    )
-                    .child(self.video_controls(&key, a, inst, false, cx))
+                self.video_surface(card.child(picture), &key, a, inst, false, cx)
                     .into_any_element()
             }
-            Some((Load::Failed(err), _)) => frame(VIDEO_W, VIDEO_H * 0.6)
+            Some((Load::Failed(err), _)) => card
                 .text_size(theme::caption_size())
                 .text_color(theme::danger())
                 .child(err.clone())
+                .child(self.video_top(inst, a, cx))
                 .into_any_element(),
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
-                frame(VIDEO_W, VIDEO_H * 0.6)
-                    .child(
-                        play_button(
-                            SharedString::from(format!("play-{}", a.id)),
-                            false,
-                            loading,
-                            56.,
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
-                        })),
+                let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
+                card.child(
+                    play_button(
+                        SharedString::from(format!("play-{}", a.id)),
+                        false,
+                        loading,
+                        56.,
                     )
-                    .into_any_element()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
+                    })),
+                )
+                .child(self.video_top(inst, a, cx))
+                .into_any_element()
             }
-        };
-        div()
-            .flex()
-            .flex_col()
-            .mt(px(4.))
-            .w(px(VIDEO_W))
-            .rounded(px(8.))
-            .overflow_hidden()
-            .bg(theme::sidebar())
-            .border_1()
-            .border_color(theme::border())
-            .child(body)
-            .child(caption)
-            .into_any_element()
+        }
     }
 
     /// A video in full view, over the whole window.
@@ -1205,40 +1254,23 @@ impl Shell {
                 .object_fit(ObjectFit::Contain)
                 .into_any_element()
         });
-        let (click_inst, click_a) = (key.0.clone(), attachment.clone());
+        let surface = div()
+            .id("video-full")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::rgb(0x000000))
+            .occlude()
+            .font_family(theme::font())
+            .children(picture);
         Some(
-            gpui_kit::deferred(
-                div()
-                    .id("video-full")
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .bg(gpui_kit::rgb(0x000000))
-                    .occlude()
-                    .font_family(theme::font())
-                    .child(
-                        div()
-                            .id("video-full-picture")
-                            .flex()
-                            .flex_1()
-                            .min_h_0()
-                            .w_full()
-                            .items_center()
-                            .justify_center()
-                            .overflow_hidden()
-                            .cursor_pointer()
-                            .children(picture)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.media_toggle(click_inst.clone(), click_a.clone(), cx);
-                            })),
-                    )
-                    .child(self.video_controls(key, &attachment, &key.0, true, cx)),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
+            gpui_kit::deferred(self.video_surface(surface, key, &attachment, &key.0, true, cx))
+                .with_priority(gpui_kit::base::POPUP_PRIORITY)
+                .into_any_element(),
         )
     }
 
