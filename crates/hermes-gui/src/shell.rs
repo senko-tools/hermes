@@ -1175,7 +1175,10 @@ impl Render for Shell {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().min_w_0().h_full().child(main))
+                    .child(div().flex_1().min_w_0().h_full().child(theme::enter(
+                        gpui_kit::SharedString::from(format!("page-{:?}", self.page)),
+                        main,
+                    )))
                     .children(members),
             );
         let full_page = self
@@ -1191,7 +1194,14 @@ impl Render for Shell {
                 .min_w_0()
                 .h_full()
                 .children(self.render_status(cx))
-                .child(div().flex_1().min_h_0().child(page))
+                .child(div().flex_1().min_h_0().child(theme::enter(
+                    if self.open_space_page.is_some() {
+                        "space-settings"
+                    } else {
+                        "settings"
+                    },
+                    page,
+                )))
                 .into_any_element(),
             None => main_column.into_any_element(),
         };

@@ -775,7 +775,10 @@ impl Shell {
         Some(frame(
             "User settings".into(),
             nav,
-            content,
+            theme::enter(
+                SharedString::from(format!("settings-{:?}", page.tab)),
+                content,
+            ),
             cx.listener(|this, _, _, cx| this.close_settings(cx)),
         ))
     }

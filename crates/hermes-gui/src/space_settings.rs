@@ -1004,7 +1004,10 @@ impl Shell {
         Some(frame(
             st.space.name.clone(),
             nav,
-            content,
+            crate::theme::enter(
+                gpui_kit::SharedString::from(format!("space-settings-{:?}", page.tab)),
+                content,
+            ),
             cx.listener(|this, _, _, cx| this.close_space_settings(cx)),
         ))
     }

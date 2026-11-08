@@ -4,7 +4,9 @@
 //! of the empty space and in settings.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, FontWeight, SharedString, Stateful, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Div, FontWeight, SharedString, Stateful, div,
+};
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{ChannelKind, User};
@@ -495,7 +497,15 @@ impl Shell {
                             }
                             Selected::Home => self.with_instances_menu(empty, cx),
                         }
-                    }),
+                    })
+                    // Another server's channels fade in.
+                    .relative()
+                    .with_animation(
+                        SharedString::from(format!("sidebar-{:?}", self.selected)),
+                        gpui_kit::Animation::new(std::time::Duration::from_millis(180))
+                            .with_easing(gpui_kit::ease_out_quint()),
+                        |d, t| d.opacity(t).top(px(6. * (1. - t))),
+                    ),
             )
     }
 

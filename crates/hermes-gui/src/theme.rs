@@ -532,6 +532,26 @@ const BLACK: Rgba = Rgba {
     a: 1.0,
 };
 
+/// Fades `element` in while it rises a few pixels into place, once each time `id` first shows:
+/// a page or tab that just opened. It fills its parent.
+pub fn enter(
+    id: impl Into<gpui_kit::ElementId>,
+    element: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .relative()
+        .size_full()
+        .child(element)
+        .with_animation(
+            id,
+            Animation::new(std::time::Duration::from_millis(180)).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t).top(px(6. * (1. - t))),
+        )
+        .into_any_element()
+}
+
 /// `a` blended towards `b` by `t` (0–1).
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     Rgba {
