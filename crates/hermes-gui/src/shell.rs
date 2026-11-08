@@ -160,6 +160,8 @@ pub struct Shell {
     pub rail_scroll: gpui_kit::ScrollHandle,
     /// The rail slot last selected: the pill springs on from there.
     pub rail_pill_slot: std::cell::Cell<f32>,
+    /// Plays mouse-wheel notches back smoothly.
+    pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
     /// A picked picture being cropped before it is uploaded.
     pub crop: Option<crate::crop::Crop>,
     /// Local UTC offset for timestamps, read once at startup.
@@ -298,6 +300,7 @@ impl Shell {
             keys_dialog: None,
             rail_scroll: gpui_kit::ScrollHandle::new(),
             rail_pill_slot: std::cell::Cell::new(0.),
+            smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
             crop: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
@@ -1295,6 +1298,7 @@ impl Render for Shell {
                         cx.listener(|this, _, _, cx| this.end_resize(cx)),
                     )
             })
+            .child(self.smooth_scroll.catcher())
             .when(on_right, |d| d.flex_row_reverse())
             .child(left)
             .child(body)

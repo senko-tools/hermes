@@ -40,6 +40,7 @@ mod settings;
 mod shell;
 mod sidebar;
 mod single_instance;
+mod smooth_scroll;
 mod space_settings;
 #[cfg(test)]
 mod tests;
