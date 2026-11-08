@@ -13,7 +13,7 @@ use gpui_kit::{
     img,
 };
 use hermes_client_core::InstanceId;
-use hermes_client_core::proto::api::{UpdateMeRequest, UpdateSpaceRequest};
+use hermes_client_core::proto::api::{PICTURE_MAX_BYTES, UpdateMeRequest, UpdateSpaceRequest};
 use hermes_client_core::proto::id::Id;
 
 use crate::images::Picture;
@@ -49,6 +49,13 @@ struct Shape {
 }
 
 const SQUARE: f32 = 240.;
+/// The largest side of the picture shown while cropping.
+const PREVIEW_SIDE: u32 = 1024;
+
+/// Why a picture was refused, in words.
+fn too_big() -> String {
+    format!("it is larger than {} MB", PICTURE_MAX_BYTES / (1024 * 1024))
+}
 
 impl CropFor {
     fn shape(&self) -> Shape {
@@ -210,27 +217,14 @@ fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result
 
 /// The frames of an animated GIF, WebP or PNG, as they come; `None` for a still picture.
 fn animated_frames(file: &[u8]) -> Result<Option<image::Frames<'_>>, String> {
-    use image::AnimationDecoder as _;
-    use std::io::Cursor;
-    let err = |e: image::ImageError| e.to_string();
-    // Only something with more than one frame is cropped as an animation.
-    if !matches!(crate::images::animation_frames(file, Some(16)), Ok(Some(_))) {
+    // Only something with more than one frame is cropped as an animation; two tell.
+    let Ok(Some(frames)) = crate::images::animation_decoder(file) else {
+        return Ok(None);
+    };
+    if frames.take(2).filter(Result::is_ok).count() < 2 {
         return Ok(None);
     }
-    Ok(Some(match image::guess_format(file).map_err(err)? {
-        image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(file))
-            .map_err(err)?
-            .into_frames(),
-        image::ImageFormat::WebP => image::codecs::webp::WebPDecoder::new(Cursor::new(file))
-            .map_err(err)?
-            .into_frames(),
-        image::ImageFormat::Png => image::codecs::png::PngDecoder::new(Cursor::new(file))
-            .map_err(err)?
-            .apng()
-            .map_err(err)?
-            .into_frames(),
-        _ => return Ok(None),
-    }))
+    crate::images::animation_decoder(file)
 }
 
 impl Shell {
@@ -252,6 +246,13 @@ impl Shell {
                 else {
                     return Ok(None);
                 };
+                let len = tokio::fs::metadata(file.path())
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .len();
+                if len > PICTURE_MAX_BYTES {
+                    return Err(too_big());
+                }
                 let bytes = tokio::fs::read(file.path())
                     .await
                     .map_err(|e| e.to_string())?;
@@ -261,7 +262,7 @@ impl Shell {
                         .map_err(|e| e.to_string())?
                         .into_dimensions()
                         .map_err(|e| e.to_string())?;
-                    let preview = crate::images::decode(&bytes, Some(1024))?;
+                    let preview = crate::images::decode_first_frame(&bytes, PREVIEW_SIDE)?;
                     Ok(Some((Arc::new(bytes), size, preview)))
                 })
                 .await
@@ -269,10 +270,33 @@ impl Shell {
             },
             move |this, result: Result<_, String>, window, cx| match result {
                 Ok(Some((bytes, size, preview))) => {
+                    this.load_crop_animation(bytes.clone(), cx);
                     this.open_crop(purpose, bytes, size, preview, window, cx);
                 }
                 Ok(None) => {}
                 Err(err) => this.error(format!("could not open the picture: {err}"), cx),
+            },
+        );
+    }
+
+    /// The crop view opens on the first frame; an animation joins it once decoded, if that
+    /// picture is still being cropped.
+    fn load_crop_animation(&self, bytes: Arc<Vec<u8>>, cx: &mut Context<Self>) {
+        let picked = bytes.clone();
+        self.run(
+            cx,
+            async move {
+                tokio::task::spawn_blocking(move || crate::images::decode_animation(&bytes))
+                    .await
+                    .map_err(|e| e.to_string())?
+            },
+            move |this, result: Result<_, String>, _, _| {
+                if let Ok(Some(moving)) = result
+                    && let Some(crop) = &mut this.crop
+                    && Arc::ptr_eq(&crop.bytes, &picked)
+                {
+                    crop.preview.moving = Some(moving);
+                }
             },
         );
     }
@@ -332,6 +356,10 @@ impl Shell {
                     tokio::task::spawn_blocking(move || crop_file(shape, &file, zoom, offset))
                         .await
                         .map_err(|e| e.to_string())??;
+                // A long animation can grow when cropped.
+                if output.bytes.len() as u64 > PICTURE_MAX_BYTES {
+                    return Err(too_big());
+                }
                 let inst = purpose.inst().clone();
                 fn failed(e: impl std::fmt::Display) -> String {
                     e.to_string()
@@ -633,10 +661,17 @@ mod tests {
         let gif = crate::images::tests::gif(3, 64);
         let out = crop_file(square(), &gif, 1., (0., 0.)).unwrap();
         assert_eq!(out.content_type, "image/gif");
-        let frames = crate::images::animation_frames(&out.bytes, None)
+        let frames = crate::images::animation_decoder(&out.bytes)
             .unwrap()
             .unwrap();
-        assert_eq!(frames.len(), 3);
+        assert_eq!(frames.count(), 3);
+    }
+
+    #[test]
+    fn a_gif_of_one_frame_is_cropped_as_a_still_picture() {
+        let gif = crate::images::tests::gif(1, 64);
+        let out = crop_file(square(), &gif, 1., (0., 0.)).unwrap();
+        assert_eq!(out.content_type, "image/png");
     }
 
     #[test]

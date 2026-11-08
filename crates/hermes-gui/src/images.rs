@@ -116,6 +116,29 @@ fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Pictur
     })
 }
 
+/// Only a picture's first frame, at most `max` pixels on a side, decoded and shrunk quickly: what
+/// is shown right after picking a file. See [`decode_animation`] for the rest of it.
+pub fn decode_first_frame(bytes: &[u8], max: u32) -> Result<Picture, String> {
+    let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    let image = if image.width() > max || image.height() > max {
+        image.thumbnail(max, max)
+    } else {
+        image
+    };
+    let mut pixels = image.to_rgba8();
+    to_bgra(&mut pixels);
+    Ok(Picture {
+        still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+        moving: None,
+    })
+}
+
+/// All frames of an animated picture at preview size; `None` for a still one.
+pub fn decode_animation(bytes: &[u8]) -> Result<Option<Arc<RenderImage>>, String> {
+    let frames = frames_within(bytes, Some(ANIMATED_PREVIEW), PREVIEW_ANIMATION_BUDGET)?;
+    Ok(frames.map(|frames| Arc::new(RenderImage::new(frames))))
+}
+
 /// gpui wants BGRA.
 fn to_bgra(pixels: &mut image::RgbaImage) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
@@ -123,21 +146,13 @@ fn to_bgra(pixels: &mut image::RgbaImage) {
     }
 }
 
-/// The frames of an animated GIF, WebP or PNG, at most `max` pixels on a side and within
-/// [`ANIMATION_BUDGET`], in BGRA. `None`: one frame only, or too long to keep moving.
-pub fn animation_frames(bytes: &[u8], max: Option<u32>) -> Result<Option<Vec<Frame>>, String> {
-    frames_within(bytes, max, ANIMATION_BUDGET)
-}
-
-fn frames_within(
-    bytes: &[u8],
-    max: Option<u32>,
-    budget: usize,
-) -> Result<Option<Vec<Frame>>, String> {
+/// The frames of a GIF, an animated WebP or an APNG, undecoded until asked for; `None` for any
+/// other picture. A GIF of one frame counts too.
+pub fn animation_decoder(bytes: &[u8]) -> Result<Option<image::Frames<'_>>, String> {
     use image::AnimationDecoder as _;
     use std::io::Cursor;
     let err = |e: image::ImageError| e.to_string();
-    let frames: image::Frames<'_> = match image::guess_format(bytes).map_err(err)? {
+    Ok(Some(match image::guess_format(bytes).map_err(err)? {
         image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
             .map_err(err)?
             .into_frames(),
@@ -156,6 +171,19 @@ fn frames_within(
             decoder.apng().map_err(err)?.into_frames()
         }
         _ => return Ok(None),
+    }))
+}
+
+/// The frames of an animated GIF, WebP or PNG, at most `max` pixels on a side and within
+/// `budget` bytes, in BGRA. `None`: one frame only, or too long to keep moving.
+fn frames_within(
+    bytes: &[u8],
+    max: Option<u32>,
+    budget: usize,
+) -> Result<Option<Vec<Frame>>, String> {
+    let err = |e: image::ImageError| e.to_string();
+    let Some(frames) = animation_decoder(bytes)? else {
+        return Ok(None);
     };
     let mut side = max.unwrap_or(u32::MAX);
     let mut out: Vec<Frame> = Vec::new();
@@ -461,6 +489,16 @@ pub(crate) mod tests {
                 .iter()
                 .all(|f| f.buffer().width() == frames[0].buffer().width())
         );
+    }
+
+    #[test]
+    fn the_first_frame_comes_alone_and_the_animation_after_it() {
+        let moving = gif(3, 64);
+        let first = decode_first_frame(&moving, 32).unwrap();
+        assert!(first.moving.is_none());
+        assert_eq!(first.still.size(0).width.0, 32);
+        assert!(decode_animation(&moving).unwrap().is_some());
+        assert!(decode_animation(&gif(1, 64)).unwrap().is_none());
     }
 
     #[test]
