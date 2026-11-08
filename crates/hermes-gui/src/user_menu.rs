@@ -365,8 +365,11 @@ impl Shell {
                     cx.notify();
                 }))
                 .child(
+                    // gpui clips to the card's box, not its rounded corners: the band rounds its
+                    // own (the card's radius less its border).
                     div()
                         .h(px(64.))
+                        .rounded_t(px(9.))
                         .bg(theme::mix(theme::sidebar(), band, 0.75)),
                 )
                 .child(
