@@ -32,6 +32,8 @@ XChaCha20-Poly1305 under a random key. That key is sealed for each device of eac
 with a one-time X25519 key, HKDF-SHA256 and ChaCha20-Poly1305. The sending device signs everything, including
 the channel and the author, so a message cannot be moved, edited or passed off as someone else's. Files get a key of their
 own, kept inside the message; on the server they are `encrypted.bin` of type `application/octet-stream`.
+Before encrypting, the sender shrinks what compresses well (`compress.rs`: zstd, and PNGs that hold only pixels are
+re-encoded), keeping the result only if it saves at least 5 %. The server can see the smaller size.
 
 The server refuses plain DMs (`privacy.require_dm_encryption`, on by default). Clients refuse to send in clear,
 and mark a DM message that is not encrypted with an open lock: an old one, or one the server made up.

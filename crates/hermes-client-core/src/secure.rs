@@ -330,8 +330,12 @@ impl Core {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
-        let plain_size = bytes.len() as u64;
-        let (sealed, key, nonce) = tokio::task::spawn_blocking(move || e2ee::seal_file(&bytes))
+        let (sealed, key, nonce, plain_size, compression) =
+            tokio::task::spawn_blocking(move || {
+                let shrunk = crate::compress::shrink(bytes);
+                let (sealed, key, nonce) = e2ee::seal_file(&shrunk.bytes)?;
+                Ok::<_, E2eeError>((sealed, key, nonce, shrunk.plain_size, shrunk.compression))
+            })
             .await
             .map_err(|e| CoreError::Io(e.to_string()))?
             .map_err(|e| CoreError::Io(e.to_string()))?;
@@ -358,6 +362,7 @@ impl Core {
                 key,
                 nonce,
                 stored_name: stored.filename,
+                compression,
             }),
         })
     }
@@ -370,10 +375,14 @@ impl Core {
         };
         let bytes = rest.download(attachment.id, &sealed.stored_name).await?;
         let (key, nonce) = (sealed.key.clone(), sealed.nonce.clone());
-        tokio::task::spawn_blocking(move || e2ee::open_file(&bytes, &key, &nonce))
-            .await
-            .map_err(|e| CoreError::Io(e.to_string()))?
-            .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
+        let (compression, plain_size) = (sealed.compression, attachment.size);
+        tokio::task::spawn_blocking(move || {
+            let opened = e2ee::open_file(&bytes, &key, &nonce).map_err(|e| e.to_string())?;
+            crate::compress::restore(opened, compression, plain_size)
+        })
+        .await
+        .map_err(|e| CoreError::Io(e.to_string()))?
+        .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
     }
 
     /// The safety number and devices of a conversation, asking the server for the latest.
@@ -465,6 +474,7 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         duration_ms: attachment.duration_ms,
         key: sealed.key.clone(),
         nonce: sealed.nonce.clone(),
+        compression: sealed.compression,
     })
 }
 
@@ -502,6 +512,7 @@ fn apply_inner(message: &mut Message, inner: Inner) {
                 key: attachment.key,
                 nonce: attachment.nonce,
                 stored_name: on_server.filename.clone(),
+                compression: attachment.compression,
             }),
         });
     }

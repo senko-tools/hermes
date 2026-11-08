@@ -291,6 +291,8 @@ pub struct InnerAttachment {
     pub duration_ms: Option<u64>,
     pub key: String,
     pub nonce: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<hermes_proto::e2ee::Compression>,
 }
 
 /// What a message says, inside its envelope.

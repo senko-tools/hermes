@@ -5,6 +5,7 @@
 
 pub mod address;
 pub mod commands;
+pub mod compress;
 pub mod config;
 mod core;
 pub mod crash;

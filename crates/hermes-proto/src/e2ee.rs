@@ -115,4 +115,14 @@ pub struct SealedFile {
     pub nonce: String,
     /// The name the file is stored under on the server.
     pub stored_name: String,
+    /// What was done to the file before it was encrypted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
+}
+
+/// How a file was made smaller before it was encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Compression {
+    Zstd,
 }

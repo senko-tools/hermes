@@ -68,6 +68,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 
 # Images (server), permissions
 image = { version = "=0.25.10", default-features = false }  # crates enable the formats they need
+zstd = { version = "=0.13.3", default-features = false }     # files are compressed before they are encrypted
 bitflags = "=2.13.2"
 
 # Client networking
