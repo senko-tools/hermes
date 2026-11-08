@@ -118,9 +118,9 @@ async fn update_transfer_delete() {
     server
         .sql(&format!(
             "INSERT INTO attachments (id, uploader_id, filename, content_type, size, sha256, created_at)
-             VALUES (77, {owner_id}, 'cat.png', 'image/png', 3, x'00', 0),
-                    (78, {alice_id}, 'dog.png', 'image/png', 3, x'00', 0),
-                    (79, {owner_id}, 'notes.txt', 'text/plain', 3, x'00', 0)"
+             VALUES (77, {owner_id}, 'cat.png', 'image/png', 3, zeroblob(32), 0),
+                    (78, {alice_id}, 'dog.png', 'image/png', 3, zeroblob(32), 0),
+                    (79, {owner_id}, 'notes.txt', 'text/plain', 3, zeroblob(32), 0)"
         ))
         .await;
     let space = server
