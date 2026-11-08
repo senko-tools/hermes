@@ -152,6 +152,10 @@ pub struct Shell {
     pub viewer: Option<Viewer>,
     /// The safety number of a conversation.
     pub keys_dialog: Option<crate::encryption::KeysDialog>,
+    /// How far the rail's servers are scrolled.
+    pub rail_scroll: gpui_kit::ScrollHandle,
+    /// The rail slot last selected: the pill springs on from there.
+    pub rail_pill_slot: std::cell::Cell<f32>,
     /// A picked picture being cropped before it is uploaded.
     pub crop: Option<crate::crop::Crop>,
     /// Local UTC offset for timestamps, read once at startup.
@@ -288,6 +292,8 @@ impl Shell {
             new_dm: None,
             viewer: None,
             keys_dialog: None,
+            rail_scroll: gpui_kit::ScrollHandle::new(),
+            rail_pill_slot: std::cell::Cell::new(0.),
             crop: None,
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,

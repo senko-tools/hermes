@@ -172,16 +172,50 @@ fn rail_morph(
         .into_any_element()
 }
 
-/// The bar at the rail's edge beside the selected icon.
-fn rail_pill() -> Div {
+/// The rail's top padding, and the gap between its icons.
+const RAIL_TOP: f32 = 12.;
+const RAIL_GAP: f32 = 8.;
+/// The separator's height between the home icon and the servers.
+const RAIL_SEPARATOR: f32 = 2.;
+
+/// The top of the icon in rail slot `slot` (0 is home, 1 the first server), from the rail's top.
+/// `scroll` is how far the servers are scrolled. Between two slots it is in between them.
+fn rail_slot_top(slot: f32, scroll: f32) -> f32 {
+    let servers = RAIL_TOP + theme::RAIL_ICON + RAIL_GAP + RAIL_SEPARATOR + RAIL_GAP;
+    let top = |slot: f32| {
+        if slot < 1. {
+            RAIL_TOP
+        } else {
+            servers + (slot - 1.) * (theme::RAIL_ICON + RAIL_GAP) - scroll
+        }
+    };
+    let below = slot.floor();
+    top(below) + (top(below + 1.) - top(below)) * (slot - below)
+}
+
+/// The bar at the rail's edge beside the selected icon. One bar for the whole rail: it springs
+/// from the icon selected before to the new one.
+fn rail_pill(slot: Option<f32>, last: f32, scroll: f32) -> AnyElement {
+    use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
+    let servers_top = RAIL_TOP + theme::RAIL_ICON + RAIL_GAP + RAIL_SEPARATOR;
     div()
         .absolute()
-        .left(px(-12.))
-        .top(px(8.))
-        .bottom(px(8.))
+        .left_0()
         .w(px(4.))
+        .h(px(theme::RAIL_ICON - 16.))
         .rounded_r(px(2.))
         .bg(theme::accent())
+        .with_spring(
+            "rail-pill",
+            SpringAnimation::new(SpringConfig::new(300., 28., 1.)).to(slot.unwrap_or(last)),
+            move |d, at| {
+                let top = rail_slot_top(at, scroll) + 8.;
+                // Hidden while nothing is selected, or while its server is scrolled out of view.
+                let hidden = slot.is_none() || (at >= 1. && top < servers_top);
+                d.top(px(top)).when(hidden, |d| d.opacity(0.))
+            },
+        )
+        .into_any_element()
 }
 
 /// A running time as `1:01:42`, or `2:05` under an hour.
@@ -264,7 +298,6 @@ impl Shell {
         let home_selected = self.selected == Selected::Home;
         let home = rail_icon("home")
             .when(!home_selected, |d| d.hover(|d| d.bg(theme::hover())))
-            .when(home_selected, |d| d.child(rail_pill()))
             .child(icon(
                 assets::FEATHER,
                 28.,
@@ -284,8 +317,22 @@ impl Shell {
             }));
         let home = rail_morph("home-morph", home, home_selected, None);
 
-        let spaces: Vec<AnyElement> = self
-            .rail_spaces()
+        let rail_spaces = self.rail_spaces();
+        let slot = if home_selected {
+            Some(0.)
+        } else {
+            rail_spaces
+                .iter()
+                .position(|(inst, id, ..)| self.selected == Selected::Space(inst.clone(), *id))
+                .map(|n| (n + 1) as f32)
+        };
+        if let Some(slot) = slot {
+            self.rail_pill_slot.set(slot);
+        }
+        let scroll = -self.rail_scroll.offset().y.as_f32() / theme::scale();
+        let pill = rail_pill(slot, self.rail_pill_slot.get(), scroll);
+
+        let spaces: Vec<AnyElement> = rail_spaces
             .into_iter()
             .map(|(inst, id, name, badge)| {
                 let selected = self.selected == Selected::Space(inst.clone(), id);
@@ -305,7 +352,7 @@ impl Shell {
                         this.select_space(inst.clone(), id, window, cx);
                     }));
                 let element = self.with_menu(element, target, cx);
-                // The pill and the badge go over the picture, so they come after it.
+                // The badge goes over the picture, so it comes after it.
                 div()
                     .relative()
                     .flex_shrink_0()
@@ -315,7 +362,6 @@ impl Shell {
                         selected,
                         picture,
                     ))
-                    .when(selected, |d| d.child(rail_pill()))
                     .children(
                         badge_element(badge)
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
@@ -336,20 +382,22 @@ impl Shell {
             );
 
         div()
+            .relative()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .flex_shrink_0()
             .items_center()
-            .gap(px(8.))
+            .gap(px(RAIL_GAP))
             .w(px(theme::RAIL_WIDTH))
             .h_full()
-            .pt(px(12.))
+            .pt(px(RAIL_TOP))
             .bg(theme::sidebar())
             .when(on_right, |d| d.border_l_1())
             .when(!on_right, |d| d.border_r_1())
             .border_color(theme::border())
             .child(home)
-            .child(div().w(px(32.)).h(px(2.)).bg(theme::border()))
+            .child(div().w(px(32.)).h(px(RAIL_SEPARATOR)).bg(theme::border()))
             .child(
                 div()
                     .id("rail-spaces")
@@ -359,8 +407,9 @@ impl Shell {
                     .min_h_0()
                     .w_full()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(RAIL_GAP))
                     .overflow_y_scroll()
+                    .track_scroll(&self.rail_scroll)
                     .children(spaces)
                     .child(add)
                     .child(self.with_instances_menu(
@@ -368,6 +417,7 @@ impl Shell {
                         cx,
                     )),
             )
+            .child(pill)
     }
 
     pub fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1060,4 +1110,23 @@ fn section_heading_owned(text: String) -> AnyElement {
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rail_slot_top;
+
+    #[test]
+    fn rail_slots_sit_under_each_other() {
+        assert_eq!(rail_slot_top(0., 0.), 12.);
+        assert_eq!(rail_slot_top(1., 0.), 78.);
+        assert_eq!(rail_slot_top(2., 0.), 134.);
+        assert_eq!(rail_slot_top(2., 30.), 104.);
+    }
+
+    #[test]
+    fn between_two_slots_is_in_between() {
+        assert_eq!(rail_slot_top(0.5, 0.), 45.);
+        assert_eq!(rail_slot_top(1.5, 0.), 106.);
+    }
 }
