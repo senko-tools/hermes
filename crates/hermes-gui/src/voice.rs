@@ -11,7 +11,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Context, Entity, FontWeight, Pixels, Point, SharedString, Size, Subscription,
-    Window, anchored, canvas, deferred, div, img, size,
+    Window, canvas, div, img, size,
 };
 use hermes_client_core::audio::{InputMode, Sound};
 use hermes_client_core::proto::id::Id;
@@ -706,75 +706,71 @@ impl Shell {
                 e.code
             )
         });
-        Some(
-            deferred(
-                anchored()
-                    .position(at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(
-                        div()
-                            .id("network")
-                            .occlude()
-                            .flex()
-                            .flex_col()
-                            .gap(px(12.))
-                            .w(px(420.))
-                            .max_h(self.viewport.height - px(16.))
-                            .overflow_y_scroll()
-                            .p(px(14.))
-                            .rounded(px(10.))
-                            .bg(theme::sidebar())
-                            .border_1()
-                            .border_color(theme::border())
-                            .shadow_lg()
-                            .font_family(theme::font())
-                            .text_color(theme::text())
-                            .text_size(theme::secondary_size())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.network_open = None;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .child(icon(assets::WAVEFORM, 16., theme::success()))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .ml(px(4.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child("Connection"),
-                                    )
-                                    .children(ranges)
-                                    .child(icon_button("network-close", assets::CLOSE).on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.network_open = None;
-                                            cx.notify();
-                                        }),
-                                    )),
-                            )
-                            .child(div().flex().gap(px(6.)).children(tiles))
-                            .child(graph)
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .pt(px(8.))
-                                    .border_t_1()
-                                    .border_color(theme::border())
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(details)
-                                    .children(code),
-                            ),
-                    ),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(crate::modal::popup(
+            "network-in",
+            at,
+            self.viewport,
+            div()
+                .id("network")
+                .occlude()
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .w(px(420.))
+                .max_h(self.viewport.height - px(16.))
+                .overflow_y_scroll()
+                .p(px(14.))
+                .rounded(px(10.))
+                .bg(theme::sidebar())
+                .border_1()
+                .border_color(theme::border())
+                .shadow_lg()
+                .font_family(theme::font())
+                .text_color(theme::text())
+                .text_size(theme::secondary_size())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.network_open = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(icon(assets::WAVEFORM, 16., theme::success()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .ml(px(4.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Connection"),
+                        )
+                        .children(ranges)
+                        .child(
+                            icon_button("network-close", assets::CLOSE).on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.network_open = None;
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                )
+                .child(div().flex().gap(px(6.)).children(tiles))
+                .child(graph)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .pt(px(8.))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .child(details)
+                        .children(code),
+                ),
+        ))
     }
 
     /// Mute and deafen, as the user panel and the call bar show them (`prefix` keeps their
@@ -1340,63 +1336,56 @@ impl Shell {
                         .child(hermes_client_core::audio::volume_label(value)),
                 )
         };
-        Some(
-            deferred(
-                anchored()
-                    .position(menu.at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(
-                        div()
-                            .id("volume-menu")
-                            .occlude()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .w(px(240.))
-                            .p(px(10.))
-                            .rounded(px(6.))
-                            .bg(theme::sidebar())
-                            .border_1()
-                            .border_color(theme::border())
-                            .font_family(theme::font())
-                            .text_color(theme::text())
-                            .text_size(theme::secondary_size())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.volume_menu = None;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(menu.name.clone()),
-                            )
-                            .child(level("Volume", menu.volume))
-                            .child(Slider::new(&menu.volume_slider).cursor_pointer())
-                            .children(menu.share_volume.map(|v| level("Stream volume", v)))
-                            .children(
-                                menu.share_slider
-                                    .as_ref()
-                                    .map(|s| Slider::new(s).cursor_pointer()),
-                            )
-                            .child(
-                                Checkbox::new("volume-mute")
-                                    .cursor_pointer()
-                                    .label("Mute for me")
-                                    .checked(menu.muted)
-                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                                        if let Some(menu) = &mut this.volume_menu {
-                                            menu.muted = *checked;
-                                            this.core
-                                                .set_user_muted(&menu.inst, menu.user, *checked);
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(crate::modal::popup(
+            "volume-menu-in",
+            menu.at,
+            self.viewport,
+            div()
+                .id("volume-menu")
+                .occlude()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .w(px(240.))
+                .p(px(10.))
+                .rounded(px(6.))
+                .bg(theme::sidebar())
+                .border_1()
+                .border_color(theme::border())
+                .font_family(theme::font())
+                .text_color(theme::text())
+                .text_size(theme::secondary_size())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.volume_menu = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(menu.name.clone()),
+                )
+                .child(level("Volume", menu.volume))
+                .child(Slider::new(&menu.volume_slider).cursor_pointer())
+                .children(menu.share_volume.map(|v| level("Stream volume", v)))
+                .children(
+                    menu.share_slider
+                        .as_ref()
+                        .map(|s| Slider::new(s).cursor_pointer()),
+                )
+                .child(
+                    Checkbox::new("volume-mute")
+                        .cursor_pointer()
+                        .label("Mute for me")
+                        .checked(menu.muted)
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            if let Some(menu) = &mut this.volume_menu {
+                                menu.muted = *checked;
+                                this.core.set_user_muted(&menu.inst, menu.user, *checked);
+                            }
+                            cx.notify();
+                        })),
+                ),
+        ))
     }
 
     // ---- sharing --------------------------------------------------------------------------------
@@ -1518,112 +1507,108 @@ impl Shell {
                 .into_any_element()
             })
             .collect();
-        Some(
-            deferred(
-                anchored()
-                    .position(at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(
-                        div()
-                            .id("share-menu")
-                            .occlude()
-                            .flex()
-                            .flex_col()
-                            .w(px(400.))
-                            .rounded(px(10.))
-                            .bg(theme::sidebar())
-                            .border_1()
-                            .border_color(theme::border())
-                            .shadow_lg()
-                            .font_family(theme::font())
-                            .text_color(theme::text())
-                            .text_size(theme::secondary_size())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.share_menu = None;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .px(px(16.))
-                                    .py(px(12.))
-                                    .border_b_1()
-                                    .border_color(theme::border())
-                                    .child(icon(assets::MONITOR_SHARE, 18., theme::accent()))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_size(theme::body_size())
-                                            .child("Share your screen"),
-                                    )
-                                    .child(icon_button("share-close", assets::CLOSE).on_click(
-                                        cx.listener(|this, _, _, cx| {
-                                            this.share_menu = None;
-                                            cx.notify();
-                                        }),
-                                    )),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(14.))
-                                    .px(px(16.))
-                                    .py(px(14.))
-                                    .child(section("Screen", screen_chips))
-                                    .child(section("Resolution", resolutions))
-                                    .child(section("Frame rate", rates))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(6.))
-                                            .child(
-                                                div()
-                                                    .text_size(theme::caption_size())
-                                                    .text_color(theme::text_tertiary())
-                                                    .child("WHEN IT FALLS BEHIND, KEEP"),
-                                            )
-                                            .child(self.render_preference_picker(cx)),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .justify_end()
-                                    .gap(px(8.))
-                                    .px(px(16.))
-                                    .py(px(12.))
-                                    .border_t_1()
-                                    .border_color(theme::border())
-                                    .child(
-                                        Button::new("share-cancel")
-                                            .cursor_pointer()
-                                            .label("Cancel")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.share_menu = None;
-                                                cx.notify();
-                                            })),
-                                    )
-                                    .child(
-                                        Button::new("share-start")
-                                            .cursor_pointer()
-                                            .primary()
-                                            .label("Start sharing")
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.share_menu = None;
-                                                this.start_share(cx);
-                                            })),
-                                    ),
-                            ),
-                    ),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
-        )
+        Some(crate::modal::popup(
+            "share-menu-in",
+            at,
+            self.viewport,
+            div()
+                .id("share-menu")
+                .occlude()
+                .flex()
+                .flex_col()
+                .w(px(400.))
+                .rounded(px(10.))
+                .bg(theme::sidebar())
+                .border_1()
+                .border_color(theme::border())
+                .shadow_lg()
+                .font_family(theme::font())
+                .text_color(theme::text())
+                .text_size(theme::secondary_size())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.share_menu = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(16.))
+                        .py(px(12.))
+                        .border_b_1()
+                        .border_color(theme::border())
+                        .child(icon(assets::MONITOR_SHARE, 18., theme::accent()))
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_size(theme::body_size())
+                                .child("Share your screen"),
+                        )
+                        .child(
+                            icon_button("share-close", assets::CLOSE).on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.share_menu = None;
+                                    cx.notify();
+                                },
+                            )),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .px(px(16.))
+                        .py(px(14.))
+                        .child(section("Screen", screen_chips))
+                        .child(section("Resolution", resolutions))
+                        .child(section("Frame rate", rates))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .child(
+                                    div()
+                                        .text_size(theme::caption_size())
+                                        .text_color(theme::text_tertiary())
+                                        .child("WHEN IT FALLS BEHIND, KEEP"),
+                                )
+                                .child(self.render_preference_picker(cx)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap(px(8.))
+                        .px(px(16.))
+                        .py(px(12.))
+                        .border_t_1()
+                        .border_color(theme::border())
+                        .child(
+                            Button::new("share-cancel")
+                                .cursor_pointer()
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.share_menu = None;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("share-start")
+                                .cursor_pointer()
+                                .primary()
+                                .label("Start sharing")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.share_menu = None;
+                                    this.start_share(cx);
+                                })),
+                        ),
+                ),
+        ))
     }
 
     /// The header's voice button of the open room.

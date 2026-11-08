@@ -3,9 +3,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, Context, FontWeight, Pixels, Point, SharedString, Window, anchored, deferred, div,
-};
+use gpui_kit::{AnyElement, Context, FontWeight, Pixels, Point, SharedString, Window, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::api::VoiceStatePatchRequest;
 use hermes_client_core::proto::id::Id;
@@ -186,89 +184,87 @@ impl Shell {
         let avatar = self.avatar_with_status(&inst, found, &name, 64., s.status(user));
         drop(store);
         let message_inst = inst.clone();
-        Some(
-            deferred(
-                anchored()
-                    .position(card.at)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(
+        Some(crate::modal::popup(
+            "profile-card-in",
+            card.at,
+            self.viewport,
+            div()
+                .id("profile-card")
+                .occlude()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .w(px(280.))
+                .p(px(14.))
+                .rounded(px(8.))
+                .bg(theme::sidebar())
+                .border_1()
+                .border_color(theme::border())
+                .font_family(theme::font())
+                .text_color(theme::text())
+                .text_size(theme::secondary_size())
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.profile = None;
+                    cx.notify();
+                }))
+                .child(avatar)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .text_size(theme::heading_size())
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(name),
+                        )
+                        .children(
+                            handle.map(|h| div().text_color(theme::text_tertiary()).child(h)),
+                        ),
+                )
+                .children(
+                    status
+                        .filter(|t| !t.is_empty())
+                        .map(|text| div().text_color(theme::text_secondary()).child(text)),
+                )
+                .when(!roles.is_empty(), |d| {
+                    d.child(
                         div()
-                            .id("profile-card")
-                            .occlude()
                             .flex()
-                            .flex_col()
-                            .gap(px(10.))
-                            .w(px(280.))
-                            .p(px(14.))
-                            .rounded(px(8.))
-                            .bg(theme::sidebar())
-                            .border_1()
-                            .border_color(theme::border())
-                            .font_family(theme::font())
-                            .text_color(theme::text())
-                            .text_size(theme::secondary_size())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                this.profile = None;
-                                cx.notify();
-                            }))
-                            .child(avatar)
-                            .child(
+                            .flex_wrap()
+                            .gap(px(4.))
+                            .children(roles.into_iter().map(|(role, color)| {
                                 div()
                                     .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(theme::heading_size())
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(name),
-                                    )
-                                    .children(handle.map(|h| {
-                                        div().text_color(theme::text_tertiary()).child(h)
-                                    })),
-                            )
-                            .children(
-                                status.filter(|t| !t.is_empty()).map(|text| {
-                                    div().text_color(theme::text_secondary()).child(text)
-                                }),
-                            )
-                            .when(!roles.is_empty(), |d| {
-                                d.child(div().flex().flex_wrap().gap(px(4.)).children(
-                                    roles.into_iter().map(|(role, color)| {
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(4.))
-                                            .px(px(6.))
-                                            .py(px(2.))
-                                            .rounded(px(4.))
-                                            .bg(theme::raised())
-                                            .text_size(theme::caption_size())
-                                            .child(div().size(px(8.)).rounded(px(4.)).bg(color))
-                                            .child(role)
-                                    }),
-                                ))
-                            })
-                            .when(!mine, |d| {
-                                d.child(
-                                    Button::new("profile-message")
-                                        .cursor_pointer()
-                                        .primary()
-                                        .label(SharedString::from("Message"))
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.profile = None;
-                                            this.run_action(
-                                                Target::Member(message_inst.clone(), None, user),
-                                                Action::SendMessage,
-                                                window,
-                                                cx,
-                                            );
-                                        })),
-                                )
-                            }),
-                    ),
-            )
-            .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            .into_any_element(),
-        )
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .px(px(6.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(theme::raised())
+                                    .text_size(theme::caption_size())
+                                    .child(div().size(px(8.)).rounded(px(4.)).bg(color))
+                                    .child(role)
+                            })),
+                    )
+                })
+                .when(!mine, |d| {
+                    d.child(
+                        Button::new("profile-message")
+                            .cursor_pointer()
+                            .primary()
+                            .label(SharedString::from("Message"))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.profile = None;
+                                this.run_action(
+                                    Target::Member(message_inst.clone(), None, user),
+                                    Action::SendMessage,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                }),
+        ))
     }
 }

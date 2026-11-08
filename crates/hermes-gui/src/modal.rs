@@ -4,7 +4,9 @@
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Div, SharedString, deferred, div};
+use gpui_kit::{
+    Anchor, AnyElement, Context, Div, Pixels, Point, SharedString, Size, anchored, deferred, div,
+};
 
 use crate::menu_entries::{Action, Target};
 use crate::shell::Shell;
@@ -68,6 +70,49 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .font_family(theme::font())
                     .child(card),
             ),
+    )
+    .with_priority(gpui_kit::base::POPUP_PRIORITY)
+    .into_any_element()
+}
+
+/// Which corner of a popup sits at the click: it opens away from the window's nearest edges, so
+/// it lies beside what was clicked instead of being pushed back by an edge.
+fn popup_anchor(at: Point<Pixels>, viewport: Size<Pixels>) -> Anchor {
+    let below = at.y > viewport.height / 2.;
+    let right = at.x > viewport.width / 2.;
+    match (below, right) {
+        (false, false) => Anchor::TopLeft,
+        (false, true) => Anchor::TopRight,
+        (true, false) => Anchor::BottomLeft,
+        (true, true) => Anchor::BottomRight,
+    }
+}
+
+/// A popup opened by a click at `at` (the share menu, the network details, a profile): `card`
+/// opens from there towards the middle of the window, fading in as it slides out a little.
+pub fn popup(
+    id: &'static str,
+    at: Point<Pixels>,
+    viewport: Size<Pixels>,
+    card: impl IntoElement + 'static,
+) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    let anchor = popup_anchor(at, viewport);
+    // It slides away from the click, in the direction it opens.
+    let away = match anchor {
+        Anchor::BottomLeft | Anchor::BottomRight => 1.,
+        _ => -1.,
+    };
+    deferred(
+        anchored()
+            .anchor(anchor)
+            .position(at)
+            .snap_to_window_with_margin(px(8.))
+            .child(div().relative().child(card).with_animation(
+                id,
+                Animation::new(std::time::Duration::from_millis(150)).with_easing(ease_out_quint()),
+                move |d, t| d.opacity(t).top(px(6. * away * (1. - t))),
+            )),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)
     .into_any_element()
@@ -179,5 +224,32 @@ impl Shell {
             (Target::Invite(..), _) => "This invite link stops working.".into(),
             _ => action.label().to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::popup_anchor;
+    use gpui_kit::{Anchor, point, px, size};
+
+    #[test]
+    fn popups_open_towards_the_middle() {
+        let window = size(px(1000.), px(800.));
+        assert_eq!(
+            popup_anchor(point(px(50.), px(750.)), window),
+            Anchor::BottomLeft
+        );
+        assert_eq!(
+            popup_anchor(point(px(950.), px(100.)), window),
+            Anchor::TopRight
+        );
+        assert_eq!(
+            popup_anchor(point(px(950.), px(700.)), window),
+            Anchor::BottomRight
+        );
+        assert_eq!(
+            popup_anchor(point(px(10.), px(10.)), window),
+            Anchor::TopLeft
+        );
     }
 }
