@@ -90,6 +90,9 @@ pub enum Level {
     Error,
 }
 
+/// How many recently open channels each server remembers.
+const RECENT_CHANNELS: usize = 10;
+
 /// How long an info line stays.
 const INFO_FOR: Duration = Duration::from_secs(5);
 
@@ -101,8 +104,9 @@ pub struct Shell {
     pub config: ClientConfig,
     pub page: Page,
     pub selected: Selected,
-    /// The channel last open in each space, reopened when the space is selected again.
-    pub last_channel: HashMap<(InstanceId, Id), Id>,
+    /// The channels last open in each space, the latest last: the latest is reopened when the
+    /// space is selected again, and the one before when it is deleted.
+    pub recent_channels: HashMap<(InstanceId, Id), Vec<Id>>,
     pub collapsed: Collapsed,
     pub chats: HashMap<ChannelKey, ChatView>,
     pub images: Images,
@@ -260,7 +264,7 @@ impl Shell {
             config,
             page: Page::Friends,
             selected: Selected::Home,
-            last_channel: HashMap::new(),
+            recent_channels: HashMap::new(),
             collapsed,
             chats: HashMap::new(),
             images: Images::default(),
@@ -534,7 +538,7 @@ impl Shell {
                         }
                     }
                     Changed::Spaces | Changed::Dms | Changed::Channel(_) => {
-                        self.check_page_exists(cx);
+                        self.check_page_exists(window, cx);
                     }
                     _ => {}
                 }
@@ -560,7 +564,7 @@ impl Shell {
 
     /// A new `ready`: the open chat's window was dropped, so it loads again.
     fn everything_changed(&mut self, inst: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.check_page_exists(cx);
+        self.check_page_exists(window, cx);
         if let Page::Chat(i, channel) = &self.page
             && i == inst
         {
@@ -570,7 +574,7 @@ impl Shell {
     }
 
     /// Leaves a channel or space that is gone (deleted, or I left it).
-    fn check_page_exists(&mut self, cx: &mut Context<Self>) {
+    fn check_page_exists(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.core.store();
         let selected_gone = match &self.selected {
             Selected::Home => false,
@@ -588,9 +592,40 @@ impl Shell {
         if selected_gone {
             self.selected = Selected::Home;
         }
+        // A deleted channel: back to the one open before it in its server (a voice channel's
+        // room, without joining it).
+        if page_gone
+            && !selected_gone
+            && let Selected::Space(inst, space) = self.selected.clone()
+            && let Some(channel) = self.fallback_channel(&inst, space)
+        {
+            self.select(inst, channel, window, cx);
+            return;
+        }
         if page_gone || selected_gone {
             self.open_friends(cx);
         }
+    }
+
+    /// What a server opens: its latest channel that still exists, else its first text channel.
+    fn fallback_channel(&self, inst: &InstanceId, space: Id) -> Option<Id> {
+        let store = self.core.store();
+        let s = store.instance(inst)?;
+        self.recent_channels
+            .get(&(inst.clone(), space))
+            .and_then(|recent| {
+                recent
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|c| s.channel(*c).is_some())
+            })
+            .or_else(|| {
+                hermes_client_core::view::channel_tree(s, space)
+                    .into_iter()
+                    .find(|c| c.kind == ChannelKind::Text)
+                    .map(|c| c.id)
+            })
     }
 
     // ---- status line --------------------------------------------------------------------------
@@ -678,23 +713,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.selected = Selected::Space(inst.clone(), space);
-        let channel = {
-            let store = self.core.store();
-            let s = store.instance(&inst);
-            self.last_channel
-                .get(&(inst.clone(), space))
-                .copied()
-                .filter(|c| s.is_some_and(|s| s.channel(*c).is_some()))
-                .or_else(|| {
-                    s.and_then(|s| {
-                        hermes_client_core::view::channel_tree(s, space)
-                            .into_iter()
-                            .find(|c| c.kind == ChannelKind::Text)
-                            .map(|c| c.id)
-                    })
-                })
-        };
-        if let Some(channel) = channel {
+        if let Some(channel) = self.fallback_channel(&inst, space) {
             self.select(inst, channel, window, cx);
         }
         cx.notify();
@@ -719,7 +738,15 @@ impl Shell {
         };
         self.selected = match space {
             Some(space) => {
-                self.last_channel.insert((inst.clone(), space), channel);
+                let recent = self
+                    .recent_channels
+                    .entry((inst.clone(), space))
+                    .or_default();
+                recent.retain(|c| *c != channel);
+                recent.push(channel);
+                if recent.len() > RECENT_CHANNELS {
+                    recent.remove(0);
+                }
                 Selected::Space(inst.clone(), space)
             }
             None => Selected::Home,
