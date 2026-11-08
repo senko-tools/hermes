@@ -4,8 +4,9 @@
 //! file plays. A paused file is let go once it is off screen for a while, or when the paused
 //! ones together hold more than [`CACHE_BYTES`]; it plays on from where it was when clicked.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -14,8 +15,9 @@ use hermes_audio::media::MediaOutput;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnimationExt as _, AnyElement, Context, Div, ObjectFit, ScrollDelta, ScrollEvent, SharedString,
-    Window, div, img,
+    AnimationExt as _, AnyElement, Bounds, Context, DispatchPhase, Div, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, Point, ScrollDelta,
+    ScrollEvent, SharedString, Window, canvas, div, img,
 };
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
@@ -44,8 +46,23 @@ const SWEEP_EVERY: Duration = Duration::from_secs(5);
 const VOLUME_PER_PIXEL: f64 = 0.05 / 75.;
 /// How long the volume shows after it changed; it is saved then.
 const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
+/// The width of a waveform's bars.
+const PILL_W: f32 = 4.;
+/// The hover group of a card's download button.
+const DOWNLOAD_GROUP: &str = "media-download";
 
 pub type MediaKey = (InstanceId, Id);
+/// A seek bar: a file's, and whether it is the one in the full view.
+type BarKey = (MediaKey, bool);
+
+/// A press on a seek bar, until it is let go.
+struct Scrub {
+    bar: BarKey,
+    inst: InstanceId,
+    attachment: Attachment,
+    /// Where on the bar the mouse is, from 0 to 1.
+    fraction: f32,
+}
 
 pub enum Load {
     Loading,
@@ -107,6 +124,10 @@ pub struct Media {
     volume_shown: Option<MediaKey>,
     /// Counts volume changes; it is saved once one stays the last for a moment.
     volume_changes: u64,
+    /// A seek bar being held.
+    scrub: Option<Scrub>,
+    /// Where each seek bar was drawn last.
+    bars: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
 }
 
 impl Drop for MediaItem {
@@ -527,6 +548,17 @@ impl Shell {
 
     /// The position, length and playing state of a file.
     fn media_progress(&self, key: &MediaKey, a: &Attachment) -> (u64, u64, bool) {
+        let (position, duration, playing) = self.media_progress_now(key, a);
+        match &self.media.scrub {
+            // Held: where it would seek to.
+            Some(scrub) if scrub.bar.0 == *key => {
+                ((duration as f32 * scrub.fraction) as u64, duration, playing)
+            }
+            _ => (position, duration, playing),
+        }
+    }
+
+    fn media_progress_now(&self, key: &MediaKey, a: &Attachment) -> (u64, u64, bool) {
         match self.media.items.get(key).map(|i| &i.load) {
             Some(Load::Ready(player)) => (
                 player.position_ms(),
@@ -547,7 +579,210 @@ impl Shell {
         }
     }
 
-    /// A sound file: play, its name and time, and its waveform as the progress bar.
+    /// A seek bar's area. It notes where it is drawn; a press in it starts scrubbing, which
+    /// follows the mouse anywhere in the window and seeks when the button is let go.
+    fn seek_area(
+        &self,
+        bar: BarKey,
+        inst: &InstanceId,
+        a: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let bars = self.media.bars.clone();
+        let drawn = bar.clone();
+        let (inst, a) = (inst.clone(), a.clone());
+        div()
+            .relative()
+            .cursor_pointer()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        bars.borrow_mut().insert(drawn.clone(), bounds);
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    let Some(fraction) = this.bar_fraction(&bar, event.position) else {
+                        return;
+                    };
+                    this.media.scrub = Some(Scrub {
+                        bar: bar.clone(),
+                        inst: inst.clone(),
+                        attachment: a.clone(),
+                        fraction,
+                    });
+                    cx.notify();
+                }),
+            )
+    }
+
+    /// Where on a seek bar `at` is, from 0 (its left end) to 1, past its ends included.
+    fn bar_fraction(&self, bar: &BarKey, at: Point<Pixels>) -> Option<f32> {
+        let bounds = *self.media.bars.borrow().get(bar)?;
+        let width = bounds.size.width.as_f32();
+        (width > 0.).then(|| ((at.x - bounds.origin.x).as_f32() / width).clamp(0., 1.))
+    }
+
+    /// While a seek bar is held: listens to the mouse in the whole window, also over the full
+    /// view, which hides everything under it from the mouse. It goes in the root.
+    pub fn media_scrub_catcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        self.media.scrub.as_ref()?;
+        let this = cx.entity().downgrade();
+        Some(
+            canvas(
+                |_, _, _| (),
+                move |_, (), window, _| {
+                    let moved = this.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture {
+                            let _ = moved.update(cx, |this, cx| {
+                                this.media_scrub_move(event.position, cx);
+                            });
+                        }
+                    });
+                    let released = this.clone();
+                    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Capture && event.button == MouseButton::Left {
+                            cx.stop_propagation();
+                            let _ = released.update(cx, |this, cx| this.media_scrub_end(cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+            .into_any_element(),
+        )
+    }
+
+    fn media_scrub_move(&mut self, at: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(bar) = self.media.scrub.as_ref().map(|s| s.bar.clone()) else {
+            return;
+        };
+        if let Some(fraction) = self.bar_fraction(&bar, at)
+            && let Some(scrub) = &mut self.media.scrub
+        {
+            scrub.fraction = fraction;
+            cx.notify();
+        }
+    }
+
+    fn media_scrub_end(&mut self, cx: &mut Context<Self>) {
+        if let Some(scrub) = self.media.scrub.take() {
+            self.media_seek_to(scrub.inst, scrub.attachment, scrub.fraction, cx);
+        }
+    }
+
+    /// Seeks to `fraction` of a file; one not loaded yet loads and plays from there.
+    fn media_seek_to(
+        &mut self,
+        inst: InstanceId,
+        attachment: Attachment,
+        fraction: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (inst.clone(), attachment.id);
+        match self.media.items.get(&key).map(|i| &i.load) {
+            Some(Load::Ready(_)) => self.media_seek(&key, fraction, cx),
+            Some(Load::Loading) => {}
+            _ => {
+                let length = attachment
+                    .duration_ms
+                    .or_else(|| self.media.resume.get(&key).map(|(_, length)| *length));
+                if let Some(length) = length {
+                    let at = (length as f32 * fraction) as u64;
+                    self.media.resume.insert(key.clone(), (at, length));
+                }
+                self.media.items.remove(&key);
+                self.media_load(inst, attachment, cx);
+            }
+        }
+    }
+
+    /// A small download button, for a card's title row or a video's top bar.
+    fn download_button(
+        &self,
+        inst: &InstanceId,
+        a: &Attachment,
+        color: gpui_kit::Rgba,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<Div> {
+        let (inst, a) = (inst.clone(), a.clone());
+        div()
+            .id(SharedString::from(format!("download-{}", a.id)))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(22.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .group(DOWNLOAD_GROUP)
+            .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
+            .child(
+                icon(assets::DOWNLOAD, 15., color)
+                    .group_hover(DOWNLOAD_GROUP, |s| s.text_color(theme::accent())),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.download(inst.clone(), a.clone(), cx);
+            }))
+    }
+
+    /// What a card says about a file: where it is and how long it lasts, and its size.
+    fn media_meta(&self, key: &MediaKey, a: &Attachment) -> String {
+        let (position, duration, _) = self.media_progress(key, a);
+        let started = self.media.scrub.as_ref().is_some_and(|s| s.bar.0 == *key)
+            || self
+                .media
+                .items
+                .get(key)
+                .is_some_and(|i| matches!(i.load, Load::Ready(_)))
+            || self.media.resume.contains_key(key);
+        let size = human_size(a.size);
+        if started {
+            format!("{} / {}  ·  {size}", clock(position), clock(duration))
+        } else if let Some(ms) = a.duration_ms {
+            format!("{}  ·  {size}", clock(ms))
+        } else {
+            size
+        }
+    }
+
+    /// The volume in place of a card's time, for a moment after it changed there.
+    fn volume_meta(&self, key: &MediaKey) -> Option<AnyElement> {
+        if self.media.volume_shown.as_ref() != Some(key) {
+            return None;
+        }
+        let volume = self.media_gain();
+        let glyph = if volume <= 0. {
+            media_icons::VOLUME_OFF
+        } else {
+            assets::VOLUME
+        };
+        Some(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(4.))
+                .text_size(theme::caption_size())
+                .text_color(theme::accent())
+                .child(icon(glyph, 13., theme::accent()))
+                .child(format!("{:.0} %", volume * 100.))
+                .into_any_element(),
+        )
+    }
+
+    /// A sound file: play, its name, time and size, and its waveform as the progress bar.
     pub fn render_audio_card(
         &self,
         inst: &InstanceId,
@@ -576,81 +811,91 @@ impl Shell {
             (None, Some(wave)) => (wave.bars, true),
             (None, None) => (Vec::new(), false),
         };
-        let played = position as f32 / duration as f32;
-        let started = item.is_some_and(|i| matches!(i.load, Load::Ready(_)))
-            || self.media.resume.contains_key(&key);
-        let time = if started {
-            format!("{} / {}", clock(position), clock(duration))
-        } else if let Some(ms) = a.duration_ms {
-            clock(ms)
-        } else {
-            human_size(a.size)
-        };
-        let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-        let (down_inst, down_a) = (inst.clone(), a.clone());
-        let bar_row = div()
+        // How many bars are played, the last one partly.
+        let filled = position as f32 / duration as f32 * BARS as f32;
+        let wave = self
+            .seek_area((key.clone(), false), inst, a, cx)
             .flex()
             .items_center()
-            .gap(px(2.))
             .h(px(32.))
             .children((0..BARS).map(|i| {
                 let level = bars.get(i).copied();
-                let done = (i as f32 + 0.5) / BARS as f32 <= played;
-                let color = if done {
-                    theme::accent()
-                } else if level.is_some() {
+                let part = (filled - i as f32).clamp(0., 1.);
+                let color = if level.is_some() {
                     theme::alpha(theme::text_secondary(), 0.55)
                 } else {
                     theme::alpha(theme::text_tertiary(), 0.35)
                 };
                 let height = 4. + level.unwrap_or(0.) * 26.;
-                let seek_key = key.clone();
-                let bar = div()
-                    .id(SharedString::from(format!("wave-{}-{i}", a.id)))
-                    .flex()
-                    .items_center()
-                    .h_full()
-                    .px(px(0.5))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.media_seek(&seek_key, (i as f32 + 0.5) / BARS as f32, cx);
-                    }));
-                let pill = div().w(px(4.)).rounded(px(2.)).bg(color);
+                let pill = div()
+                    .relative()
+                    .overflow_hidden()
+                    .w(px(PILL_W))
+                    .rounded(px(PILL_W / 2.))
+                    .bg(color)
+                    .when(part > 0., |pill| {
+                        pill.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .left_0()
+                                .h_full()
+                                .w(px(PILL_W * part))
+                                .rounded_l(px(PILL_W / 2.))
+                                .when(part >= 1., |d| d.rounded(px(PILL_W / 2.)))
+                                .bg(theme::accent()),
+                        )
+                    });
                 // A level measured just now grows in.
                 let pill = match level {
                     Some(_) if grows => pill
                         .with_animation(
                             SharedString::from(format!("wave-in-{}-{i}", a.id)),
-                            gpui_kit::Animation::new(std::time::Duration::from_millis(320))
+                            gpui_kit::Animation::new(Duration::from_millis(320))
                                 .with_easing(gpui_kit::ease_out_quint()),
                             move |d, t| d.h(px(4. + (height - 4.) * t)),
                         )
                         .into_any_element(),
                     _ => pill.h(px(height)).into_any_element(),
                 };
-                bar.child(pill)
+                div()
+                    .flex()
+                    .flex_1()
+                    .justify_center()
+                    .items_center()
+                    .h_full()
+                    .child(pill)
             }));
+        let meta = self.volume_meta(&key).unwrap_or_else(|| {
+            div()
+                .flex_shrink_0()
+                .text_size(theme::caption_size())
+                .text_color(theme::text_tertiary())
+                .child(self.media_meta(&key, a))
+                .into_any_element()
+        });
+        let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
         let wheel_key = key.clone();
         div()
-            .relative()
             .flex()
             .items_center()
             .gap(px(12.))
             .mt(px(4.))
             .w(px(420.))
-            .px(px(12.))
-            .when(started && item.is_some(), |card| {
+            .pl(px(12.))
+            .pr(px(8.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .bg(theme::sidebar())
+            .border_1()
+            .border_color(theme::border())
+            // The wheel sets the volume once the file is loaded; before that it scrolls the chat.
+            .when(item.is_some(), |card| {
                 card.on_scroll(cx.listener(move |this, event, _, cx| {
                     cx.stop_propagation();
                     this.media_wheel(&wheel_key, event, cx);
                 }))
             })
-            .children(self.volume_pill(&key))
-            .py(px(10.))
-            .rounded(px(8.))
-            .bg(theme::sidebar())
-            .border_1()
-            .border_color(theme::border())
             .child(
                 play_button(
                     SharedString::from(format!("play-{}", a.id)),
@@ -669,12 +914,12 @@ impl Shell {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .gap(px(2.))
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(6.))
+                            .h(px(22.))
                             .text_size(theme::secondary_size())
                             .child(icon(media_icons::MUSIC, 14., theme::accent()))
                             .child(
@@ -684,13 +929,8 @@ impl Shell {
                                     .truncate()
                                     .child(a.filename.clone()),
                             )
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(time),
-                            ),
+                            .child(meta)
+                            .child(self.download_button(inst, a, theme::text_tertiary(), cx)),
                     )
                     .child(match failed {
                         Some(err) => div()
@@ -701,18 +941,9 @@ impl Shell {
                             .text_color(theme::danger())
                             .child(err)
                             .into_any_element(),
-                        None => bar_row.into_any_element(),
+                        // Up to the edge of the download button above it.
+                        None => wave.mr(px(4.)).into_any_element(),
                     }),
-            )
-            .child(
-                icon_button(
-                    SharedString::from(format!("download-{}", a.id)),
-                    assets::DOWNLOAD,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.download(down_inst.clone(), down_a.clone(), cx);
-                })),
             )
             .into_any_element()
     }

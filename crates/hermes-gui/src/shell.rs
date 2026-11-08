@@ -1304,6 +1304,7 @@ impl Render for Shell {
                     )
             })
             .child(self.smooth_scroll.catcher())
+            .children(self.media_scrub_catcher(cx))
             .when(on_right, |d| d.flex_row_reverse())
             .child(left)
             .child(body)
