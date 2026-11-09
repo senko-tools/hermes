@@ -1349,6 +1349,13 @@ impl Shell {
                             cx,
                         ),
                         self.flag(
+                            "Format messages",
+                            "Off: bold, code blocks and the like show as they were typed.",
+                            b.markdown,
+                            "buffer.markdown",
+                            cx,
+                        ),
+                        self.flag(
                             "Enter sends",
                             "Shift+Enter starts a new line.",
                             b.enter_sends,

@@ -487,7 +487,8 @@ impl Shell {
     ) -> std::rc::Rc<Vec<markup::Block>> {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (content, space, s.me_id()).hash(&mut hasher);
+        let formatted = self.config.buffer.markdown;
+        (content, space, s.me_id(), formatted).hash(&mut hasher);
         let key = hasher.finish();
         let mut cache = self.markup_cache.borrow_mut();
         if let Some(found) = cache.get(&key) {
@@ -496,9 +497,57 @@ impl Shell {
         if cache.len() >= MARKUP_CACHE_SIZE {
             cache.clear();
         }
-        let blocks = std::rc::Rc::new(markup::blocks(content, s, space));
+        let blocks = std::rc::Rc::new(if formatted {
+            markup::blocks(content, s, space)
+        } else {
+            markup::plain(content)
+        });
         cache.insert(key, blocks.clone());
         blocks
+    }
+
+    /// Says so above the chat when messages are not getting through.
+    fn render_connection_banner(
+        &self,
+        inst: &InstanceId,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        use hermes_client_core::gateway::ConnStatus;
+        let text = match self.core.status(inst) {
+            ConnStatus::Reconnecting { attempt } => {
+                format!("Connection lost. Reconnecting (try {attempt})…")
+            }
+            ConnStatus::Failed { reason } => format!("Not connected: {reason}"),
+            _ => return None,
+        };
+        let inst = inst.clone();
+        Some(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .mx(px(16.))
+                .mb(px(6.))
+                .p(px(8.))
+                .rounded(px(6.))
+                .bg(theme::raised())
+                .border_1()
+                .border_color(theme::warning())
+                .text_size(theme::secondary_size())
+                .child(div().flex_1().min_w_0().truncate().child(text))
+                .child(
+                    Button::new("connection-retry")
+                        .cursor_pointer()
+                        .label("Reconnect")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Err(err) = this.core.set_online(&inst, true) {
+                                this.error(format!("could not reconnect: {err}"), cx);
+                            }
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// A setting that changes how messages look moved: every open chat follows it at once.
@@ -1769,6 +1818,7 @@ impl Shell {
                 }
             }))
             .child(content)
+            .children(self.render_connection_banner(&key.0, cx))
             .children(self.render_new_devices(&key.0, key.1, cx))
             .child(bottom)
             .into_any_element()
@@ -2644,6 +2694,19 @@ impl Shell {
                 }
             }
             Link::Channel(target) => self.select(inst, target, window, cx),
+            Link::User(user) => {
+                let space = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.space_of(channel));
+                self.run_action(
+                    Target::Member(inst, space, user),
+                    crate::menu_entries::Action::Profile,
+                    window,
+                    cx,
+                );
+            }
             Link::Spoiler => {
                 if let Some(view) = self.chats.get_mut(&(inst, channel)) {
                     view.revealed.insert(message);

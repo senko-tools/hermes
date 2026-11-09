@@ -218,6 +218,8 @@ pub struct Buffer {
     pub enter_sends: bool,
     pub image_previews: bool,
     pub show_typing: bool,
+    /// Bold, code blocks and the like are drawn; off shows messages as they were typed.
+    pub markdown: bool,
 }
 
 impl Default for Buffer {
@@ -229,6 +231,7 @@ impl Default for Buffer {
             enter_sends: true,
             image_previews: true,
             show_typing: true,
+            markdown: true,
         }
     }
 }
@@ -551,9 +554,26 @@ pub fn set_value(
 
 /// Writes through a temporary file and a rename, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Two writers never share a temporary file, and what is renamed has reached the disk.
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Watches `config.toml` and sends the newly loaded config on every change (debounced by

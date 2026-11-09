@@ -11,6 +11,8 @@ use hermes_client_core::store::InstanceStore;
 pub enum Link {
     Url(String),
     Channel(Id),
+    /// Opens the person's profile.
+    User(Id),
     /// Reveals the message's spoilers.
     Spoiler,
 }
@@ -52,6 +54,14 @@ struct Style {
 }
 
 /// Parses and flattens `content`. Mentions are resolved to names through the store.
+/// A message as it was typed, for those who turned formatting off.
+pub fn plain(content: &str) -> Vec<Block> {
+    vec![Block::Text(vec![Piece {
+        text: content.to_owned(),
+        ..Piece::default()
+    }])]
+}
+
 pub fn blocks(content: &str, store: &InstanceStore, space: Option<Id>) -> Vec<Block> {
     let mut out = Vec::new();
     let mut current: Vec<Piece> = Vec::new();
@@ -191,6 +201,11 @@ fn flatten(
             }
             Span::UserMention(id) => out.push(Piece {
                 mention: true,
+                link: Some(if style.spoiler {
+                    Link::Spoiler
+                } else {
+                    Link::User(*id)
+                }),
                 ..piece(format!("@{}", store.display_name(space, *id)), style)
             }),
             Span::RoleMention(id) => {
