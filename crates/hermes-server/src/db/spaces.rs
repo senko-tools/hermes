@@ -163,7 +163,8 @@ pub async fn own_image(
     let (id, uploader_id) = (attachment_id.to_i64(), uploader_id.to_i64());
     let filename = sqlx::query_scalar!(
         "SELECT filename FROM attachments
-         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'",
+         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'
+           AND width IS NOT NULL",
         id,
         uploader_id
     )

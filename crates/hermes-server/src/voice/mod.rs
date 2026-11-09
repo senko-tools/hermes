@@ -27,6 +27,7 @@ use hermes_proto::voice::{
 use tokio::sync::mpsc;
 
 use crate::gateway::bus::Audience;
+use crate::ratelimit::KeyedLimiter;
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -43,6 +44,10 @@ const SHARE_STATS_EVERY: Duration = Duration::from_secs(10);
 const RING_LIFETIME: Duration = Duration::from_secs(60);
 
 pub type ConnId = u64;
+
+/// A microphone sends 50 a second; a rejoining client can catch up on a few.
+const VOICE_PACKETS_PER_SECOND: u32 = 150;
+const VOICE_KEYS_PER_MINUTE: u32 = 600;
 
 /// Where clients connect: the public UDP port and the certificate fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +72,7 @@ pub struct Ticket {
 /// A connection's way back to its client.
 #[derive(Debug, Clone)]
 pub struct Link {
-    pub control: mpsc::UnboundedSender<ServerControl>,
+    pub control: mpsc::Sender<ServerControl>,
     pub conn: quinn::Connection,
     /// Screen share frames to write to the client, one stream each, in order. Bounded: a slow
     /// client loses frames instead of piling them up.
@@ -249,6 +254,10 @@ pub struct Voice {
     token_lifetime: Duration,
     after: mpsc::UnboundedSender<After>,
     after_rx: Mutex<Option<mpsc::UnboundedReceiver<After>>>,
+    /// Voice packets a connection may send: well above what a microphone produces.
+    packets: KeyedLimiter<ConnId>,
+    /// Sealed voice keys a connection may pass on.
+    keys: KeyedLimiter<ConnId>,
 }
 
 impl Voice {
@@ -263,6 +272,8 @@ impl Voice {
             token_lifetime: Duration::from_secs(voice::TOKEN_LIFETIME_SECS),
             after,
             after_rx: Mutex::new(Some(after_rx)),
+            packets: KeyedLimiter::default(),
+            keys: KeyedLimiter::default(),
         }
     }
 
@@ -462,7 +473,7 @@ impl Voice {
                 let _ = conn
                     .link
                     .control
-                    .send(ServerControl::ParticipantJoined(Participant {
+                    .try_send(ServerControl::ParticipantJoined(Participant {
                         participant_id,
                         user_id,
                     }));
@@ -493,7 +504,7 @@ impl Voice {
         conn.user_id = Some(user_id);
         conn.room = Some((channel_id, participant_id));
         users.insert(user_id, conn_id);
-        let _ = conn.link.control.send(ServerControl::Ready {
+        let _ = conn.link.control.try_send(ServerControl::Ready {
             participant_id,
             room_id: channel_id,
             bitrate: room.bitrate,
@@ -611,7 +622,7 @@ impl Voice {
             return Some(());
         }
         if (after.server_mute, after.server_deaf) != (before.server_mute, before.server_deaf) {
-            let _ = conn.link.control.send(ServerControl::ServerState {
+            let _ = conn.link.control.try_send(ServerControl::ServerState {
                 server_mute: after.server_mute,
                 server_deaf: after.server_deaf,
             });
@@ -632,7 +643,7 @@ impl Voice {
         };
         conn.link
             .control
-            .send(ServerControl::Moved { token })
+            .try_send(ServerControl::Moved { token })
             .is_ok()
     }
 
@@ -652,7 +663,7 @@ impl Voice {
                 let _ = conn
                     .link
                     .control
-                    .send(ServerControl::BitrateChanged { bitrate });
+                    .try_send(ServerControl::BitrateChanged { bitrate });
             }
         }
     }
@@ -732,6 +743,13 @@ impl Voice {
             Ok((AudioKind::Share, ..)) => return self.forward_share_audio(state, conn_id, data),
             Err(_) => return,
         }
+        if self
+            .packets
+            .check(&conn_id, VOICE_PACKETS_PER_SECOND, Duration::from_secs(1))
+            .is_err()
+        {
+            return;
+        }
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
         let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
@@ -779,7 +797,12 @@ impl Voice {
     /// Passes a sealed sender key to one other member of the sender's room (docs/e2ee.md). It is
     /// opaque here: the server only knows that a key went from one member to another.
     pub fn relay_key(&self, conn_id: ConnId, to: u16, key: String) {
-        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES {
+        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES
+            || self
+                .keys
+                .check(&conn_id, VOICE_KEYS_PER_MINUTE, Duration::from_secs(60))
+                .is_err()
+        {
             return;
         }
         let reg = self.registry();
@@ -793,7 +816,7 @@ impl Voice {
             let _ = conn
                 .link
                 .control
-                .send(ServerControl::VoiceKey { from, key });
+                .try_send(ServerControl::VoiceKey { from, key });
         }
     }
 
@@ -1060,7 +1083,7 @@ impl Room {
             if id != except
                 && let Some(conn) = conns.get(&member.conn_id)
             {
-                let _ = conn.link.control.send(msg.clone());
+                let _ = conn.link.control.try_send(msg.clone());
             }
         }
     }
@@ -1107,7 +1130,7 @@ impl Room {
             let _ = conn
                 .link
                 .control
-                .send(ServerControl::ShareWatchers { count });
+                .try_send(ServerControl::ShareWatchers { count });
         }
     }
 
@@ -1133,7 +1156,10 @@ impl Room {
         if member.share.as_mut().is_some_and(Share::keyframe_due)
             && let Some(conn) = conns.get(&conn_id)
         {
-            let _ = conn.link.control.send(ServerControl::KeyframeRequested {});
+            let _ = conn
+                .link
+                .control
+                .try_send(ServerControl::KeyframeRequested {});
         }
     }
 }
@@ -1164,7 +1190,7 @@ impl Registry {
             return;
         };
         if let Some(reason) = reason {
-            let _ = conn.link.control.send(ServerControl::Kicked { reason });
+            let _ = conn.link.control.try_send(ServerControl::Kicked { reason });
         }
         let Some(user_id) = conn.user_id else {
             return;
@@ -1187,7 +1213,7 @@ impl Registry {
                 let _ = other
                     .link
                     .control
-                    .send(ServerControl::ParticipantLeft { participant_id });
+                    .try_send(ServerControl::ParticipantLeft { participant_id });
             }
         }
         state.cache_mut().voice_states.remove(&user_id);

@@ -77,6 +77,15 @@ pub async fn update_user(
             "You cannot disable yourself or remove your own admin rights",
         ));
     }
+    if user_id != auth.user_id
+        && (req.disabled == Some(true) || req.instance_admin == Some(false))
+        && state.cache().first_admin() == Some(user_id)
+    {
+        return Err(Error::new(
+            ErrorCode::MissingPermission,
+            "The instance's first admin cannot be disabled or demoted by anyone else",
+        ));
+    }
     let disabled = req.disabled.unwrap_or(current.disabled);
     let instance_admin = req.instance_admin.unwrap_or(current.instance_admin);
     let mut tx = state.db.write.begin().await?;

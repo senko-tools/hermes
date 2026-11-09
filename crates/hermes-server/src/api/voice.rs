@@ -268,6 +268,7 @@ pub async fn ring(
     Path(channel_id): Path<Id>,
     Json(req): Json<CallRingRequest>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Ring)?;
     if state.voice.endpoint().is_none() {
         return Err(disabled());
     }

@@ -96,6 +96,7 @@ pub async fn add(
     auth: Auth,
     Json(req): Json<AddFriendRequest>,
 ) -> ApiResult<Json<Relationship>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Friend)?;
     let _writes = state.writes.lock().await;
     let me = auth.user_id;
     let (other, existing) = {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM read_states WHERE channel_id IN (\n           SELECT c.id FROM channels c\n           WHERE c.space_id IS NOT NULL AND NOT EXISTS (\n             SELECT 1 FROM space_members m\n             WHERE m.space_id = c.space_id AND m.user_id = read_states.user_id\n           )\n         )",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "76213c46f2f42d5613059cf4254696a79d5082a10627129ff9e9f2c0e7982a20"
+}

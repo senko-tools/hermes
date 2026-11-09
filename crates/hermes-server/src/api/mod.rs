@@ -7,6 +7,7 @@ mod audit;
 mod auth;
 mod channel_keys;
 mod channels;
+pub mod conn_limit;
 pub mod devices;
 mod dms;
 mod friends;
@@ -32,8 +33,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::connect_info::Connected;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::serve::IncomingStream;
@@ -42,10 +44,16 @@ use hermes_proto::{ApiError, ErrorBody, ErrorCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutBody;
 
+use self::conn_limit::{Capped, Caps};
 use crate::ratelimit;
 use crate::state::AppState;
 use crate::tls::{Tls, TlsListener};
+
+/// How long a request body may pause between pieces.
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Largest JSON request body; uploads (`POST /attachments`) stream and have their own limit.
 pub const JSON_BODY_LIMIT: usize = 256 * 1024;
@@ -58,7 +66,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/gateway", get(crate::gateway::handler))
         .route("/instance", get(instance::get))
-        .route("/auth/register", post(auth::register))
+        .route(
+            "/auth/register",
+            ratelimit::limit_login(
+                post(auth::register),
+                trusted,
+                limits.login_attempts_per_minute,
+            ),
+        )
         .route(
             "/auth/login",
             ratelimit::limit_login(post(auth::login), trusted, limits.login_attempts_per_minute),
@@ -192,7 +207,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/channels/{id}/call/ring", post(voice::ring))
         .fallback(not_found)
-        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(CompressionLayer::new().gzip(true).compress_when(
+            |_: StatusCode, _: Version, headers: &HeaderMap, _: &Extensions| {
+                headers
+                    .get(CONTENT_TYPE)
+                    .is_some_and(|t| t.as_bytes().starts_with(b"application/json"))
+            },
+        ))
+        .layer(axum::middleware::map_request(limit_body_idle));
     let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);
     Router::new()
         .nest("/api/v1", api)
@@ -200,6 +223,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/", get(pages::landing))
         .route("/invite/{code}", get(pages::invite))
         .with_state(state)
+}
+
+/// A request body that stops arriving ends the request, instead of holding it open.
+async fn limit_body_idle(request: axum::extract::Request) -> axum::extract::Request {
+    request.map(|body| axum::body::Body::new(TimeoutBody::new(BODY_IDLE_TIMEOUT, body)))
 }
 
 /// `GET /healthz`, for Docker and uptime checks.
@@ -217,19 +245,23 @@ pub async fn serve(
     tcp: TcpListener,
     tls: &Tls,
     app: Router,
+    caps: Caps,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     let service = app.into_make_service_with_connect_info::<PeerAddr>();
     match tls {
         Tls::Off => {
-            axum::serve(tcp, service)
+            axum::serve(Capped::new(tcp, caps), service)
                 .with_graceful_shutdown(shutdown)
                 .await
         }
         Tls::Rustls { config, .. } => {
-            axum::serve(TlsListener::new(tcp, config.clone())?, service)
-                .with_graceful_shutdown(shutdown)
-                .await
+            axum::serve(
+                Capped::new(TlsListener::new(tcp, config.clone())?, caps),
+                service,
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
         }
     }
 }
@@ -238,14 +270,14 @@ pub async fn serve(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerAddr(pub SocketAddr);
 
-impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TcpListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TcpListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }
 
-impl Connected<IncomingStream<'_, TlsListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TlsListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TlsListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }

@@ -20,7 +20,7 @@ use crate::db;
 use crate::db::messages::MessageRow;
 use crate::gateway::bus::Audience;
 use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
-use crate::ratelimit;
+use crate::ratelimit::{self, Action};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -165,10 +165,19 @@ fn check_emoji(emoji: &str) -> ApiResult<()> {
     Ok(())
 }
 
+/// Mentions of people, and of roles, one encrypted message may claim.
+const MAX_TOLD_MENTIONS: usize = 100;
+
 /// What a message mentions: read from its text, or as told for an encrypted one.
 fn mentions_of(content: &str, encrypted: bool, told: Option<&Mentions>) -> Mentions {
     if encrypted {
-        told.cloned().unwrap_or_default()
+        let mut told = told.cloned().unwrap_or_default();
+        for list in [&mut told.users, &mut told.roles] {
+            list.sort();
+            list.dedup();
+            list.truncate(MAX_TOLD_MENTIONS);
+        }
+        told
     } else {
         hermes_proto::markup::extract_mentions(content)
     }
@@ -393,6 +402,7 @@ pub async fn edit(
     Path((channel_id, message_id)): Path<(Id, Id)>,
     Json(req): Json<EditMessageRequest>,
 ) -> ApiResult<Json<Message>> {
+    state.throttle(auth.user_id, Action::Edit)?;
     let max = state.config.limits.max_message_length as usize;
     validate::message_content(&req.content, max)
         .map_err(|problem| validate::field_error("content", problem))?;
@@ -550,6 +560,7 @@ pub async fn add_reaction(
     auth: Auth,
     Path((channel_id, message_id, emoji)): Path<(Id, Id, String)>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, Action::React)?;
     check_emoji(&emoji)?;
     let t = target(
         &state.cache(),
@@ -646,6 +657,7 @@ pub async fn typing(
     auth: Auth,
     Path(channel_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, Action::Typing)?;
     target(
         &state.cache(),
         channel_id,

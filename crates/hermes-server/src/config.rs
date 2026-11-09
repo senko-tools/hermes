@@ -132,7 +132,7 @@ impl Default for StorageConfig {
             data_dir: PathBuf::from("./data"),
             max_upload_mb: 25,
             max_total_storage_gb: 0,
-            max_user_storage_mb: 0,
+            max_user_storage_mb: 10240,
             limit_includes_messages: false,
             thumbnails: true,
         }
@@ -168,6 +168,17 @@ pub struct LimitsConfig {
     pub requests_per_second: u32,
     /// Per IP.
     pub login_attempts_per_minute: u32,
+    /// Per person and kind of action (edits, reactions, typing and the like). The rarer kinds,
+    /// such as calling or changing a password, get a fraction of this.
+    pub actions_per_minute: u32,
+    /// Open connections in all.
+    pub max_connections: u32,
+    /// Open connections from one address; 0 = no limit. Trusted proxies have none.
+    pub max_connections_per_ip: u32,
+    /// A session not used for this long ends; 0 = never.
+    pub session_idle_days: u32,
+    /// Only this many sessions per person are kept, the most recently used; 0 = no limit.
+    pub max_sessions_per_user: u32,
 }
 
 impl Default for LimitsConfig {
@@ -179,6 +190,11 @@ impl Default for LimitsConfig {
             messages_per_5s: 5,
             requests_per_second: 30,
             login_attempts_per_minute: 5,
+            actions_per_minute: 120,
+            max_connections: 4096,
+            max_connections_per_ip: 128,
+            session_idle_days: 180,
+            max_sessions_per_user: 64,
         }
     }
 }

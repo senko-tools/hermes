@@ -193,3 +193,26 @@ async fn shutdown_closes_gateways_with_4100_and_stops_serving() {
         "still accepting connections"
     );
 }
+
+#[tokio::test]
+async fn maintenance_ends_what_has_gone_unused() {
+    let server = start_with("lifecycle-maintenance", RegistrationMode::Open, |_| {}).await;
+    let (owner, _, _) = server.owner().await;
+    let (idle, _) = server.register("idle", None).await;
+    let now = hermes_server::time::now_ms();
+    let long_ago = now - 200 * 24 * 60 * 60 * 1000;
+    server
+        .sql(&format!(
+            "UPDATE sessions SET last_seen_at = {long_ago} WHERE user_id =
+               (SELECT id FROM users WHERE username LIKE 'idle%')"
+        ))
+        .await;
+    hermes_server::maintenance::run(&server.state, now)
+        .await
+        .unwrap();
+    server
+        .get("/users/@me", Some(&idle))
+        .await
+        .err(401, "UNAUTHORIZED");
+    server.get("/users/@me", Some(&owner)).await.ok();
+}

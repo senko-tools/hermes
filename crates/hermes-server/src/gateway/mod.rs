@@ -26,12 +26,18 @@ use crate::ratelimit::{self, Bucket};
 use crate::state::AppState;
 use bus::{Attached, ResumeError};
 
+/// A connection that has not said who it is by then is closed.
+const IDENTIFY_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
+/// A client that takes longer than this to accept a frame has stopped reading.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Client frames are small; anything bigger is not a valid op.
 const MAX_CLIENT_FRAME: usize = 16 * 1024;
 
 /// `GET /api/v1/gateway`: upgrades to a WebSocket.
 pub async fn handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Response {
     ws.max_message_size(MAX_CLIENT_FRAME)
+        .max_frame_size(MAX_CLIENT_FRAME)
         .on_upgrade(move |socket| connection(state, socket))
 }
 
@@ -57,7 +63,7 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) {
     let interval = state.gateway.timings.heartbeat_interval;
     let shutdown = state.gateway.shutting_down();
     let mut conn = Connection {
-        deadline: Instant::now() + interval * 2,
+        deadline: Instant::now() + (interval * 2).min(IDENTIFY_WITHIN),
         state,
         socket,
         attached: None,
@@ -270,9 +276,10 @@ impl Connection {
     }
 
     async fn send_text(&mut self, text: &str) -> Result<(), End> {
-        self.socket
-            .send(Message::Text(text.into()))
-            .await
-            .map_err(|_| End::Gone)
+        match tokio::time::timeout(SEND_TIMEOUT, self.socket.send(Message::Text(text.into()))).await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(End::Gone),
+        }
     }
 }

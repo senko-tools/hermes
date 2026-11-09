@@ -38,6 +38,7 @@ pub async fn change_password(
     auth: Auth,
     Json(req): Json<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
     let mut fields = Fields::new();
     fields.check(
         "new_password",
@@ -76,6 +77,7 @@ pub async fn change_username(
     auth: Auth,
     Json(req): Json<ChangeUsernameRequest>,
 ) -> ApiResult<Json<CurrentUser>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
     let name = validate::username(&req.username)
         .map_err(|problem| validate::field_error("username", problem))?;
     if req.current_password.chars().count() > validate::MAX_PASSWORD_CHARS {

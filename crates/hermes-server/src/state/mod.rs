@@ -41,6 +41,10 @@ pub struct AppState {
     pub slowmode: Slowmode,
     /// `limits.messages_per_5s`, keyed by `(channel_id, user_id)`.
     pub message_limiter: KeyedLimiter<(Id, Id)>,
+    /// `limits.actions_per_minute`.
+    pub action_limiter: KeyedLimiter<(Id, crate::ratelimit::Action)>,
+    /// Guesses at one account's password, wherever they come from.
+    pub account_limiter: KeyedLimiter<String>,
     /// Uploaded files on disk.
     pub files: Files,
     /// Who has been visibly online since when.
@@ -70,6 +74,8 @@ impl AppState {
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
             message_limiter: KeyedLimiter::default(),
+            action_limiter: KeyedLimiter::default(),
+            account_limiter: KeyedLimiter::default(),
             files,
             last_online: Default::default(),
             gateway: Gateway::default(),
@@ -461,6 +467,15 @@ impl Cache {
     }
 
     /// The wire `Member` of `user_id` in `space_id`, if they are a member.
+    /// The instance's oldest admin.
+    pub fn first_admin(&self) -> Option<Id> {
+        self.users
+            .iter()
+            .filter(|(_, u)| u.instance_admin)
+            .map(|(id, _)| *id)
+            .min()
+    }
+
     pub fn member(&self, space_id: Id, user_id: Id) -> Option<Member> {
         let member = self.spaces.get(&space_id)?.members.get(&user_id)?;
         Some(Member {

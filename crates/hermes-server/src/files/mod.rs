@@ -37,6 +37,8 @@ pub struct Files {
     /// Bytes of all stored originals, for `storage.max_total_storage_gb`.
     used: AtomicU64,
     decodes: Semaphore,
+    /// Uploads running per person.
+    uploads: std::sync::Mutex<std::collections::HashMap<Id, u32>>,
 }
 
 impl Files {
@@ -54,6 +56,7 @@ impl Files {
             root,
             used: AtomicU64::new(used),
             decodes: Semaphore::new(PARALLEL_DECODES),
+            uploads: std::sync::Mutex::default(),
         })
     }
 
@@ -181,6 +184,43 @@ pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
         height,
         has_thumb,
     })
+}
+
+/// Uploads one person may have running at once.
+const MAX_UPLOADS_AT_ONCE: u32 = 8;
+
+/// A running upload; gives its place back when dropped.
+pub struct UploadSlot<'a> {
+    running: &'a std::sync::Mutex<std::collections::HashMap<Id, u32>>,
+    user: Id,
+}
+
+impl Drop for UploadSlot<'_> {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().expect("uploads");
+        if let Some(count) = running.get_mut(&self.user) {
+            *count -= 1;
+            if *count == 0 {
+                running.remove(&self.user);
+            }
+        }
+    }
+}
+
+impl Files {
+    /// A place for one more upload of `user`, unless they have all they may.
+    pub fn upload_slot(&self, user: Id) -> Option<UploadSlot<'_>> {
+        let mut running = self.uploads.lock().expect("uploads");
+        let count = running.entry(user).or_insert(0);
+        if *count >= MAX_UPLOADS_AT_ONCE {
+            return None;
+        }
+        *count += 1;
+        Some(UploadSlot {
+            running: &self.uploads,
+            user,
+        })
+    }
 }
 
 /// Deletes uploads that were not attached within [`UNATTACHED_TTL_MS`] (avatars and icons stay).

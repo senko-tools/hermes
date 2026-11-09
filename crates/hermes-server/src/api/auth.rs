@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{AuthResponse, LoginRequest, RegisterRequest, SessionInfo};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{PrivacySettings, User};
+use hermes_proto::{ApiError, ErrorCode};
 use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
@@ -18,6 +18,7 @@ use crate::config::RegistrationMode;
 use crate::db;
 use crate::gateway::bus::Audience;
 use crate::invites;
+use crate::ratelimit;
 use crate::setup::DefaultSpace;
 use crate::state::{AppState, CachedUser};
 use crate::time::now_ms;
@@ -25,6 +26,9 @@ use crate::time::now_ms;
 fn registration_closed(message: &str) -> Error {
     Error::new(ErrorCode::RegistrationClosed, message)
 }
+
+/// How long the guesses at one account are counted over.
+const ACCOUNT_GUESS_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 fn invite_invalid() -> Error {
     Error::new(
@@ -256,14 +260,23 @@ pub async fn login(
     let device_name = device_name.unwrap_or_default();
 
     let login = req.username.trim().trim_start_matches('@').to_lowercase();
+    // Guesses from many addresses still count against the one account.
+    state
+        .account_limiter
+        .check(
+            &login,
+            state
+                .config
+                .limits
+                .login_attempts_per_minute
+                .saturating_mul(2),
+            ACCOUNT_GUESS_PERIOD,
+        )
+        .map_err(|wait| Error(ApiError::rate_limited(ratelimit::retry_ms(wait))))?;
+    // Whether a name is taken, or by how many, is not told to whoever asks.
     let handle = db::auth::resolve_handle(&state.db.read, &login)
         .await?
-        .map_err(|()| {
-            Error::new(
-                ErrorCode::InvalidCredentials,
-                "Several accounts have this name: add your # number, like name#1234",
-            )
-        })?;
+        .unwrap_or(None);
     let credentials = match &handle {
         Some(handle) => db::auth::credentials_by_username(&state.db.read, handle).await?,
         None => None,
@@ -272,7 +285,7 @@ pub async fn login(
     if !auth::verify_password(req.password, hash).await? {
         return Err(Error::new(
             ErrorCode::InvalidCredentials,
-            "Wrong username or password",
+            "Wrong name or password. If several people have your name, add its # number.",
         ));
     }
     let credentials = credentials.expect("verify_password is false for unknown users");

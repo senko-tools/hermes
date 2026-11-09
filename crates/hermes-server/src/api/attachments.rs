@@ -16,6 +16,7 @@ use hermes_proto::ErrorCode;
 use hermes_proto::api::PICTURE_MAX_BYTES;
 use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, AttachmentRef};
+use hermes_proto::permissions::Permissions;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
@@ -75,6 +76,15 @@ pub async fn upload(
     if declared_len.is_some_and(|len| len > max) {
         return Err(too_large());
     }
+    state.throttle(auth.user_id, crate::ratelimit::Action::Upload)?;
+    // Refused before the body is read, if it is known already.
+    check_user_quota(&state, auth.user_id, declared_len.unwrap_or(0)).await?;
+    let _upload = state.files.upload_slot(auth.user_id).ok_or_else(|| {
+        Error::new(
+            ErrorCode::RateLimited,
+            "Too many uploads at once; wait for one to finish",
+        )
+    })?;
 
     let id = state.ids.next();
     let part = state.files.tmp_path(id, ".part");
@@ -381,8 +391,19 @@ async fn readable(state: &AppState, id: Id, user_id: Id) -> ApiResult<Attachment
     let allowed = match row.message_id {
         Some(message_id) => {
             match db::attachments::message_channel(&state.db.read, message_id).await? {
-                // `perms::channel` requires VIEW_CHANNEL.
-                Some(channel_id) => perms::channel(&state.cache(), channel_id, user_id).is_ok(),
+                // `perms::channel` requires VIEW_CHANNEL. Without READ_HISTORY, only what was
+                // posted since joining: that is what arrives live.
+                Some(channel_id) => {
+                    let cache = state.cache();
+                    perms::channel(&cache, channel_id, user_id).is_ok_and(|access| {
+                        access.perms.contains(Permissions::READ_HISTORY)
+                            || access.channel.space_id.is_some_and(|space| {
+                                cache.member(space, user_id).is_some_and(|member| {
+                                    message_id.timestamp_ms() as i64 >= member.joined_at
+                                })
+                            })
+                    })
+                }
                 None => false,
             }
         }

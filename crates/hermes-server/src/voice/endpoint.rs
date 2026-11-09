@@ -105,8 +105,12 @@ pub async fn serve(state: Arc<AppState>, endpoint: quinn::Endpoint) {
     }
 }
 
+/// Control messages waiting to be sent to one client.
+const CONTROL_QUEUE: usize = 1024;
+
 async fn connection(state: Arc<AppState>, conn: quinn::Connection) {
-    let (control, mut outbox) = mpsc::unbounded_channel();
+    // Bounded: a client that stops reading loses messages, the server keeps its memory.
+    let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let (video, video_out) = mpsc::channel(VIDEO_QUEUE);
     let conn_id = state.voice.register(Link {
         control,
@@ -131,7 +135,7 @@ async fn run(
     state: &AppState,
     conn_id: ConnId,
     conn: &quinn::Connection,
-    outbox: &mut mpsc::UnboundedReceiver<ServerControl>,
+    outbox: &mut mpsc::Receiver<ServerControl>,
 ) -> String {
     let (mut send, recv) = match tokio::time::timeout(AUTH_TIMEOUT, conn.accept_bi()).await {
         Ok(Ok(streams)) => streams,

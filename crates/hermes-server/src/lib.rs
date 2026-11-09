@@ -8,6 +8,7 @@ pub mod db;
 pub mod files;
 pub mod gateway;
 pub mod invites;
+pub mod maintenance;
 pub mod messages;
 pub mod ratelimit;
 pub mod server;

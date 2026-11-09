@@ -70,6 +70,10 @@ pub async fn create(
         );
     }
     fields.finish()?;
+    // A link that never runs out stays usable after whoever made it has left.
+    if expires_in == 0 && !perms.contains(Permissions::MANAGE_INVITES) {
+        return Err(Error::missing_permission("MANAGE_INVITES"));
+    }
 
     let now = now_ms();
     // Bounded by MAX_EXPIRES_IN_SECS above, so the multiplication cannot overflow.

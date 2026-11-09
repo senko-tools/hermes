@@ -34,6 +34,19 @@ pub const GATEWAY_OPS: u32 = 120;
 pub const GATEWAY_OPS_PERIOD: Duration = Duration::from_secs(60);
 /// The window of `limits.messages_per_5s`.
 pub const MESSAGES_PERIOD: Duration = Duration::from_secs(5);
+/// What a person can do too often. The value divides `limits.actions_per_minute`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Action {
+    Edit = 1,
+    React = 2,
+    Typing = 3,
+    Search = 4,
+    Upload = 5,
+    Friend = 6,
+    Ring = 12,
+    Password = 24,
+}
+
 /// One address may make this many times the REST requests of one session.
 const REST_IP_FACTOR: u32 = 10;
 /// How often idle REST limiter entries are dropped.
@@ -250,6 +263,16 @@ pub fn limit_rest<S: Clone + Send + Sync + 'static>(
             per_second.saturating_mul(REST_IP_FACTOR),
             Duration::from_secs(1)
         ))
+}
+
+impl crate::state::AppState {
+    /// One more `action` of `user`, unless they have done too many this minute.
+    pub fn throttle(&self, user: hermes_proto::id::Id, action: Action) -> Result<(), Error> {
+        let burst = (self.config.limits.actions_per_minute / action as u32).max(1);
+        self.action_limiter
+            .check(&(user, action), burst, Duration::from_secs(60))
+            .map_err(|wait| Error(ApiError::rate_limited(retry_ms(wait))))
+    }
 }
 
 /// Applies `limits.login_attempts_per_minute` per IP to one route.
