@@ -31,6 +31,14 @@ const SLOWMODE: [(&str, u32); 8] = [
     ("1 hour", 3600),
 ];
 
+const BAN_LENGTH: [(&str, u32); 5] = [
+    ("Until lifted", 0),
+    ("1 hour", 1),
+    ("1 day", 24),
+    ("7 days", 168),
+    ("30 days", 720),
+];
+
 const BAN_DELETE: [(&str, u32); 4] = [
     ("Don't delete any", 0),
     ("From the last hour", 1),
@@ -96,6 +104,22 @@ pub enum Purpose {
     },
     EditProfile(InstanceId),
     ChangePassword(InstanceId),
+    LoginCode {
+        host: hermes_client_core::address::HostPort,
+        username: String,
+        password: String,
+        invite: Option<String>,
+    },
+    TwoFactorBegin(InstanceId),
+    TwoFactorConfirm(InstanceId),
+    TwoFactorDisable(InstanceId),
+    DeleteAccount(InstanceId),
+    Report {
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        excerpt: String,
+    },
     ChangeUsername(InstanceId),
     AddFriend,
 }
@@ -500,7 +524,8 @@ impl Shell {
                 "",
                 &labels(&BAN_DELETE),
                 BAN_DELETE[0].0,
-            );
+            )
+            .choice("How long", "", &labels(&BAN_LENGTH), BAN_LENGTH[0].0);
         self.finish(fields);
     }
 
@@ -628,6 +653,127 @@ impl Shell {
             .password("Current password")
             .password("New password")
             .password("New password again");
+        self.finish(fields);
+    }
+
+    pub fn open_form_login_code(
+        &mut self,
+        host: hermes_client_core::address::HostPort,
+        username: String,
+        password: String,
+        invite: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let purpose = Purpose::LoginCode {
+            host,
+            username,
+            password,
+            invite,
+        };
+        let form = Form::new(purpose, "Two-factor login", "Sign in")
+            .text("Enter the six digits your authenticator shows for this account.");
+        let fields = Self::fields(form, window, cx).text("Code", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_two_factor_begin(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorBegin(inst),
+            "Two-factor login",
+            "Continue",
+        )
+        .text("Signing in will also need a code from an authenticator app.");
+        let fields = Self::fields(form, window, cx).password("Your password");
+        self.finish(fields);
+    }
+
+    fn open_form_two_factor_confirm(
+        &mut self,
+        inst: InstanceId,
+        secret: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorConfirm(inst),
+            "Add it to your authenticator",
+            "Turn on",
+        )
+        .text(format!(
+            "Add an account by hand with this key, then enter the code it shows. If you lose \
+                 the authenticator, an administrator has to turn this off for you.\n\n{secret}"
+        ));
+        let fields = Self::fields(form, window, cx).text("Code", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_two_factor_disable(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorDisable(inst),
+            "Turn off two-factor login",
+            "Turn off",
+        )
+        .danger();
+        let fields = Self::fields(form, window, cx)
+            .password("Your password")
+            .text("Code from your authenticator", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_delete_account(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::DeleteAccount(inst),
+            "Delete your account?",
+            "Delete account",
+        )
+        .text(
+            "This cannot be undone. Your name, picture and devices go, and you leave every \
+                 server. Servers you own have to be given away or deleted first.",
+        )
+        .danger();
+        let fields = Self::fields(form, window, cx)
+            .password("Your password")
+            .check("Also delete all my messages", "", false);
+        self.finish(fields);
+    }
+
+    pub fn open_form_report(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        excerpt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::Report {
+                inst,
+                channel,
+                message,
+                excerpt,
+            },
+            "Report this message",
+            "Report",
+        )
+        .text("The moderators see your reason and the words of this message, even if it is encrypted.");
+        let fields = Self::fields(form, window, cx).text("What is wrong with it?", "", "");
         self.finish(fields);
     }
 
@@ -827,6 +973,7 @@ impl Shell {
                 let req = BanRequest {
                     reason: (!reason.is_empty()).then_some(reason),
                     delete_messages_hours: lookup(&BAN_DELETE, form.selected(1)).filter(|h| *h > 0),
+                    duration_hours: lookup(&BAN_LENGTH, form.selected(2)).filter(|h| *h > 0),
                 };
                 self.form_call(cx, async move {
                     core.rest(&inst)?.ban(space, user, &req).await?;
@@ -869,6 +1016,89 @@ impl Shell {
                         Err(err) => this.form_done(Err(err.to_string()), cx),
                     },
                 );
+            }
+            Purpose::LoginCode {
+                host,
+                username,
+                password,
+                invite,
+            } => {
+                let code = form.required(0, "the code", cx)?;
+                self.form_call(cx, async move {
+                    let inst = core
+                        .login_with_code(&host, &username, &password, Some(&code))
+                        .await?;
+                    if let Some(invite) = invite {
+                        let _ = core.join_invite(&inst, &invite).await;
+                    }
+                    Ok(format!("Signed in to {inst}"))
+                });
+            }
+            Purpose::TwoFactorBegin(inst) => {
+                let password = form.raw(0, cx);
+                if password.is_empty() {
+                    return Err("Your password is needed.".into());
+                }
+                let next = inst.clone();
+                self.run(
+                    cx,
+                    async move {
+                        core.rest(&inst)?
+                            .two_factor_begin(password)
+                            .await
+                            .map_err(CoreError::from)
+                    },
+                    move |this, result: Result<_, CoreError>, window, cx| match result {
+                        Ok(begun) => {
+                            this.form = None;
+                            this.open_form_two_factor_confirm(next, begun.secret, window, cx);
+                        }
+                        Err(err) => this.form_done(Err(err.to_string()), cx),
+                    },
+                );
+            }
+            Purpose::TwoFactorConfirm(inst) => {
+                let code = form.required(0, "the code", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?.two_factor_confirm(code).await?;
+                    Ok("Two-factor login is on".to_owned())
+                });
+            }
+            Purpose::TwoFactorDisable(inst) => {
+                let password = form.raw(0, cx);
+                let code = form.required(1, "the code", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?.two_factor_disable(password, code).await?;
+                    Ok("Two-factor login is off".to_owned())
+                });
+            }
+            Purpose::DeleteAccount(inst) => {
+                let password = form.raw(0, cx);
+                if password.is_empty() {
+                    return Err("Your password is needed.".into());
+                }
+                let delete_messages = form.checked(1);
+                self.form_call(cx, async move {
+                    core.rest(&inst)?
+                        .delete_account(password, delete_messages)
+                        .await?;
+                    core.remove_instance(&inst).await?;
+                    Ok("Your account has been deleted".to_owned())
+                });
+            }
+            Purpose::Report {
+                inst,
+                channel,
+                message,
+                excerpt,
+            } => {
+                let reason = form.required(0, "a reason", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?
+                        .report(channel, message, reason, excerpt)
+                        .await?;
+                    Ok("Reported to the moderators".to_owned())
+                });
             }
             Purpose::ChangePassword(inst) => {
                 let (current, new, again) = (form.raw(0, cx), form.raw(1, cx), form.raw(2, cx));

@@ -654,6 +654,7 @@ impl App {
                 let req = BanRequest {
                     reason: (!reason.is_empty()).then_some(reason),
                     delete_messages_hours: None,
+                    duration_hours: None,
                 };
                 self.rest(&inst, &format!("banned {name}"), move |r| async move {
                     r.ban(space, user, &req).await

@@ -719,6 +719,17 @@ impl Core {
         username: &str,
         password: &str,
     ) -> Result<InstanceId> {
+        self.login_with_code(host, username, password, None).await
+    }
+
+    /// [`Core::login`] with the code of an account that has two-factor login.
+    pub async fn login_with_code(
+        &self,
+        host: &HostPort,
+        username: &str,
+        password: &str,
+        totp: Option<&str>,
+    ) -> Result<InstanceId> {
         self.check_trusted(host).await?;
         let rest = Rest::new(host, self.trust(host))?;
         let res = rest
@@ -726,6 +737,7 @@ impl Core {
                 username: username.into(),
                 password: password.into(),
                 device_name: self.device_name(),
+                totp: totp.map(str::to_owned),
             })
             .await?;
         self.signed_in(host, &res.user.user.username, &res.token)
@@ -875,6 +887,32 @@ impl Core {
         self.save_config()
     }
 
+    /// Asks who I have blocked: the server does not put that in `ready`.
+    fn spawn_blocks(&self, inst: &str) {
+        let core = self.clone();
+        let inst = inst.to_owned();
+        tokio::spawn(async move {
+            if let Ok(rest) = core.rest(&inst)
+                && let Ok(list) = rest.blocks().await
+            {
+                core.with_store(&inst, |s| s.blocked = list.into_iter().collect());
+                core.changed(&inst, [Changed::Users]);
+            }
+        });
+    }
+
+    /// I blocked or unblocked someone: their messages show accordingly at once.
+    pub fn set_blocked(&self, inst: &str, user: Id, blocked: bool) {
+        self.with_store(inst, |s| {
+            if blocked {
+                s.blocked.insert(user);
+            } else {
+                s.blocked.remove(&user);
+            }
+        });
+        self.changed(inst, [Changed::Users]);
+    }
+
     /// Goes offline (keeping the session to resume) or back online.
     pub fn set_online(&self, inst: &str, online: bool) -> Result<()> {
         let handle = self.handle_or_err(inst)?;
@@ -978,6 +1016,7 @@ impl Core {
                     self.with_store(&inst, |s| s.apply_ready(*ready));
                     self.changed(&inst, [Changed::All]);
                     self.publish_device(&inst);
+                    self.spawn_blocks(&inst);
                     for space in spaces {
                         self.spawn_members(&inst, space);
                     }

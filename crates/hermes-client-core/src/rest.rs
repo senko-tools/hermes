@@ -533,6 +533,129 @@ impl Rest {
         .await
     }
 
+    pub async fn two_factor(&self) -> Result<hermes_proto::api::TwoFactorStatus> {
+        self.get("/users/@me/2fa").await
+    }
+
+    pub async fn two_factor_begin(
+        &self,
+        password: String,
+    ) -> Result<hermes_proto::api::TwoFactorSecret> {
+        self.call(
+            Method::POST,
+            "/users/@me/2fa/begin",
+            Some(&hermes_proto::api::TwoFactorPassword { password }),
+        )
+        .await
+    }
+
+    pub async fn two_factor_confirm(&self, code: String) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/2fa/confirm",
+            Some(&hermes_proto::api::TwoFactorCode { code }),
+        )
+        .await
+    }
+
+    pub async fn two_factor_disable(&self, password: String, code: String) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/2fa/disable",
+            Some(&hermes_proto::api::TwoFactorDisable { password, code }),
+        )
+        .await
+    }
+
+    pub async fn blocks(&self) -> Result<Vec<Id>> {
+        self.get("/users/@me/blocks").await
+    }
+
+    pub async fn block(&self, user: Id) -> Result<()> {
+        self.empty::<()>(Method::PUT, &format!("/users/@me/blocks/{user}"), None)
+            .await
+    }
+
+    pub async fn unblock(&self, user: Id) -> Result<()> {
+        self.empty::<()>(Method::DELETE, &format!("/users/@me/blocks/{user}"), None)
+            .await
+    }
+
+    /// Everything the server holds about me, as readable JSON.
+    pub async fn export_account(&self) -> Result<Vec<u8>> {
+        let data: serde_json::Value = self.get("/users/@me/export").await?;
+        serde_json::to_vec_pretty(&data).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    pub async fn delete_account(&self, password: String, delete_messages: bool) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/delete",
+            Some(&hermes_proto::api::DeleteAccountRequest {
+                password,
+                delete_messages,
+            }),
+        )
+        .await
+    }
+
+    pub async fn report(
+        &self,
+        channel: Id,
+        message: Id,
+        reason: String,
+        excerpt: String,
+    ) -> Result<()> {
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/messages/{message}/report"),
+            Some(&hermes_proto::api::ReportRequest { reason, excerpt }),
+        )
+        .await
+    }
+
+    pub async fn reports(&self, space: Id) -> Result<Vec<hermes_proto::models::Report>> {
+        self.get(&format!("/spaces/{space}/reports")).await
+    }
+
+    pub async fn resolve_report(&self, space: Id, report: Id) -> Result<()> {
+        self.empty::<()>(
+            Method::DELETE,
+            &format!("/spaces/{space}/reports/{report}"),
+            None,
+        )
+        .await
+    }
+
+    pub async fn bulk_delete(&self, channel: Id, ids: Vec<Id>) -> Result<()> {
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/messages/bulk-delete"),
+            Some(&hermes_proto::api::BulkDeleteRequest { ids }),
+        )
+        .await
+    }
+
+    pub async fn admin_log(&self) -> Result<Vec<hermes_proto::api::AdminLogEntry>> {
+        self.get("/admin/log").await
+    }
+
+    pub async fn admin_settings(&self) -> Result<hermes_proto::api::AdminSettings> {
+        self.get("/admin/settings").await
+    }
+
+    pub async fn set_admin_settings(
+        &self,
+        settings: &hermes_proto::api::AdminSettings,
+    ) -> Result<hermes_proto::api::AdminSettings> {
+        self.call(Method::PATCH, "/admin/settings", Some(settings))
+            .await
+    }
+
+    pub async fn admin_user_detail(&self, user: Id) -> Result<hermes_proto::api::AdminUserDetail> {
+        self.get(&format!("/admin/users/{user}/detail")).await
+    }
+
     /// `seconds` of only being able to read; 0 ends it.
     pub async fn timeout(&self, space: Id, user: Id, seconds: u32) -> Result<()> {
         self.empty(

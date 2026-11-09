@@ -300,7 +300,7 @@ impl Shell {
     }
 
     /// The rail stays beside the settings pages: a click on it leaves them for what it opens.
-    fn close_pages(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_pages(&mut self, cx: &mut Context<Self>) {
         if self.settings.is_some() {
             self.close_settings(cx);
         }

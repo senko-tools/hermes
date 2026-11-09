@@ -15,6 +15,8 @@ pub enum Link {
     User(Id),
     /// Reveals the message's spoilers.
     Spoiler,
+    /// Shows a message hidden because its author is blocked.
+    Reveal,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

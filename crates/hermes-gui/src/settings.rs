@@ -40,10 +40,11 @@ pub enum Tab {
     Notifications,
     Privacy,
     Keybinds,
+    Admin,
     About,
 }
 
-const TABS: [(Tab, &str, &str); 8] = [
+const TABS: [(Tab, &str, &str); 9] = [
     (Tab::Account, assets::ACCOUNT, "Account"),
     (Tab::Appearance, assets::PALETTE, "Appearance"),
     (Tab::Chat, assets::CHAT, "Chat"),
@@ -51,6 +52,7 @@ const TABS: [(Tab, &str, &str); 8] = [
     (Tab::Notifications, assets::BELL, "Notifications"),
     (Tab::Privacy, assets::LOCK, "Privacy"),
     (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
+    (Tab::Admin, assets::SERVER, "Instance"),
     (Tab::About, assets::INFO, "About"),
 ];
 
@@ -177,6 +179,11 @@ pub struct SettingsPage {
     pub tab: Tab,
     pub account_inst: Option<InstanceId>,
     pub sessions: Remote<Vec<SessionInfo>>,
+    /// Whether this account has two-factor login, once known.
+    two_factor: Option<bool>,
+    admin_users: Remote<Vec<hermes_client_core::proto::api::AdminUser>>,
+    admin_log: Remote<Vec<hermes_client_core::proto::api::AdminLogEntry>>,
+    admin_settings: Option<hermes_client_core::proto::api::AdminSettings>,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
     pub mic_test: bool,
@@ -401,6 +408,10 @@ impl Shell {
             tab: self.settings_tab,
             account_inst: None,
             sessions: Remote::Idle,
+            two_factor: None,
+            admin_users: Remote::Idle,
+            admin_log: Remote::Idle,
+            admin_settings: None,
             device_selects: None,
             mic_test: false,
             fine_timers: None,
@@ -436,6 +447,7 @@ impl Shell {
         self.core.set_level_meter(tab == Tab::Voice);
         match tab {
             Tab::Account => self.load_sessions(cx),
+            Tab::Admin => self.load_admin(cx),
             Tab::Voice => self.load_devices(cx),
             _ => {}
         }
@@ -458,7 +470,23 @@ impl Shell {
         };
         if let Some(page) = &mut self.settings {
             page.sessions = Remote::Loading;
+            page.two_factor = None;
         }
+        let twofa_core = self.core.clone();
+        let twofa_inst = inst.clone();
+        self.run(
+            cx,
+            async move {
+                let rest = twofa_core.rest(&twofa_inst).ok()?;
+                rest.two_factor().await.ok().map(|s| s.enabled)
+            },
+            |this, enabled, _, cx| {
+                if let Some(page) = &mut this.settings {
+                    page.two_factor = enabled;
+                }
+                cx.notify();
+            },
+        );
         let core = self.core.clone();
         self.run(
             cx,
@@ -788,8 +816,10 @@ impl Shell {
     /// The page: navigation on the left, the tab on the right.
     pub fn render_settings(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let page = self.settings.as_ref()?;
+        let admin = self.is_instance_admin();
         let nav: Vec<AnyElement> = TABS
             .iter()
+            .filter(|(tab, _, _)| *tab != Tab::Admin || admin)
             .map(|(tab, glyph, name)| {
                 let tab = *tab;
                 nav_item(glyph, name, page.tab == tab, format!("settings-tab-{name}"))
@@ -804,6 +834,7 @@ impl Shell {
             Tab::Voice => self.tab_voice(page, cx),
             Tab::Notifications => self.tab_notifications(cx),
             Tab::Privacy => self.tab_privacy(cx),
+            Tab::Admin => self.tab_admin(page, cx),
             Tab::Keybinds => self.tab_keybinds(),
             Tab::About => self.tab_about(cx),
         };
@@ -1123,6 +1154,7 @@ impl Shell {
                 group("Account", account_rows),
                 group("Privacy", privacy_rows),
                 group("Signed-in devices", device_rows),
+                self.security_group(page, &inst, cx),
                 group(
                     "End-to-end encryption",
                     vec![setting(
@@ -1540,6 +1572,288 @@ impl Shell {
                 if let Some(folder) = picked {
                     this.persist("general.download_dir", &toml_string(folder), cx);
                 }
+            },
+        );
+    }
+
+    fn is_instance_admin(&self) -> bool {
+        let store = self.core.store();
+        self.account_instance()
+            .and_then(|inst| store.instance(&inst).and_then(|s| s.me.clone()))
+            .is_some_and(|me| me.instance_admin)
+    }
+
+    fn security_group(
+        &self,
+        page: &SettingsPage,
+        inst: &InstanceId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let on = page.two_factor == Some(true);
+        let (form_inst, export_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
+        group(
+            "Security and your data",
+            vec![
+                setting(
+                    "Two-factor login",
+                    if on {
+                        "On: signing in also needs a code."
+                    } else {
+                        "Signing in can also need a code from an authenticator app."
+                    },
+                    Button::new("two-factor")
+                        .cursor_pointer()
+                        .label(if on { "Turn off" } else { "Turn on" })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if on {
+                                this.open_form_two_factor_disable(form_inst.clone(), window, cx);
+                            } else {
+                                this.open_form_two_factor_begin(form_inst.clone(), window, cx);
+                            }
+                        })),
+                ),
+                setting(
+                    "Your data",
+                    "A file with your profile, servers and messages as the server holds them.",
+                    Button::new("export-account")
+                        .cursor_pointer()
+                        .label("Export…")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.export_account(export_inst.clone(), cx);
+                        })),
+                ),
+                setting(
+                    "Delete account",
+                    "This cannot be undone.",
+                    Button::new("delete-account")
+                        .cursor_pointer()
+                        .danger()
+                        .label("Delete…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_form_delete_account(delete_inst.clone(), window, cx);
+                        })),
+                ),
+            ],
+        )
+    }
+
+    fn export_account(&mut self, inst: InstanceId, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        self.run_status(cx, async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_file_name("hermes-export.json")
+                .save_file()
+                .await;
+            let Some(file) = file else {
+                return Ok("Export cancelled".to_owned());
+            };
+            let text = core
+                .rest(&inst)
+                .map_err(|e| e.to_string())?
+                .export_account()
+                .await
+                .map_err(|e| e.to_string())?;
+            let path = file.path().to_path_buf();
+            let written = path.clone();
+            tokio::task::spawn_blocking(move || std::fs::write(written, text))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Saved to {}", path.display()))
+        });
+    }
+
+    fn load_admin(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.account_instance() else {
+            return;
+        };
+        if let Some(page) = &mut self.settings {
+            page.admin_users = Remote::Loading;
+            page.admin_log = Remote::Loading;
+        }
+        let core = self.core.clone();
+        self.run(
+            cx,
+            async move {
+                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                let users = rest
+                    .admin_users(None, 200)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let log = rest.admin_log().await.map_err(|e| e.to_string())?;
+                let settings = rest.admin_settings().await.map_err(|e| e.to_string())?;
+                Ok::<_, String>((users, log, settings))
+            },
+            |this, result, _, cx| {
+                if let Some(page) = &mut this.settings {
+                    match result {
+                        Ok((users, log, settings)) => {
+                            page.admin_users = Remote::Ready(users);
+                            page.admin_log = Remote::Ready(log);
+                            page.admin_settings = Some(settings);
+                        }
+                        Err(err) => {
+                            page.admin_users = Remote::Failed(err.clone());
+                            page.admin_log = Remote::Failed(err);
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn tab_admin(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        use hermes_client_core::proto::api::{AdminSettings, RegistrationMode as Mode};
+        let Some(inst) = self.account_instance() else {
+            return muted("Add an instance first.");
+        };
+        let current = page.admin_settings.map(|s| s.registration_mode);
+        let chips = [
+            (Mode::Open, "Open"),
+            (Mode::InviteOnly, "Invite only"),
+            (Mode::Closed, "Closed"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (mode, name))| {
+            let inst = inst.clone();
+            chip(("registration", n), name, current == Some(mode)).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    let core = this.core.clone();
+                    let inst = inst.clone();
+                    this.run(
+                        cx,
+                        async move {
+                            core.rest(&inst)
+                                .map_err(|e| e.to_string())?
+                                .set_admin_settings(&AdminSettings {
+                                    registration_mode: mode,
+                                })
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        |this, result, _, cx| match result {
+                            Ok(_) => this.load_admin(cx),
+                            Err(err) => this.error(err, cx),
+                        },
+                    );
+                },
+            ))
+        });
+        let mut users: Vec<AnyElement> = Vec::new();
+        match &page.admin_users {
+            Remote::Idle | Remote::Loading => users.push(muted("Loading…")),
+            Remote::Failed(err) => users.push(muted(err.clone())),
+            Remote::Ready(list) => {
+                for entry in list {
+                    let id = entry.user.id;
+                    let flags = match (entry.instance_admin, entry.disabled) {
+                        (true, _) => "admin",
+                        (_, true) => "disabled",
+                        _ => "",
+                    };
+                    let disabled = entry.disabled;
+                    let admin = entry.instance_admin;
+                    let (disable_inst, admin_inst) = (inst.clone(), inst.clone());
+                    users.push(setting(
+                        &entry.user.handle(),
+                        flags,
+                        wrap()
+                            .child(
+                                Button::new(SharedString::from(format!("admin-disable-{id}")))
+                                    .cursor_pointer()
+                                    .label(if disabled { "Enable" } else { "Disable" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.admin_patch(
+                                            disable_inst.clone(),
+                                            id,
+                                            Some(!disabled),
+                                            None,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("admin-admin-{id}")))
+                                    .cursor_pointer()
+                                    .label(if admin { "Remove admin" } else { "Make admin" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.admin_patch(
+                                            admin_inst.clone(),
+                                            id,
+                                            None,
+                                            Some(!admin),
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    ));
+                }
+            }
+        }
+        let mut log: Vec<AnyElement> = Vec::new();
+        match &page.admin_log {
+            Remote::Idle | Remote::Loading => log.push(muted("Loading…")),
+            Remote::Failed(err) => log.push(muted(err.clone())),
+            Remote::Ready(list) if list.is_empty() => log.push(muted("Nothing yet.")),
+            Remote::Ready(list) => {
+                for entry in list {
+                    log.push(muted(format!(
+                        "{} · {} · {}",
+                        time::format(entry.created_at, "%Y-%m-%d %H:%M", self.utc_offset),
+                        entry.action,
+                        entry.details
+                    )));
+                }
+            }
+        }
+        page_body(
+            "Instance",
+            None,
+            vec![
+                group(
+                    "Who can make an account",
+                    vec![setting(
+                        "Registration",
+                        "Takes effect at once, and over the config file.",
+                        wrap().children(chips),
+                    )],
+                ),
+                group("Accounts", users),
+                group("Log", log),
+            ],
+        )
+    }
+
+    fn admin_patch(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        disabled: Option<bool>,
+        instance_admin: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let core = self.core.clone();
+        self.run(
+            cx,
+            async move {
+                core.rest(&inst)
+                    .map_err(|e| e.to_string())?
+                    .admin_update_user(
+                        user,
+                        &hermes_client_core::proto::api::AdminUserPatch {
+                            disabled,
+                            instance_admin,
+                            tagless: None,
+                        },
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |this, result, _, cx| match result {
+                Ok(()) => this.load_admin(cx),
+                Err(err) => this.error(err, cx),
             },
         );
     }

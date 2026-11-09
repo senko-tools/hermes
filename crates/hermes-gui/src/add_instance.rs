@@ -59,6 +59,9 @@ pub enum Tab {
     Register,
 }
 
+/// `submit` says this when the password was right and a code is still needed.
+const NEEDS_CODE: &str = "two-factor code needed";
+
 /// What a probe found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Probed {
@@ -287,22 +290,38 @@ impl Shell {
             return;
         }
         let account = (**account).clone();
+        let retry = account.clone();
         dialog.busy = true;
         dialog.error = None;
         let core = self.core.clone();
-        self.run(cx, submit(core, account), |this, result, _, cx| {
-            let Some(dialog) = &mut this.add_instance else {
-                return;
-            };
-            dialog.busy = false;
-            match result {
-                Ok(inst) => {
-                    this.add_instance = None;
-                    this.info(format!("Signed in to {inst}"), cx);
+        self.run(
+            cx,
+            submit(core, account),
+            move |this, result, window, cx| {
+                let Some(dialog) = &mut this.add_instance else {
+                    return;
+                };
+                dialog.busy = false;
+                match result {
+                    Ok(inst) => {
+                        this.add_instance = None;
+                        this.info(format!("Signed in to {inst}"), cx);
+                    }
+                    Err(err) if err == NEEDS_CODE => {
+                        this.add_instance = None;
+                        this.open_form_login_code(
+                            retry.host.clone(),
+                            retry.username.trim().to_owned(),
+                            retry.password.clone(),
+                            retry.invite.clone(),
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(err) => dialog.error = Some(err),
                 }
-                Err(err) => dialog.error = Some(err),
-            }
-        });
+            },
+        );
         cx.notify();
     }
 
@@ -637,6 +656,11 @@ pub async fn submit(core: Core, account: Account) -> Result<InstanceId, String> 
                 },
                 None => Ok(inst),
             },
+            Err(CoreError::Rest(hermes_client_core::rest::Error::Api(api)))
+                if api.code == hermes_client_core::proto::ErrorCode::TwoFactorRequired =>
+            {
+                return Err(NEEDS_CODE.to_owned());
+            }
             Err(e) => Err(e),
         },
     };

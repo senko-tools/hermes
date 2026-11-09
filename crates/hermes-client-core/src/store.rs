@@ -208,6 +208,8 @@ pub struct InstanceStore {
     pub privacy: PrivacySettings,
     /// My friends and friend requests, by the other person.
     pub relationships: HashMap<Id, Relationship>,
+    /// People I blocked.
+    pub blocked: std::collections::HashSet<Id>,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }

@@ -247,6 +247,26 @@ impl Shell {
                 );
             }
 
+            (Target::Member(inst, _, user), Action::Block) => {
+                let core = self.core.clone();
+                self.run_status(cx, async move {
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    // Someone blocked is no longer a friend either.
+                    let _ = rest.remove_friend(user).await;
+                    rest.block(user).await.map_err(|e| e.to_string())?;
+                    core.set_blocked(&inst, user, true);
+                    Ok("Blocked".to_owned())
+                });
+            }
+            (Target::Member(inst, _, user), Action::Unblock) => {
+                let core = self.core.clone();
+                self.run_status(cx, async move {
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    rest.unblock(user).await.map_err(|e| e.to_string())?;
+                    core.set_blocked(&inst, user, false);
+                    Ok("Unblocked".to_owned())
+                });
+            }
             (Target::Member(inst, _, user), Action::AddFriend) => {
                 let handle = {
                     let store = core.store();

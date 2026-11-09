@@ -70,6 +70,7 @@ pub struct Viewer {
     pub image: Img,
 }
 
+const BULK_DELETE_AT_ONCE: usize = 100;
 /// Parsed messages kept; it is emptied when full.
 const MARKUP_CACHE_SIZE: usize = 4096;
 
@@ -1575,6 +1576,16 @@ impl Shell {
                     view.anchor = Some(message);
                 }
             }
+            (Target::Message(inst, channel, message), Action::Report) => {
+                let excerpt = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.window(channel))
+                    .and_then(|w| w.get(message).map(|m| m.content.clone()))
+                    .unwrap_or_default();
+                self.open_form_report(inst, channel, message, excerpt, window, cx);
+            }
             (Target::Messages(inst, channel, messages), Action::DeleteMessage) => {
                 if let Some(view) = self.chats.get_mut(&(inst.clone(), channel)) {
                     view.clear_selection();
@@ -1583,9 +1594,10 @@ impl Shell {
                     let total = messages.len();
                     let mut failed = 0;
                     let mut last_error = None;
-                    for message in messages {
-                        if let Err(err) = core.delete_message(&inst, channel, message).await {
-                            failed += 1;
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    for ids in messages.chunks(BULK_DELETE_AT_ONCE) {
+                        if let Err(err) = rest.bulk_delete(channel, ids.to_vec()).await {
+                            failed += ids.len();
                             last_error = Some(err.to_string());
                         }
                     }
@@ -2282,7 +2294,15 @@ impl Shell {
             );
         }
         let revealed = view.is_some_and(|v| v.revealed.contains(&id));
-        let blocks = self.cached_blocks(&msg.content, s, space);
+        let blocks = if s.blocked.contains(&msg.author.id) && !revealed {
+            std::rc::Rc::new(vec![markup::Block::Text(vec![markup::Piece {
+                text: "Message from someone you blocked. Click to show it.".to_owned(),
+                link: Some(Link::Reveal),
+                ..markup::Piece::default()
+            }])])
+        } else {
+            self.cached_blocks(&msg.content, s, space)
+        };
         let last = blocks.len().saturating_sub(1);
         let system = m.system;
         for (i, block) in blocks.iter().cloned().enumerate() {
@@ -2741,7 +2761,7 @@ impl Shell {
                     cx,
                 );
             }
-            Link::Spoiler => {
+            Link::Spoiler | Link::Reveal => {
                 if let Some(view) = self.chats.get_mut(&(inst, channel)) {
                     view.revealed.insert(message);
                 }

@@ -52,6 +52,7 @@ pub enum Tab {
     Encryption,
     Invites,
     Bans,
+    Reports,
     Audit,
 }
 
@@ -65,6 +66,7 @@ impl Tab {
             Tab::Encryption => "Encryption",
             Tab::Invites => "Invites",
             Tab::Bans => "Bans",
+            Tab::Reports => "Reports",
             Tab::Audit => "Audit log",
         }
     }
@@ -78,6 +80,7 @@ impl Tab {
             Tab::Encryption => assets::LOCK,
             Tab::Invites => assets::LINK,
             Tab::Bans => assets::BAN,
+            Tab::Reports => assets::BELL,
             Tab::Audit => assets::FILE,
         }
     }
@@ -98,6 +101,9 @@ impl Tab {
         }
         if view::can_in_space(s, space, Permissions::BAN_MEMBERS) {
             tabs.push(Tab::Bans);
+        }
+        if view::can_in_space(s, space, Permissions::MANAGE_MESSAGES) {
+            tabs.push(Tab::Reports);
         }
         if view::can_in_space(s, space, Permissions::VIEW_AUDIT_LOG) {
             tabs.push(Tab::Audit);
@@ -168,6 +174,7 @@ pub struct SpacePage {
     pub member: Option<Id>,
     pub invites: Remote<Vec<Invite>>,
     pub bans: Remote<Vec<Ban>>,
+    pub reports: Remote<Vec<hermes_client_core::proto::models::Report>>,
     pub audit: Remote<Vec<AuditEntry>>,
     /// The audit log has older entries to load.
     pub audit_more: bool,
@@ -407,6 +414,7 @@ impl Shell {
                     member: None,
                     invites: Remote::Idle,
                     bans: Remote::Idle,
+                    reports: Remote::Idle,
                     audit: Remote::Idle,
                     audit_more: false,
                     keys: Default::default(),
@@ -485,6 +493,27 @@ impl Shell {
                     move |this, result, _, _| {
                         if let Some(page) = this.space_pages.get_mut(&done) {
                             page.bans = match result {
+                                Ok(list) => Remote::Ready(list),
+                                Err(err) => Remote::Failed(err),
+                            };
+                        }
+                    },
+                );
+            }
+            Tab::Reports => {
+                if !force && matches!(page.reports, Remote::Ready(_) | Remote::Loading) {
+                    return;
+                }
+                page.reports = Remote::Loading;
+                self.run(
+                    cx,
+                    async move {
+                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        rest.reports(space).await.map_err(|e| e.to_string())
+                    },
+                    move |this, result, _, _| {
+                        if let Some(page) = this.space_pages.get_mut(&done) {
+                            page.reports = match result {
                                 Ok(list) => Remote::Ready(list),
                                 Err(err) => Remote::Failed(err),
                             };
@@ -1019,6 +1048,7 @@ impl Shell {
             Tab::Encryption => self.tab_encryption(page, s, cx),
             Tab::Invites => self.tab_invites(page, s, cx),
             Tab::Bans => self.tab_bans(page, s, cx),
+            Tab::Reports => self.tab_reports(page, s, cx),
             Tab::Audit => self.tab_audit(page, s, cx),
         };
         Some(frame(
@@ -2245,6 +2275,92 @@ impl Shell {
             );
         }
         page_body("Invites", None, rows)
+    }
+
+    fn tab_reports(
+        &self,
+        page: &SpacePage,
+        s: &InstanceStore,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut rows: Vec<AnyElement> = vec![muted(
+            "Messages people reported. A report shows what the reporter chose to share: the server \
+             cannot read encrypted messages.",
+        )];
+        let list = page.reports.ready();
+        if let Some(p) = self.list_placeholder(
+            &page.reports,
+            list.is_some_and(Vec::is_empty),
+            "Nothing has been reported.",
+            cx,
+        ) {
+            rows.push(p);
+            return page_body("Reports", None, rows);
+        }
+        for report in list.into_iter().flatten() {
+            let (inst, space, id) = (page.inst.clone(), page.space, report.id);
+            let jump_inst = page.inst.clone();
+            let (channel, message) = (report.channel_id, report.message_id);
+            let who = |user: Id| s.display_name(Some(space), user);
+            rows.push(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(8.))
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_size(theme::secondary_size()).child(format!(
+                                "{} about {}: {}",
+                                who(report.reporter_id),
+                                who(report.author_id),
+                                report.reason
+                            )))
+                            .child(muted(report.excerpt.clone())),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("report-open-{id}")))
+                            .cursor_pointer()
+                            .label("Go to it")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_pages(cx);
+                                this.jump_to(jump_inst.clone(), channel, message, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("report-done-{id}")))
+                            .cursor_pointer()
+                            .label("Dealt with")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let core = this.core.clone();
+                                let inst = inst.clone();
+                                this.run(
+                                    cx,
+                                    async move {
+                                        core.rest(&inst)
+                                            .map_err(|e| e.to_string())?
+                                            .resolve_report(space, id)
+                                            .await
+                                            .map_err(|e| e.to_string())
+                                    },
+                                    |this, result, _, cx| match result {
+                                        Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
+                                        Err(err) => this.error(err, cx),
+                                    },
+                                );
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        page_body("Reports", None, rows)
     }
 
     fn tab_bans(&self, page: &SpacePage, _s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {

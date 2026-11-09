@@ -321,9 +321,7 @@ impl Shell {
                 let append = append && matches!(state.items, Remote::Ready(_));
                 state.add(append, items);
                 if total.is_some() {
-                    if total.is_some() {
-                        state.total = total;
-                    }
+                    state.total = total;
                 }
             }
             Err(err) if append && matches!(state.items, Remote::Ready(_)) => {

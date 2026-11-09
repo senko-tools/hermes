@@ -117,6 +117,9 @@ pub enum Action {
     Volume,
     MuteForMe,
     UnmuteForMe,
+    Report,
+    Block,
+    Unblock,
     Timeout10Minutes,
     Timeout1Hour,
     Timeout1Day,
@@ -228,6 +231,9 @@ impl Action {
             Action::CopyUserId => "Copy user ID",
             Action::ChangeNickname => "Change nickname…",
             Action::ManageRoles => "Roles…",
+            Action::Report => "Report…",
+            Action::Block => "Block",
+            Action::Unblock => "Unblock",
             Action::Timeout10Minutes => "Timeout for 10 minutes",
             Action::Timeout1Hour => "Timeout for 1 hour",
             Action::Timeout1Day => "Timeout for 1 day",
@@ -525,6 +531,9 @@ pub fn entries_with(
             if manage {
                 push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
             }
+            if !own {
+                push(&mut out, [Action::Report]);
+            }
             out.push(None);
             push(&mut out, [Action::CopyMessageId]);
             if deletable {
@@ -550,6 +559,14 @@ pub fn entries_with(
                 }
             }
             if let (false, Some(s)) = (me, s) {
+                push(
+                    &mut out,
+                    [if s.blocked.contains(user) {
+                        Action::Unblock
+                    } else {
+                        Action::Block
+                    }],
+                );
                 voice_entries(s, *user, extra.locally_muted, &mut out);
             }
             out.push(None);

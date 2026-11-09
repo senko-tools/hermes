@@ -471,6 +471,7 @@ async fn revoked_sessions_log_out_and_login_works() {
             username: "alice".into(),
             password: "correct horse".into(),
             device_name: "Phone".into(),
+            totp: None,
         })
         .await
         .unwrap();
