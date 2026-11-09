@@ -378,6 +378,22 @@ pub struct Ban {
     /// The moderator who banned them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub banned_by: Option<Id>,
+    /// When it ends by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// A message someone reported to the moderators.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    pub id: Id,
+    pub channel_id: Id,
+    pub message_id: Id,
+    pub reporter_id: Id,
+    pub author_id: Id,
+    pub reason: String,
+    pub excerpt: String,
+    pub created_at: i64,
 }
 
 /// What an audit log entry records.
@@ -416,10 +432,12 @@ pub enum AuditAction {
     InviteRevoke,
     /// The rules for handing over a channel's keys changed.
     KeyPolicyUpdate,
+    /// Several messages deleted at once (`details.count`).
+    MessageDeleteBulk,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 26] = [
+    pub const ALL: [AuditAction; 27] = [
         AuditAction::SpaceUpdate,
         AuditAction::SpaceTransfer,
         AuditAction::MemberUpdate,
@@ -446,6 +464,7 @@ impl AuditAction {
         AuditAction::InviteCreate,
         AuditAction::InviteRevoke,
         AuditAction::KeyPolicyUpdate,
+        AuditAction::MessageDeleteBulk,
     ];
 
     /// The snake_case name, as on the wire and in `audit_log.action`.
@@ -457,6 +476,7 @@ impl AuditAction {
             AuditAction::InviteCreate => "invite_create",
             AuditAction::InviteRevoke => "invite_revoke",
             AuditAction::KeyPolicyUpdate => "key_policy_update",
+            AuditAction::MessageDeleteBulk => "message_delete_bulk",
             AuditAction::SpaceUpdate => "space_update",
             AuditAction::SpaceTransfer => "space_transfer",
             AuditAction::MemberUpdate => "member_update",

@@ -182,10 +182,13 @@ pub async fn is_banned(
     user_id: Id,
 ) -> Result<bool, sqlx::Error> {
     let (space_id, user_id) = (space_id.to_i64(), user_id.to_i64());
+    let now = crate::time::now_ms();
     let found = sqlx::query_scalar!(
-        "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?",
+        "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?
+           AND (expires_at IS NULL OR expires_at > ?)",
         space_id,
-        user_id
+        user_id,
+        now
     )
     .fetch_optional(e)
     .await?;

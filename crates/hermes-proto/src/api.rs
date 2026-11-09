@@ -84,6 +84,95 @@ pub struct LoginRequest {
     pub username: String,
     pub password: String,
     pub device_name: String,
+    /// The code from an authenticator, on accounts that have two-factor login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorStatus {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorPassword {
+    pub password: String,
+}
+
+/// To put in an authenticator app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorSecret {
+    pub secret: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorCode {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorDisable {
+    pub password: String,
+    pub code: String,
+}
+
+/// `POST /users/@me/delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    pub password: String,
+    #[serde(default)]
+    pub delete_messages: bool,
+}
+
+/// `POST /channels/{id}/messages/{mid}/report`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportRequest {
+    pub reason: String,
+    /// What the reporter shows of it: the server cannot read an encrypted message.
+    #[serde(default)]
+    pub excerpt: String,
+}
+
+impl ReportRequest {
+    pub const MAX_REASON_CHARS: usize = 300;
+    pub const MAX_EXCERPT_CHARS: usize = 2000;
+}
+
+/// `POST /channels/{id}/messages/bulk-delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BulkDeleteRequest {
+    pub ids: Vec<Id>,
+}
+
+impl BulkDeleteRequest {
+    pub const MAX_IDS: usize = 100;
+}
+
+/// `GET /admin/users/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminUserDetail {
+    pub created_at: i64,
+    pub last_online_at: Option<i64>,
+    pub sessions: u32,
+    pub storage_bytes: u64,
+    pub spaces: u32,
+}
+
+/// `GET /admin/log`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminLogEntry {
+    pub id: Id,
+    pub actor_id: Id,
+    pub target_id: Option<Id>,
+    pub action: String,
+    pub details: String,
+    pub created_at: i64,
+}
+
+/// `GET`/`PATCH /admin/settings`: what an instance admin can change while the server runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminSettings {
+    pub registration_mode: RegistrationMode,
 }
 
 /// Response of register and login. `token` is sent as `Authorization: Bearer <token>`.
@@ -308,6 +397,9 @@ impl TimeoutRequest {
 pub struct BanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Ends the ban by itself after this many hours; none = until lifted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_hours: Option<u32>,
     /// Soft-deletes the user's messages in the space from the last N hours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_messages_hours: Option<u32>,

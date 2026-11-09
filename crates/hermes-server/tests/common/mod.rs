@@ -519,3 +519,6 @@ pub fn nonce() -> String {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
+
+/// What every test account signs in with.
+pub const PASSWORD: &str = "correct horse";

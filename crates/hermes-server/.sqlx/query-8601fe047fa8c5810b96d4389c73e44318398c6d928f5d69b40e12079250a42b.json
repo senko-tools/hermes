@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT user_id, reason, created_at, banned_by FROM bans WHERE space_id = ?\n         ORDER BY created_at, user_id LIMIT 2000",
+  "query": "SELECT user_id, reason, created_at, banned_by, expires_at FROM bans WHERE space_id = ?\n         ORDER BY created_at, user_id LIMIT 2000",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "banned_by"
           }
         }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "expires_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -55,8 +66,9 @@
       false,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "073e60b7b566cd7f8b5a1aaba3dfe6319037bdff7cce2b5c7d78d93cf67106ca"
+  "hash": "8601fe047fa8c5810b96d4389c73e44318398c6d928f5d69b40e12079250a42b"
 }

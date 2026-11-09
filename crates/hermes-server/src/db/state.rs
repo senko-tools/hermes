@@ -47,6 +47,28 @@ pub struct Snapshot {
     pub overrides: Vec<(Id, Override)>,
     pub dm_recipients: Vec<DmRecipientRow>,
     pub relationships: Vec<super::friends::Row>,
+    pub blocks: Vec<(Id, Id)>,
+}
+
+async fn blocks(pool: &SqlitePool) -> Result<Vec<(Id, Id)>, sqlx::Error> {
+    let rows = sqlx::query!("SELECT user_id, blocked_id FROM user_blocks")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (Id::from_i64(r.user_id), Id::from_i64(r.blocked_id)))
+        .collect())
+}
+
+/// Who may register, if an instance admin changed it from the config file's.
+pub async fn registration_override(
+    pool: &SqlitePool,
+) -> Result<Option<crate::config::RegistrationMode>, sqlx::Error> {
+    let value =
+        sqlx::query_scalar!("SELECT value FROM instance_settings WHERE key = 'registration_mode'")
+            .fetch_optional(pool)
+            .await?;
+    Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
 }
 
 pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
@@ -60,6 +82,7 @@ pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
         overrides: overrides(pool).await?,
         dm_recipients: dm_recipients(pool).await?,
         relationships: super::friends::all(pool).await?,
+        blocks: blocks(pool).await?,
     })
 }
 

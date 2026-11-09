@@ -6,7 +6,9 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
-use hermes_proto::api::{AdminUser, AdminUserPatch, Pagination};
+use hermes_proto::api::{
+    AdminLogEntry, AdminSettings, AdminUser, AdminUserDetail, AdminUserPatch, Pagination,
+};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 
@@ -15,6 +17,8 @@ use crate::auth::Auth;
 use crate::db;
 use crate::gateway::bus::Audience;
 use crate::state::AppState;
+use crate::time::now_ms;
+use sqlx::Row as _;
 
 fn require_admin(state: &AppState, user_id: Id) -> ApiResult<()> {
     if state
@@ -30,6 +34,131 @@ fn require_admin(state: &AppState, user_id: Id) -> ApiResult<()> {
             "Only instance admins can do this",
         ))
     }
+}
+
+async fn write_log(
+    state: &AppState,
+    actor: Id,
+    target: Option<Id>,
+    action: &str,
+    details: String,
+) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO admin_log (id, actor_id, target_id, action, details, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+    )
+    .bind(state.ids.next().to_i64())
+    .bind(actor.to_i64())
+    .bind(target.map(Id::to_i64))
+    .bind(action)
+    .bind(details)
+    .bind(now_ms())
+    .execute(&state.db.write)
+    .await?;
+    Ok(())
+}
+
+pub async fn log(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+) -> ApiResult<Json<Vec<AdminLogEntry>>> {
+    require_admin(&state, auth.user_id)?;
+    let rows = sqlx::query("SELECT * FROM admin_log ORDER BY id DESC LIMIT 200")
+        .fetch_all(&state.db.read)
+        .await?;
+    let entries = rows
+        .into_iter()
+        .map(|r| {
+            Ok(AdminLogEntry {
+                id: Id::from_i64(r.try_get("id")?),
+                actor_id: Id::from_i64(r.try_get("actor_id")?),
+                target_id: r.try_get::<Option<i64>, _>("target_id")?.map(Id::from_i64),
+                action: r.try_get("action")?,
+                details: r.try_get("details")?,
+                created_at: r.try_get("created_at")?,
+            })
+        })
+        .collect::<Result<Vec<_>, sqlx::Error>>()?;
+    Ok(Json(entries))
+}
+
+pub async fn user_detail(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(user): Path<Id>,
+) -> ApiResult<Json<AdminUserDetail>> {
+    require_admin(&state, auth.user_id)?;
+    let spaces = {
+        let cache = state.cache();
+        if !cache.users.contains_key(&user) {
+            return Err(Error::not_found("user"));
+        }
+        cache
+            .spaces
+            .values()
+            .filter(|s| s.members.contains_key(&user))
+            .count() as u32
+    };
+    let db = &state.db.read;
+    let created_at: i64 = sqlx::query_scalar("SELECT created_at FROM users WHERE id = ?")
+        .bind(user.to_i64())
+        .fetch_one(db)
+        .await?;
+    Ok(Json(AdminUserDetail {
+        created_at,
+        last_online_at: db::users::last_online(db, user).await?,
+        sessions: db::auth::list_sessions(db, user).await?.len() as u32,
+        storage_bytes: db::attachments::total_size_of(db, user).await?,
+        spaces,
+    }))
+}
+
+pub async fn settings(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+) -> ApiResult<Json<AdminSettings>> {
+    require_admin(&state, auth.user_id)?;
+    Ok(Json(AdminSettings {
+        registration_mode: state.registration_mode(),
+    }))
+}
+
+pub async fn update_settings(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Json(req): Json<AdminSettings>,
+) -> ApiResult<Json<AdminSettings>> {
+    require_admin(&state, auth.user_id)?;
+    let value = serde_json::to_string(&req.registration_mode)
+        .map_err(|err| Error::internal(format!("registration mode: {err}")))?;
+    sqlx::query(
+        "INSERT INTO instance_settings (key, value) VALUES ('registration_mode', ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(&value)
+    .execute(&state.db.write)
+    .await?;
+    state.set_registration_mode(req.registration_mode);
+    write_log(&state, auth.user_id, None, "registration_mode", value).await?;
+    Ok(Json(req))
+}
+
+pub async fn reports(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+) -> ApiResult<Json<Vec<hermes_proto::models::Report>>> {
+    require_admin(&state, auth.user_id)?;
+    Ok(Json(super::reports::list_unowned(&state).await?))
+}
+
+pub async fn resolve_report(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(report): Path<Id>,
+) -> ApiResult<StatusCode> {
+    require_admin(&state, auth.user_id)?;
+    super::reports::resolve_unowned(&state, report).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_users(
@@ -140,5 +269,13 @@ pub async fn update_user(
     state.gateway.revoke(&revoked);
     super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::info!(%user_id, disabled, instance_admin, by = %auth.user_id, "admin changed a user");
+    write_log(
+        &state,
+        auth.user_id,
+        Some(user_id),
+        "user_update",
+        format!("disabled: {disabled}, admin: {instance_admin}"),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

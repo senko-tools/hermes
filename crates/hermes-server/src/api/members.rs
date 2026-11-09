@@ -230,7 +230,7 @@ pub async fn remove(
 }
 
 /// `member_remove` to the remaining members, `space_delete` to the removed user.
-fn publish_removal(state: &AppState, space_id: Id, user_id: Id) {
+pub(super) fn publish_removal(state: &AppState, space_id: Id, user_id: Id) {
     state.publish(
         ServerEvent::MemberRemove { space_id, user_id },
         Audience::space(space_id),
@@ -264,6 +264,7 @@ pub async fn list_bans(
                     reason: row.reason,
                     created_at: row.created_at,
                     banned_by: Some(row.banned_by),
+                    expires_at: row.expires_at,
                 })
             })
             .collect(),
@@ -365,6 +366,10 @@ pub async fn ban(
     };
 
     let now = now_ms();
+    let expires_at = req
+        .duration_hours
+        .filter(|hours| *hours > 0)
+        .map(|hours| now + i64::from(hours) * HOUR_MS);
     let mut tx = state.db.write.begin().await?;
     db::members::upsert_ban(
         &mut tx,
@@ -373,6 +378,7 @@ pub async fn ban(
         reason.as_deref(),
         auth.user_id,
         now,
+        expires_at,
     )
     .await?;
     if was_member {

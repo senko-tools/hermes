@@ -55,19 +55,20 @@ struct Connection {
     attached: Option<Attached>,
     /// The connection is closed with 4009 when this passes without a heartbeat (or identify).
     deadline: Instant,
-    /// Client ops: [`ratelimit::GATEWAY_OPS`] per [`ratelimit::GATEWAY_OPS_PERIOD`], else 4008.
+    /// Client ops: `limits.gateway_ops_per_minute` per [`ratelimit::GATEWAY_OPS_PERIOD`], else 4008.
     ops: Bucket,
 }
 
 async fn connection(state: Arc<AppState>, socket: WebSocket) {
     let interval = state.gateway.timings.heartbeat_interval;
     let shutdown = state.gateway.shutting_down();
+    let gateway_ops = state.config.limits.gateway_ops_per_minute;
     let mut conn = Connection {
         deadline: Instant::now() + (interval * 2).min(IDENTIFY_WITHIN),
         state,
         socket,
         attached: None,
-        ops: Bucket::full(ratelimit::GATEWAY_OPS, std::time::Instant::now()),
+        ops: Bucket::full(gateway_ops, std::time::Instant::now()),
     };
     let hello = ServerEvent::Hello {
         heartbeat_interval_ms: u64::try_from(interval.as_millis()).unwrap_or(u64::MAX),
@@ -161,7 +162,11 @@ impl Connection {
                     let now = std::time::Instant::now();
                     if self
                         .ops
-                        .take(ratelimit::GATEWAY_OPS, ratelimit::GATEWAY_OPS_PERIOD, now)
+                        .take(
+                            self.state.config.limits.gateway_ops_per_minute,
+                            ratelimit::GATEWAY_OPS_PERIOD,
+                            now,
+                        )
                         .is_err()
                     {
                         return End::Close(CloseCode::RateLimited);

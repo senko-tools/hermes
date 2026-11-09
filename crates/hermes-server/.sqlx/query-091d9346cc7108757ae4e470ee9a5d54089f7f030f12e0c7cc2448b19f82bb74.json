@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, password_hash, disabled AS \"disabled: bool\" FROM users WHERE username = ?",
+  "query": "SELECT id, password_hash, disabled AS \"disabled: bool\", totp_secret\n           FROM users WHERE username = ?",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "disabled"
           }
         }
+      },
+      {
+        "name": "totp_secret",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "totp_secret"
+          }
+        }
       }
     ],
     "parameters": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "739fca917f4398e068227a5f405479778efd1765675d88272f05720cf72da505"
+  "hash": "091d9346cc7108757ae4e470ee9a5d54089f7f030f12e0c7cc2448b19f82bb74"
 }

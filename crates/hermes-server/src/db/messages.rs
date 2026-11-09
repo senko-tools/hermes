@@ -498,6 +498,45 @@ pub async fn soft_delete(conn: &mut SqliteConnection, message_id: Id) -> Result<
     clear_deleted_extras(conn, message_id).await
 }
 
+/// Deletes these messages of a channel, only `author`'s when given. Returns which went.
+pub async fn soft_delete_many(
+    conn: &mut SqliteConnection,
+    channel_id: Id,
+    ids: &[Id],
+    author: Option<Id>,
+) -> Result<Vec<Id>, sqlx::Error> {
+    let channel_id = channel_id.to_i64();
+    let list = id_list(ids);
+    let author = author.map(Id::to_i64);
+    let rows = sqlx::query!(
+        "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0
+         WHERE channel_id = ?1 AND deleted = 0
+           AND id IN (SELECT value FROM json_each(?2))
+           AND (?3 IS NULL OR author_id = ?3)
+         RETURNING id",
+        channel_id,
+        list,
+        author
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let deleted: Vec<Id> = rows.into_iter().map(|r| Id::from_i64(r.id)).collect();
+    clear_deleted_extras_of(conn, &deleted).await?;
+    Ok(deleted)
+}
+
+/// A report from a DM has been dealt with.
+pub async fn delete_report_unowned(
+    e: impl SqliteExecutor<'_>,
+    report: Id,
+) -> Result<(), sqlx::Error> {
+    let id = report.to_i64();
+    sqlx::query!("DELETE FROM reports WHERE id = ? AND space_id IS NULL", id)
+        .execute(e)
+        .await?;
+    Ok(())
+}
+
 /// [`clear_deleted_extras`] for many messages at once.
 pub async fn clear_deleted_extras_of(
     conn: &mut SqliteConnection,

@@ -88,6 +88,9 @@ impl Default for Timings {
     }
 }
 
+/// Gateway sessions one person may have at once.
+const MAX_SESSIONS_PER_USER: usize = 32;
+
 /// What one session may hold for resuming, however few events that is.
 const RESUME_BUFFER_BYTES: usize = 32 << 20;
 
@@ -220,6 +223,18 @@ impl Gateway {
         let mut sessions = lock(&self.sessions);
         let window = self.timings.resume_window;
         sessions.retain(|_, s| !s.expired(now, window));
+        // One person's sockets stay few: the longest-idle one goes to make room.
+        let mine: Vec<String> = sessions
+            .iter()
+            .filter(|(_, s)| s.user_id == user_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if mine.len() >= MAX_SESSIONS_PER_USER
+            && let Some(oldest) = mine.first().and_then(|id| sessions.remove(id))
+            && let Some(conn) = lock(&oldest.inner).conn.take()
+        {
+            conn.close.send_replace(Some(CloseCode::SessionTimedOut));
+        }
         sessions.insert(session.id.clone(), session);
         attached
     }

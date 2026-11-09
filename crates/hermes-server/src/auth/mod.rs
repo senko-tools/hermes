@@ -20,6 +20,8 @@ use crate::db;
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
 
+pub mod totp;
+
 /// Prefix of every session token, so leaked tokens are easy to recognize.
 pub const TOKEN_PREFIX: &str = "hms_";
 

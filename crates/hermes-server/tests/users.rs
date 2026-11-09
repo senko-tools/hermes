@@ -395,3 +395,127 @@ async fn the_server_applies_changes_made_by_the_user_commands() {
         (0, 0)
     );
 }
+
+#[tokio::test]
+async fn two_factor_login_needs_a_code() {
+    let server = start("users-2fa", RegistrationMode::Open).await;
+    server.owner().await;
+    let (token, _) = server.register("alice", None).await;
+    let begun = server
+        .post(
+            "/users/@me/2fa/begin",
+            Some(&token),
+            json!({ "password": common::PASSWORD }),
+        )
+        .await
+        .ok();
+    let secret = begun["secret"].as_str().unwrap().to_owned();
+    assert_eq!(
+        server.get("/users/@me/2fa", Some(&token)).await.ok()["enabled"],
+        false,
+        "not until a code is confirmed"
+    );
+    server
+        .post(
+            "/users/@me/2fa/confirm",
+            Some(&token),
+            json!({ "code": "000000" }),
+        )
+        .await
+        .err(401, "INVALID_CREDENTIALS");
+    server
+        .sql(&format!(
+            "UPDATE users SET totp_secret = '{secret}', totp_pending = NULL"
+        ))
+        .await;
+    server
+        .login("alice", common::PASSWORD)
+        .await
+        .err(401, "TWO_FACTOR_REQUIRED");
+}
+
+#[tokio::test]
+async fn deleting_an_account_leaves_no_name_behind() {
+    let server = start("users-delete", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let path = format!("/channels/{general}/messages");
+    let sent = server
+        .post(
+            &path,
+            Some(&alice),
+            json!({ "content": "bye", "nonce": common::nonce() }),
+        )
+        .await
+        .ok();
+    let export = server.get("/users/@me/export", Some(&alice)).await.ok();
+    assert_eq!(export["messages"][0]["content"], "bye");
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&alice),
+            json!({ "password": "wrong", "delete_messages": true }),
+        )
+        .await
+        .err(401, "INVALID_CREDENTIALS");
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&alice),
+            json!({ "password": common::PASSWORD, "delete_messages": true }),
+        )
+        .await
+        .ok();
+    server
+        .get("/users/@me", Some(&alice))
+        .await
+        .err(401, "UNAUTHORIZED");
+    let history = server.get(&path, Some(&owner)).await.ok();
+    let gone = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == sent["id"])
+        .unwrap();
+    assert_eq!(gone["content"], "");
+    assert!(
+        gone["author"]["username"]
+            .as_str()
+            .unwrap()
+            .contains("deleted")
+    );
+    // A server is not left without an owner.
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&owner),
+            json!({ "password": common::PASSWORD }),
+        )
+        .await
+        .err(400, "BAD_REQUEST");
+}
+
+#[tokio::test]
+async fn someone_blocked_cannot_start_a_dm() {
+    let server = start("users-block", RegistrationMode::Open).await;
+    server.owner().await;
+    let (alice, alice_id) = server.register("alice", None).await;
+    let (bob, bob_id) = server.register("bob", None).await;
+    server
+        .put(
+            &format!("/users/@me/blocks/{bob_id}"),
+            Some(&alice),
+            json!(null),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        server.get("/users/@me/blocks", Some(&alice)).await.ok(),
+        json!([bob_id])
+    );
+    server
+        .post("/dms", Some(&bob), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .err(403, "MISSING_PERMISSION");
+}

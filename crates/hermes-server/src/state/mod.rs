@@ -17,7 +17,7 @@ use hermes_proto::models::{
 };
 use hermes_proto::permissions::{self, Permissions};
 
-use crate::config::Config;
+use crate::config::{Config, ProxyRange};
 use crate::db::Db;
 use crate::db::state::Snapshot;
 use crate::files::Files;
@@ -45,6 +45,8 @@ pub struct AppState {
     pub action_limiter: KeyedLimiter<(Id, crate::ratelimit::Action)>,
     /// Guesses at one account's password, wherever they come from.
     pub account_limiter: KeyedLimiter<String>,
+    /// Who may register: the config, unless an admin changed it while the server runs.
+    registration: std::sync::RwLock<crate::config::RegistrationMode>,
     /// Uploaded files on disk.
     pub files: Files,
     /// Who has been visibly online since when.
@@ -63,9 +65,13 @@ impl AppState {
     pub async fn load(config: Config) -> Result<Self, sqlx::Error> {
         let db = Db::open(&config.storage.data_dir).await?;
         let cache = load_from_db(&db).await?;
+        let registration = crate::db::state::registration_override(&db.read)
+            .await?
+            .unwrap_or(config.registration.mode);
         let used = crate::db::attachments::total_size(&db.read).await?;
         let files = Files::open(&config.storage.data_dir, used)?;
         let voice = crate::voice::Voice::new(config.voice.enabled);
+        let config_limits = config.limits.clone();
         Ok(Self {
             config,
             db,
@@ -76,9 +82,16 @@ impl AppState {
             message_limiter: KeyedLimiter::default(),
             action_limiter: KeyedLimiter::default(),
             account_limiter: KeyedLimiter::default(),
+            registration: std::sync::RwLock::new(registration),
             files,
             last_online: Default::default(),
-            gateway: Gateway::default(),
+            gateway: Gateway::new(crate::gateway::bus::Timings {
+                resume_window: std::time::Duration::from_secs(u64::from(
+                    config_limits.resume_window_secs,
+                )),
+                resume_buffer: config_limits.resume_buffer_events as usize,
+                ..Default::default()
+            }),
             voice,
             fingerprint: None,
         })
@@ -111,6 +124,14 @@ impl AppState {
     }
 
     /// The client's IP; see [`client_ip`].
+    pub fn registration_mode(&self) -> crate::config::RegistrationMode {
+        *self.registration.read().expect("registration")
+    }
+
+    pub fn set_registration_mode(&self, mode: crate::config::RegistrationMode) {
+        *self.registration.write().expect("registration") = mode;
+    }
+
     pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
         client_ip(&self.config.network.trusted_proxies, peer, headers)
     }
@@ -119,8 +140,8 @@ impl AppState {
 /// The client's IP: the TCP peer, or, when the peer is one of `trusted` (proxies), the last
 /// `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
 /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
-pub fn client_ip(trusted: &[IpAddr], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+pub fn client_ip(trusted: &[ProxyRange], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.contains(*ip));
     let mut ip = peer.ip().to_canonical();
     if !is_trusted(&ip) {
         return ip;
@@ -216,6 +237,8 @@ pub struct Cache {
     pub voice_states: HashMap<Id, VoiceState>,
     /// Friends and friend requests, under both people.
     pub relationships: HashMap<Id, HashMap<Id, CachedRelationship>>,
+    /// Who each person has blocked.
+    pub blocks: HashMap<Id, HashSet<Id>>,
 }
 
 impl CachedUser {
@@ -287,6 +310,9 @@ impl Cache {
                 members: HashMap::new(),
             };
             cache.spaces.insert(state.space.id, state);
+        }
+        for (user, blocked) in s.blocks {
+            cache.blocks.entry(user).or_default().insert(blocked);
         }
         for role in s.roles {
             if let Some(space) = cache.spaces.get_mut(&role.space_id) {
@@ -477,6 +503,11 @@ impl Cache {
     }
 
     /// The wire `Member` of `user_id` in `space_id`, if they are a member.
+    /// Whether `by` has blocked `who`.
+    pub fn blocked(&self, by: Id, who: Id) -> bool {
+        self.blocks.get(&by).is_some_and(|list| list.contains(&who))
+    }
+
     /// The instance's oldest admin.
     pub fn first_admin(&self) -> Option<Id> {
         self.users

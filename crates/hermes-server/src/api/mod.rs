@@ -1,6 +1,7 @@
 //! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
 //! mapping of errors to HTTP responses.
 
+mod account;
 mod admin;
 mod attachments;
 mod audit;
@@ -17,6 +18,7 @@ mod members;
 mod messages;
 pub mod pages;
 mod perms;
+mod reports;
 mod roles;
 mod search;
 mod spaces;
@@ -119,6 +121,35 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/users/@me/notification-settings/{target_id}",
             put(users::put_notification_setting).delete(users::delete_notification_setting),
         )
+        .route("/users/@me/2fa", get(account::two_factor))
+        .route("/users/@me/2fa/begin", post(account::two_factor_begin))
+        .route("/users/@me/2fa/confirm", post(account::two_factor_confirm))
+        .route("/users/@me/2fa/disable", post(account::two_factor_disable))
+        .route("/users/@me/blocks", get(account::blocks))
+        .route(
+            "/users/@me/blocks/{id}",
+            put(account::block).delete(account::unblock),
+        )
+        .route("/users/@me/export", get(account::export))
+        .route("/users/@me/delete", post(account::delete))
+        .route(
+            "/channels/{id}/messages/bulk-delete",
+            post(messages::bulk_delete),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}/report",
+            post(reports::create),
+        )
+        .route("/spaces/{id}/reports", get(reports::list))
+        .route("/spaces/{id}/reports/{rid}", delete(reports::resolve))
+        .route("/admin/users/{id}/detail", get(admin::user_detail))
+        .route("/admin/log", get(admin::log))
+        .route(
+            "/admin/settings",
+            get(admin::settings).patch(admin::update_settings),
+        )
+        .route("/admin/reports", get(admin::reports))
+        .route("/admin/reports/{id}", delete(admin::resolve_report))
         .route("/users/{id}", get(users::get))
         .route("/search", get(search::search))
         .route("/admin/users", get(admin::list_users))

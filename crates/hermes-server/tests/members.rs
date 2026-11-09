@@ -427,3 +427,36 @@ async fn a_timeout_lets_someone_read_but_not_write() {
             .contains(&"member_timeout".to_owned())
     );
 }
+
+#[tokio::test]
+async fn a_temporary_ban_stops_counting_when_it_ends() {
+    let server = start("members-temp-ban", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let invite = server
+        .post(
+            &format!("/spaces/{space_id}/invites"),
+            Some(&owner),
+            json!({}),
+        )
+        .await
+        .ok();
+    let code = invite["code"].as_str().unwrap();
+    server
+        .put(
+            &format!("/spaces/{space_id}/bans/{alice_id}"),
+            Some(&owner),
+            json!({ "duration_hours": 1 }),
+        )
+        .await
+        .ok();
+    server
+        .post(&format!("/invites/{code}"), Some(&alice), json!({}))
+        .await
+        .err(403, "BANNED");
+    server.sql("UPDATE bans SET expires_at = 1").await;
+    server
+        .post(&format!("/invites/{code}"), Some(&alice), json!({}))
+        .await
+        .ok();
+}

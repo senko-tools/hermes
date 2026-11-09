@@ -9,6 +9,7 @@ use crate::state::AppState;
 use crate::time::now_ms;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+const RETENTION_BATCH: i64 = 2000;
 /// A nonce only has to outlive a client's retries.
 const NONCE_KEEP_MS: i64 = DAY_MS;
 /// An invite that has run out is kept this long, so its link can still say so.
@@ -41,6 +42,52 @@ async fn expired_sessions(state: &AppState, now: i64) -> Result<Vec<Id>, sqlx::E
     .fetch_all(&state.db.read)
     .await?;
     Ok(rows.into_iter().map(|r| Id::from_i64(r.id)).collect())
+}
+
+/// Deletes what `[privacy]` says is not to be kept, a batch at a time so that writers go on.
+async fn retention(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
+    let privacy = &state.config.privacy;
+    let id_at = |days: u32| {
+        hermes_proto::id::Id::min_at_unix_ms(
+            u64::try_from(now - i64::from(days) * DAY_MS).unwrap_or(0),
+        )
+        .to_i64()
+    };
+    let batched = async |sql: &'static str, cutoff: i64| -> Result<(), sqlx::Error> {
+        loop {
+            let done = sqlx::query(sql)
+                .bind(cutoff)
+                .bind(RETENTION_BATCH)
+                .execute(&state.db.write)
+                .await?;
+            if done.rows_affected() < RETENTION_BATCH as u64 {
+                return Ok(());
+            }
+        }
+    };
+    if privacy.message_retention_days > 0 {
+        batched(
+            "DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE id < ? LIMIT ?)",
+            id_at(privacy.message_retention_days),
+        )
+        .await?;
+    }
+    if privacy.deleted_message_retention_days > 0 {
+        batched(
+            "DELETE FROM messages WHERE id IN
+               (SELECT id FROM messages WHERE deleted = 1 AND id < ? LIMIT ?)",
+            id_at(privacy.deleted_message_retention_days),
+        )
+        .await?;
+    }
+    if privacy.audit_retention_days > 0 {
+        batched(
+            "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE id < ? LIMIT ?)",
+            id_at(privacy.audit_retention_days),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// One round of tidying.
@@ -76,6 +123,13 @@ pub async fn run(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
     .execute(&state.db.write)
     .await?;
 
+    sqlx::query!(
+        "DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < ?",
+        now
+    )
+    .execute(&state.db.write)
+    .await?;
+    retention(state, now).await?;
     let sessions = expired_sessions(state, now).await?;
     if !sessions.is_empty() {
         tracing::info!("ending {} unused sessions", sessions.len());

@@ -249,7 +249,7 @@ impl Shell {
                                 .into_iter()
                                 .map(|m| (inst.clone(), m))
                                 .collect(),
-                            Some(res.total),
+                            (!append).then_some(res.total),
                         ))
                     },
                     move |this, result, _, cx| this.results_loaded(&done, append, result, cx),
@@ -321,7 +321,9 @@ impl Shell {
                 let append = append && matches!(state.items, Remote::Ready(_));
                 state.add(append, items);
                 if total.is_some() {
-                    state.total = total;
+                    if total.is_some() {
+                        state.total = total;
+                    }
                 }
             }
             Err(err) if append && matches!(state.items, Remote::Ready(_)) => {

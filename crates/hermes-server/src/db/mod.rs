@@ -123,6 +123,41 @@ pub async fn backup(data_dir: &Path, output: &Path) -> Result<(), sqlx::Error> {
     result.map(|_| ())
 }
 
+/// Puts the database file at `input` in place at `target`, after checking it, and returns where
+/// the previous one went.
+pub async fn restore(input: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
+    use sqlx::ConnectOptions as _;
+    let mut conn = SqliteConnectOptions::new()
+        .filename(input)
+        .read_only(true)
+        .connect()
+        .await
+        .map_err(|e| format!("{}: {e}", input.display()))?;
+    let verdict: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&mut conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    if verdict != "ok" {
+        return Err(format!("{} is damaged: {verdict}", input.display()));
+    }
+    drop(conn);
+    let kept = if target.exists() {
+        let kept = target.with_extension(format!("before-restore-{}", crate::time::now_ms()));
+        std::fs::rename(target, &kept).map_err(|e| e.to_string())?;
+        Some(kept)
+    } else {
+        None
+    };
+    for suffix in ["wal", "shm"] {
+        let _ = std::fs::remove_file(target.with_extension(format!("db-{suffix}")));
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(input, target).map_err(|e| e.to_string())?;
+    Ok(kept)
+}
+
 /// Pragmas from PLAN.md section 7.3, plus `synchronous = NORMAL`, the usual choice with WAL:
 /// a power loss may lose the last commits but cannot corrupt the database.
 fn connect_options(path: &PathBuf) -> SqliteConnectOptions {

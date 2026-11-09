@@ -295,6 +295,7 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
         A::InviteCreate => "created an invite".to_owned(),
         A::InviteRevoke => "revoked an invite".to_owned(),
         A::KeyPolicyUpdate => "changed the encryption rules".to_owned(),
+        A::MessageDeleteBulk => "deleted several messages".to_owned(),
     };
     let details = match entry.details.as_object() {
         Some(map) if !map.is_empty() => {

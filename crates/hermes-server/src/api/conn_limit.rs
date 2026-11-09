@@ -11,13 +11,15 @@ use axum::serve::Listener;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::config::ProxyRange;
+
 /// How many connections may be open.
 #[derive(Debug, Clone)]
 pub struct Caps {
     pub total: u32,
     /// From one address; 0 = no limit. Trusted proxies carry many people, so they have none.
     pub per_ip: u32,
-    pub trusted_proxies: Arc<[IpAddr]>,
+    pub trusted_proxies: Arc<[ProxyRange]>,
 }
 
 type Counts = Arc<Mutex<HashMap<IpAddr, u32>>>;
@@ -27,7 +29,7 @@ pub struct Capped<L> {
     inner: L,
     total: Arc<Semaphore>,
     per_ip: u32,
-    trusted_proxies: Arc<[IpAddr]>,
+    trusted_proxies: Arc<[ProxyRange]>,
     open: Counts,
 }
 
@@ -44,7 +46,7 @@ impl<L> Capped<L> {
 
     /// One more connection from `ip`, unless it already has all it may.
     fn claim(&self, ip: IpAddr) -> Result<Option<IpSlot>, ()> {
-        if self.per_ip == 0 || self.trusted_proxies.contains(&ip) {
+        if self.per_ip == 0 || self.trusted_proxies.iter().any(|range| range.contains(ip)) {
             return Ok(None);
         }
         let mut open = self.open.lock().expect("connection counts");
@@ -151,7 +153,7 @@ impl<I: AsyncWrite + Unpin> AsyncWrite for CappedIo<I> {
 mod tests {
     use super::*;
 
-    fn capped(per_ip: u32, trusted: &[IpAddr]) -> Capped<()> {
+    fn capped(per_ip: u32, trusted: &[ProxyRange]) -> Capped<()> {
         Capped::new(
             (),
             Caps {
@@ -176,7 +178,7 @@ mod tests {
     #[test]
     fn a_trusted_proxy_has_no_limit() {
         let ip: IpAddr = "10.0.0.1".parse().unwrap();
-        let capped = capped(1, &[ip]);
+        let capped = capped(1, &["10.0.0.1".parse().unwrap()]);
         assert!(capped.claim(ip).unwrap().is_none());
         assert!(capped.claim(ip).unwrap().is_none());
     }

@@ -83,11 +83,7 @@ pub async fn register(
 
     // Cheap checks before hashing; repeated authoritatively inside the transaction.
     let first_user = state.cache().users.is_empty();
-    check_mode(
-        state.config.registration.mode,
-        first_user,
-        invite_code.is_some(),
-    )?;
+    check_mode(state.registration_mode(), first_user, invite_code.is_some())?;
     if let Some(code) = invite_code {
         // Hashing is what costs, so a made-up code must not get that far.
         let usable = invites::is_valid_code(code)
@@ -106,11 +102,7 @@ pub async fn register(
     let mut tx = state.db.write.begin().await?;
 
     let first_user = db::auth::count_users(&mut *tx).await? == 0;
-    check_mode(
-        state.config.registration.mode,
-        first_user,
-        invite_code.is_some(),
-    )?;
+    check_mode(state.registration_mode(), first_user, invite_code.is_some())?;
     let join_space = match invite_code {
         Some(code) => db::invites::take_use(&mut tx, code, now)
             .await?
@@ -283,6 +275,24 @@ pub async fn login(
         ));
     }
     let credentials = credentials.expect("verify_password is false for unknown users");
+    if let Some(secret) = &credentials.totp_secret {
+        let now = u64::try_from(now_ms() / 1000).unwrap_or(0);
+        match req.totp.as_deref() {
+            None => {
+                return Err(Error::new(
+                    ErrorCode::TwoFactorRequired,
+                    "Enter the code from your authenticator",
+                ));
+            }
+            Some(code) if !auth::totp::check(secret, code, now) => {
+                return Err(Error::new(
+                    ErrorCode::InvalidCredentials,
+                    "That code is not right",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     if credentials.disabled {
         return Err(Error::new(
             ErrorCode::AccountDisabled,

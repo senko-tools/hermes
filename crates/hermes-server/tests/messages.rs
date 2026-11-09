@@ -741,3 +741,66 @@ async fn someone_who_cannot_send_cannot_edit() {
         .await
         .err(403, "MISSING_PERMISSION");
 }
+
+#[tokio::test]
+async fn bulk_delete_takes_only_what_may_be_deleted() {
+    let server = start("messages-bulk", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let mine = send(&server, &alice, &general, "mine").await;
+    let theirs = send(&server, &owner, &general, "theirs").await;
+    let path = format!("/channels/{general}/messages");
+    server
+        .post(
+            &format!("{path}/bulk-delete"),
+            Some(&alice),
+            json!({ "ids": [id(&mine), id(&theirs)] }),
+        )
+        .await
+        .ok();
+    let history = server.get(&path, Some(&owner)).await.ok();
+    let content = |wanted: &Value| {
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == wanted["id"])
+            .unwrap()["content"]
+            .clone()
+    };
+    assert_eq!(content(&mine), "");
+    assert_eq!(content(&theirs), "theirs");
+}
+
+#[tokio::test]
+async fn a_report_reaches_the_moderators_only() {
+    let server = start("messages-report", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let message = send(&server, &owner, &general, "rude").await;
+    server
+        .post(
+            &format!("/channels/{general}/messages/{}/report", id(&message)),
+            Some(&alice),
+            json!({ "reason": "rude", "excerpt": "the words" }),
+        )
+        .await
+        .ok();
+    let reports = format!("/spaces/{space_id}/reports");
+    server
+        .get(&reports, Some(&alice))
+        .await
+        .err(403, "MISSING_PERMISSION");
+    let list = server.get(&reports, Some(&owner)).await.ok();
+    assert_eq!(list[0]["excerpt"], "the words");
+    server
+        .delete(
+            &format!("{reports}/{}", list[0]["id"].as_str().unwrap()),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(server.get(&reports, Some(&owner)).await.ok(), json!([]));
+}

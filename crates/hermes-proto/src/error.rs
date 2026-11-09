@@ -17,6 +17,8 @@ pub enum ErrorCode {
     ValidationFailed,
     Unauthorized,
     InvalidCredentials,
+    /// The password was right; this account also needs a code from its authenticator.
+    TwoFactorRequired,
     AccountDisabled,
     MissingPermission,
     NotFound,
@@ -35,11 +37,12 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
-    pub const ALL: [ErrorCode; 17] = [
+    pub const ALL: [ErrorCode; 18] = [
         ErrorCode::BadRequest,
         ErrorCode::ValidationFailed,
         ErrorCode::Unauthorized,
         ErrorCode::InvalidCredentials,
+        ErrorCode::TwoFactorRequired,
         ErrorCode::AccountDisabled,
         ErrorCode::MissingPermission,
         ErrorCode::NotFound,
@@ -59,7 +62,9 @@ impl ErrorCode {
     pub const fn http_status(self) -> u16 {
         match self {
             ErrorCode::BadRequest | ErrorCode::ValidationFailed => 400,
-            ErrorCode::Unauthorized | ErrorCode::InvalidCredentials => 401,
+            ErrorCode::Unauthorized
+            | ErrorCode::InvalidCredentials
+            | ErrorCode::TwoFactorRequired => 401,
             ErrorCode::AccountDisabled
             | ErrorCode::MissingPermission
             | ErrorCode::RegistrationClosed
@@ -81,6 +86,7 @@ impl ErrorCode {
             ErrorCode::ValidationFailed => "VALIDATION_FAILED",
             ErrorCode::Unauthorized => "UNAUTHORIZED",
             ErrorCode::InvalidCredentials => "INVALID_CREDENTIALS",
+            ErrorCode::TwoFactorRequired => "TWO_FACTOR_REQUIRED",
             ErrorCode::AccountDisabled => "ACCOUNT_DISABLED",
             ErrorCode::MissingPermission => "MISSING_PERMISSION",
             ErrorCode::NotFound => "NOT_FOUND",

@@ -89,7 +89,12 @@ pub async fn search(
     .limit();
     let db = &state.db.read;
     let rows = db::messages::search(db, &fts, &channels, q.author_id, q.before, limit).await?;
-    let total = db::messages::search_count(db, &fts, &channels, q.author_id).await?;
+    // Counting every match costs as much as the search: once, for the first page.
+    let total = if q.before.is_some() {
+        0
+    } else {
+        db::messages::search_count(db, &fts, &channels, q.author_id).await?
+    };
     Ok(Json(SearchResponse {
         messages: messages::to_wire(&state, rows, auth.user_id).await?,
         total: u64::try_from(total).unwrap_or(0),

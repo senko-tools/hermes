@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessageRequest};
+use hermes_proto::api::{
+    AckRequest, BulkDeleteRequest, EditMessageRequest, HistoryQuery, SendMessageRequest,
+};
 use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
@@ -294,6 +296,22 @@ pub async fn send(
             t.require(Permissions::ATTACH_FILES)?;
         }
         let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+        let max_mentions = state.config.limits.max_mentions_per_message as usize;
+        if max_mentions > 0 && raw.users.len() + raw.roles.len() > max_mentions {
+            return Err(validate::field_error("content", "mentions too many people"));
+        }
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                c.recipient_ids
+                    .iter()
+                    .any(|id| *id != auth.user_id && cache.blocked(*id, auth.user_id))
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::MissingPermission,
+                "This user does not accept direct messages from you",
+            ));
+        }
         let resolved = messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, raw);
         let slowmode = Some(t.slowmode_secs)
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
@@ -506,6 +524,54 @@ pub async fn unpin(
     Path((channel_id, message_id)): Path<(Id, Id)>,
 ) -> ApiResult<StatusCode> {
     set_pinned(&state, auth, channel_id, message_id, false).await
+}
+
+/// Deletes several messages at once: one's own, or anyone's with `MANAGE_MESSAGES`.
+pub async fn bulk_delete(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(channel_id): Path<Id>,
+    Json(req): Json<BulkDeleteRequest>,
+) -> ApiResult<StatusCode> {
+    if req.ids.len() > BulkDeleteRequest::MAX_IDS {
+        return Err(validate::field_error("ids", "are too many"));
+    }
+    let t = target(
+        &state.cache(),
+        channel_id,
+        auth.user_id,
+        Permissions::VIEW_CHANNEL,
+    )?;
+    let moderator = t.perms.contains(Permissions::MANAGE_MESSAGES);
+    let mut stored = Vec::new();
+    for id in &req.ids {
+        stored.extend(db::attachments::stored_of_message(&state.db.read, *id).await?);
+    }
+    let author = (!moderator).then_some(auth.user_id);
+    let mut tx = state.db.write.begin().await?;
+    let mut ids = db::messages::soft_delete_many(&mut tx, channel_id, &req.ids, author).await?;
+    if let (Some(space_id), true) = (t.space_id, moderator && !ids.is_empty()) {
+        audit::record(
+            &mut tx,
+            &state,
+            space_id,
+            auth.user_id,
+            AuditAction::MessageDeleteBulk,
+            None,
+            json!({ "channel_id": channel_id, "count": ids.len() }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    crate::files::purge(&state, stored).await;
+    if !ids.is_empty() {
+        ids.sort();
+        state.publish(
+            ServerEvent::MessageDeleteBulk { ids, channel_id },
+            Audience::Channel(channel_id),
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `MANAGE_MESSAGES`; in DMs any recipient. Pinning twice is not an error.

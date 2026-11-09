@@ -101,12 +101,14 @@ pub async fn add(
     let me = auth.user_id;
     let (other, existing) = {
         let cache = state.cache();
-        let other = find_by_handle(&cache, &req.handle).ok_or_else(|| {
-            Error::new(
-                ErrorCode::NotFound,
-                "Nobody has that name. Check the name and the # number.",
-            )
-        })?;
+        let other = find_by_handle(&cache, &req.handle)
+            .filter(|other| !cache.blocked(*other, me))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    "Nobody has that name. Check the name and the # number.",
+                )
+            })?;
         (other, cache.relationship(me, other))
     };
     if other == me {

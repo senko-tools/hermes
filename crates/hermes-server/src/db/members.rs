@@ -73,6 +73,7 @@ pub struct BanRow {
     pub reason: Option<String>,
     pub created_at: i64,
     pub banned_by: Id,
+    pub expires_at: Option<i64>,
 }
 
 /// A space's bans, oldest first.
@@ -82,7 +83,7 @@ pub async fn list_bans(
 ) -> Result<Vec<BanRow>, sqlx::Error> {
     let space_id = space_id.to_i64();
     let rows = sqlx::query!(
-        "SELECT user_id, reason, created_at, banned_by FROM bans WHERE space_id = ?
+        "SELECT user_id, reason, created_at, banned_by, expires_at FROM bans WHERE space_id = ?
          ORDER BY created_at, user_id LIMIT 2000",
         space_id
     )
@@ -95,6 +96,7 @@ pub async fn list_bans(
             reason: r.reason,
             created_at: r.created_at,
             banned_by: Id::from_i64(r.banned_by),
+            expires_at: r.expires_at,
         })
         .collect())
 }
@@ -107,17 +109,21 @@ pub async fn upsert_ban(
     reason: Option<&str>,
     banned_by: Id,
     now: i64,
+    expires_at: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     let (space_id, user_id, banned_by) = (space_id.to_i64(), user_id.to_i64(), banned_by.to_i64());
     sqlx::query!(
-        "INSERT INTO bans (space_id, user_id, reason, banned_by, created_at) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO bans (space_id, user_id, reason, banned_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (space_id, user_id)
-         DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by",
+         DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by,
+           expires_at = excluded.expires_at",
         space_id,
         user_id,
         reason,
         banned_by,
-        now
+        now,
+        expires_at
     )
     .execute(conn)
     .await?;

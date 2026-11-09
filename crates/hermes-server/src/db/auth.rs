@@ -15,6 +15,7 @@ pub struct Credentials {
     pub user_id: Id,
     pub password_hash: String,
     pub disabled: bool,
+    pub totp_secret: Option<String>,
 }
 
 /// The stored handle a login name means: itself if an account has exactly that handle, or, for a
@@ -50,7 +51,8 @@ pub async fn credentials_by_username(
     username: &str,
 ) -> Result<Option<Credentials>, sqlx::Error> {
     let row = sqlx::query!(
-        r#"SELECT id, password_hash, disabled AS "disabled: bool" FROM users WHERE username = ?"#,
+        r#"SELECT id, password_hash, disabled AS "disabled: bool", totp_secret
+           FROM users WHERE username = ?"#,
         username
     )
     .fetch_optional(e)
@@ -59,6 +61,7 @@ pub async fn credentials_by_username(
         user_id: Id::from_i64(r.id),
         password_hash: r.password_hash,
         disabled: r.disabled,
+        totp_secret: r.totp_secret,
     }))
 }
 

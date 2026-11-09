@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?",
+  "query": "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?\n           AND (expires_at IS NULL OR expires_at > ?)",
   "describe": {
     "columns": [
       {
@@ -16,11 +16,11 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 3
     },
     "nullable": [
       false
     ]
   },
-  "hash": "e922c38ee5bee6afff0ae1b08a2036d71323f1b132c21109ea4dd3f1d5b14553"
+  "hash": "a975630c7cbc9e0c5b0192ad7d6025b2b9aaf143179d166ccb9a8c59f96b6e3d"
 }
