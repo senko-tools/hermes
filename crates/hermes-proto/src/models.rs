@@ -375,6 +375,9 @@ pub struct Ban {
     pub user: User,
     pub reason: Option<String>,
     pub created_at: i64,
+    /// The moderator who banned them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_by: Option<Id>,
 }
 
 /// What an audit log entry records.

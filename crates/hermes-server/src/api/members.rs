@@ -263,6 +263,7 @@ pub async fn list_bans(
                     user: cache.users.get(&row.user_id)?.user.clone(),
                     reason: row.reason,
                     created_at: row.created_at,
+                    banned_by: Some(row.banned_by),
                 })
             })
             .collect(),

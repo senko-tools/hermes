@@ -231,8 +231,16 @@ async fn limit_body_idle(request: axum::extract::Request) -> axum::extract::Requ
 }
 
 /// `GET /healthz`, for Docker and uptime checks.
-async fn healthz() -> &'static str {
-    "ok"
+async fn healthz(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<&'static str, StatusCode> {
+    match sqlx::query("SELECT 1").execute(&state.db.read).await {
+        Ok(_) => Ok("ok"),
+        Err(err) => {
+            tracing::error!("health check: {err}");
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+    }
 }
 
 async fn not_found() -> Error {

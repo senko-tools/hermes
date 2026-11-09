@@ -72,6 +72,7 @@ pub struct BanRow {
     pub user_id: Id,
     pub reason: Option<String>,
     pub created_at: i64,
+    pub banned_by: Id,
 }
 
 /// A space's bans, oldest first.
@@ -81,7 +82,7 @@ pub async fn list_bans(
 ) -> Result<Vec<BanRow>, sqlx::Error> {
     let space_id = space_id.to_i64();
     let rows = sqlx::query!(
-        "SELECT user_id, reason, created_at FROM bans WHERE space_id = ?
+        "SELECT user_id, reason, created_at, banned_by FROM bans WHERE space_id = ?
          ORDER BY created_at, user_id LIMIT 2000",
         space_id
     )
@@ -93,6 +94,7 @@ pub async fn list_bans(
             user_id: Id::from_i64(r.user_id),
             reason: r.reason,
             created_at: r.created_at,
+            banned_by: Id::from_i64(r.banned_by),
         })
         .collect())
 }

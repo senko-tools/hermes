@@ -82,7 +82,7 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) {
     if let End::Close(code) = end {
         let frame = CloseFrame {
             code: code.code(),
-            reason: "".into(),
+            reason: format!("{code:?}").into(),
         };
         let _ = conn.socket.send(Message::Close(Some(frame))).await;
     }

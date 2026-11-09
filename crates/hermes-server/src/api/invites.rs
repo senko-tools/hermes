@@ -110,10 +110,21 @@ async fn usable_invite(state: &AppState, code: &str) -> ApiResult<InviteRow> {
     if !invites::is_valid_code(code) {
         return Err(invite_invalid());
     }
-    db::invites::get(&state.db.read, code)
+    let invite = db::invites::get(&state.db.read, code)
         .await?
-        .filter(|invite| invite.is_usable(now_ms()))
-        .ok_or_else(invite_invalid)
+        .ok_or_else(invite_invalid)?;
+    if invite.is_usable(now_ms()) {
+        return Ok(invite);
+    }
+    let used_up = invite.max_uses.is_some_and(|max| invite.uses >= max);
+    Err(Error::new(
+        ErrorCode::InviteInvalid,
+        if used_up {
+            "This invite has been used up"
+        } else {
+            "This invite has expired"
+        },
+    ))
 }
 
 /// Public preview (no auth): the space's name, icon and member count.

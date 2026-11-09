@@ -71,6 +71,9 @@ fn check_parent(
         .ok_or_else(|| "must be a category in this space".to_owned())
 }
 
+/// Channels one server may have, categories included.
+const MAX_CHANNELS: usize = 500;
+
 /// `MANAGE_CHANNELS`. The channel goes last; inside a category it gets a copy of the category's
 /// overrides (PLAN.md section 8.2).
 pub async fn create(
@@ -79,6 +82,18 @@ pub async fn create(
     Path(space_id): Path<Id>,
     Json(req): Json<CreateChannelRequest>,
 ) -> ApiResult<Json<Channel>> {
+    let in_space = state
+        .cache()
+        .channels
+        .values()
+        .filter(|c| c.channel.space_id == Some(space_id))
+        .count();
+    if in_space >= MAX_CHANNELS {
+        return Err(Error::new(
+            hermes_proto::ErrorCode::BadRequest,
+            format!("A server can have at most {MAX_CHANNELS} channels"),
+        ));
+    }
     let config = &state.config;
     let mut fields = Fields::new();
     if !matches!(
