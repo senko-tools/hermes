@@ -158,6 +158,8 @@ pub struct Shell {
     pub resizing: Option<(f32, f32)>,
     /// What is being resized is the member list, not the sidebar.
     pub resizing_members: bool,
+    /// The status went idle by itself, so it comes back by itself.
+    pub auto_idle: bool,
     /// What the system asked for, under the setting.
     pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
@@ -314,6 +316,7 @@ impl Shell {
             sidebar_visible: true,
             resizing: None,
             resizing_members: false,
+            auto_idle: false,
             system_reduce_motion: false,
             update: None,
             new_dm: None,
@@ -372,6 +375,7 @@ impl Shell {
         this.apply_motion(cx);
         window.set_rem_size(gpui_kit::px(16. * crate::theme::scale()));
         this.start_theme_watcher(cx);
+        this.start_idle_watch(cx);
         this.check_for_update(cx);
         if let Some(warning) = key_warnings.into_iter().next() {
             this.warn(warning, cx);
@@ -1105,6 +1109,22 @@ impl Shell {
     }
 
     /// Asks GitHub for a newer release (`general.check_for_updates`).
+    /// Asks now, and says what came of it.
+    pub fn check_for_update_now(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
+            |this, result, _, cx| match result {
+                Ok(Some(update)) => {
+                    this.update = Some(update);
+                    cx.notify();
+                }
+                Ok(None) => this.info("Hermes is up to date", cx),
+                Err(err) => this.error(format!("could not check for updates: {err}"), cx),
+            },
+        );
+    }
+
     fn check_for_update(&mut self, cx: &mut Context<Self>) {
         if !self.config.general.check_for_updates {
             return;
@@ -1132,6 +1152,13 @@ impl Shell {
                 .px(px(16.))
                 .py(px(6.))
                 .bg(theme::accent_soft())
+                .child(
+                    crate::channel::tip_button("update-dismiss", assets::CLOSE, "Not now")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.update = None;
+                            cx.notify();
+                        })),
+                )
                 .cursor_pointer()
                 .text_size(crate::theme::secondary_size())
                 .child(div().flex_1().child(format!(

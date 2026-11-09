@@ -1372,6 +1372,32 @@ impl Shell {
                             &format!("Within {} minutes", b.group_minutes),
                             self.slider(page, SliderKind::GroupMinutes),
                         ),
+                        self.flag(
+                            "Compact messages",
+                            "Less space between messages.",
+                            b.compact,
+                            "buffer.compact",
+                            cx,
+                        ),
+                        setting(
+                            "Clock",
+                            "",
+                            wrap().children(
+                                [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")]
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(n, (format, name))| {
+                                        chip(("clock", n), name, b.timestamp_format == format)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.persist(
+                                                    "buffer.timestamp_format",
+                                                    &toml_string(format.to_owned()),
+                                                    cx,
+                                                );
+                                            }))
+                                    }),
+                            ),
+                        ),
                         setting(
                             "Time format",
                             &format!("Now: {preview}. Enter saves."),
@@ -1861,6 +1887,48 @@ impl Shell {
                         ),
                         self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
                         self.flag(
+                            "Pop up for DMs",
+                            "",
+                            n.toast_dms,
+                            "notifications.toast_dms",
+                            cx,
+                        ),
+                        self.flag(
+                            "Pop up for mentions",
+                            "",
+                            n.toast_mentions,
+                            "notifications.toast_mentions",
+                            cx,
+                        ),
+                        self.flag(
+                            "Pop up for other messages",
+                            "",
+                            n.toast_other,
+                            "notifications.toast_other",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for DMs",
+                            "",
+                            n.sound_dms,
+                            "notifications.sound_dms",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for mentions",
+                            "",
+                            n.sound_mentions,
+                            "notifications.sound_mentions",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for other messages",
+                            "",
+                            n.sound_other,
+                            "notifications.sound_other",
+                            cx,
+                        ),
+                        self.flag(
                             "Flash the taskbar button",
                             "",
                             n.flash_taskbar,
@@ -1879,6 +1947,49 @@ impl Shell {
                             "general.close_to_tray",
                             cx,
                         ),
+                        setting(
+                            "Start when I sign in",
+                            "Hermes opens by itself when you sign in to this computer.",
+                            Switch::new("start-on-login")
+                                .cursor_pointer()
+                                .checked(g.start_on_login)
+                                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                    let on = *on;
+                                    match crate::desktop::set_start_on_login(on) {
+                                        Ok(()) => this.persist(
+                                            "general.start_on_login",
+                                            &on.to_string(),
+                                            cx,
+                                        ),
+                                        Err(err) => this.error(err, cx),
+                                    }
+                                })),
+                        ),
+                        setting(
+                            "Go idle after",
+                            "With nothing touched for this long.",
+                            wrap().children(
+                                [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")]
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(n, (minutes, name))| {
+                                        chip(
+                                            ("idle-after", n),
+                                            name,
+                                            g.auto_idle_minutes == minutes,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.persist(
+                                                    "general.auto_idle_minutes",
+                                                    &minutes.to_string(),
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                    }),
+                            ),
+                        ),
                         self.flag(
                             "Start minimized to the tray",
                             "",
@@ -1892,6 +2003,16 @@ impl Shell {
                             g.check_for_updates,
                             "general.check_for_updates",
                             cx,
+                        ),
+                        setting(
+                            "Check for updates now",
+                            "",
+                            Button::new("update-now")
+                                .cursor_pointer()
+                                .label("Check")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.check_for_update_now(cx);
+                                })),
                         ),
                     ],
                 ),

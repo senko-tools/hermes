@@ -94,6 +94,43 @@ pub struct ResultsPage {
 /// Loaded results and, for a search, the total number of matches.
 type ResultPage = (Vec<(InstanceId, ChatMessage)>, Option<u64>);
 
+/// Takes `from:name` and `in:channel` out of a search. What matches nobody stays in the words.
+fn filters(
+    s: &hermes_client_core::store::InstanceStore,
+    query: &str,
+    space: Option<Id>,
+) -> (String, Option<Id>, Option<Id>) {
+    let (mut author, mut channel) = (None, None);
+    let mut rest = Vec::new();
+    for word in query.split_whitespace() {
+        if let Some(name) = word.strip_prefix("from:") {
+            let name = name.trim_start_matches('@').to_lowercase();
+            let found = s
+                .users
+                .values()
+                .find(|u| u.username.to_lowercase() == name || u.handle().to_lowercase() == name);
+            if let Some(user) = found {
+                author = Some(user.id);
+                continue;
+            }
+        } else if let Some(name) = word.strip_prefix("in:") {
+            let name = name.trim_start_matches('#').to_lowercase();
+            let found = space.and_then(|id| s.spaces.get(&id)).and_then(|state| {
+                state
+                    .channels
+                    .values()
+                    .find(|c| c.name.as_deref().is_some_and(|n| n.to_lowercase() == name))
+            });
+            if let Some(found) = found {
+                channel = Some(found.id);
+                continue;
+            }
+        }
+        rest.push(word);
+    }
+    (rest.join(" "), author, channel)
+}
+
 impl Shell {
     /// Shows a results page, loading it unless it is a search or loaded already.
     pub fn open_results(&mut self, key: Key, window: &mut Window, cx: &mut Context<Self>) {
@@ -184,12 +221,17 @@ impl Shell {
                 } else {
                     None
                 };
+                let (query, author_id, channel_id) = self.core.store().instance(&inst).map_or_else(
+                    || (query.clone(), None, None),
+                    |s| filters(s, &query, space),
+                );
                 let request = SearchQuery {
                     q: query,
                     space_id: space,
+                    channel_id,
+                    author_id,
                     before,
                     limit: Some(PAGE),
-                    ..SearchQuery::default()
                 };
                 let core = self.core.clone();
                 let done = key.clone();

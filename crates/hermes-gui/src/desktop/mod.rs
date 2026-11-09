@@ -38,6 +38,60 @@ pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String
     (title, body)
 }
 
+/// A number that changes whenever the user touches the mouse or keyboard; `None` where the system
+/// does not say.
+#[cfg(windows)]
+pub fn last_input() -> Option<u32> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in.
+    #[allow(unsafe_code)]
+    let ok = unsafe { GetLastInputInfo(&mut info) }.as_bool();
+    ok.then_some(info.dwTime)
+}
+
+#[cfg(not(windows))]
+pub fn last_input() -> Option<u32> {
+    None
+}
+
+/// Starts Hermes when the user signs in, or stops doing so.
+#[cfg(windows)]
+pub fn set_start_on_login(on: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let mut command = std::process::Command::new("reg");
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        command.args(["add", KEY, "/v", "Hermes", "/t", "REG_SZ", "/f", "/d"]);
+        command.arg(format!("\"{}\"", exe.display()));
+    } else {
+        command.args(["delete", KEY, "/v", "Hermes", "/f"]);
+    }
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| e.to_string())?;
+    // Deleting what was never there is fine too.
+    if status.success() || !on {
+        Ok(())
+    } else {
+        Err("the system refused the change".to_owned())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_start_on_login(_on: bool) -> Result<(), String> {
+    Err("starting at sign-in is only available on Windows for now".to_owned())
+}
+
 /// Whether a notification flashes the taskbar: DMs and mentions only.
 pub fn flashes(n: &Notification) -> bool {
     n.mention || n.space_id.is_none()

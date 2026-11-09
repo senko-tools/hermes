@@ -171,6 +171,54 @@ impl Shell {
         }
     }
 
+    /// Turns the status idle after a while without input, and back when input returns.
+    pub fn start_idle_watch(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let mut seen = None;
+            let mut active = std::time::Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(15))
+                    .await;
+                let input = desktop::last_input();
+                if input != seen {
+                    seen = input;
+                    active = std::time::Instant::now();
+                }
+                // Where the system cannot say, nobody counts as idle.
+                let idle = if input.is_some() {
+                    active.elapsed()
+                } else {
+                    std::time::Duration::ZERO
+                };
+                if this.update(cx, |this, _| this.idle_for(idle)).is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn idle_for(&mut self, idle: std::time::Duration) {
+        use hermes_client_core::proto::models::PresenceStatus as Presence;
+        let current = self.core.presence();
+        if self.auto_idle {
+            if current != Presence::Idle {
+                // Changed by hand meanwhile.
+                self.auto_idle = false;
+            } else if idle < std::time::Duration::from_secs(30) {
+                self.auto_idle = false;
+                self.core.set_presence_for_now(Presence::Online);
+            }
+            return;
+        }
+        let minutes = self.config.general.auto_idle_minutes;
+        if minutes > 0 && current == Presence::Online && idle.as_secs() >= u64::from(minutes) * 60 {
+            self.auto_idle = true;
+            self.core.set_presence_for_now(Presence::Idle);
+        }
+    }
+
     /// A toast (if enabled) and a taskbar flash for DMs and mentions while unfocused.
     pub fn notify(
         &mut self,
@@ -186,8 +234,18 @@ impl Shell {
         if !self.focused && settings.flash_taskbar && desktop::flashes(&notification) {
             native::flash(window);
         }
-        if settings.sound {
+        let (toast, sound) = if notification.space_id.is_none() {
+            (settings.toast_dms, settings.sound_dms)
+        } else if notification.mention {
+            (settings.toast_mentions, settings.sound_mentions)
+        } else {
+            (settings.toast_other, settings.sound_other)
+        };
+        if settings.sound && sound {
             self.core.play_sound(Sound::Ping);
+        }
+        if !toast {
+            return;
         }
         self.run(
             cx,

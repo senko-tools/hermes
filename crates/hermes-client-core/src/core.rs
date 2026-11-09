@@ -888,11 +888,16 @@ impl Core {
 
     /// Changes my presence on every instance.
     pub fn set_presence(&self, status: PresenceStatus) {
-        *self.inner.presence.lock().expect("presence") = status;
+        self.set_presence_for_now(status);
         // Whoever goes invisible stays invisible after a restart.
         if let Err(err) = self.set_setting("general.presence", presence_name(status)) {
             tracing::warn!("presence not saved: {err}");
         }
+    }
+
+    /// Changes my presence without making it the status chosen: going idle by itself.
+    pub fn set_presence_for_now(&self, status: PresenceStatus) {
+        *self.inner.presence.lock().expect("presence") = status;
         for handle in self.inner.instances.lock().expect("instances").values() {
             handle.gateway.send(Command::Presence(status));
         }

@@ -97,6 +97,8 @@ pub struct ChatView {
     pub highlight: Option<Id>,
     /// Opening it failed: it offers to try again instead of loading for ever.
     pub load_failed: bool,
+    /// The jump to the first new message was used this visit.
+    pub unread_jump_done: bool,
     /// Messages selected to delete together (only ones I may delete).
     pub selected: BTreeSet<Id>,
     /// The message the last selecting click was on: Shift+click selects from there.
@@ -399,6 +401,7 @@ impl Shell {
                 jump: None,
                 highlight: None,
                 load_failed: false,
+                unread_jump_done: false,
                 selected: BTreeSet::new(),
                 anchor: None,
                 input,
@@ -435,6 +438,7 @@ impl Shell {
                 .and_then(|s| s.read_states.get(&channel).map(|r| r.last_read_id));
             if let Some(view) = self.chats.get_mut(&key) {
                 view.read_marker = marker;
+                view.unread_jump_done = false;
             }
         }
         self.page = Page::Chat(inst.clone(), channel);
@@ -1688,6 +1692,10 @@ impl Shell {
             .unwrap_or_default();
         let typing = s.and_then(|s| self.typing_line(s, channel));
         let at_end = view.list.is_scrolled_to_end() != Some(false);
+        let newest = window_state.and_then(|w| w.messages.iter().last().map(|m| m.id));
+        let first_unread = view
+            .read_marker
+            .filter(|marker| !view.unread_jump_done && newest.is_some_and(|n| n > *marker));
         let selected_count = view.selected.len();
         let can_send = s.is_some_and(|s| view::can(s, channel, Permissions::SEND_MESSAGES));
         let reply_name = view.reply_to.map(|id| {
@@ -1760,6 +1768,22 @@ impl Shell {
                 .min_h_0()
                 .child(self.selection_list_marker())
                 .child(messages)
+                .children(first_unread.map(|marker| {
+                    let (jump_inst, jump_channel) = key.clone();
+                    div().absolute().top(px(8.)).right(px(16.)).child(
+                        Button::new("jump-unread")
+                            .cursor_pointer()
+                            .label("Jump to new messages")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(view) =
+                                    this.chats.get_mut(&(jump_inst.clone(), jump_channel))
+                                {
+                                    view.unread_jump_done = true;
+                                }
+                                this.jump_to(jump_inst.clone(), jump_channel, marker, window, cx);
+                            })),
+                    )
+                }))
                 .when(!at_end || !live, |d| {
                     d.child(
                         div().absolute().bottom(px(12.)).right(px(16.)).child(
@@ -2365,7 +2389,17 @@ impl Shell {
             .relative()
             .flex()
             .w_full()
-            .pt(px(if m.grouped { 1. } else { 8. }))
+            .pt(px(match (m.grouped, self.config.buffer.compact) {
+                (true, _) => {
+                    if self.config.buffer.compact {
+                        0.
+                    } else {
+                        1.
+                    }
+                }
+                (false, true) => 3.,
+                (false, false) => 8.,
+            }))
             .pb(px(if m.ends_group { 8. } else { 1. }))
             .pl(px(8.))
             .pr(px(8.))

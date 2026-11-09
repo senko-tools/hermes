@@ -124,6 +124,10 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// Hermes starts when I sign in to the computer.
+    pub start_on_login: bool,
+    /// Minutes without input before the status turns idle; 0 = never.
+    pub auto_idle_minutes: u32,
     /// The status chosen last: `online`, `idle`, `dnd` or `invisible`.
     pub presence: String,
     /// No sliding or fading, whatever the system says.
@@ -147,6 +151,8 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            start_on_login: false,
+            auto_idle_minutes: 10,
             presence: "online".into(),
             reduce_motion: false,
             smooth_scroll: true,
@@ -220,6 +226,8 @@ pub struct Buffer {
     pub show_typing: bool,
     /// Bold, code blocks and the like are drawn; off shows messages as they were typed.
     pub markdown: bool,
+    /// Less space between messages.
+    pub compact: bool,
 }
 
 impl Default for Buffer {
@@ -232,6 +240,7 @@ impl Default for Buffer {
             image_previews: true,
             show_typing: true,
             markdown: true,
+            compact: false,
         }
     }
 }
@@ -303,6 +312,12 @@ pub struct Notifications {
     pub sound: bool,
     pub show_preview: bool,
     pub flash_taskbar: bool,
+    pub toast_dms: bool,
+    pub toast_mentions: bool,
+    pub toast_other: bool,
+    pub sound_dms: bool,
+    pub sound_mentions: bool,
+    pub sound_other: bool,
 }
 
 impl Default for Notifications {
@@ -312,6 +327,12 @@ impl Default for Notifications {
             sound: true,
             show_preview: true,
             flash_taskbar: true,
+            toast_dms: true,
+            toast_mentions: true,
+            toast_other: true,
+            sound_dms: true,
+            sound_mentions: true,
+            sound_other: true,
         }
     }
 }
