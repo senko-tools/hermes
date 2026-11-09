@@ -1544,6 +1544,9 @@ impl Core {
             return;
         }
         self.changed(inst, [Changed::ReadState(channel)]);
+        if !self.config().privacy.send_read_marks {
+            return;
+        }
         let first = handle
             .read_marks
             .lock()
@@ -1582,6 +1585,9 @@ impl Core {
                 return;
             }
             sent.insert(channel, now);
+        }
+        if !self.config().privacy.send_typing {
+            return;
         }
         tokio::spawn(async move {
             let _ = handle.rest.typing(channel).await;

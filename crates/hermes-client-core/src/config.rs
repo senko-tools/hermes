@@ -83,6 +83,7 @@ pub struct ClientConfig {
     pub buffer: Buffer,
     pub voice: Voice,
     pub notifications: Notifications,
+    pub privacy: Privacy,
     /// GUI keybinds, action = "key combo".
     pub keys: BTreeMap<String, String>,
     pub tui: Tui,
@@ -100,6 +101,7 @@ impl Default for ClientConfig {
             buffer: Buffer::default(),
             voice: Voice::default(),
             notifications: Notifications::default(),
+            privacy: Privacy::default(),
             keys: [
                 ("command_bar", "Ctrl+K"),
                 ("toggle_mute", "Ctrl+Shift+M"),
@@ -122,6 +124,18 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// No sliding or fading, whatever the system says.
+    pub reduce_motion: bool,
+    /// The mouse wheel glides instead of jumping.
+    pub smooth_scroll: bool,
+    /// How far a wheel notch goes, as a multiple of the plain distance.
+    pub scroll_speed: f64,
+    /// GIFs and other animated pictures move while the window has the focus.
+    pub animate_pictures: bool,
+    /// Where downloads go; empty = the Downloads folder.
+    pub download_dir: String,
+    /// Ask for a place each time something is downloaded.
+    pub ask_where_to_save: bool,
 }
 
 impl Default for General {
@@ -131,6 +145,12 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            reduce_motion: false,
+            smooth_scroll: true,
+            scroll_speed: 1.25,
+            animate_pictures: true,
+            download_dir: String::new(),
+            ask_where_to_save: false,
         }
     }
 }
@@ -163,6 +183,12 @@ pub struct Sidebar {
     pub show_voice_users: bool,
     /// Width of the member list (desktop client).
     pub member_list_width: u16,
+    /// The member list shows beside a chat.
+    pub show_members: bool,
+    /// The sidebar shows (Ctrl+B hides it).
+    pub visible: bool,
+    pub show_unread_dots: bool,
+    pub show_mention_counts: bool,
 }
 
 impl Default for Sidebar {
@@ -172,6 +198,10 @@ impl Default for Sidebar {
             width: 240,
             show_voice_users: true,
             member_list_width: 232,
+            show_members: true,
+            visible: true,
+            show_unread_dots: true,
+            show_mention_counts: true,
         }
     }
 }
@@ -273,6 +303,29 @@ impl Default for Notifications {
             sound: true,
             show_preview: true,
             flash_taskbar: true,
+        }
+    }
+}
+
+/// What this device tells the server. Who may reach me is kept on the server instead
+/// (`/users/@me/privacy`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Privacy {
+    /// Others see that I am typing.
+    pub send_typing: bool,
+    /// The server keeps what I have read, which also syncs it to my other devices.
+    pub send_read_marks: bool,
+    /// Searches never leave this device, so older unencrypted messages are not found.
+    pub local_search_only: bool,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Privacy {
+            send_typing: true,
+            send_read_marks: true,
+            local_search_only: false,
         }
     }
 }

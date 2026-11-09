@@ -264,10 +264,11 @@ impl Core {
         let limit = query.limit.unwrap_or(25).max(1) as usize;
         // The server can only search what it can read; where that is nothing, it need not
         // learn what is being looked for.
-        let sealed = self
-            .store()
-            .instance(inst)
-            .is_some_and(|s| s.search_only_sealed(query));
+        let sealed = self.config().privacy.local_search_only
+            || self
+                .store()
+                .instance(inst)
+                .is_some_and(|s| s.search_only_sealed(query));
         let mut merged = if sealed {
             SearchResponse {
                 messages: Vec::new(),
