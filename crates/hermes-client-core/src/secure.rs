@@ -39,6 +39,8 @@ const STORED_NAME: &str = "encrypted.bin";
 pub const NOT_FOR_THIS_DEVICE: &str =
     "Encrypted before this device was signed in, so it cannot be read here.";
 pub const TAMPERED: &str = "This encrypted message could not be verified, so it is not shown.";
+/// How soon someone's devices are asked for again when a message names an unknown one.
+const UNKNOWN_DEVICE_RETRY_MS: i64 = 5_000;
 pub const UNSEALED: &str = "This message was not encrypted although this conversation is, so it may not be from who it says. It is not shown.";
 const REPLAYED: &str =
     "This encrypted message does not match where the server put it, so it is not shown.";
@@ -398,7 +400,10 @@ impl Core {
         let sender = match known {
             Some(sender) => Some(sender),
             None => {
-                if let Err(err) = self.fetch_devices(inst, &keys, &[author], 0).await {
+                // A page of messages from a device nobody lists asks only once.
+                let asked = keys.directory.lock().expect("directory").fetched_at(author);
+                let recently = asked.is_some_and(|at| now_ms() - at < UNKNOWN_DEVICE_RETRY_MS);
+                if !recently && let Err(err) = self.fetch_devices(inst, &keys, &[author], 0).await {
                     tracing::warn!("could not ask for {author}'s encryption keys: {err}");
                 }
                 keys.directory

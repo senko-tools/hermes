@@ -1696,10 +1696,10 @@ mod tests {
         dir.update(BOB, vec![one.public(BOB)], 5);
         assert_eq!(dir.live_devices(BOB).len(), 1);
         assert!(dir.device(BOB, &gone).is_some());
-        // And coming back is no news.
+        // And coming back is news, as a new device would be.
         dir.update(BOB, vec![one.public(BOB), two.public(BOB)], 6);
         assert_eq!(dir.live_devices(BOB).len(), 2);
-        assert_eq!(dir.unseen(BOB), 0);
+        assert_eq!(dir.unseen(BOB), 1);
     }
 
     #[test]

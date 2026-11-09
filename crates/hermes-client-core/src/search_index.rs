@@ -43,18 +43,25 @@ struct Progress {
     complete: bool,
 }
 
+/// The index is written after this many pages of old messages.
+const SAVE_EVERY_PAGES: u32 = 10;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Data {
     words: BTreeMap<String, Vec<Id>>,
     /// Each message's channel and author.
     messages: HashMap<Id, (Id, Id)>,
     progress: HashMap<Id, Progress>,
+    /// The words of each message, so that removing one does not look through the whole index.
+    #[serde(skip)]
+    by_message: HashMap<Id, Vec<String>>,
 }
 
 impl Data {
     fn add(&mut self, id: Id, channel: Id, author: Id, words: &BTreeSet<String>) {
         self.remove(id);
         self.messages.insert(id, (channel, author));
+        self.by_message.insert(id, words.iter().cloned().collect());
         for word in words {
             let ids = self.words.entry(word.clone()).or_default();
             if let Err(at) = ids.binary_search(&id) {
@@ -64,15 +71,32 @@ impl Data {
     }
 
     fn remove(&mut self, id: Id) {
-        if self.messages.remove(&id).is_none() {
+        if !self.messages.contains_key(&id) {
             return;
         }
-        self.words.retain(|_, ids| {
-            if let Ok(at) = ids.binary_search(&id) {
-                ids.remove(at);
+        // Not kept in the file: made once, the first time something is removed after a load.
+        if self.by_message.len() != self.messages.len() {
+            self.by_message.clear();
+            for (word, ids) in &self.words {
+                for message in ids {
+                    self.by_message
+                        .entry(*message)
+                        .or_default()
+                        .push(word.clone());
+                }
             }
-            !ids.is_empty()
-        });
+        }
+        self.messages.remove(&id);
+        for word in self.by_message.remove(&id).unwrap_or_default() {
+            if let Some(ids) = self.words.get_mut(&word) {
+                if let Ok(at) = ids.binary_search(&id) {
+                    ids.remove(at);
+                }
+                if ids.is_empty() {
+                    self.words.remove(&word);
+                }
+            }
+        }
     }
 
     /// The messages holding a word that starts with `prefix`.
@@ -412,6 +436,15 @@ impl Core {
                 .copied()
                 .unwrap_or_default()
         };
+        // Nothing new and nothing older to read: no need to ask.
+        let last = self
+            .store()
+            .instance(inst)
+            .and_then(|s| s.channel(channel).and_then(|c| c.last_message_id));
+        let at = progress(keys);
+        if at.complete && last.is_some() && last == at.newest {
+            return Ok(());
+        }
         // What arrived since last time first, then further into the past.
         loop {
             let at = progress(keys);
@@ -426,6 +459,7 @@ impl Core {
             }
             tokio::time::sleep(SYNC_PAUSE).await;
         }
+        let mut pages = 0;
         loop {
             let at = progress(keys);
             if at.complete || at.oldest.is_none() {
@@ -443,7 +477,11 @@ impl Core {
                 index.dirty = true;
                 break;
             }
-            keys.index.lock().expect("index").save();
+            // Writing the whole index is the slow part, so not after every page.
+            pages += 1;
+            if pages % SAVE_EVERY_PAGES == 0 {
+                keys.index.lock().expect("index").save();
+            }
             tokio::time::sleep(SYNC_PAUSE).await;
         }
         Ok(())

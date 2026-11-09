@@ -86,6 +86,28 @@ never repeats under a key. The clear header of an audio datagram keeps only its 
 are authenticated; loudness moved inside, and the content is padded to 32 bytes. Packet version 2 keeps
 clients from before this out, in both directions, so nothing is ever sent or played in clear.
 
+## What a device holds a server to
+
+A hostile server is the case all of this is for, so a device remembers what it has seen and does not
+take the server's word for less:
+
+- **Key rules:** a channel seen to need approval, or to hide its past, stays that way on this device
+  until someone changes the rule from this device. A server claiming otherwise gets a warning.
+- **Encryption stays on:** an instance seen to encrypt its channels keeps being treated as encrypted.
+- **Older keys:** a key this device holds is never replaced, and a server offering an older channel key
+  than the newest held gets nothing sent. Restoring a server from a backup older than a key rotation
+  therefore stops sending in that channel, on purpose.
+- **Messages in clear:** a plain message after a conversation's first sealed one is not shown and does
+  not notify, because the server could have written it under any name.
+- **Replays:** a sealed message says when it was written and which message it edits. One the server
+  moved, or posted again later (over an hour off), or rolled back from an edit, is not shown.
+- **Devices:** a device that comes back after being removed counts as new, and what it signs while
+  removed does not verify. Marking a conversation as verified holds sending while someone has an
+  unseen device.
+- **Damage:** a damaged record file is set aside and reported, rather than silently starting over.
+- **Removing an instance** deletes this device's keys, channel keys, search index and records for it.
+  Signing out keeps them, so signing back in on this device still reads the history.
+
 ## What this does not protect
 
 Said plainly, because promising more would be worse than saying nothing:
