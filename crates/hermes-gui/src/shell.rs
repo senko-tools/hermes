@@ -353,6 +353,7 @@ impl Shell {
             _subscriptions: subscriptions,
         };
         this.restore_layout();
+        crate::open::clear_pasted();
         this.reload_theme(cx);
         this.system_reduce_motion = cx.reduce_motion();
         this.show_members = this.config.sidebar.show_members;

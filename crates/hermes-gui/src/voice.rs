@@ -249,6 +249,10 @@ impl Shell {
         if self.core.voice_channel() == Some((inst.clone(), channel)) {
             return;
         }
+        // Do not disturb means no ringing; the call still shows in the channel.
+        if self.core.presence() == hermes_client_core::proto::models::PresenceStatus::Dnd {
+            return;
+        }
         self.call = Some(Call {
             inst,
             channel,

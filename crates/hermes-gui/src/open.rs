@@ -97,6 +97,17 @@ fn launch(target: &OsStr) -> std::io::Result<()> {
 
 pub use hermes_client_core::files::safe_filename;
 
+/// Where a pasted picture waits while it uploads.
+pub fn paste_dir() -> PathBuf {
+    std::env::temp_dir().join("hermes-gui")
+}
+
+/// Removes pasted pictures of earlier runs: nothing is using them, and a picture meant for an
+/// encrypted chat should not stay readable on the disk.
+pub fn clear_pasted() {
+    let _ = std::fs::remove_dir_all(paste_dir());
+}
+
 /// The Downloads folder (or the home folder, or the current one).
 pub fn downloads_dir() -> PathBuf {
     directories::UserDirs::new()

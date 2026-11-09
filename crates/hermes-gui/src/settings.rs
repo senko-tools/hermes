@@ -1042,6 +1042,22 @@ impl Shell {
                         );
                     })),
             ),
+            setting(
+                "Show when I was last online",
+                "On your profile, for people who share a server with you and your friends.",
+                Switch::new("show-last-online")
+                    .cursor_pointer()
+                    .checked(privacy.show_last_online)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        this.set_privacy(
+                            UpdatePrivacyRequest {
+                                show_last_online: Some(*on),
+                                ..UpdatePrivacyRequest::default()
+                            },
+                            cx,
+                        );
+                    })),
+            ),
         ];
 
         let mut device_rows: Vec<AnyElement> = Vec::new();
@@ -1510,6 +1526,17 @@ impl Shell {
                         p.send_read_marks,
                         "privacy.send_read_marks",
                         cx,
+                    ),
+                    setting(
+                        "Close the microphone while muted",
+                        "The system then shows it as unused. Unmuting takes a moment longer.",
+                        Switch::new("close-mic")
+                            .cursor_pointer()
+                            .checked(self.config.voice.close_mic_when_muted)
+                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                let on = *on;
+                                this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
+                            })),
                     ),
                     self.flag(
                         "Search on this device only",

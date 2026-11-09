@@ -70,6 +70,9 @@ pub struct Viewer {
     pub image: Img,
 }
 
+/// How long the message jumped to stays highlighted.
+const HIGHLIGHT_FOR: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// What each channel remembers while the app runs: its list position and its draft.
 pub struct ChatView {
     pub list: ListState,
@@ -89,6 +92,8 @@ pub struct ChatView {
     pub jump: Option<Id>,
     /// The message jumped to, drawn highlighted.
     pub highlight: Option<Id>,
+    /// Opening it failed: it offers to try again instead of loading for ever.
+    pub load_failed: bool,
     /// Messages selected to delete together (only ones I may delete).
     pub selected: BTreeSet<Id>,
     /// The message the last selecting click was on: Shift+click selects from there.
@@ -390,6 +395,7 @@ impl Shell {
                 revealed: HashSet::new(),
                 jump: None,
                 highlight: None,
+                load_failed: false,
                 selected: BTreeSet::new(),
                 anchor: None,
                 input,
@@ -412,6 +418,10 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let key = (inst.clone(), channel);
+        // Pictures that failed get another chance.
+        self.images
+            .thumbs
+            .retain(|_, picture| !matches!(picture, Img::Failed));
         self.chat_view(&key, window, cx);
         // Coming back moves the "new messages" line to what arrived since the last visit.
         if self.open_channel().as_ref() != Some(&key) {
@@ -433,11 +443,16 @@ impl Shell {
             cx,
             async move { core.open_channel(&inst, channel).await },
             move |this, result, _, cx| {
+                let failed = result.is_err();
+                if let Some(view) = this.chats.get_mut(&key) {
+                    view.load_failed = failed;
+                }
                 if let Err(err) = result {
                     this.error(format!("could not open the channel: {err}"), cx);
                 }
                 this.sync_rows(&key);
                 this.mark_open_read(cx);
+                cx.notify();
             },
         );
         cx.notify();
@@ -687,6 +702,19 @@ impl Shell {
             view.jump = Some(message);
             view.highlight = Some(message);
         }
+        let clear = key.clone();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HIGHLIGHT_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                if let Some(view) = this.chats.get_mut(&clear)
+                    && view.highlight == Some(message)
+                {
+                    view.highlight = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         let loaded = self
             .core
             .store()
@@ -1226,7 +1254,7 @@ impl Shell {
             self.error("could not read the pasted image", cx);
             return true;
         };
-        let dir = std::env::temp_dir().join("hermes-gui");
+        let dir = crate::open::paste_dir();
         self.next_upload += 1;
         let path = dir.join(format!(
             "paste-{}-{}.png",
@@ -1586,7 +1614,27 @@ impl Shell {
         });
         drop(store);
 
-        let content: AnyElement = if !loaded {
+        let content: AnyElement = if !loaded && view.load_failed {
+            let (retry_inst, retry_channel) = key.clone();
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(12.))
+                .text_color(theme::text_secondary())
+                .child("This channel could not be loaded.")
+                .child(
+                    Button::new("chat-retry")
+                        .cursor_pointer()
+                        .label("Try again")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_chat(retry_inst.clone(), retry_channel, window, cx);
+                        })),
+                )
+                .into_any_element()
+        } else if !loaded {
             centered("Loading…").into_any_element()
         } else if empty {
             div()
