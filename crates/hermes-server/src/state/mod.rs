@@ -706,12 +706,13 @@ impl Cache {
 
     /// A user's space-level permissions; empty if they are not a member.
     pub fn space_permissions(&self, space_id: Id, user_id: Id) -> Permissions {
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, None)
+        let Some(member) = space.members.get(&user_id) else {
+            return Permissions::empty();
+        };
+        permissions::compute_for(&space.space, &space.roles, user_id, &member.role_ids, None)
     }
 
     /// A user's permissions in a channel; empty if they cannot see it.
@@ -726,12 +727,19 @@ impl Cache {
                 Permissions::empty()
             };
         };
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, Some(&state.channel))
+        let Some(member) = space.members.get(&user_id) else {
+            return Permissions::empty();
+        };
+        permissions::compute_for(
+            &space.space,
+            &space.roles,
+            user_id,
+            &member.role_ids,
+            Some(&state.channel),
+        )
     }
 }
 

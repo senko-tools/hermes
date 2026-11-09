@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT user_id, reason, created_at FROM bans WHERE space_id = ?\n         ORDER BY created_at, user_id",
+  "query": "SELECT user_id, reason, created_at FROM bans WHERE space_id = ?\n         ORDER BY created_at, user_id LIMIT 2000",
   "describe": {
     "columns": [
       {
@@ -46,5 +46,5 @@
       false
     ]
   },
-  "hash": "896169557b405eebb2bf48c7247e2c718a60fd643624f8ef650b21da6ba6b9a1"
+  "hash": "b607c8b5e04e5fb29fc4d25ae12715b9b69b9783d371f322814b3bb88c740d22"
 }

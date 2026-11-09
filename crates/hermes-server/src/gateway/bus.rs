@@ -88,6 +88,9 @@ impl Default for Timings {
     }
 }
 
+/// What one session may hold for resuming, however few events that is.
+const RESUME_BUFFER_BYTES: usize = 32 << 20;
+
 /// All gateway sessions, connected or waiting to be resumed.
 #[derive(Debug, Default)]
 pub struct Gateway {
@@ -114,6 +117,8 @@ struct SessionInner {
     /// Last sequence number used; 0 = none yet.
     seq: u64,
     buffer: VecDeque<Buffered>,
+    /// What `buffer` holds, in bytes.
+    buffered_bytes: usize,
     conn: Option<Conn>,
     /// Set while no connection is attached.
     disconnected_at: Option<Instant>,
@@ -205,6 +210,7 @@ impl Gateway {
             inner: Mutex::new(SessionInner {
                 seq: 0,
                 buffer: VecDeque::new(),
+                buffered_bytes: 0,
                 conn: None,
                 disconnected_at: Some(now),
                 next_conn_id: 0,
@@ -351,6 +357,7 @@ impl Session {
         inner.seq += 1;
         let frame: Arc<str> = format!("{{\"s\":{},{body}", inner.seq).into();
         let seq = inner.seq;
+        inner.buffered_bytes += frame.len();
         inner.buffer.push_back(Buffered {
             seq,
             frame: frame.clone(),
@@ -391,12 +398,16 @@ impl SessionInner {
     /// Keeps at most `resume_buffer` events, none older than `resume_window`.
     fn prune(&mut self, now: Instant, timings: &Timings) {
         while self.buffer.len() > timings.resume_buffer
+            || self.buffered_bytes > RESUME_BUFFER_BYTES
             || self
                 .buffer
                 .front()
                 .is_some_and(|b| now.duration_since(b.at) >= timings.resume_window)
         {
-            self.buffer.pop_front();
+            let Some(dropped) = self.buffer.pop_front() else {
+                break;
+            };
+            self.buffered_bytes -= dropped.frame.len();
         }
     }
 }

@@ -236,7 +236,7 @@ pub async fn pinned(
             Raw,
             r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
                       deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
-               FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC"#,
+               FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC LIMIT 500"#,
             channel_id
         )
         .fetch_all(e)
@@ -498,6 +498,37 @@ pub async fn soft_delete(conn: &mut SqliteConnection, message_id: Id) -> Result<
     clear_deleted_extras(conn, message_id).await
 }
 
+/// [`clear_deleted_extras`] for many messages at once.
+pub async fn clear_deleted_extras_of(
+    conn: &mut SqliteConnection,
+    message_ids: &[Id],
+) -> Result<(), sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(());
+    }
+    let ids = id_list(message_ids);
+    sqlx::query!(
+        "DELETE FROM reactions WHERE message_id IN (SELECT value FROM json_each(?))",
+        ids
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "DELETE FROM message_mentions WHERE message_id IN (SELECT value FROM json_each(?))",
+        ids
+    )
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query!(
+        "UPDATE attachments SET message_id = NULL
+         WHERE message_id IN (SELECT value FROM json_each(?))",
+        ids
+    )
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// After a soft delete: removes the message's reactions and mentions and unlinks its attachments
 /// (unattached uploads are cleaned up later).
 pub async fn clear_deleted_extras(
@@ -595,21 +626,23 @@ pub async fn add_mention_counts(
     user_ids: &[Id],
     message_id: Id,
 ) -> Result<(), sqlx::Error> {
-    let (channel_id, message_id) = (channel_id.to_i64(), message_id.to_i64());
-    for user_id in user_ids {
-        let user_id = user_id.to_i64();
-        sqlx::query!(
-            "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)
-             VALUES (?, ?, 0, 1)
-             ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = mention_count + 1
-             WHERE last_read_id < ?",
-            user_id,
-            channel_id,
-            message_id
-        )
-        .execute(&mut *conn)
-        .await?;
+    if user_ids.is_empty() {
+        return Ok(());
     }
+    let (channel_id, message_id) = (channel_id.to_i64(), message_id.to_i64());
+    let users = id_list(user_ids);
+    // One statement: `@everyone` in a large server would otherwise be a write per member.
+    sqlx::query!(
+        "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)
+         SELECT value, ?, 0, 1 FROM json_each(?) WHERE true
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = mention_count + 1
+         WHERE last_read_id < ?",
+        channel_id,
+        users,
+        message_id
+    )
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 

@@ -82,7 +82,7 @@ pub async fn list_bans(
     let space_id = space_id.to_i64();
     let rows = sqlx::query!(
         "SELECT user_id, reason, created_at FROM bans WHERE space_id = ?
-         ORDER BY created_at, user_id",
+         ORDER BY created_at, user_id LIMIT 2000",
         space_id
     )
     .fetch_all(e)
@@ -160,9 +160,8 @@ pub async fn soft_delete_messages_since(
     )
     .fetch_all(&mut *conn)
     .await?;
-    for row in &rows {
-        super::messages::clear_deleted_extras(&mut *conn, Id::from_i64(row.id)).await?;
-    }
+    let ids: Vec<Id> = rows.iter().map(|r| Id::from_i64(r.id)).collect();
+    super::messages::clear_deleted_extras_of(&mut *conn, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|r| (Id::from_i64(r.id), Id::from_i64(r.channel_id)))
