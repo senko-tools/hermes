@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, actor_id, action, target_id, details, created_at FROM audit_log\n         WHERE space_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+  "query": "SELECT id, actor_id, action, target_id, details, created_at FROM audit_log\n         WHERE space_id = ? AND id < ?\n           AND (?3 IS NULL OR action = ?3) AND (?4 IS NULL OR actor_id = ?4)\n         ORDER BY id DESC LIMIT ?5",
   "describe": {
     "columns": [
       {
@@ -71,7 +71,7 @@
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 5
     },
     "nullable": [
       false,
@@ -82,5 +82,5 @@
       false
     ]
   },
-  "hash": "ab5891f1755a13eaa78709584e3418a96ce2e0926a33ec8f2e8b01d4009ea370"
+  "hash": "846e47c13e5dfc1f3a049b536b08da75acbd756f8ed77d21ead5704f2eb60eca"
 }

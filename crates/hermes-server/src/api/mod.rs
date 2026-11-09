@@ -131,6 +131,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/spaces/{id}/members/{uid}",
             patch(members::update).delete(members::remove),
         )
+        .route("/spaces/{id}/members/{uid}/timeout", put(members::timeout))
         .route("/spaces/{id}/bans", get(members::list_bans))
         .route(
             "/spaces/{id}/bans/{uid}",

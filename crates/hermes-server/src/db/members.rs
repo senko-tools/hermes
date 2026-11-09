@@ -141,6 +141,25 @@ pub async fn delete_ban(
     Ok(done.rows_affected() > 0)
 }
 
+/// Until when a member may only read; `None` ends it.
+pub async fn set_timeout(
+    conn: &mut SqliteConnection,
+    space_id: Id,
+    user_id: Id,
+    until: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let (space_id, user_id) = (space_id.to_i64(), user_id.to_i64());
+    sqlx::query!(
+        "UPDATE space_members SET timeout_until = ? WHERE space_id = ? AND user_id = ?",
+        until,
+        space_id,
+        user_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Soft-deletes `author_id`'s messages in the space's channels with an ID of at least `min_id`
 /// (content cleared, unpinned, reactions and mentions removed, attachments unlinked). Returns
 /// `(message_id, channel_id)` of the messages deleted now.

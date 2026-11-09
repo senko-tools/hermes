@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT space_id, user_id, nickname, joined_at FROM space_members",
+  "query": "SELECT space_id, user_id, nickname, joined_at, timeout_until FROM space_members",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "joined_at"
           }
         }
+      },
+      {
+        "name": "timeout_until",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "timeout_until"
+          }
+        }
       }
     ],
     "parameters": {
@@ -55,8 +66,9 @@
       false,
       false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "13f72a62c5ac891094cc09bff441aa43ac49ef42c2a59036cfbfd5da225842da"
+  "hash": "dfe040e3d9f04e35469433cdecdec6fcd7b63284a619d2feeec5b346b76cddc9"
 }

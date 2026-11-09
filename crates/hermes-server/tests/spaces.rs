@@ -222,7 +222,11 @@ async fn audit_log_permission_and_pagination() {
 
     let all = server.get(&log, Some(&alice)).await.ok();
     let all = all.as_array().unwrap();
-    assert_eq!(all.len(), 7);
+    assert_eq!(
+        all.len(),
+        8,
+        "the five changes, the role, its assignment and the invite"
+    );
     assert_eq!(all[0]["action"], "member_update");
     assert_eq!(all[0]["target_id"], alice_id);
     assert_eq!(all[1]["action"], "role_create");

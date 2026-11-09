@@ -8,7 +8,7 @@ use hermes_proto::ErrorCode;
 use hermes_proto::api::CreateInviteRequest;
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
-use hermes_proto::models::Invite;
+use hermes_proto::models::{AuditAction, Invite};
 use hermes_proto::permissions::Permissions;
 
 use super::validate::Fields;
@@ -88,6 +88,18 @@ pub async fn create(
         now,
     )
     .await?;
+    let mut conn = state.db.write.acquire().await?;
+    super::audit::record(
+        &mut conn,
+        &state,
+        space_id,
+        auth.user_id,
+        AuditAction::InviteCreate,
+        None,
+        serde_json::json!({ "code": row.code, "expires_at": expires_at, "max_uses": max_uses }),
+    )
+    .await?;
+    drop(conn);
     Ok(Json(to_wire(row, &state.cache())))
 }
 
@@ -261,6 +273,19 @@ pub async fn delete(
         }
     }
     if db::invites::delete(&state.db.write, &code).await? {
+        if let Some(space_id) = row.space_id {
+            let mut conn = state.db.write.acquire().await?;
+            super::audit::record(
+                &mut conn,
+                &state,
+                space_id,
+                auth.user_id,
+                AuditAction::InviteRevoke,
+                None,
+                serde_json::json!({ "code": code }),
+            )
+            .await?;
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(not_found())

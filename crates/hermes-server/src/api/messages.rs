@@ -529,7 +529,25 @@ async fn set_pinned(
     if row.pinned == pinned {
         return Ok(StatusCode::NO_CONTENT);
     }
-    db::messages::set_pinned(&state.db.write, message_id, pinned).await?;
+    let mut tx = state.db.write.begin().await?;
+    db::messages::set_pinned(&mut *tx, message_id, pinned).await?;
+    if let Some(space_id) = t.space_id {
+        audit::record(
+            &mut tx,
+            state,
+            space_id,
+            auth.user_id,
+            if pinned {
+                AuditAction::MessagePin
+            } else {
+                AuditAction::MessageUnpin
+            },
+            Some(message_id),
+            json!({ "channel_id": channel_id }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
     row.pinned = pinned;
     let message = one_to_wire(state, row, auth.user_id).await?;
     state.publish(

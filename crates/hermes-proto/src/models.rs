@@ -408,10 +408,18 @@ pub enum AuditAction {
     MemberMove,
     /// Disconnected from voice.
     MemberDisconnect,
+    /// Made to only read for a while (`details.seconds`; 0 ends it).
+    MemberTimeout,
+    MessagePin,
+    MessageUnpin,
+    InviteCreate,
+    InviteRevoke,
+    /// The rules for handing over a channel's keys changed.
+    KeyPolicyUpdate,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 20] = [
+    pub const ALL: [AuditAction; 26] = [
         AuditAction::SpaceUpdate,
         AuditAction::SpaceTransfer,
         AuditAction::MemberUpdate,
@@ -432,11 +440,23 @@ impl AuditAction {
         AuditAction::MemberVoiceUpdate,
         AuditAction::MemberMove,
         AuditAction::MemberDisconnect,
+        AuditAction::MemberTimeout,
+        AuditAction::MessagePin,
+        AuditAction::MessageUnpin,
+        AuditAction::InviteCreate,
+        AuditAction::InviteRevoke,
+        AuditAction::KeyPolicyUpdate,
     ];
 
     /// The snake_case name, as on the wire and in `audit_log.action`.
     pub const fn as_str(self) -> &'static str {
         match self {
+            AuditAction::MemberTimeout => "member_timeout",
+            AuditAction::MessagePin => "message_pin",
+            AuditAction::MessageUnpin => "message_unpin",
+            AuditAction::InviteCreate => "invite_create",
+            AuditAction::InviteRevoke => "invite_revoke",
+            AuditAction::KeyPolicyUpdate => "key_policy_update",
             AuditAction::SpaceUpdate => "space_update",
             AuditAction::SpaceTransfer => "space_transfer",
             AuditAction::MemberUpdate => "member_update",

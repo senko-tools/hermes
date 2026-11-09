@@ -377,15 +377,53 @@ async fn bans() {
         .get(&format!("/spaces/{space_id}/audit-log"), Some(&owner))
         .await
         .ok();
-    let actions: Vec<_> = log
+    let bans: Vec<_> = log
         .as_array()
         .unwrap()
         .iter()
-        .map(|e| e["action"].as_str().unwrap())
+        .filter(|e| e["action"] != "invite_create")
         .collect();
+    let actions: Vec<_> = bans.iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert_eq!(actions, ["member_unban", "member_ban", "member_ban"]);
     assert_eq!(
-        log[2]["details"],
+        bans[2]["details"],
         json!({ "reason": "spam", "delete_messages_hours": 24, "deleted_messages": 1 })
+    );
+}
+
+#[tokio::test]
+async fn a_timeout_lets_someone_read_but_not_write() {
+    let server = start("members-timeout", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let general = server.channel_id(&space_id, "general");
+    let timeout = format!("/spaces/{space_id}/members/{alice_id}/timeout");
+    let say = json!({ "content": "hi", "nonce": common::nonce() });
+    let path = format!("/channels/{general}/messages");
+
+    server
+        .put(&timeout, Some(&bob), json!({ "seconds": 60 }))
+        .await
+        .err(403, "MISSING_PERMISSION");
+    server
+        .put(&timeout, Some(&owner), json!({ "seconds": 60 }))
+        .await
+        .ok();
+    server
+        .post(&path, Some(&alice), say.clone())
+        .await
+        .err(403, "MISSING_PERMISSION");
+    server.get(&path, Some(&alice)).await.ok();
+    server
+        .put(&timeout, Some(&owner), json!({ "seconds": 0 }))
+        .await
+        .ok();
+    server.post(&path, Some(&alice), say).await.ok();
+    assert!(
+        server
+            .audit_actions(&owner, &space_id)
+            .await
+            .contains(&"member_timeout".to_owned())
     );
 }

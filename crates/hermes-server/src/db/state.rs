@@ -24,6 +24,7 @@ pub struct MemberRow {
     pub user_id: Id,
     pub nickname: Option<String>,
     pub joined_at: i64,
+    pub timeout_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,9 +158,11 @@ async fn roles(pool: &SqlitePool) -> Result<Vec<Role>, sqlx::Error> {
 }
 
 async fn members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
-    let rows = sqlx::query!("SELECT space_id, user_id, nickname, joined_at FROM space_members")
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query!(
+        "SELECT space_id, user_id, nickname, joined_at, timeout_until FROM space_members"
+    )
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|r| MemberRow {
@@ -167,6 +170,7 @@ async fn members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
             user_id: Id::from_i64(r.user_id),
             nickname: r.nickname,
             joined_at: r.joined_at,
+            timeout_until: r.timeout_until,
         })
         .collect())
 }

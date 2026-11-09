@@ -36,12 +36,23 @@ pub async fn record(
     db::audit::insert(conn, space_id, &entry).await
 }
 
-/// Newest first; `?before&limit`.
+/// `?before&limit&action&actor`.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct AuditQuery {
+    before: Option<Id>,
+    limit: Option<u32>,
+    /// One kind of entry, by its name.
+    action: Option<String>,
+    /// What one person did.
+    actor: Option<Id>,
+}
+
+/// Newest first; `?before&limit&action&actor`.
 pub async fn list(
     State(state): State<Arc<AppState>>,
     auth: Auth,
     Path(space_id): Path<Id>,
-    Query(page): Query<Pagination>,
+    Query(query): Query<AuditQuery>,
 ) -> ApiResult<Json<Vec<AuditEntry>>> {
     perms::require_space(
         &state.cache(),
@@ -49,6 +60,19 @@ pub async fn list(
         auth.user_id,
         Permissions::VIEW_AUDIT_LOG,
     )?;
-    let entries = db::audit::list(&state.db.read, space_id, page.before, page.limit()).await?;
+    let page = Pagination {
+        before: query.before,
+        limit: query.limit,
+        ..Pagination::default()
+    };
+    let entries = db::audit::list(
+        &state.db.read,
+        space_id,
+        page.before,
+        page.limit(),
+        query.action.as_deref(),
+        query.actor,
+    )
+    .await?;
     Ok(Json(entries))
 }

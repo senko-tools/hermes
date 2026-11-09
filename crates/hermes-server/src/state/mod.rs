@@ -182,7 +182,15 @@ pub struct MemberState {
     /// Explicitly assigned roles, sorted; `@everyone` is implicit.
     pub role_ids: Vec<Id>,
     pub joined_at: i64,
+    /// Until when they may only read (Unix milliseconds).
+    pub timeout_until: Option<i64>,
 }
+
+/// What a member in a timeout cannot do.
+const TIMED_OUT_LOSES: Permissions = Permissions::SEND_MESSAGES
+    .union(Permissions::ADD_REACTIONS)
+    .union(Permissions::SPEAK)
+    .union(Permissions::STREAM);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelState {
@@ -291,6 +299,7 @@ impl Cache {
                     nickname: m.nickname,
                     role_ids: Vec::new(),
                     joined_at: m.joined_at,
+                    timeout_until: m.timeout_until,
                 };
                 space.members.insert(m.user_id, member);
             }
@@ -379,6 +388,7 @@ impl Cache {
                     nickname: None,
                     role_ids: Vec::new(),
                     joined_at,
+                    timeout_until: None,
                 },
             );
         }
@@ -733,13 +743,23 @@ impl Cache {
         let Some(member) = space.members.get(&user_id) else {
             return Permissions::empty();
         };
-        permissions::compute_for(
+        let perms = permissions::compute_for(
             &space.space,
             &space.roles,
             user_id,
             &member.role_ids,
             Some(&state.channel),
-        )
+        );
+        // Owners and administrators cannot be silenced.
+        if member
+            .timeout_until
+            .is_some_and(|until| until > crate::time::now_ms())
+            && !perms.contains(Permissions::ADMINISTRATOR)
+        {
+            perms - TIMED_OUT_LOSES
+        } else {
+            perms
+        }
     }
 }
 

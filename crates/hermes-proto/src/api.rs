@@ -292,6 +292,17 @@ pub struct UpdateMemberRequest {
     pub role_ids: Option<Vec<Id>>,
 }
 
+/// `PUT /spaces/{id}/members/{uid}/timeout`: the member may only read for this long; 0 ends it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeoutRequest {
+    pub seconds: u32,
+}
+
+impl TimeoutRequest {
+    /// 28 days.
+    pub const MAX_SECONDS: u32 = 28 * 24 * 60 * 60;
+}
+
 /// `PUT /spaces/{id}/bans/{uid}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BanRequest {

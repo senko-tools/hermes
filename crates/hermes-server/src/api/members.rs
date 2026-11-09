@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
-use hermes_proto::api::{BanRequest, Pagination, UpdateMemberRequest};
+use hermes_proto::api::{BanRequest, Pagination, TimeoutRequest, UpdateMemberRequest};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{AuditAction, Ban, Member};
@@ -268,6 +268,53 @@ pub async fn list_bans(
             })
             .collect(),
     ))
+}
+
+/// `KICK_MEMBERS` + hierarchy. For a while the member can only read and listen.
+pub async fn timeout(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path((space_id, user_id)): Path<(Id, Id)>,
+    Json(req): Json<TimeoutRequest>,
+) -> ApiResult<StatusCode> {
+    if req.seconds > TimeoutRequest::MAX_SECONDS {
+        return Err(validate::field_error("seconds", "must be at most 28 days"));
+    }
+    let _writes = state.writes.lock().await;
+    {
+        let cache = state.cache();
+        let access =
+            perms::require_space(&cache, space_id, auth.user_id, Permissions::KICK_MEMBERS)?;
+        let member = cache
+            .member(space_id, user_id)
+            .ok_or_else(|| Error::not_found("member"))?;
+        if user_id == auth.user_id || !access.outranks_member(&member) {
+            return Err(access.hierarchy_error("members"));
+        }
+    }
+    let until = (req.seconds > 0).then(|| now_ms() + i64::from(req.seconds) * 1000);
+    let mut tx = state.db.write.begin().await?;
+    db::members::set_timeout(&mut tx, space_id, user_id, until).await?;
+    audit::record(
+        &mut tx,
+        &state,
+        space_id,
+        auth.user_id,
+        AuditAction::MemberTimeout,
+        Some(user_id),
+        json!({ "seconds": req.seconds }),
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(member) = state
+        .cache_mut()
+        .spaces
+        .get_mut(&space_id)
+        .and_then(|space| space.members.get_mut(&user_id))
+    {
+        member.timeout_until = until;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `BAN_MEMBERS` (+ hierarchy if the user is a member). Removes the membership and optionally

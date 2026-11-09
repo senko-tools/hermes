@@ -323,6 +323,7 @@ impl TestServer {
         log.as_array()
             .unwrap()
             .iter()
+            .filter(|e| e["action"] != "invite_create")
             .map(|e| e["action"].as_str().unwrap().to_owned())
             .collect()
     }

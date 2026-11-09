@@ -293,7 +293,28 @@ pub async fn set_space_policy(
         }
     }
     db::channel_keys::set_space_policy(&state.db.write, space, policy).await?;
+    record_policy(&state, space, auth.user_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn record_policy(
+    state: &AppState,
+    space: Id,
+    actor: Id,
+    channel: Option<Id>,
+) -> ApiResult<()> {
+    let mut conn = state.db.write.acquire().await?;
+    super::audit::record(
+        &mut conn,
+        state,
+        space,
+        actor,
+        hermes_proto::models::AuditAction::KeyPolicyUpdate,
+        channel,
+        serde_json::json!({}),
+    )
+    .await?;
+    Ok(())
 }
 
 /// What a channel changes about its server's rules.
@@ -315,14 +336,16 @@ pub async fn set_channel_policy(
     Path(channel): Path<Id>,
     Json(policy): Json<KeyPolicyOverride>,
 ) -> ApiResult<StatusCode> {
-    {
+    let space = {
         let cache = state.cache();
         let space = space_of(&cache, channel, auth.user_id)?;
         let access = perms::space(&cache, space, auth.user_id)?;
         if !access.is_owner() {
             access.require(Permissions::ADMINISTRATOR)?;
         }
-    }
+        space
+    };
     db::channel_keys::set_channel_policy(&state.db.write, channel, policy).await?;
+    record_policy(&state, space, auth.user_id, Some(channel)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -39,15 +39,22 @@ pub async fn list(
     space_id: Id,
     before: Option<Id>,
     limit: u32,
+    action: Option<&str>,
+    actor: Option<Id>,
 ) -> Result<Vec<AuditEntry>, sqlx::Error> {
     let space_id = space_id.to_i64();
     let before = before.map_or(i64::MAX, Id::to_i64);
     let limit = i64::from(limit);
+    let actor = actor.map(Id::to_i64);
     sqlx::query!(
         "SELECT id, actor_id, action, target_id, details, created_at FROM audit_log
-         WHERE space_id = ? AND id < ? ORDER BY id DESC LIMIT ?",
+         WHERE space_id = ? AND id < ?
+           AND (?3 IS NULL OR action = ?3) AND (?4 IS NULL OR actor_id = ?4)
+         ORDER BY id DESC LIMIT ?5",
         space_id,
         before,
+        action,
+        actor,
         limit
     )
     .fetch_all(e)

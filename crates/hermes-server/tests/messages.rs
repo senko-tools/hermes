@@ -349,11 +349,13 @@ async fn edit_delete_pin() {
         log[0]["details"],
         json!({ "channel_id": general, "author_id": bob_id })
     );
-    assert_eq!(
-        log.as_array().unwrap().len(),
-        1,
-        "own deletes are not audited"
-    );
+    let deletes = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "message_delete")
+        .count();
+    assert_eq!(deletes, 1, "own deletes are not audited");
 
     // In a DM, any recipient may pin, nobody may delete others' messages.
     let dm = Id(777);
