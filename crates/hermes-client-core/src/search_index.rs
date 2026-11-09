@@ -262,7 +262,20 @@ impl Core {
         query: &SearchQuery,
     ) -> rest::Result<SearchResponse> {
         let limit = query.limit.unwrap_or(25).max(1) as usize;
-        let mut merged = rest.search(query).await?;
+        // The server can only search what it can read; where that is nothing, it need not
+        // learn what is being looked for.
+        let sealed = self
+            .store()
+            .instance(inst)
+            .is_some_and(|s| s.search_only_sealed(query));
+        let mut merged = if sealed {
+            SearchResponse {
+                messages: Vec::new(),
+                total: 0,
+            }
+        } else {
+            rest.search(query).await?
+        };
         let Some(keys) = self.account_keys(inst) else {
             return Ok(merged);
         };

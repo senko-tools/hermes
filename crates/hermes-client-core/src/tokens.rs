@@ -18,6 +18,9 @@ pub enum TokenStore {
     File(PathBuf),
     /// In memory, for tests.
     Memory(Mutex<BTreeMap<String, String>>),
+    /// A credential store that cannot be read, for tests.
+    #[cfg(test)]
+    Failing,
 }
 
 fn account(instance: &str, username: &str) -> String {
@@ -30,14 +33,29 @@ impl TokenStore {
     }
 
     pub fn get(&self, instance: &str, username: &str) -> Option<String> {
+        self.read(instance, username).ok().flatten()
+    }
+
+    /// What is kept under this name. `Ok(None)` means nothing is; an error means the credential
+    /// store could not say, so something may well be there. What cannot be replaced must not be
+    /// made anew on an error.
+    pub fn read(&self, instance: &str, username: &str) -> Result<Option<String>, String> {
         let account = account(instance, username);
         match self {
-            TokenStore::Keyring { fallback } => keyring::Entry::new(SERVICE, &account)
-                .and_then(|e| e.get_password())
-                .ok()
-                .or_else(|| read_file(fallback).remove(&account)),
-            TokenStore::File(path) => read_file(path).remove(&account),
-            TokenStore::Memory(map) => map.lock().expect("token lock").get(&account).cloned(),
+            TokenStore::Keyring { fallback } => {
+                match keyring::Entry::new(SERVICE, &account).and_then(|e| e.get_password()) {
+                    Ok(secret) => Ok(Some(secret)),
+                    Err(err) => match (read_file(fallback).remove(&account), err) {
+                        (Some(secret), _) => Ok(Some(secret)),
+                        (None, keyring::Error::NoEntry) => Ok(None),
+                        (None, err) => Err(err.to_string()),
+                    },
+                }
+            }
+            TokenStore::File(path) => Ok(read_file(path).remove(&account)),
+            TokenStore::Memory(map) => Ok(map.lock().expect("token lock").get(&account).cloned()),
+            #[cfg(test)]
+            TokenStore::Failing => Err("the credential store is locked".to_owned()),
         }
     }
 
@@ -65,6 +83,8 @@ impl TokenStore {
                     .insert(account, token.to_owned());
                 Ok(())
             }
+            #[cfg(test)]
+            TokenStore::Failing => Err(std::io::Error::other("locked")),
         }
     }
 
@@ -82,6 +102,8 @@ impl TokenStore {
                 map.lock().expect("token lock").remove(&account);
                 Ok(())
             }
+            #[cfg(test)]
+            TokenStore::Failing => Err(std::io::Error::other("locked")),
         }
     }
 }
@@ -137,6 +159,14 @@ fn restrict(_path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_that_cannot_be_read_is_not_an_empty_one() {
+        let store = TokenStore::Failing;
+        assert!(store.read("example.com", "alice").is_err());
+        let store = TokenStore::memory();
+        assert_eq!(store.read("example.com", "alice"), Ok(None));
+    }
 
     #[test]
     fn file_store() {

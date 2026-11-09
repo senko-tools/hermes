@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use hermes_proto::api::SearchQuery;
 use hermes_proto::gateway::{
     InstanceInfo, ReactionEvent, Ready, ServerEvent, SpaceSnapshot, VoiceInfo, VoiceStateUpdate,
 };
@@ -228,6 +229,18 @@ impl InstanceStore {
                     .instance
                     .as_ref()
                     .is_some_and(|i| i.limits.channels_encrypted))
+    }
+
+    /// Whether everything a search would look through is encrypted, so that the server can find
+    /// nothing in it. DMs always are.
+    pub fn search_only_sealed(&self, query: &SearchQuery) -> bool {
+        match query.channel_id {
+            Some(channel) => self.channel_encrypted(channel),
+            None => self
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.limits.channels_encrypted),
+        }
     }
 
     pub fn max_upload_mb(&self) -> Option<u32> {
@@ -1093,6 +1106,22 @@ pub(crate) mod tests {
 
     fn live_window(s: &mut InstanceStore, channel: u64) {
         s.merge_history(Id(channel), HistoryAnchor::Latest, vec![], PAGE);
+    }
+
+    #[test]
+    fn search_stays_on_the_device_only_where_everything_is_sealed() {
+        let mut s = store();
+        let query = SearchQuery {
+            q: "soup".into(),
+            space_id: None,
+            channel_id: None,
+            author_id: None,
+            before: None,
+            limit: None,
+        };
+        assert!(!s.search_only_sealed(&query));
+        s.instance.as_mut().unwrap().limits.channels_encrypted = true;
+        assert!(s.search_only_sealed(&query));
     }
 
     #[test]

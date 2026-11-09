@@ -3,15 +3,32 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hermes_proto::e2ee::{DeviceKeys, MessageLock, SealedFile, SealedThumb};
 use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, ChannelKind, Message, MessageKind};
 
-use crate::core::{Core, CoreError, InstanceId, Result, content_type, now_ms};
+use crate::core::{Core, CoreError, CoreEvent, InstanceId, Result, content_type, now_ms};
 use crate::e2ee::{self, Directory, E2eeError, Identity, Inner, InnerAttachment};
 use crate::store::Changed;
+use crate::tokens::TokenStore;
+
+/// A secret kept in `slot`, or `None` if there is none to keep yet. An unreadable credential store
+/// is an error on a device that has had keys here: making new ones would lose the old for good.
+/// On one that never had any, this system simply has no store, and the file takes over.
+fn kept_secret(
+    tokens: &TokenStore,
+    inst: &str,
+    slot: &str,
+    had_keys: bool,
+) -> std::result::Result<Option<String>, String> {
+    match tokens.read(inst, slot) {
+        Err(_) if !had_keys => Ok(None),
+        kept => kept,
+    }
+}
 
 /// Devices asked for longer ago than this are asked for again before sending to them. Changes are
 /// announced too, so this only matters for an announcement that got lost.
@@ -69,9 +86,27 @@ impl Core {
         }
         let slot = Self::secret_slot(me);
         let tokens = self.tokens();
-        let identity = tokens
-            .get(inst, &slot)
-            .and_then(|secret| Identity::from_secret(&secret));
+        let had_keys = self.paths().is_some_and(|paths| {
+            let dir = paths.dir.join("e2ee");
+            let name = safe_file_name(inst);
+            dir.join(format!("{name}-{me}.json")).exists()
+                || dir.join(format!("{name}-{me}-channels.bin")).exists()
+        });
+        let keep = |slot: &str| match kept_secret(tokens, inst, slot, had_keys) {
+            Ok(secret) => Some(secret),
+            Err(err) => {
+                static TOLD: AtomicBool = AtomicBool::new(false);
+                if !TOLD.swap(true, Ordering::Relaxed) {
+                    tracing::error!("the credential store cannot be read: {err}");
+                    self.emit(CoreEvent::Error(format!(
+                        "Your encryption keys cannot be read right now ({err}). Unlock your \
+                         credential store and restart Hermes; nothing has been changed."
+                    )));
+                }
+                None
+            }
+        };
+        let identity = keep(&slot)?.and_then(|secret| Identity::from_secret(&secret));
         let identity = identity.unwrap_or_else(|| {
             let identity = Identity::generate();
             if let Err(err) = tokens.set(inst, &slot, &identity.to_secret()) {
@@ -86,8 +121,7 @@ impl Core {
                 .join(format!("{}-{me}.json", safe_file_name(inst)))
         });
         let ring_slot = format!("e2ee-ring-{me}");
-        let wrap = tokens
-            .get(inst, &ring_slot)
+        let wrap = keep(&ring_slot)?
             .and_then(|secret| e2ee::decode_key(&secret).ok())
             .unwrap_or_else(|| {
                 let wrap = e2ee::new_channel_key();
@@ -103,8 +137,7 @@ impl Core {
                 .join(format!("{}-{me}-channels.bin", safe_file_name(inst)))
         });
         let index_slot = format!("e2ee-index-{me}");
-        let index_key = tokens
-            .get(inst, &index_slot)
+        let index_key = keep(&index_slot)?
             .and_then(|secret| e2ee::decode_key(&secret).ok())
             .unwrap_or_else(|| {
                 let key = e2ee::new_channel_key();
@@ -653,5 +686,18 @@ fn apply_inner(message: &mut Message, inner: Inner) {
         // The server pointed it at something the author did not answer.
         (reply @ Some(_), _) => *reply = None,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod kept_secret_tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_never_made_anew_when_the_old_ones_cannot_be_read() {
+        let store = TokenStore::Failing;
+        assert!(kept_secret(&store, "i", "slot", true).is_err());
+        // Nothing to lose yet: a system with no credential store still gets keys.
+        assert_eq!(kept_secret(&store, "i", "slot", false), Ok(None));
     }
 }
