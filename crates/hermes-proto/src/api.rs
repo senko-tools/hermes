@@ -506,6 +506,8 @@ pub struct UpdatePrivacyRequest {
     pub dm_from: Option<DmFrom>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_requests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_last_online: Option<bool>,
 }
 
 /// `POST /voice/join`.

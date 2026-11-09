@@ -135,7 +135,13 @@ pub(super) async fn invite_preview(state: &AppState, code: &str) -> ApiResult<In
     {
         return Err(invite_invalid());
     }
-    Ok(to_wire(row, &cache))
+    // Anyone holding the link sees where it leads, not who made it or how much it was used.
+    Ok(Invite {
+        creator_id: None,
+        max_uses: None,
+        uses: 0,
+        ..to_wire(row, &cache)
+    })
 }
 
 /// Joins the invite's space and returns it as in `ready`. Already being a member is not an error

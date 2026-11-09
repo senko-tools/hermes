@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET dm_from = ?, message_requests = ?, show_last_online = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "ce41ec26449edfce2c7e677b5522bf076ae46a257185148be53eb7f2d5ccf920"
+}

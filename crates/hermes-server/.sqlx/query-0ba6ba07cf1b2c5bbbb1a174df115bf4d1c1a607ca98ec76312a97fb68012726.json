@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.dm_from, u.message_requests AS \"message_requests: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\",\n                  u.banner_id, b.filename AS \"banner_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id\n                        LEFT JOIN attachments b ON b.id = u.banner_id",
+  "query": "SELECT u.id, u.username, u.display_name, u.status_text,\n                  u.instance_admin AS \"instance_admin: bool\", u.disabled AS \"disabled: bool\",\n                  u.dm_from, u.message_requests AS \"message_requests: bool\",\n                  u.show_last_online AS \"show_last_online: bool\",\n                  u.avatar_id, a.filename AS \"avatar_filename?\",\n                  u.banner_id, b.filename AS \"banner_filename?\"\n           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id\n                        LEFT JOIN attachments b ON b.id = u.banner_id",
   "describe": {
     "columns": [
       {
@@ -92,8 +92,19 @@
         }
       },
       {
-        "name": "avatar_id",
+        "name": "show_last_online: bool",
         "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "show_last_online"
+          }
+        }
+      },
+      {
+        "name": "avatar_id",
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "avatar_filename?",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "banner_id",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "banner_filename?",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -148,11 +159,12 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
       true
     ]
   },
-  "hash": "e6addac7bc703b92a47cf8a86a1cffb21ae0e94319c111c25c26ff5474e2ad9c"
+  "hash": "0ba6ba07cf1b2c5bbbb1a174df115bf4d1c1a607ca98ec76312a97fb68012726"
 }

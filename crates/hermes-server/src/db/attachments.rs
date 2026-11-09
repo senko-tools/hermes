@@ -169,6 +169,26 @@ pub async fn total_size_of(e: impl SqliteExecutor<'_>, user: Id) -> Result<u64, 
 pub type Expired = (Id, [u8; 32], u64);
 
 /// Uploads created before `cutoff` that are attached to no message and are no avatar or icon.
+/// What a message has stored, before it is deleted.
+pub async fn stored_of_message(
+    e: impl SqliteExecutor<'_>,
+    message_id: Id,
+) -> Result<Vec<Expired>, sqlx::Error> {
+    let id = message_id.to_i64();
+    sqlx::query!(
+        "SELECT id, sha256, size FROM attachments WHERE message_id = ?",
+        id
+    )
+    .fetch_all(e)
+    .await?
+    .into_iter()
+    .filter_map(|r| {
+        let sha: [u8; 32] = r.sha256.as_slice().try_into().ok()?;
+        Some(int(r.size, "attachments.size").map(|size| (Id::from_i64(r.id), sha, size)))
+    })
+    .collect()
+}
+
 pub async fn expired_unattached(
     e: impl SqliteExecutor<'_>,
     cutoff: i64,

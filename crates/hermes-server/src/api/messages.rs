@@ -465,6 +465,7 @@ pub async fn delete(
     if !own {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
+    let stored = db::attachments::stored_of_message(&state.db.read, message_id).await?;
     let mut tx = state.db.write.begin().await?;
     db::messages::soft_delete(&mut tx, message_id).await?;
     if let Some(space_id) = t.space_id.filter(|_| !own) {
@@ -480,6 +481,7 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
+    crate::files::purge(&state, stored).await;
     state.publish(
         ServerEvent::MessageDelete {
             id: message_id,
@@ -658,12 +660,19 @@ pub async fn typing(
     Path(channel_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
     state.throttle(auth.user_id, Action::Typing)?;
-    target(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        Permissions::SEND_MESSAGES,
-    )?;
+    {
+        let cache = state.cache();
+        let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        // Whoever has not accepted a message request does not see presence, or typing either.
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                let audience = cache.presence_audience(auth.user_id);
+                c.recipient_ids.iter().any(|id| !audience.contains(id))
+            })
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
     state.publish_except(
         ServerEvent::TypingStart {
             channel_id,

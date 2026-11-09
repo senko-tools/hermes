@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::State;
+use axum::http::StatusCode;
 use hermes_proto::api::{AuthResponse, LoginRequest, RegisterRequest, SessionInfo};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -12,7 +12,7 @@ use hermes_proto::{ApiError, ErrorCode};
 use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
-use super::{ApiResult, Error, Json, Path, PeerAddr};
+use super::{ApiResult, Error, Json, Path};
 use crate::auth::{self, Auth};
 use crate::config::RegistrationMode;
 use crate::db;
@@ -62,8 +62,6 @@ fn check_mode(mode: RegistrationMode, first_user: bool, has_invite: bool) -> Api
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<PeerAddr>,
-    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
@@ -105,7 +103,6 @@ pub async fn register(
     let now = now_ms();
     let user_id = state.ids.next();
     let token = auth::new_token();
-    let ip = state.client_ip(peer.0, &headers).to_string();
     let mut tx = state.db.write.begin().await?;
 
     let first_user = db::auth::count_users(&mut *tx).await? == 0;
@@ -172,7 +169,7 @@ pub async fn register(
     if let Some(space_id) = join_space {
         db::spaces::insert_member(&mut tx, space_id, user_id, now).await?;
     }
-    let session_id = insert_session(&mut tx, &state, user_id, &token, &device_name, &ip).await?;
+    let session_id = insert_session(&mut tx, &state, user_id, &token, &device_name).await?;
     tx.commit().await?;
 
     let user = CachedUser {
@@ -230,7 +227,6 @@ async fn insert_session(
     user_id: Id,
     token: &str,
     device_name: &str,
-    ip: &str,
 ) -> ApiResult<Id> {
     let id = state.ids.next();
     let session = db::auth::NewSession {
@@ -239,7 +235,7 @@ async fn insert_session(
         token_hash: &auth::token_hash(token),
         device_name,
         created_at: now_ms(),
-        ip: Some(ip),
+        ip: None,
     };
     db::auth::insert_session(conn, &session).await?;
     Ok(id)
@@ -247,8 +243,6 @@ async fn insert_session(
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<PeerAddr>,
-    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
@@ -303,17 +297,8 @@ pub async fn login(
         .ok_or_else(|| Error::internal("user missing from the cache"))?;
 
     let token = auth::new_token();
-    let ip = state.client_ip(peer.0, &headers).to_string();
     let mut conn = state.db.write.acquire().await?;
-    insert_session(
-        &mut conn,
-        &state,
-        credentials.user_id,
-        &token,
-        &device_name,
-        &ip,
-    )
-    .await?;
+    insert_session(&mut conn, &state, credentials.user_id, &token, &device_name).await?;
     Ok(Json(AuthResponse { token, user }))
 }
 

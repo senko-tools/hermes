@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use base64::Engine;
@@ -15,7 +15,7 @@ use hermes_proto::id::Id;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::api::{ApiResult, Error, PeerAddr};
+use crate::api::{ApiResult, Error};
 use crate::db;
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
@@ -23,7 +23,7 @@ use crate::time::{SECOND_MS, now_ms};
 /// Prefix of every session token, so leaked tokens are easy to recognize.
 pub const TOKEN_PREFIX: &str = "hms_";
 
-/// `last_seen_at` / `last_ip` are written at most this often per session.
+/// `last_seen_at` is written at most this often per session.
 const TOUCH_INTERVAL_MS: i64 = 60 * SECOND_MS;
 
 /// Password hashes computed at once. Each takes 19 MiB, so a burst of logins or registrations
@@ -135,11 +135,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
 
         let now = now_ms();
         if now - session.last_seen_at >= TOUCH_INTERVAL_MS {
-            let ip = parts
-                .extensions
-                .get::<ConnectInfo<PeerAddr>>()
-                .map(|ConnectInfo(peer)| state.client_ip(peer.0, &parts.headers).to_string());
-            db::auth::touch_session(&state.db.write, session.id, now, ip.as_deref()).await?;
+            db::auth::touch_session(&state.db.write, session.id, now).await?;
         }
         Ok(Auth {
             user_id: session.user_id,

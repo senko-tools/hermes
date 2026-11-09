@@ -135,6 +135,8 @@ fn connect_options(path: &PathBuf) -> SqliteConnectOptions {
         .synchronous(SqliteSynchronous::Normal)
         // A burst of writes must not leave a large write-ahead log behind.
         .pragma("journal_size_limit", JOURNAL_SIZE_LIMIT.to_string())
+        // What is deleted is overwritten, not just marked free.
+        .pragma("secure_delete", "ON")
 }
 
 /// Converts an `INTEGER` column to a narrower type, failing on out-of-range values.

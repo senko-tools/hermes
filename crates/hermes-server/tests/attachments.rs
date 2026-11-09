@@ -211,7 +211,7 @@ async fn access_follows_the_message_channel() {
     assert_eq!(status(&server, &path, Some(&alice)).await, 404);
     assert_eq!(status(&server, &path, Some(&owner)).await, 200);
 
-    // A deleted message unlinks its files: only the uploader keeps access until cleanup.
+    // A deleted message takes its files with it, for everyone.
     server
         .delete(
             &format!("/channels/{general}/messages/{}", id(&message)),
@@ -219,7 +219,7 @@ async fn access_follows_the_message_channel() {
         )
         .await
         .ok();
-    assert_eq!(status(&server, &path, Some(&owner)).await, 200);
+    assert_eq!(status(&server, &path, Some(&owner)).await, 404);
 
     // Avatars are visible to every user.
     let avatar = id(&server

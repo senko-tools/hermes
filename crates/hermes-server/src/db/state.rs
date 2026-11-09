@@ -79,6 +79,7 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
         r#"SELECT u.id, u.username, u.display_name, u.status_text,
                   u.instance_admin AS "instance_admin: bool", u.disabled AS "disabled: bool",
                   u.dm_from, u.message_requests AS "message_requests: bool",
+                  u.show_last_online AS "show_last_online: bool",
                   u.avatar_id, a.filename AS "avatar_filename?",
                   u.banner_id, b.filename AS "banner_filename?"
            FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id
@@ -104,6 +105,7 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
             privacy: PrivacySettings {
                 dm_from: super::users::parse_dm_from(&r.dm_from),
                 message_requests: r.message_requests,
+                show_last_online: r.show_last_online,
             },
         })
     })

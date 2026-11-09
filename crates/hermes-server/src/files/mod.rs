@@ -186,6 +186,20 @@ pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
     })
 }
 
+/// Removes the files of a message just deleted, instead of leaving them for the hourly round.
+pub async fn purge(state: &AppState, stored: Vec<db::attachments::Expired>) {
+    for (id, sha256, size) in stored {
+        match db::attachments::delete_if_unused(&state.db.write, id).await {
+            Ok(true) => {
+                state.files.remove(&sha256, id);
+                state.files.release(size);
+            }
+            Ok(false) => {}
+            Err(err) => tracing::error!("could not delete attachment {id}: {err}"),
+        }
+    }
+}
+
 /// Uploads one person may have running at once.
 const MAX_UPLOADS_AT_ONCE: u32 = 8;
 

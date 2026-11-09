@@ -502,6 +502,15 @@ pub struct PrivacySettings {
     /// DMs from people `dm_from` leaves out become message requests (one notification, then
     /// quiet until accepted) instead of being refused.
     pub message_requests: bool,
+    /// Others may see when you were last online.
+    #[serde(default = "PrivacySettings::shown")]
+    pub show_last_online: bool,
+}
+
+impl PrivacySettings {
+    const fn shown() -> bool {
+        true
+    }
 }
 
 impl Default for PrivacySettings {
@@ -509,6 +518,7 @@ impl Default for PrivacySettings {
         PrivacySettings {
             dm_from: DmFrom::Everyone,
             message_requests: true,
+            show_last_online: true,
         }
     }
 }

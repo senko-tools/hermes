@@ -431,7 +431,7 @@ async fn privacy_settings_and_message_requests() {
     let (mut aws, ready) = server.identify(&alice).await;
     assert_eq!(
         ready["privacy"],
-        json!({ "dm_from": "everyone", "message_requests": true })
+        json!({ "dm_from": "everyone", "message_requests": true, "show_last_online": true })
     );
 
     // Only people in her spaces reach Alice directly; everyone else becomes a request.
@@ -445,7 +445,7 @@ async fn privacy_settings_and_message_requests() {
         .ok();
     assert_eq!(
         privacy,
-        json!({ "dm_from": "spaces", "message_requests": true })
+        json!({ "dm_from": "spaces", "message_requests": true, "show_last_online": true })
     );
     assert_eq!(aws.next_event().await["op"], "privacy_update");
     assert_eq!(

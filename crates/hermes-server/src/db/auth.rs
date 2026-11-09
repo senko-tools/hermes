@@ -170,17 +170,11 @@ pub async fn touch_session(
     e: impl SqliteExecutor<'_>,
     session_id: Id,
     now: i64,
-    ip: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let id = session_id.to_i64();
-    sqlx::query!(
-        "UPDATE sessions SET last_seen_at = ?, last_ip = COALESCE(?, last_ip) WHERE id = ?",
-        now,
-        ip,
-        id
-    )
-    .execute(e)
-    .await?;
+    sqlx::query!("UPDATE sessions SET last_seen_at = ? WHERE id = ?", now, id)
+        .execute(e)
+        .await?;
     Ok(())
 }
 

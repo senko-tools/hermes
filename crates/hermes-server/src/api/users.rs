@@ -11,7 +11,9 @@ use hermes_proto::api::{
 };
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
-use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
+use hermes_proto::models::{
+    CurrentUser, Message, NotificationSetting, PrivacySettings, RelationshipKind,
+};
 use hermes_proto::permissions::Permissions;
 
 use super::attachments::own_picture;
@@ -217,7 +219,7 @@ pub async fn get(
     auth: Auth,
     Path(user_id): Path<Id>,
 ) -> ApiResult<Json<UserProfile>> {
-    let (user, mutual_space_ids) = {
+    let (user, mutual_space_ids, may_see_last_online) = {
         let cache = state.cache();
         let visible =
             user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
@@ -233,9 +235,19 @@ pub async fn get(
             .map(|s| s.space.id)
             .collect();
         mutual_space_ids.sort();
-        (user.user.clone(), mutual_space_ids)
+        // A friend request sent by a stranger is enough to see a profile, but not this.
+        let known = !mutual_space_ids.is_empty()
+            || cache
+                .relationship(auth.user_id, user_id)
+                .is_some_and(|r| r.kind == RelationshipKind::Friend);
+        let may_see = user_id == auth.user_id || (known && user.privacy.show_last_online);
+        (user.user.clone(), mutual_space_ids, may_see)
     };
-    let last_online_at = db::users::last_online(&state.db.read, user_id).await?;
+    let last_online_at = if may_see_last_online {
+        db::users::last_online(&state.db.read, user_id).await?
+    } else {
+        None
+    };
     Ok(Json(UserProfile {
         user,
         mutual_space_ids,
@@ -283,6 +295,9 @@ pub async fn update_privacy(
     }
     if let Some(on) = req.message_requests {
         privacy.message_requests = on;
+    }
+    if let Some(on) = req.show_last_online {
+        privacy.show_last_online = on;
     }
     let mut conn = state.db.write.acquire().await?;
     db::users::set_privacy(&mut conn, auth.user_id, &privacy).await?;

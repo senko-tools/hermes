@@ -87,9 +87,10 @@ pub async fn set_privacy(
     let id = user_id.to_i64();
     let dm_from = dm_from_name(privacy.dm_from);
     sqlx::query!(
-        "UPDATE users SET dm_from = ?, message_requests = ? WHERE id = ?",
+        "UPDATE users SET dm_from = ?, message_requests = ?, show_last_online = ? WHERE id = ?",
         dm_from,
         privacy.message_requests,
+        privacy.show_last_online,
         id
     )
     .execute(conn)
