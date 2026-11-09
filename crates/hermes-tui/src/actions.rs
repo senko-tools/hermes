@@ -831,13 +831,17 @@ impl App {
         let rest = self.core.rest(inst);
         let tasks = self.tasks.clone();
         let inst = inst.clone();
+        let core = self.core.clone();
         tokio::spawn(async move {
             let msg = match rest {
                 Ok(rest) => match f(rest).await {
-                    Ok(items) => TaskMsg::Results {
-                        title,
-                        items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
-                    },
+                    Ok(mut items) => {
+                        core.open_messages(&inst, &mut items).await;
+                        TaskMsg::Results {
+                            title,
+                            items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
+                        }
+                    }
                     Err(err) => TaskMsg::Error(err.to_string()),
                 },
                 Err(err) => TaskMsg::Error(err.to_string()),

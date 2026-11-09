@@ -61,6 +61,8 @@ Two rules decide who gets keys. A server sets them (only its owner); a channel m
   lets each new device in, in the server's Encryption settings.
 - **New members can read earlier messages.** When off, a new member's arrival starts a new key and they get only
   that one. This is enforced by the keys, not by the server hiding anything.
+  A member asks for keys when they first open the channel, so what was written between joining and that moment stays
+  closed to them too.
 
 Changing a rule never takes back keys someone already has. Messages from before channels were encrypted stay readable,
 with an open lock. A server may turn the requirement off with `privacy.require_channel_encryption`.
