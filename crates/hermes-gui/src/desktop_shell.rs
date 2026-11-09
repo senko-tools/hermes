@@ -4,6 +4,7 @@
 use futures_util::StreamExt as _;
 use gpui_kit::{AppContext as _, Context, Window};
 use hermes_client_core::InstanceId;
+use hermes_client_core::audio::Sound;
 use hermes_client_core::notify::Notification;
 
 use crate::desktop::tray::TrayAction;
@@ -184,6 +185,9 @@ impl Shell {
         }
         if !self.focused && settings.flash_taskbar && desktop::flashes(&notification) {
             native::flash(window);
+        }
+        if settings.sound {
+            self.core.play_sound(Sound::Ping);
         }
         self.run(
             cx,

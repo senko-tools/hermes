@@ -63,11 +63,8 @@ pub async fn show_toast(
     let channel = n.channel_id;
     tokio::task::spawn_blocking(move || {
         let mut toast = notify_rust::Notification::new();
+        // No sound name: the toast stays silent, and the app plays its own soft ping instead.
         toast.summary(&title).body(&body).appname("Hermes");
-        #[cfg(any(windows, target_os = "macos"))]
-        if settings.sound {
-            toast.sound_name("Default");
-        }
         let handle = match toast.show() {
             Ok(handle) => handle,
             Err(err) => {
