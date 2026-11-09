@@ -689,7 +689,11 @@ impl Shell {
 
     /// The config changed: everything that follows it.
     pub fn apply_config(&mut self, cx: &mut Context<Self>) {
+        let old_buffer = self.config.buffer.clone();
         self.config = self.core.config();
+        if self.config.buffer != old_buffer {
+            self.refresh_chats();
+        }
         let (keybinds, warnings) = Keybinds::from_config(&self.config.keys);
         self.keybinds = keybinds;
         if let Some(warning) = warnings.into_iter().next() {

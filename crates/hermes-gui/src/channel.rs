@@ -413,6 +413,17 @@ impl Shell {
     ) {
         let key = (inst.clone(), channel);
         self.chat_view(&key, window, cx);
+        // Coming back moves the "new messages" line to what arrived since the last visit.
+        if self.open_channel().as_ref() != Some(&key) {
+            let marker = self
+                .core
+                .store()
+                .instance(&inst)
+                .and_then(|s| s.read_states.get(&channel).map(|r| r.last_read_id));
+            if let Some(view) = self.chats.get_mut(&key) {
+                view.read_marker = marker;
+            }
+        }
         self.page = Page::Chat(inst.clone(), channel);
         self.update_visible_channels();
         self.sync_rows(&key);
@@ -447,6 +458,15 @@ impl Shell {
         if self.open_channel().as_ref() == Some(&key) {
             self.mark_open_read(cx);
         }
+    }
+
+    /// A setting that changes how messages look moved: every open chat follows it at once.
+    pub fn refresh_chats(&mut self) {
+        let keys: Vec<ChannelKey> = self.chats.keys().cloned().collect();
+        for key in &keys {
+            self.sync_rows(key);
+        }
+        self.remeasure_chats();
     }
 
     /// Rebuilds a channel's rows and tells the list only what differs, which keeps its position.
@@ -2402,6 +2422,7 @@ impl Shell {
                             .bg(theme::code_background())
                             .border_1()
                             .border_color(theme::border())
+                            .font_family(theme::mono_font())
                             .text_size(theme::secondary_size())
                             .whitespace_normal()
                             .child(text)
