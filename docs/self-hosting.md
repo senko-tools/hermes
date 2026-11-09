@@ -205,6 +205,26 @@ These commands are safe while the server runs; it notices the changes within 10 
   servers of different versions work together as long as they speak the same protocol version;
   the app tells you when one of them needs an update.
 
+## Restoring a backup
+
+Stop the server, then run `hermes-server restore <file>`: it checks the file, keeps the current database beside it
+and puts the backup in place. Copy `<data_dir>/files` back as well. The nightly job keeps 14 days of the database, and
+daily copies of the files that hard-link what has not changed, so they take little room.
+
+## Settings worth knowing
+
+- `network.trusted_proxies` takes addresses or ranges, such as `10.0.0.0/8`.
+- `[privacy]`: `message_retention_days`, `deleted_message_retention_days` and `audit_retention_days` delete for good
+  what is older (0 keeps it). They run once an hour.
+- `[limits]`: `session_idle_days` and `max_sessions_per_user` end unused sessions, `max_connections` and
+  `max_connections_per_ip` cap sockets, `actions_per_minute` limits edits, reactions and the like per person, and
+  `max_mentions_per_message` also works on encrypted messages.
+- Instance admins can change who may register in the app (Settings, Instance). That wins over the config file.
+- Someone who lost their authenticator: `hermes-server user disable2fa <name>`.
+
+Automatic moderation of message text cannot exist where channels are end-to-end encrypted, because the server cannot
+read them. Reports carry what the reporter chooses to share.
+
 ## Troubleshooting
 
 | Problem | Fix |

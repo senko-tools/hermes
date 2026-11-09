@@ -108,6 +108,11 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
   while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
+- **Soft sounds (2026-11-09):** every sound stays at or under 660 Hz with a slow attack; a test holds them to it. Toasts
+  are silent and the app plays its own ping.
+- **Sizes:** `assets::icon` and the shell go through `theme::px`, so icons follow the UI scale.
+- **Local data:** drafts, queued messages, notes and names given to people live sealed in the key ring file.
+
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.
 

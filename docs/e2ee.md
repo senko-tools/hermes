@@ -108,6 +108,11 @@ take the server's word for less:
 - **Removing an instance** deletes this device's keys, channel keys, search index and records for it.
   Signing out keeps them, so signing back in on this device still reads the history.
 
+## What the server still sees of a sealed message
+
+Besides what is listed below, the server sees which message a reply answers and that a file has a thumbnail, and file
+sizes are not padded.
+
 ## What this does not protect
 
 Said plainly, because promising more would be worse than saying nothing:
