@@ -10,7 +10,6 @@ use hermes_client_core::proto::models::{RelationshipKind, Status};
 use hermes_client_core::{InstanceId, view};
 
 use crate::assets;
-use crate::channel::icon_button;
 use crate::menu_entries::{Action, Target};
 use crate::shell::Shell;
 use crate::theme::{self, px};
@@ -295,16 +294,23 @@ impl Shell {
         let element_id = SharedString::from(format!("person-{inst}-{id}-{}", kind_key(kind)));
         let target = Target::Member(inst.clone(), None, id);
         let mut buttons: Vec<AnyElement> = Vec::new();
-        let action_button =
-            |key: &str, glyph: &'static str, action: Action, cx: &mut Context<Self>| {
-                let inst = inst.clone();
-                icon_button(SharedString::from(format!("friend-{key}-{id}")), glyph)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.run_action(Target::Member(inst.clone(), None, id), action, window, cx);
-                    }))
-                    .into_any_element()
+        let action_button = |key: &str,
+                             glyph: &'static str,
+                             action: Action,
+                             cx: &mut Context<Self>| {
+            let inst = inst.clone();
+            let tip = match key {
+                "accept" => "Accept",
+                "decline" => "Decline",
+                _ => "Cancel",
             };
+            crate::channel::tip_button(SharedString::from(format!("friend-{key}-{id}")), glyph, tip)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.run_action(Target::Member(inst.clone(), None, id), action, window, cx);
+                }))
+                .into_any_element()
+        };
         match kind {
             LineKind::Incoming => {
                 buttons.push(action_button(
@@ -360,7 +366,13 @@ impl Shell {
                             .flex()
                             .gap(px(8.))
                             .items_baseline()
-                            .child(div().text_size(theme::body_size()).child(name))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(theme::body_size())
+                                    .child(name),
+                            )
                             .child(
                                 div()
                                     .truncate()

@@ -38,16 +38,18 @@ pub enum Tab {
     Chat,
     Voice,
     Notifications,
+    Privacy,
     Keybinds,
     About,
 }
 
-const TABS: [(Tab, &str, &str); 7] = [
+const TABS: [(Tab, &str, &str); 8] = [
     (Tab::Account, assets::ACCOUNT, "Account"),
     (Tab::Appearance, assets::PALETTE, "Appearance"),
     (Tab::Chat, assets::CHAT, "Chat"),
     (Tab::Voice, assets::MIC, "Voice & Audio"),
     (Tab::Notifications, assets::BELL, "Notifications"),
+    (Tab::Privacy, assets::LOCK, "Privacy"),
     (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
     (Tab::About, assets::INFO, "About"),
 ];
@@ -91,6 +93,8 @@ enum SliderKind {
     Vad,
     ReleaseDelay,
     SoundsVolume,
+    MediaVolume,
+    ScrollSpeed,
 }
 
 /// How often the level meter can redraw the window at most. Every frame redraws the whole window,
@@ -348,6 +352,20 @@ impl Shell {
                 0.05,
                 voice.sounds_volume as f32,
             ),
+            (
+                SliderKind::MediaVolume,
+                0.,
+                1.,
+                0.05,
+                (voice.media_volume as f32).clamp(0., 1.),
+            ),
+            (
+                SliderKind::ScrollSpeed,
+                0.5,
+                3.,
+                0.05,
+                self.config.general.scroll_speed as f32,
+            ),
         ];
         let mut sliders = Vec::new();
         for (kind, min, max, step, value) in table {
@@ -526,6 +544,8 @@ impl Shell {
             SliderKind::Vad => voice.vad_sensitivity = value as i32,
             SliderKind::ReleaseDelay => voice.ptt_release_delay_ms = value as u32,
             SliderKind::SoundsVolume => voice.sounds_volume = rounded(value) as _,
+            SliderKind::MediaVolume => voice.media_volume = rounded(value) as _,
+            SliderKind::ScrollSpeed => self.config.general.scroll_speed = rounded(value) as _,
         }
         cx.notify();
     }
@@ -546,6 +566,14 @@ impl Shell {
             SliderKind::GroupMinutes => {
                 let value = self.config.buffer.group_minutes.to_string();
                 self.persist("buffer.group_minutes", &value, cx);
+            }
+            SliderKind::MediaVolume => {
+                let value = format!("{:.3}", self.config.voice.media_volume);
+                self.persist("voice.media_volume", &value, cx);
+            }
+            SliderKind::ScrollSpeed => {
+                let value = format!("{:.2}", self.config.general.scroll_speed);
+                self.persist("general.scroll_speed", &value, cx);
             }
             _ => {
                 let voice = self.config.voice.clone();
@@ -769,6 +797,7 @@ impl Shell {
             Tab::Chat => self.tab_chat(page, cx),
             Tab::Voice => self.tab_voice(page, cx),
             Tab::Notifications => self.tab_notifications(cx),
+            Tab::Privacy => self.tab_privacy(cx),
             Tab::Keybinds => self.tab_keybinds(),
             Tab::About => self.tab_about(cx),
         };
@@ -1233,7 +1262,12 @@ impl Shell {
         page_body(
             "Appearance",
             None,
-            vec![theme_group, text_group, layout_group],
+            vec![
+                theme_group,
+                text_group,
+                layout_group,
+                self.motion_group(page, cx),
+            ],
         )
     }
 
@@ -1316,7 +1350,176 @@ impl Shell {
                         ),
                     ],
                 ),
+                self.sidebar_group(cx),
+                self.files_group(page, cx),
             ],
+        )
+    }
+
+    fn motion_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        let g = &self.config.general;
+        group(
+            "Motion",
+            vec![
+                self.flag(
+                    "Reduce motion",
+                    "No sliding or fading.",
+                    g.reduce_motion,
+                    "general.reduce_motion",
+                    cx,
+                ),
+                self.flag(
+                    "Smooth scrolling",
+                    "The mouse wheel glides instead of jumping.",
+                    g.smooth_scroll,
+                    "general.smooth_scroll",
+                    cx,
+                ),
+                setting(
+                    "Scroll speed",
+                    &format!("{:.2} x", g.scroll_speed),
+                    self.slider(page, SliderKind::ScrollSpeed),
+                ),
+                self.flag(
+                    "Animate pictures",
+                    "GIFs move while the window has the focus.",
+                    g.animate_pictures,
+                    "general.animate_pictures",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn sidebar_group(&self, cx: &mut Context<Self>) -> AnyElement {
+        let s = &self.config.sidebar;
+        group(
+            "Sidebar",
+            vec![
+                self.flag(
+                    "Show unread dots",
+                    "",
+                    s.show_unread_dots,
+                    "sidebar.show_unread_dots",
+                    cx,
+                ),
+                self.flag(
+                    "Show mention counts",
+                    "",
+                    s.show_mention_counts,
+                    "sidebar.show_mention_counts",
+                    cx,
+                ),
+                self.flag(
+                    "Show who is in voice channels",
+                    "",
+                    s.show_voice_users,
+                    "sidebar.show_voice_users",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn files_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        let g = &self.config.general;
+        let folder = if g.download_dir.is_empty() {
+            "The Downloads folder".to_owned()
+        } else {
+            g.download_dir.clone()
+        };
+        group(
+            "Files",
+            vec![
+                setting(
+                    "Media volume",
+                    &format!("{:.0} %", self.config.voice.media_volume * 100.),
+                    self.slider(page, SliderKind::MediaVolume),
+                ),
+                setting(
+                    "Download folder",
+                    &folder,
+                    wrap()
+                        .child(
+                            Button::new("download-choose")
+                                .cursor_pointer()
+                                .label("Choose…")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.choose_download_dir(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("download-reset")
+                                .cursor_pointer()
+                                .label("Reset")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.persist(
+                                        "general.download_dir",
+                                        &toml_string(String::new()),
+                                        cx,
+                                    );
+                                })),
+                        ),
+                ),
+                self.flag(
+                    "Ask where to save",
+                    "Choose a place for each download.",
+                    g.ask_where_to_save,
+                    "general.ask_where_to_save",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn choose_download_dir(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            async {
+                rfd::AsyncFileDialog::new()
+                    .pick_folder()
+                    .await
+                    .map(|folder| folder.path().display().to_string())
+            },
+            |this, picked, _, cx| {
+                if let Some(folder) = picked {
+                    this.persist("general.download_dir", &toml_string(folder), cx);
+                }
+            },
+        );
+    }
+
+    fn tab_privacy(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = &self.config.privacy;
+        page_body(
+            "Privacy",
+            None,
+            vec![group(
+                "What this device tells the server",
+                vec![
+                    self.flag(
+                        "Show others when I am typing",
+                        "",
+                        p.send_typing,
+                        "privacy.send_typing",
+                        cx,
+                    ),
+                    self.flag(
+                        "Sync what I have read",
+                        "Off: the server is not told, and your other devices will not know either.",
+                        p.send_read_marks,
+                        "privacy.send_read_marks",
+                        cx,
+                    ),
+                    self.flag(
+                        "Search on this device only",
+                        "Older unencrypted messages are then not found.",
+                        p.local_search_only,
+                        "privacy.local_search_only",
+                        cx,
+                    ),
+                ],
+            )],
         )
     }
 

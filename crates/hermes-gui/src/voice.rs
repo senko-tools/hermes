@@ -20,7 +20,6 @@ use hermes_client_core::voice::VoiceLink;
 use hermes_client_core::{InstanceId, VoiceStatus, view};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::menu_entries::Target;
 use crate::shell::{Page, Shell};
 use crate::theme::{self, px};
@@ -747,12 +746,11 @@ impl Shell {
                         )
                         .children(ranges)
                         .child(
-                            icon_button("network-close", assets::CLOSE).on_click(cx.listener(
-                                |this, _, _, cx| {
+                            crate::channel::tip_button("network-close", assets::CLOSE, "Close")
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.network_open = None;
                                     cx.notify();
-                                },
-                            )),
+                                })),
                         ),
                 )
                 .child(div().flex().gap(px(6.)).children(tiles))
@@ -1139,9 +1137,10 @@ impl Shell {
                     )
                     .child(
                         div().absolute().top(px(8.)).right(px(8.)).child(
-                            icon_button(
+                            crate::channel::tip_button(
                                 SharedString::from(format!("stop-watching-{}", p.user)),
                                 assets::CLOSE,
+                                "Stop watching",
                             )
                             .bg(theme::scrim())
                             .on_click(cx.listener(
@@ -1547,12 +1546,11 @@ impl Shell {
                                 .child("Share your screen"),
                         )
                         .child(
-                            icon_button("share-close", assets::CLOSE).on_click(cx.listener(
-                                |this, _, _, cx| {
+                            crate::channel::tip_button("share-close", assets::CLOSE, "Close")
+                                .on_click(cx.listener(|this, _, _, cx| {
                                     this.share_menu = None;
                                     cx.notify();
-                                },
-                            )),
+                                })),
                         ),
                 )
                 .child(

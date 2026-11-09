@@ -180,6 +180,8 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
+                            .max_w(px(240.))
+                            .truncate()
                             .child(entry.detail.clone()),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {

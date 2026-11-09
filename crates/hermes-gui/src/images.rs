@@ -295,7 +295,7 @@ impl Shell {
     pub fn banner_picture(&self, inst: &str, user: Option<&User>) -> Option<Arc<RenderImage>> {
         let banner = user?.banner.as_ref()?;
         match self.images.avatars.get(&(inst.to_owned(), banner.id)) {
-            Some(Img::Ready(picture)) => Some(picture.shown(self.focused)),
+            Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
             _ => None,
         }
     }
@@ -312,7 +312,7 @@ impl Shell {
             .as_ref()?
             .id;
         match self.images.avatars.get(&(inst.to_owned(), icon)) {
-            Some(Img::Ready(picture)) => Some(picture.shown(self.focused)),
+            Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
             _ => None,
         }
     }
@@ -378,7 +378,7 @@ impl Shell {
             .and_then(|u| u.avatar.as_ref())
             .and_then(|a| self.images.avatars.get(&(inst.to_owned(), a.id)));
         if let Some(Img::Ready(picture)) = picture {
-            return img(picture.shown(self.focused))
+            return img(picture.shown(self.animating()))
                 .flex_shrink_0()
                 .size(px(size))
                 .rounded(px(size / 2.))
@@ -428,9 +428,39 @@ impl Shell {
                     .rounded(px(dot / 2.))
                     .border_2()
                     .border_color(theme::sidebar())
-                    .bg(theme::status(status)),
+                    .bg(theme::status(status))
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .children(presence_shape(status, dot)),
             )
             .into_any_element()
+    }
+}
+
+/// What is cut out of a presence dot, so that a status never depends on its colour alone:
+/// a bar for do-not-disturb, a crescent for idle, a ring for offline.
+fn presence_shape(status: Status, dot: f32) -> Option<gpui_kit::Div> {
+    let cut = || div().bg(theme::sidebar());
+    let inner = dot - 4.;
+    match status {
+        Status::Online => None,
+        Status::Dnd => Some(
+            cut()
+                .w(px(inner * 0.7))
+                .h(px((inner * 0.25).max(1.5)))
+                .rounded(px(1.)),
+        ),
+        Status::Offline => Some(cut().size(px(inner * 0.5)).rounded(px(inner * 0.25))),
+        Status::Idle => Some(
+            cut()
+                .absolute()
+                .top(px(-inner * 0.1))
+                .left(px(-inner * 0.1))
+                .size(px(inner * 0.7))
+                .rounded(px(inner * 0.35)),
+        ),
     }
 }
 

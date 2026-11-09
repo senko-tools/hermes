@@ -12,7 +12,7 @@ use gpui_kit::{
     TouchPhase, Window, canvas, point, px,
 };
 
-/// How much further a notch goes than it did before.
+/// How much further a notch goes than it did before, until the setting is read.
 const SPEED: f32 = 1.25;
 /// The pixels of one wheel line, as gpui's lists count it (the chat is one).
 const LINE: f32 = 20.;
@@ -28,6 +28,10 @@ struct State {
     /// When the last frame scrolled; `None` while nothing plays.
     last: Option<Instant>,
     modifiers: Modifiers,
+    /// The wheel is left to the lists themselves.
+    off: bool,
+    /// How much further a notch goes; 0 until configured.
+    speed: f32,
 }
 
 #[derive(Clone, Default)]
@@ -54,6 +58,13 @@ fn merge(left: f32, add: f32) -> f32 {
 }
 
 impl SmoothScroll {
+    /// Follows the settings.
+    pub fn configure(&self, on: bool, speed: f32) {
+        let mut s = self.0.borrow_mut();
+        s.off = !on;
+        s.speed = speed;
+    }
+
     /// An empty element that catches the wheel for the whole window. It goes in the root.
     pub fn catcher(&self) -> impl IntoElement + use<> {
         let state = self.0.clone();
@@ -65,6 +76,7 @@ impl SmoothScroll {
                         || event.source != ScrollSource::Pointer
                         || event.modifiers.control
                         || cx.reduce_motion()
+                        || state.borrow().off
                     {
                         return;
                     }
@@ -72,7 +84,8 @@ impl SmoothScroll {
                         return;
                     };
                     cx.stop_propagation();
-                    let line = LINE * SPEED;
+                    let speed = state.borrow().speed;
+                    let line = LINE * if speed > 0. { speed } else { SPEED };
                     let start = {
                         let mut s = state.borrow_mut();
                         s.left.x = merge(s.left.x, lines.x * line);

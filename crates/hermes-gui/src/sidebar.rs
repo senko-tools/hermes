@@ -13,7 +13,6 @@ use hermes_client_core::proto::models::{ChannelKind, User};
 use hermes_client_core::{InstanceId, view};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::collapsed::Node;
 use crate::drag::{Ghost, Item, Kind};
 use crate::menu_entries::Target;
@@ -77,13 +76,21 @@ fn unread_dot() -> Div {
 }
 
 /// A row's unread dot or mention count.
-fn badge_element(badge: Badge) -> Option<Div> {
-    if badge.mentions > 0 {
+fn badge_element(badge: Badge, counts: bool, dots: bool) -> Option<Div> {
+    if badge.mentions > 0 && counts {
         Some(count_badge(badge.mentions))
-    } else if badge.unread {
+    } else if (badge.unread || badge.mentions > 0) && dots {
         Some(unread_dot())
     } else {
         None
+    }
+}
+
+impl Shell {
+    /// A row's badge, as the settings want it shown.
+    fn badge(&self, badge: Badge) -> Option<Div> {
+        let sidebar = &self.config.sidebar;
+        badge_element(badge, sidebar.show_mention_counts, sidebar.show_unread_dots)
     }
 }
 
@@ -318,7 +325,7 @@ impl Shell {
                 },
             ))
             .children(
-                badge_element(home_badge)
+                self.badge(home_badge)
                     .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
             )
             .on_click(cx.listener(|this, _, _, cx| {
@@ -359,6 +366,13 @@ impl Shell {
                         d.hover(|d| d.bg(theme::hover()))
                     })
                     .when(picture.is_none(), |d| d.child(initials(&name)))
+                    .tooltip({
+                        let name = SharedString::from(name.clone());
+                        move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(name.clone())
+                                .build(window, cx)
+                        }
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_pages(cx);
                         this.select_space(inst.clone(), id, window, cx);
@@ -375,7 +389,7 @@ impl Shell {
                         picture,
                     ))
                     .children(
-                        badge_element(badge)
+                        self.badge(badge)
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
                     )
                     .into_any_element()
@@ -635,7 +649,11 @@ impl Shell {
             out
         };
         let mut rows = self.instance_notices(cx);
-        let mut tree_rows = tree_rows.into_iter().peekable();
+        let show_people = self.config.sidebar.show_voice_users;
+        let mut tree_rows = tree_rows
+            .into_iter()
+            .filter(|row| show_people || !matches!(row, Row::VoiceUser { .. }))
+            .peekable();
         while let Some(tree_row) = tree_rows.next() {
             // The space itself is the header above the list.
             if matches!(tree_row, Row::Space { .. }) {
@@ -763,7 +781,7 @@ impl Shell {
                         .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent())),
                     )
                     .child(div().flex_1())
-                    .children(badge_element(badge))
+                    .children(self.badge(badge))
                     .children(add)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Err(err) = this.collapsed.toggle(&node) {
@@ -817,9 +835,10 @@ impl Shell {
                     .child(avatar)
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(
-                        icon_button(
+                        crate::channel::tip_button(
                             SharedString::from(format!("request-accept-{id}")),
                             assets::CHECK,
+                            "Accept",
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -859,7 +878,7 @@ impl Shell {
                     .when(connected, |d| {
                         d.child(icon(assets::PHONE, 16., theme::speaking()))
                     })
-                    .children(badge_element(badge))
+                    .children(self.badge(badge))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select(inst.clone(), id, window, cx);
                     }));
@@ -949,7 +968,7 @@ impl Shell {
                     .text_color(theme::success())
                     .child(text)
             }))
-            .children(badge_element(badge))
+            .children(self.badge(badge))
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.select(inst.clone(), id, window, cx);

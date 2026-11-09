@@ -234,8 +234,8 @@ impl Shell {
             | Action::SplitDown
             | Action::ClosePane
             | Action::MaximizePane => {}
-            Action::ToggleMemberList => self.show_members = !self.show_members,
-            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Action::ToggleMemberList => self.toggle_members(cx),
+            Action::ToggleSidebar => self.toggle_sidebar(cx),
             Action::Settings => self.open_settings(window, cx),
             Action::ZoomIn => self.set_ui_scale(self.config.font.ui_scale + 0.1, window, cx),
             Action::ZoomOut => self.set_ui_scale(self.config.font.ui_scale - 0.1, window, cx),

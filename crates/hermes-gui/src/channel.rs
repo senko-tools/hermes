@@ -1246,15 +1246,37 @@ impl Shell {
     /// Downloads an attachment into the Downloads folder (never overwriting a file).
     pub fn download(&self, inst: InstanceId, attachment: Attachment, cx: &mut Context<Self>) {
         let core = self.core.clone();
+        let (folder, ask) = (
+            self.config.general.download_dir.clone(),
+            self.config.general.ask_where_to_save,
+        );
         self.run_status(cx, async move {
             let result: Result<String, String> = async {
+                let chosen = if ask {
+                    let name = crate::open::safe_filename(&attachment.filename);
+                    let Some(file) = rfd::AsyncFileDialog::new()
+                        .set_file_name(name)
+                        .save_file()
+                        .await
+                    else {
+                        return Ok("Download cancelled".to_owned());
+                    };
+                    Some(file.path().to_path_buf())
+                } else {
+                    None
+                };
                 let bytes = core
                     .download(&inst, &attachment)
                     .await
                     .map_err(|e| e.to_string())?;
-                let dir = crate::open::downloads_dir();
-                let path = tokio::task::spawn_blocking(move || {
-                    crate::open::save_new(&dir, &attachment.filename, &bytes)
+                let dir = if folder.is_empty() {
+                    crate::open::downloads_dir()
+                } else {
+                    std::path::PathBuf::from(folder)
+                };
+                let path = tokio::task::spawn_blocking(move || match chosen {
+                    Some(path) => std::fs::write(&path, &bytes).map(|()| path),
+                    None => crate::open::save_new(&dir, &attachment.filename, &bytes),
                 })
                 .await
                 .map_err(|e| e.to_string())?
@@ -1310,7 +1332,7 @@ impl Shell {
     pub fn render_viewer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let viewer = self.viewer.as_ref()?;
         let content = match &viewer.image {
-            Img::Ready(picture) => img(picture.shown(self.focused))
+            Img::Ready(picture) => img(picture.shown(self.animating()))
                 .max_w_full()
                 .max_h_full()
                 .object_fit(gpui_kit::ObjectFit::Contain)
@@ -1351,19 +1373,20 @@ impl Shell {
                                     .truncate()
                                     .child(viewer.attachment.filename.clone()),
                             )
-                            .child(icon_button("viewer-download", assets::DOWNLOAD).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    cx.stop_propagation();
-                                    if let Some(viewer) = &this.viewer {
-                                        this.download(
-                                            viewer.inst.clone(),
-                                            viewer.attachment.clone(),
-                                            cx,
-                                        );
-                                    }
-                                }),
-                            ))
-                            .child(icon_button("viewer-close", assets::CLOSE).on_click(
+                            .child(
+                                tip_button("viewer-download", assets::DOWNLOAD, "Download")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if let Some(viewer) = &this.viewer {
+                                            this.download(
+                                                viewer.inst.clone(),
+                                                viewer.attachment.clone(),
+                                                cx,
+                                            );
+                                        }
+                                    })),
+                            )
+                            .child(tip_button("viewer-close", assets::CLOSE, "Close").on_click(
                                 cx.listener(|this, _, _, cx| {
                                     this.viewer = None;
                                     cx.notify();
@@ -1808,12 +1831,14 @@ impl Shell {
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_size(theme::secondary_size())
                         .text_color(theme::text_secondary())
                         .child(text),
                 )
                 .child(
-                    icon_button("composer-cancel", assets::CLOSE).on_click(cx.listener(
+                    tip_button("composer-cancel", assets::CLOSE, "Cancel").on_click(cx.listener(
                         move |this, _, window, cx| {
                             this.composer_cancel(&cancel_key, window, cx);
                         },
@@ -1839,17 +1864,16 @@ impl Shell {
                 .bg(theme::selected())
                 .text_size(theme::caption_size())
                 .child(icon(assets::FILE, 14., theme::text_secondary()))
-                .child(upload.name.clone())
+                .child(div().max_w(px(240.)).truncate().child(upload.name.clone()))
                 .child(div().text_color(color).child(state))
                 .child(
-                    icon_button(("upload-remove", local as usize), assets::CLOSE).on_click(
-                        cx.listener(move |this, _, _, cx| {
+                    tip_button(("upload-remove", local as usize), assets::CLOSE, "Remove")
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(view) = this.chats.get_mut(&remove) {
                                 view.uploads.retain(|u| u.local != local);
                             }
                             cx.notify();
-                        }),
-                    ),
+                        })),
                 )
         });
         let uploads = (!view.uploads.is_empty()).then(|| {
@@ -2360,7 +2384,7 @@ impl Shell {
             .occlude()
             .children(buttons)
             .child(
-                icon_button("palette-close", assets::CLOSE).on_click(cx.listener(
+                tip_button("palette-close", assets::CLOSE, "Close").on_click(cx.listener(
                     move |this, _, _, cx| {
                         cx.stop_propagation();
                         if let Some(view) = this.chats.get_mut(&(close_inst.clone(), channel)) {
@@ -2567,7 +2591,7 @@ impl Shell {
                     .cursor_pointer()
                     .group(IMAGE_GROUP)
                     .child(
-                        img(image.shown(self.focused))
+                        img(image.shown(self.animating()))
                             .w(px(w))
                             .h(px(h))
                             .rounded(px(6.))

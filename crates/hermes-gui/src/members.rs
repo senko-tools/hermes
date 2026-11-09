@@ -12,6 +12,31 @@ use crate::shell::Shell;
 use crate::theme::{self, px};
 
 impl Shell {
+    /// The member list's edge: dragging starts on press, a double-click goes back to the default.
+    fn render_member_edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("members-edge")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(6.))
+            .cursor_col_resize()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.persist("sidebar.member_list_width", "232", cx);
+                        return;
+                    }
+                    let width = f32::from(this.config.sidebar.member_list_width);
+                    this.resizing = Some((event.position.x.as_f32(), width));
+                    this.resizing_members = true;
+                    cx.notify();
+                }),
+            )
+    }
+
     pub fn render_members(
         &self,
         inst: &InstanceId,
@@ -93,19 +118,26 @@ impl Shell {
         }
         Some(
             div()
-                .id("members")
-                .flex()
-                .flex_col()
+                .relative()
                 .flex_shrink_0()
                 .h_full()
-                .w(px(f32::from(self.config.sidebar.member_list_width)))
-                .p(px(8.))
-                .gap(px(2.))
-                .overflow_y_scroll()
-                .bg(theme::sidebar())
-                .border_l_1()
-                .border_color(theme::border())
-                .children(content)
+                .child(
+                    div()
+                        .id("members")
+                        .flex()
+                        .flex_col()
+                        .flex_shrink_0()
+                        .h_full()
+                        .w(px(f32::from(self.config.sidebar.member_list_width)))
+                        .p(px(8.))
+                        .gap(px(2.))
+                        .overflow_y_scroll()
+                        .bg(theme::sidebar())
+                        .border_l_1()
+                        .border_color(theme::border())
+                        .children(content),
+                )
+                .child(self.render_member_edge(cx))
                 .into_any_element(),
         )
     }

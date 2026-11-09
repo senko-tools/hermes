@@ -23,7 +23,6 @@ use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{CoreError, InstanceId, now_ms, time, view};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::drag::{Ghost, Item, Kind};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
@@ -1053,7 +1052,7 @@ impl Shell {
             // Read from the image cache, not through the store again (it is held here).
             let picture = st.space.icon.as_ref().and_then(|icon| {
                 match self.images.avatars.get(&(inst.clone(), icon.id)) {
-                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.focused)),
+                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
                     _ => None,
                 }
             });
@@ -1269,7 +1268,7 @@ impl Shell {
             })
             .collect();
         let create = can_manage.then(|| {
-            icon_button("role-create", assets::PLUS)
+            crate::channel::tip_button("role-create", assets::PLUS, "Create a role")
                 .on_click(cx.listener(|this, _, _, cx| this.create_role(cx)))
                 .into_any_element()
         });
@@ -1531,8 +1530,8 @@ impl Shell {
                 .flex()
                 .gap(px(2.))
                 .child(
-                    icon_button("channel-create", assets::PLUS).on_click(cx.listener(
-                        move |this, _, window, cx| {
+                    crate::channel::tip_button("channel-create", assets::PLUS, "Create a channel")
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_form_create_channel(
                                 channel_inst.clone(),
                                 space,
@@ -1540,20 +1539,17 @@ impl Shell {
                                 window,
                                 cx,
                             );
-                        },
-                    )),
+                        })),
                 )
                 .child(
-                    icon_button("category-create", assets::FOLDER_PLUS).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.open_form_create_category(
-                                category_inst.clone(),
-                                space,
-                                window,
-                                cx,
-                            );
-                        },
-                    )),
+                    crate::channel::tip_button(
+                        "category-create",
+                        assets::FOLDER_PLUS,
+                        "Create a category",
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_form_create_category(category_inst.clone(), space, window, cx);
+                    })),
                 )
                 .into_any_element()
         });

@@ -536,6 +536,8 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
                 .gap(px(8.))
                 .child(
                     div()
+                        .min_w_0()
+                        .truncate()
                         .text_size(theme::secondary_size())
                         .font_weight(FontWeight::BOLD)
                         .child(SharedString::from(author)),
@@ -551,6 +553,8 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
                     div()
                         .text_size(theme::caption_size())
                         .text_color(theme::text_secondary())
+                        .max_w(px(220.))
+                        .truncate()
                         .child(place),
                 ),
         )

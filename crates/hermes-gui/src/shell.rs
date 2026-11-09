@@ -152,6 +152,10 @@ pub struct Shell {
     pub sidebar_visible: bool,
     /// The sidebar's edge is being dragged: where the drag started, and the width then.
     pub resizing: Option<(f32, f32)>,
+    /// What is being resized is the member list, not the sidebar.
+    pub resizing_members: bool,
+    /// What the system asked for, under the setting.
+    pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
     pub update: Option<hermes_client_core::update::Update>,
     pub new_dm: Option<NewDm>,
@@ -300,6 +304,8 @@ impl Shell {
             show_members: true,
             sidebar_visible: true,
             resizing: None,
+            resizing_members: false,
+            system_reduce_motion: false,
             update: None,
             new_dm: None,
             viewer: None,
@@ -348,6 +354,10 @@ impl Shell {
         };
         this.restore_layout();
         this.reload_theme(cx);
+        this.system_reduce_motion = cx.reduce_motion();
+        this.show_members = this.config.sidebar.show_members;
+        this.sidebar_visible = this.config.sidebar.visible;
+        this.apply_motion(cx);
         window.set_rem_size(gpui_kit::px(16. * crate::theme::scale()));
         this.start_theme_watcher(cx);
         this.check_for_update(cx);
@@ -701,7 +711,32 @@ impl Shell {
         }
         self.update_ptt_keys();
         self.register_global_keys(cx);
+        self.apply_motion(cx);
         cx.notify();
+    }
+
+    fn apply_motion(&self, cx: &mut Context<Self>) {
+        let general = &self.config.general;
+        cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
+        self.smooth_scroll
+            .configure(general.smooth_scroll, general.scroll_speed as f32);
+    }
+
+    /// Whether animated pictures move right now.
+    pub fn animating(&self) -> bool {
+        self.focused && self.config.general.animate_pictures
+    }
+
+    pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
+        let shown = !self.show_members;
+        self.show_members = shown;
+        self.persist("sidebar.show_members", &shown.to_string(), cx);
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        let shown = !self.sidebar_visible;
+        self.sidebar_visible = shown;
+        self.persist("sidebar.visible", &shown.to_string(), cx);
     }
 
     /// Puts text on the clipboard; `what` names it for the status line.
@@ -923,8 +958,7 @@ impl Shell {
             controls.push(
                 crate::channel::tip_button("header-members", assets::USERS, "Member list")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_members = !this.show_members;
-                        cx.notify();
+                        this.toggle_members(cx);
                     }))
                     .into_any_element(),
             );
@@ -1008,9 +1042,8 @@ impl Shell {
                 .unwrap_or(true);
             Some((inst, channel, members))
         });
-        if let Some((inst, channel, members)) = restored {
+        if let Some((inst, channel, _)) = restored {
             self.restore = Some((inst, channel));
-            self.show_members = members;
         }
     }
 
@@ -1115,6 +1148,11 @@ impl Shell {
             return;
         };
         let moved = (x - start) / crate::theme::scale();
+        if self.resizing_members {
+            self.config.sidebar.member_list_width = (width - moved).clamp(180., 420.) as u16;
+            cx.notify();
+            return;
+        }
         let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
         let new = if on_right {
             width - moved
@@ -1127,8 +1165,13 @@ impl Shell {
 
     fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
-            let width = self.config.sidebar.width.to_string();
-            self.persist("sidebar.width", &width, cx);
+            if std::mem::take(&mut self.resizing_members) {
+                let width = self.config.sidebar.member_list_width.to_string();
+                self.persist("sidebar.member_list_width", &width, cx);
+            } else {
+                let width = self.config.sidebar.width.to_string();
+                self.persist("sidebar.width", &width, cx);
+            }
         }
     }
 
