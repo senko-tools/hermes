@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Context, DismissEvent, Div, Entity, Focusable as _, MouseButton, MouseUpEvent,
     Pixels, Point, SharedString, Stateful, Subscription, WeakEntity, Window, anchored, deferred,
-    div, px,
+    div,
 };
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
@@ -290,7 +290,7 @@ impl Shell {
             deferred(
                 anchored()
                     .position(menu.position)
-                    .snap_to_window_with_margin(px(8.))
+                    .snap_to_window_with_margin(crate::theme::px(8.))
                     .child(menu.view.clone()),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)

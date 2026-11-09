@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
-    div, px,
+    div,
 };
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
@@ -36,6 +36,7 @@ use crate::screen::{Latest, Share, capture::Capture};
 use crate::settings::SettingsPage;
 use crate::single_instance::{self, Endpoint};
 use crate::space_settings::SpacePage;
+use crate::theme::px;
 use crate::voice::{Call, NetHistory, VolumeMenu};
 use crate::{theme, watchdog};
 

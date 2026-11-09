@@ -5,13 +5,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, div, px};
+use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::store::InstanceStore;
 
 use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
+use crate::theme::px;
 
 pub struct NewDm {
     pub inst: InstanceId,

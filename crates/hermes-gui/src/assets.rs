@@ -4,7 +4,9 @@
 use std::borrow::Cow;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{App, AssetSource, Result, Rgba, SharedString, Svg, px, svg};
+use gpui_kit::{App, AssetSource, Result, Rgba, SharedString, Svg, svg};
+
+use crate::theme::px;
 
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
