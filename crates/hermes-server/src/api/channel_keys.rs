@@ -148,6 +148,14 @@ pub async fn start_epoch(
     {
         let cache = state.cache();
         space_of(&cache, channel, auth.user_id)?;
+        // Replacing the key stops everyone's sends for a moment, so reading is not enough.
+        let perms = cache.channel_permissions(channel, auth.user_id);
+        if !perms.intersects(Permissions::SEND_MESSAGES | Permissions::MANAGE_SPACE) {
+            return Err(Error::new(
+                ErrorCode::MissingPermission,
+                "You cannot replace this channel's key",
+            ));
+        }
         check_keys(&cache, channel, auth.user_id, &req.keys)?;
     }
     if req.keys.iter().any(|k| k.epoch != req.epoch) {

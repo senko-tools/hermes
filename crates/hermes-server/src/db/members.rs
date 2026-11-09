@@ -150,7 +150,7 @@ pub async fn soft_delete_messages_since(
 ) -> Result<Vec<(Id, Id)>, sqlx::Error> {
     let (space_id, author_id, min_id) = (space_id.to_i64(), author_id.to_i64(), min_id.to_i64());
     let rows = sqlx::query!(
-        "UPDATE messages SET content = '', deleted = 1, pinned = 0
+        "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0
          WHERE author_id = ? AND id >= ? AND deleted = 0
            AND channel_id IN (SELECT id FROM channels WHERE space_id = ?)
          RETURNING id, channel_id",

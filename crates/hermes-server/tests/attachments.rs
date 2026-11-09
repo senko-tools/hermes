@@ -182,7 +182,7 @@ async fn access_follows_the_message_channel() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&alice),
-            json!({ "content": "x", "nonce": "n", "attachment_ids": [aid] }),
+            json!({ "content": "x", "nonce": common::nonce(), "attachment_ids": [aid] }),
         )
         .await
         .err(400, "VALIDATION_FAILED");
@@ -191,7 +191,7 @@ async fn access_follows_the_message_channel() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "file", "nonce": "n", "attachment_ids": [aid] }),
+            json!({ "content": "file", "nonce": common::nonce(), "attachment_ids": [aid] }),
         )
         .await
         .ok();
@@ -403,7 +403,7 @@ async fn cleanup_deletes_only_old_unattached_uploads() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "", "nonce": "n", "attachment_ids": [attached] }),
+            json!({ "content": "", "nonce": common::nonce(), "attachment_ids": [attached] }),
         )
         .await
         .ok();
@@ -566,7 +566,7 @@ async fn sounds_keep_the_waveform_and_length_their_uploader_measured() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "", "attachment_ids": [id(&sound)], "nonce": "n" }),
+            json!({ "content": "", "attachment_ids": [id(&sound)], "nonce": common::nonce() }),
         )
         .await
         .ok();

@@ -86,8 +86,15 @@ pub async fn register(
         first_user,
         invite_code.is_some(),
     )?;
-    if invite_code.is_some_and(|c| !invites::is_valid_code(c)) {
-        return Err(invite_invalid());
+    if let Some(code) = invite_code {
+        // Hashing is what costs, so a made-up code must not get that far.
+        let usable = invites::is_valid_code(code)
+            && db::invites::get(&state.db.read, code)
+                .await?
+                .is_some_and(|invite| invite.is_usable(now_ms()));
+        if !usable {
+            return Err(invite_invalid());
+        }
     }
     let password_hash = auth::hash_password(req.password).await?;
 

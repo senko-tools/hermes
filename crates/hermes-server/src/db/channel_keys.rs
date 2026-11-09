@@ -76,7 +76,8 @@ pub async fn start_epoch(
     Ok(true)
 }
 
-/// Stores handed-over keys; one already there is replaced.
+/// Stores handed-over keys. A key already there is replaced only by the member who stored it, so
+/// nobody can swap the key someone else handed to a device.
 pub async fn store_keys(
     conn: &mut SqliteConnection,
     channel: Id,
@@ -86,9 +87,13 @@ pub async fn store_keys(
     for key in keys {
         let (user, sender) = (key.user_id.to_i64(), key.sender_id.to_i64());
         sqlx::query!(
-            "INSERT OR REPLACE INTO channel_keys
+            "INSERT INTO channel_keys
                (channel_id, epoch, user_id, device_id, sender_id, sender_device, eph, key, sig)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (channel_id, epoch, user_id, device_id) DO UPDATE SET
+               sender_device = excluded.sender_device, eph = excluded.eph,
+               key = excluded.key, sig = excluded.sig
+             WHERE channel_keys.sender_id = excluded.sender_id",
             id,
             key.epoch,
             user,

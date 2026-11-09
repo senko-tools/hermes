@@ -26,7 +26,14 @@ async fn send_message(server: &TestServer, token: &str, channel_id: &str, conten
 /// Sends a message in `channel_id` and checks that it is the next event `ws` receives, proving
 /// that nothing else was delivered before it.
 async fn expect_marker(server: &TestServer, token: &str, channel_id: &str, ws: &mut Ws) {
-    send_message(server, token, channel_id, "marker").await;
+    server
+        .post(
+            &format!("/channels/{channel_id}/messages"),
+            Some(token),
+            json!({ "content": "marker", "nonce": format!("nonce-marker-{}", common::nonce()) }),
+        )
+        .await
+        .ok();
     let event = ws.next_event().await;
     assert_eq!(
         (event["op"].as_str(), event["d"]["content"].as_str()),
@@ -80,7 +87,13 @@ async fn message_events_respect_view_channel() {
 
     // In #general the author gets the nonce, everyone else does not.
     let own = ows.next_event().await;
-    assert_eq!(own["d"]["nonce"], "nonce-marker");
+    assert!(
+        own["d"]["nonce"]
+            .as_str()
+            .unwrap()
+            .starts_with("nonce-marker"),
+        "{own}"
+    );
     send_message(&server, &alice, &general, "hi").await;
     let theirs = ows.next_event().await;
     assert_eq!(theirs["d"]["content"], "hi");

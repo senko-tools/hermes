@@ -222,6 +222,22 @@ fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) 
 
 /// `SEND_MESSAGES` (+ `ATTACH_FILES` with attachments); slowmode unless `BYPASS_SLOWMODE`.
 /// Mentions are stored and raise the mentioned users' mention counts.
+/// The reply to a send whose nonce already made message `id`.
+async fn send_again(
+    state: &Arc<AppState>,
+    channel_id: Id,
+    id: Id,
+    nonce: String,
+    viewer: Id,
+) -> ApiResult<Json<Message>> {
+    let row = db::messages::get(&state.db.read, channel_id, id)
+        .await?
+        .ok_or_else(|| Error::not_found("message"))?;
+    let mut message = one_to_wire(state, row, viewer).await?;
+    message.nonce = Some(nonce);
+    Ok(Json(message))
+}
+
 pub async fn send(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -274,6 +290,12 @@ pub async fn send(
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
         (resolved, slowmode, t.kind)
     };
+    // A retry after a lost reply gets the message it already made, whatever has changed since.
+    if let Some(id) =
+        db::messages::by_nonce(&state.db.read, channel_id, auth.user_id, &req.nonce).await?
+    {
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
     check_epoch(&state, channel_id, kind, req.e2ee.as_ref()).await?;
     if let Some(reply_id) = req.reply_to_id
         && db::messages::get(&state.db.read, channel_id, reply_id)
@@ -314,7 +336,14 @@ pub async fn send(
         e2ee,
     };
     let mut tx = state.db.write.begin().await?;
+    // Checked again here: the single writer settles two copies arriving together.
+    if let Some(id) = db::messages::by_nonce(&mut *tx, channel_id, auth.user_id, &req.nonce).await?
+    {
+        drop(tx);
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
     db::messages::insert(&mut tx, &row).await?;
+    db::messages::remember_nonce(&mut *tx, &row, &req.nonce, now).await?;
     for &attachment_id in &attachment_ids {
         if !db::messages::link_attachment(&mut tx, row.id, attachment_id, auth.user_id).await? {
             return Err(validate::field_error(
@@ -372,7 +401,7 @@ pub async fn edit(
         &state.cache(),
         channel_id,
         auth.user_id,
-        Permissions::VIEW_CHANNEL,
+        Permissions::SEND_MESSAGES,
     )?;
     check_encryption(&state, t.kind, e2ee.as_ref())?;
     check_epoch(&state, channel_id, t.kind, req.e2ee.as_ref()).await?;

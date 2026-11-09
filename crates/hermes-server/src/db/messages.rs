@@ -107,6 +107,52 @@ pub async fn insert(conn: &mut SqliteConnection, m: &MessageRow) -> Result<(), s
     Ok(())
 }
 
+/// The message this author already made in the channel with this nonce, if any.
+pub async fn by_nonce(
+    e: impl SqliteExecutor<'_>,
+    channel_id: Id,
+    author_id: Id,
+    nonce: &str,
+) -> Result<Option<Id>, sqlx::Error> {
+    let (channel_id, author_id) = (channel_id.to_i64(), author_id.to_i64());
+    let id = sqlx::query_scalar!(
+        "SELECT message_id FROM message_nonces
+         WHERE channel_id = ? AND author_id = ? AND nonce = ?",
+        channel_id,
+        author_id,
+        nonce
+    )
+    .fetch_optional(e)
+    .await?;
+    Ok(id.map(Id::from_i64))
+}
+
+/// Remembers which message a nonce made, so that a retry finds it.
+pub async fn remember_nonce(
+    e: impl SqliteExecutor<'_>,
+    message: &MessageRow,
+    nonce: &str,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    let (channel_id, author_id, message_id) = (
+        message.channel_id.to_i64(),
+        message.author_id.to_i64(),
+        message.id.to_i64(),
+    );
+    sqlx::query!(
+        "INSERT INTO message_nonces (channel_id, author_id, nonce, message_id, created_at)
+         VALUES (?, ?, ?, ?, ?)",
+        channel_id,
+        author_id,
+        nonce,
+        message_id,
+        now
+    )
+    .execute(e)
+    .await?;
+    Ok(())
+}
+
 /// A message of `channel_id` (deleted ones included).
 pub async fn get(
     e: impl SqliteExecutor<'_>,

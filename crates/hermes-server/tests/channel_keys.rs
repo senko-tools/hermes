@@ -17,7 +17,7 @@ async fn server(name: &str) -> TestServer {
 
 fn envelope(epoch: Option<u32>) -> Value {
     let mut value = json!({
-        "v": 1, "device": "d", "eph": "", "nonce": "n", "ciphertext": "opaque",
+        "v": 1, "device": "d", "eph": "", "nonce": common::nonce(), "ciphertext": "opaque",
         "keys": [{ "device": "", "key": "k" }], "sig": "s",
     });
     if let Some(epoch) = epoch {
@@ -79,7 +79,7 @@ async fn a_channel_takes_only_messages_under_its_current_key() {
         .post(
             &path,
             Some(&owner),
-            json!({ "content": "plain", "nonce": "n" }),
+            json!({ "content": "plain", "nonce": common::nonce() }),
         )
         .await;
     res.err(400, "BAD_REQUEST");
@@ -91,7 +91,7 @@ async fn a_channel_takes_only_messages_under_its_current_key() {
     );
 
     // No key yet, and then a key that is not the newest.
-    let send = |epoch| json!({ "nonce": "n", "e2ee": envelope(epoch) });
+    let send = |epoch| json!({ "nonce": common::nonce(), "e2ee": envelope(epoch) });
     server
         .post(&path, Some(&owner), send(Some(1)))
         .await
@@ -445,7 +445,7 @@ async fn an_encrypted_message_says_who_it_mentions() {
             &path,
             Some(&owner),
             json!({
-                "nonce": "n",
+                "nonce": common::nonce(),
                 "e2ee": envelope(Some(1)),
                 "mentions": { "users": [alice_id], "roles": [], "everyone": false, "here": false },
             }),
@@ -481,7 +481,7 @@ async fn an_encrypted_message_says_who_it_mentions() {
             &path,
             Some(&bob_token),
             json!({
-                "nonce": "n",
+                "nonce": common::nonce(),
                 "e2ee": envelope(Some(2)),
                 "mentions": { "users": [], "roles": [], "everyone": true, "here": false },
             }),
@@ -489,4 +489,116 @@ async fn an_encrypted_message_says_who_it_mentions() {
         .await
         .ok();
     assert_eq!(sent["mentions"]["everyone"], false);
+}
+
+#[tokio::test]
+async fn someone_who_can_only_read_cannot_replace_the_key() {
+    let server = server("keys-read-only").await;
+    let (owner, owner_id, space) = server.owner().await;
+    let (bob, bob_id) = server.member(&owner, &space, "bob").await;
+    let general = server.channel_id(&space, "general");
+    server
+        .put(
+            &format!("/channels/{general}/overrides/{space}"),
+            Some(&owner),
+            json!({ "allow": "0", "deny": Permissions::SEND_MESSAGES.bits().to_string() }),
+        )
+        .await
+        .ok();
+    server
+        .post(
+            &format!("/channels/{general}/keys/epochs"),
+            Some(&bob),
+            json!({ "epoch": 1, "keys": [key(1, &bob_id, "d", &bob_id)] }),
+        )
+        .await
+        .err(403, "MISSING_PERMISSION");
+    // Whoever may manage the server still can, whatever the channel says.
+    start_epoch(
+        &server,
+        &owner,
+        &general,
+        1,
+        json!([key(1, &owner_id, "d", &owner_id)]),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn nobody_can_swap_a_key_someone_else_handed_over() {
+    let server = server("keys-swap").await;
+    let (owner, owner_id, space) = server.owner().await;
+    let (bob, bob_id) = server.member(&owner, &space, "bob").await;
+    let (mallory, mallory_id) = server.member(&owner, &space, "mallory").await;
+    let general = server.channel_id(&space, "general");
+    publish_device(&server, &bob, "0000000000000000000000000000b0b0").await;
+    start_epoch(
+        &server,
+        &owner,
+        &general,
+        1,
+        json!([key(
+            1,
+            &bob_id,
+            "0000000000000000000000000000b0b0",
+            &owner_id
+        )]),
+    )
+    .await;
+    let path = format!("/channels/{general}/keys");
+    let mut forged = key(1, &bob_id, "0000000000000000000000000000b0b0", &mallory_id);
+    forged["key"] = json!("forged");
+    server
+        .put(&path, Some(&mallory), json!({ "keys": [forged] }))
+        .await;
+    let held = keys_of(&server, &bob, &general, "0000000000000000000000000000b0b0").await;
+    assert!(!held.to_string().contains("forged"), "{held}");
+
+    // The one who handed it over may hand it over again.
+    let mut again = key(1, &bob_id, "0000000000000000000000000000b0b0", &owner_id);
+    again["key"] = json!("again");
+    server
+        .put(&path, Some(&owner), json!({ "keys": [again] }))
+        .await
+        .ok();
+    let held = keys_of(&server, &bob, &general, "0000000000000000000000000000b0b0").await;
+    assert!(held.to_string().contains("again"), "{held}");
+}
+
+#[tokio::test]
+async fn deleting_a_banned_members_messages_removes_their_ciphertext() {
+    let server = server("keys-ban-purge").await;
+    let (owner, owner_id, space) = server.owner().await;
+    let (bob, bob_id) = server.member(&owner, &space, "bob").await;
+    let general = server.channel_id(&space, "general");
+    start_epoch(
+        &server,
+        &owner,
+        &general,
+        1,
+        json!([key(1, &owner_id, "d", &owner_id)]),
+    )
+    .await;
+    let path = format!("/channels/{general}/messages");
+    server
+        .post(
+            &path,
+            Some(&bob),
+            json!({ "nonce": common::nonce(), "e2ee": envelope(Some(1)) }),
+        )
+        .await
+        .ok();
+    server
+        .put(
+            &format!("/spaces/{space}/bans/{bob_id}"),
+            Some(&owner),
+            json!({ "delete_messages_hours": 24 }),
+        )
+        .await
+        .ok();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE e2ee IS NOT NULL")
+        .fetch_one(&server.state.db.read)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
 }

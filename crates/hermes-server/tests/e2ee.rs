@@ -56,7 +56,7 @@ async fn plain_direct_messages_are_refused() {
         .post(
             &format!("/channels/{dm}/messages"),
             Some(&alice),
-            json!({ "content": "secret", "nonce": "n" }),
+            json!({ "content": "secret", "nonce": common::nonce() }),
         )
         .await;
     res.err(400, "BAD_REQUEST");
@@ -72,7 +72,7 @@ async fn plain_direct_messages_are_refused() {
         .post(
             &format!("/channels/{dm}/messages"),
             Some(&alice),
-            json!({ "content": "secret", "nonce": "n", "e2ee": envelope("x") }),
+            json!({ "content": "secret", "nonce": common::nonce(), "e2ee": envelope("x") }),
         )
         .await
         .err(400, "VALIDATION_FAILED");
@@ -86,7 +86,7 @@ async fn plain_direct_messages_are_refused() {
         .post(
             &format!("/channels/{dm}/messages"),
             Some(&alice),
-            json!({ "nonce": "n", "attachment_ids": [upload["id"]] }),
+            json!({ "nonce": common::nonce(), "attachment_ids": [upload["id"]] }),
         )
         .await
         .err(400, "BAD_REQUEST");
@@ -106,7 +106,7 @@ async fn plain_direct_messages_are_refused() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "plain", "nonce": "n" }),
+            json!({ "content": "plain", "nonce": common::nonce() }),
         )
         .await
         .ok();
@@ -114,7 +114,7 @@ async fn plain_direct_messages_are_refused() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "nonce": "n", "e2ee": envelope("x") }),
+            json!({ "nonce": common::nonce(), "e2ee": envelope("x") }),
         )
         .await
         .err(409, "CONFLICT");
@@ -130,7 +130,7 @@ async fn envelopes_are_stored_and_returned_as_they_came() {
         .post(
             &format!("/channels/{dm}/messages"),
             Some(&alice),
-            json!({ "nonce": "n", "e2ee": envelope("opaque") }),
+            json!({ "nonce": common::nonce(), "e2ee": envelope("opaque") }),
         )
         .await
         .ok();
@@ -189,7 +189,7 @@ async fn oversized_envelopes_are_refused() {
         .post(
             &format!("/channels/{dm}/messages"),
             Some(&alice),
-            json!({ "nonce": "n", "e2ee": envelope(&huge) }),
+            json!({ "nonce": common::nonce(), "e2ee": envelope(&huge) }),
         )
         .await
         .err(413, "PAYLOAD_TOO_LARGE");

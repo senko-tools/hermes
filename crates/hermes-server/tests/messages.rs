@@ -19,7 +19,7 @@ async fn send(server: &TestServer, token: &str, channel: &str, content: &str) ->
         .post(
             &format!("/channels/{channel}/messages"),
             Some(token),
-            json!({ "content": content, "nonce": "n" }),
+            json!({ "content": content, "nonce": common::nonce() }),
         )
         .await
         .ok()
@@ -55,7 +55,7 @@ async fn send_and_history() {
         .post(
             &path,
             Some(&stranger),
-            json!({ "content": "hi", "nonce": "n" }),
+            json!({ "content": "hi", "nonce": common::nonce() }),
         )
         .await
         .err(404, "NOT_FOUND");
@@ -82,13 +82,13 @@ async fn send_and_history() {
     );
 
     for bad in [
-        json!({ "content": "   ", "nonce": "n" }),
+        json!({ "content": "   ", "nonce": common::nonce() }),
         json!({ "content": "hi", "nonce": "" }),
         json!({ "content": "hi", "nonce": "x".repeat(65) }),
-        json!({ "content": "bell\u{7}", "nonce": "n" }),
-        json!({ "content": "x".repeat(4001), "nonce": "n" }),
-        json!({ "content": "hi", "nonce": "n", "attachment_ids": (1..=11).map(|i| i.to_string()).collect::<Vec<_>>() }),
-        json!({ "content": "hi", "nonce": "n", "reply_to_id": "12345" }),
+        json!({ "content": "bell\u{7}", "nonce": common::nonce() }),
+        json!({ "content": "x".repeat(4001), "nonce": common::nonce() }),
+        json!({ "content": "hi", "nonce": common::nonce(), "attachment_ids": (1..=11).map(|i| i.to_string()).collect::<Vec<_>>() }),
+        json!({ "content": "hi", "nonce": common::nonce(), "reply_to_id": "12345" }),
     ] {
         server
             .post(&path, Some(&alice), bad.clone())
@@ -107,7 +107,7 @@ async fn send_and_history() {
         .post(
             &path,
             Some(&owner),
-            json!({ "content": "re", "nonce": "n", "reply_to_id": id(&target) }),
+            json!({ "content": "re", "nonce": common::nonce(), "reply_to_id": id(&target) }),
         )
         .await
         .ok();
@@ -184,7 +184,7 @@ async fn send_and_history() {
         .post(
             &format!("/channels/{}/messages", id(&category)),
             Some(&owner),
-            json!({ "content": "hi", "nonce": "n" }),
+            json!({ "content": "hi", "nonce": common::nonce() }),
         )
         .await
         .err(400, "BAD_REQUEST");
@@ -216,7 +216,7 @@ async fn send_and_history() {
         .post(
             &path,
             Some(&alice),
-            json!({ "content": "hi", "nonce": "n" }),
+            json!({ "content": "hi", "nonce": common::nonce() }),
         )
         .await
         .err(403, "MISSING_PERMISSION");
@@ -333,7 +333,7 @@ async fn edit_delete_pin() {
         .post(
             &path,
             Some(&bob),
-            json!({ "content": "what?", "nonce": "n", "reply_to_id": m1 }),
+            json!({ "content": "what?", "nonce": common::nonce(), "reply_to_id": m1 }),
         )
         .await
         .ok();
@@ -427,7 +427,7 @@ async fn attachments() {
         .post(
             &path,
             Some(&alice),
-            json!({ "content": "", "nonce": "n", "attachment_ids": ["50", "50"] }),
+            json!({ "content": "", "nonce": common::nonce(), "attachment_ids": ["50", "50"] }),
         )
         .await
         .ok();
@@ -445,7 +445,7 @@ async fn attachments() {
             .post(
                 &path,
                 Some(&alice),
-                json!({ "content": "x", "nonce": "n", "attachment_ids": [attachment] }),
+                json!({ "content": "x", "nonce": common::nonce(), "attachment_ids": [attachment] }),
             )
             .await
             .err(400, "VALIDATION_FAILED");
@@ -476,7 +476,7 @@ async fn attachments() {
         .post(
             &path,
             Some(&alice),
-            json!({ "content": "x", "nonce": "n", "attachment_ids": ["52"] }),
+            json!({ "content": "x", "nonce": common::nonce(), "attachment_ids": ["52"] }),
         )
         .await
         .err(403, "MISSING_PERMISSION");
@@ -657,7 +657,7 @@ async fn slowmode_and_typing() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&alice),
-            json!({ "content": "two", "nonce": "n" }),
+            json!({ "content": "two", "nonce": common::nonce() }),
         )
         .await;
     res.err(429, "RATE_LIMITED");
@@ -684,6 +684,58 @@ async fn slowmode_and_typing() {
         .ok();
     server
         .post(&typing, Some(&alice), json!(null))
+        .await
+        .err(403, "MISSING_PERMISSION");
+}
+
+#[tokio::test]
+async fn a_retried_send_makes_one_message() {
+    let server = start("messages-retry", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let path = format!("/channels/{general}/messages");
+    let body = json!({ "content": "only once", "nonce": "retry-me" });
+
+    let first = server.post(&path, Some(&alice), body.clone()).await.ok();
+    let again = server.post(&path, Some(&alice), body.clone()).await.ok();
+    assert_eq!(first["id"], again["id"]);
+    assert_eq!(again["nonce"], "retry-me");
+    let history = server.get(&path, Some(&alice)).await.ok();
+    let same = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["content"] == "only once")
+        .count();
+    assert_eq!(same, 1);
+
+    // The same nonce from someone else, or elsewhere, is another message.
+    let theirs = server.post(&path, Some(&owner), body).await.ok();
+    assert_ne!(first["id"], theirs["id"]);
+}
+
+#[tokio::test]
+async fn someone_who_cannot_send_cannot_edit() {
+    let server = start("messages-muted-edit", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let message = send(&server, &alice, &general, "before").await;
+    server
+        .put(
+            &format!("/channels/{general}/overrides/{space_id}"),
+            Some(&owner),
+            json!({ "allow": "0", "deny": bits(Permissions::SEND_MESSAGES) }),
+        )
+        .await
+        .ok();
+    server
+        .patch(
+            &format!("/channels/{general}/messages/{}", id(&message)),
+            Some(&alice),
+            json!({ "content": "after" }),
+        )
         .await
         .err(403, "MISSING_PERMISSION");
 }

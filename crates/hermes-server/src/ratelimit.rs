@@ -34,6 +34,8 @@ pub const GATEWAY_OPS: u32 = 120;
 pub const GATEWAY_OPS_PERIOD: Duration = Duration::from_secs(60);
 /// The window of `limits.messages_per_5s`.
 pub const MESSAGES_PERIOD: Duration = Duration::from_secs(5);
+/// One address may make this many times the REST requests of one session.
+const REST_IP_FACTOR: u32 = 10;
 /// How often idle REST limiter entries are dropped.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -232,11 +234,22 @@ pub fn limit_rest<S: Clone + Send + Sync + 'static>(
     let extractor = SessionOrIp {
         trusted_proxies: trusted_proxies.into(),
     };
-    router.layer(governor_layer!(
-        extractor,
-        per_second,
-        Duration::from_secs(1)
-    ))
+    let by_ip = ClientIp {
+        trusted_proxies: trusted_proxies.into(),
+    };
+    router
+        .layer(governor_layer!(
+            extractor,
+            per_second,
+            Duration::from_secs(1)
+        ))
+        // The session's limit trusts any token it is shown, verified or not; made-up ones
+        // would each get a bucket of their own. Several people may share an address.
+        .layer(governor_layer!(
+            by_ip,
+            per_second.saturating_mul(REST_IP_FACTOR),
+            Duration::from_secs(1)
+        ))
 }
 
 /// Applies `limits.login_attempts_per_minute` per IP to one route.

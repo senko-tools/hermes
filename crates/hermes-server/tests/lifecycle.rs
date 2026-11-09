@@ -49,6 +49,16 @@ async fn rest_requests_are_limited_per_session_and_ip() {
         .get("/invites/AAAAAAAAAA", None)
         .await
         .err(429, "RATE_LIMITED");
+    // Made-up tokens do not each get a bucket: the address has a limit too.
+    let mut limited = false;
+    for i in 0..200 {
+        let token = format!("made-up-{i}");
+        if server.get("/users/@me", Some(&token)).await.code() == "RATE_LIMITED" {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "made-up tokens got past every limit");
     // /healthz is not limited.
     for _ in 0..5 {
         let res = server
@@ -96,7 +106,7 @@ async fn messages_are_limited_per_user_per_channel() {
                 .post(
                     &format!("/channels/{channel}/messages"),
                     Some(&token),
-                    json!({ "content": "hi", "nonce": "n" }),
+                    json!({ "content": "hi", "nonce": common::nonce() }),
                 )
                 .await
         }

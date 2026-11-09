@@ -69,7 +69,7 @@ async fn send(server: &TestServer, token: &str, channel: &str, content: &str) ->
         .post(
             &format!("/channels/{channel}/messages"),
             Some(token),
-            json!({ "content": content, "nonce": "n" }),
+            json!({ "content": content, "nonce": common::nonce() }),
         )
         .await
         .ok()

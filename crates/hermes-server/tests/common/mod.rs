@@ -508,3 +508,12 @@ impl Ws {
         }
     }
 }
+
+/// A nonce no other message of this run has, as a real client's random ones are.
+pub fn nonce() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "test-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}

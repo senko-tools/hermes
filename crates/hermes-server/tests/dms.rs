@@ -12,7 +12,7 @@ async fn send_message(server: &TestServer, token: &str, channel_id: &str, conten
         .post(
             &format!("/channels/{channel_id}/messages"),
             Some(token),
-            json!({ "content": content, "nonce": content }),
+            json!({ "content": content, "nonce": common::nonce() }),
         )
         .await
         .ok()
@@ -271,7 +271,7 @@ async fn group_dms() {
         .post(
             &format!("/channels/{gid}/messages"),
             Some(&bob),
-            json!({ "content": "let me in", "nonce": "n" }),
+            json!({ "content": "let me in", "nonce": common::nonce() }),
         )
         .await
         .err(404, "NOT_FOUND");
@@ -310,7 +310,7 @@ async fn leaving_group_dms() {
         .post(
             &format!("/channels/{gid}/messages"),
             Some(&bob),
-            json!({ "content": "hi", "nonce": "n" }),
+            json!({ "content": "hi", "nonce": common::nonce() }),
         )
         .await
         .err(404, "NOT_FOUND");
