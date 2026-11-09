@@ -27,6 +27,7 @@ pub fn lock_mark(lock: MessageLock, private: bool) -> Option<Div> {
     let (name, color) = match lock {
         MessageLock::Sealed => (assets::LOCK, theme::text_tertiary()),
         MessageLock::NotForThisDevice | MessageLock::Tampered => (assets::LOCK, theme::warning()),
+        MessageLock::Unsealed => (assets::LOCK_OPEN, theme::danger()),
         // A message in a DM that is not encrypted: from before encryption, or a server's forgery.
         MessageLock::Plain if private => (assets::LOCK_OPEN, theme::warning()),
         MessageLock::Plain => return None,
@@ -87,6 +88,22 @@ impl Shell {
                         .text_size(theme::body_size())
                         .child(keys.safety_number.clone()),
                 )
+                .child({
+                    let (inst, channel) = (open.inst.clone(), open.channel);
+                    let verified = self.core.conversation_verified(&inst, channel);
+                    Button::new("keys-verified")
+                        .cursor_pointer()
+                        .label(if verified {
+                            "Verified: forget this"
+                        } else {
+                            "We compared these numbers"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.core
+                                .set_conversation_verified(&inst, channel, !verified);
+                            cx.notify();
+                        }))
+                })
                 .children(keys.devices.iter().map(|(user, devices)| {
                     let list = devices
                         .iter()
