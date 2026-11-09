@@ -533,6 +533,16 @@ impl Rest {
         .await
     }
 
+    /// `seconds` of only being able to read; 0 ends it.
+    pub async fn timeout(&self, space: Id, user: Id, seconds: u32) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/spaces/{space}/members/{user}/timeout"),
+            Some(&hermes_proto::api::TimeoutRequest { seconds }),
+        )
+        .await
+    }
+
     pub async fn kick(&self, space: Id, user: Id) -> Result<()> {
         self.empty::<()>(
             Method::DELETE,

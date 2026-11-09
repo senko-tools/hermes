@@ -117,6 +117,10 @@ pub enum Action {
     Volume,
     MuteForMe,
     UnmuteForMe,
+    Timeout10Minutes,
+    Timeout1Hour,
+    Timeout1Day,
+    EndTimeout,
     ServerMute,
     ServerUnmute,
     ServerDeafen,
@@ -224,6 +228,10 @@ impl Action {
             Action::CopyUserId => "Copy user ID",
             Action::ChangeNickname => "Change nickname…",
             Action::ManageRoles => "Roles…",
+            Action::Timeout10Minutes => "Timeout for 10 minutes",
+            Action::Timeout1Hour => "Timeout for 1 hour",
+            Action::Timeout1Day => "Timeout for 1 day",
+            Action::EndTimeout => "End timeout",
             Action::Kick => "Kick",
             Action::Ban => "Ban…",
             Action::TransferOwnership => "Transfer ownership",
@@ -572,6 +580,10 @@ pub fn entries_with(
                     moderation.push(Action::ManageRoles);
                 }
                 if above && can(Permissions::KICK_MEMBERS) {
+                    moderation.push(Action::Timeout10Minutes);
+                    moderation.push(Action::Timeout1Hour);
+                    moderation.push(Action::Timeout1Day);
+                    moderation.push(Action::EndTimeout);
                     moderation.push(Action::Kick);
                 }
                 if above && can(Permissions::BAN_MEMBERS) {

@@ -328,6 +328,26 @@ impl Shell {
             (Target::Member(inst, Some(space), user), Action::ChangeNickname) => {
                 self.open_form_nickname(inst, space, user, window, cx);
             }
+            (
+                Target::Member(inst, Some(space), user),
+                action @ (Action::Timeout10Minutes
+                | Action::Timeout1Hour
+                | Action::Timeout1Day
+                | Action::EndTimeout),
+            ) => {
+                let (seconds, done) = match action {
+                    Action::Timeout10Minutes => (10 * 60, "Timed out for 10 minutes"),
+                    Action::Timeout1Hour => (60 * 60, "Timed out for 1 hour"),
+                    Action::Timeout1Day => (24 * 60 * 60, "Timed out for 1 day"),
+                    _ => (0, "Timeout ended"),
+                };
+                self.call_status(
+                    &inst,
+                    done,
+                    move |r| async move { r.timeout(space, user, seconds).await },
+                    cx,
+                );
+            }
             (Target::Member(inst, Some(space), user), Action::Kick) => {
                 self.call_status(
                     &inst,

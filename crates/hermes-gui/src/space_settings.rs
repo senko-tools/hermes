@@ -289,6 +289,12 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
         A::MemberVoiceUpdate => format!("changed the voice mute / deafen of {t}"),
         A::MemberMove => format!("moved {t} to another voice channel"),
         A::MemberDisconnect => format!("disconnected {t} from voice"),
+        A::MemberTimeout => format!("changed the timeout of {t}"),
+        A::MessagePin => "pinned a message".to_owned(),
+        A::MessageUnpin => "unpinned a message".to_owned(),
+        A::InviteCreate => "created an invite".to_owned(),
+        A::InviteRevoke => "revoked an invite".to_owned(),
+        A::KeyPolicyUpdate => "changed the encryption rules".to_owned(),
     };
     let details = match entry.details.as_object() {
         Some(map) if !map.is_empty() => {
