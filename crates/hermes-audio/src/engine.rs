@@ -7,7 +7,8 @@
 //! means the device is gone rebuilds the stream on the default device (PLAN.md 12.5).
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -217,6 +218,8 @@ enum Backend {
         input_retry: Option<Instant>,
         output_retry: Option<Instant>,
         input_buf: Vec<f32>,
+        /// Packet numbers, kept across changes of microphone.
+        sequence: Arc<AtomicU16>,
     },
     Virtual {
         io: Box<dyn VirtualIo>,
@@ -258,6 +261,7 @@ impl Worker {
                 input_retry: None,
                 output_retry: None,
                 input_buf: vec![0.0; 48_000],
+                sequence: Arc::default(),
             },
             Io::Virtual(io) => Backend::Virtual {
                 io,
@@ -571,6 +575,7 @@ impl Worker {
             output,
             input_retry,
             output_retry,
+            sequence,
             ..
         } = &mut self.backend
         else {
@@ -596,7 +601,8 @@ impl Worker {
                         device.stream.channels,
                         &settings,
                         bitrate,
-                    );
+                    )
+                    .continuing(sequence.clone());
                     capture.gate.muted = mute;
                     capture.gate.set_ptt(ptt);
                     *input = Some((device, capture));

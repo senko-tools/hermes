@@ -1,6 +1,9 @@
 //! The capture pipeline after the input ring buffer (PLAN.md 12.5 "Capture" steps 1–7): mono,
 //! 48 kHz, noise suppression, AGC, the gate, Opus, and the datagram.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+
 use hermes_proto::voice::{self, AudioHeader};
 
 use crate::codec::Encoder;
@@ -20,7 +23,7 @@ pub struct Capture {
     input_volume: f32,
     downmix: Downmix,
     timestamp: u32,
-    sequence: u16,
+    sequence: Arc<AtomicU16>,
     was_open: bool,
     level_db: f32,
 }
@@ -41,12 +44,19 @@ impl Capture {
             downmix: Downmix::default(),
             // Random start (RFC 3550); the sequence starts at 0.
             timestamp: rand_u32(),
-            sequence: 0,
+            sequence: Arc::default(),
             was_open: false,
             level_db: -100.0,
         };
         capture.apply(settings);
         capture
+    }
+
+    /// Goes on numbering packets from `sequence`, shared with the capture before this one. After
+    /// a change of microphone, listeners would take a number that starts over for late packets.
+    pub fn continuing(mut self, sequence: Arc<AtomicU16>) -> Self {
+        self.sequence = sequence;
+        self
     }
 
     /// Takes over changed settings without losing the stream position.
@@ -121,10 +131,9 @@ impl Capture {
             voice_active: open,
             sender_id: 0,
             timestamp,
-            sequence: self.sequence,
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
             audio_level: voice::audio_level(level),
         };
-        self.sequence = self.sequence.wrapping_add(1);
         Some(header.encode(&opus))
     }
 }
@@ -172,6 +181,18 @@ mod tests {
             capture.push(chunk, |d| out.push(d.to_vec()));
         }
         out
+    }
+
+    #[test]
+    fn a_new_microphone_goes_on_counting() {
+        let sequence = Arc::new(AtomicU16::new(5000));
+        let mut first = Capture::new(44_100, 2, &settings(), 64_000).continuing(sequence.clone());
+        let before = run(&mut first, &tone(44_100, 0.5, 0.3));
+        let last = AudioHeader::decode(before.last().unwrap()).unwrap().0;
+        let mut second = Capture::new(44_100, 2, &settings(), 64_000).continuing(sequence);
+        let after = run(&mut second, &tone(44_100, 0.5, 0.3));
+        let next = AudioHeader::decode(&after[0]).unwrap().0;
+        assert_eq!(next.sequence, last.sequence.wrapping_add(1));
     }
 
     #[test]
