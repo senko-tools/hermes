@@ -249,6 +249,7 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         vad_sensitivity_db: v.vad_sensitivity as f32,
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
+        close_mic_when_muted: v.close_mic_when_muted,
         sounds: v.sounds,
         sounds_volume: v.sounds_volume as f32,
     }
@@ -269,6 +270,7 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     v.vad_sensitivity = s.vad_sensitivity_db.round() as i32;
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
+    v.close_mic_when_muted = s.close_mic_when_muted;
     v.sounds = s.sounds;
     v.sounds_volume = f64::from(s.sounds_volume);
 }
@@ -811,11 +813,14 @@ impl Core {
         generation: u64,
         mut control: mpsc::UnboundedReceiver<ClientControl>,
     ) {
+        // Rejoins that never got a connection in a row: REST may work while QUIC does not.
+        let mut failed_in_a_row = 0;
         loop {
             let end = self
                 .connection(&mut channel, &join, generation, &mut control)
                 .await;
             let connected_once = self.with_session(generation, |s| s.connected_once);
+            let never_connected = matches!(end, End::Failed(_));
             match end {
                 End::Left => return,
                 End::Kicked(reason) => {
@@ -828,6 +833,18 @@ impl Core {
                 }
                 End::Failed(message) | End::Lost(message) => {
                     tracing::info!("voice connection lost: {message}");
+                    if never_connected {
+                        failed_in_a_row += 1;
+                    } else {
+                        failed_in_a_row = 0;
+                    }
+                    if failed_in_a_row > RECONNECT_ATTEMPTS {
+                        self.session_ended(
+                            generation,
+                            Some("Voice connection lost (is UDP blocked?)".into()),
+                        );
+                        return;
+                    }
                     match self.rejoin(&inst, channel, generation).await {
                         Some(next) => join = next,
                         None => {
@@ -843,12 +860,14 @@ impl Core {
         }
     }
 
-    /// Fresh `/voice/join` tokens for `channel`, with backoff. `None` when giving up.
+    /// Fresh `/voice/join` tokens for `channel`, with backoff (spread out so that a whole room
+    /// does not come back at the same moment). `None` when giving up.
     async fn rejoin(&self, inst: &str, channel: Id, generation: u64) -> Option<VoiceJoinResponse> {
         *self.voice().link.lock().expect("voice link") = None;
         for attempt in 1..=RECONNECT_ATTEMPTS {
             self.set_status(generation, VoiceStatus::Reconnecting { attempt })?;
-            let delay = Duration::from_millis(500 * (1 << (attempt - 1)));
+            let delay = Duration::from_millis(500 * (1 << (attempt - 1)))
+                .mul_f64(rand::random_range(0.75..1.25));
             tokio::time::sleep(delay).await;
             self.with_session(generation, |_| ())?;
             let Ok(rest) = self.rest(inst) else {

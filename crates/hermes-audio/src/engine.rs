@@ -476,7 +476,8 @@ impl Worker {
     }
 
     fn wants_input(&self) -> bool {
-        self.transmitting || self.mic_test || self.meter
+        let closed = self.settings.close_mic_when_muted && self.self_mute;
+        (self.transmitting && !closed) || self.mic_test || self.meter
     }
 
     /// Sends what the capture produced: to the server while transmitting, to yourself while

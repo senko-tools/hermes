@@ -124,6 +124,8 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// The status chosen last: `online`, `idle`, `dnd` or `invisible`.
+    pub presence: String,
     /// No sliding or fading, whatever the system says.
     pub reduce_motion: bool,
     /// The mouse wheel glides instead of jumping.
@@ -145,6 +147,7 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            presence: "online".into(),
             reduce_motion: false,
             smooth_scroll: true,
             scroll_speed: 1.25,
@@ -244,6 +247,8 @@ pub struct Voice {
     pub vad_sensitivity: i32,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+    /// While muted the microphone is really closed, so the system shows it as unused.
+    pub close_mic_when_muted: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
     /// The volume of sound and video files in the chat, as a slider position (1.0 = 100 %).
@@ -275,6 +280,7 @@ impl Default for Voice {
             vad_sensitivity: -50,
             noise_suppression: true,
             auto_gain: false,
+            close_mic_when_muted: false,
             sounds: true,
             sounds_volume: 0.6,
             media_volume: 1.0,

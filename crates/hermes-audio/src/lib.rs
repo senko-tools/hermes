@@ -128,6 +128,8 @@ pub struct AudioSettings {
     /// Voice activity threshold, dBFS.
     pub vad_sensitivity_db: f32,
     pub noise_suppression: bool,
+    /// Closes the microphone while muted, at the price of a moment's delay on unmuting.
+    pub close_mic_when_muted: bool,
     pub auto_gain: bool,
     /// Join/leave/mute sounds.
     pub sounds: bool,
@@ -146,6 +148,7 @@ impl Default for AudioSettings {
             ptt_release_delay: Duration::from_millis(150),
             vad_sensitivity_db: -50.0,
             noise_suppression: true,
+            close_mic_when_muted: false,
             auto_gain: false,
             sounds: true,
             sounds_volume: 0.6,

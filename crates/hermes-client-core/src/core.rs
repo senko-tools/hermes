@@ -393,6 +393,24 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
+const fn presence_name(status: PresenceStatus) -> &'static str {
+    match status {
+        PresenceStatus::Online => "online",
+        PresenceStatus::Idle => "idle",
+        PresenceStatus::Dnd => "dnd",
+        PresenceStatus::Invisible => "invisible",
+    }
+}
+
+fn parse_presence(name: &str) -> PresenceStatus {
+    match name {
+        "idle" => PresenceStatus::Idle,
+        "dnd" => PresenceStatus::Dnd,
+        "invisible" => PresenceStatus::Invisible,
+        _ => PresenceStatus::Online,
+    }
+}
+
 /// A random UUID v4 string, used as the message nonce.
 pub fn uuid_v4() -> String {
     let mut b: [u8; 16] = rand::random();
@@ -411,6 +429,7 @@ pub fn uuid_v4() -> String {
 
 impl Core {
     pub fn new(config: ClientConfig, options: CoreOptions) -> (Core, CoreEvents) {
+        let presence = parse_presence(&config.general.presence);
         // rustls needs a process-wide provider for reqwest's internals.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -436,7 +455,7 @@ impl Core {
                     app_focused: true,
                     visible: HashSet::new(),
                 }),
-                presence: Mutex::new(PresenceStatus::Online),
+                presence: Mutex::new(presence),
                 watcher: Mutex::new(None),
                 voice,
                 accounts: Mutex::default(),
@@ -810,7 +829,12 @@ impl Core {
     /// instance stays in the config so signing in again is quick.
     pub async fn logout(&self, inst: &str) -> Result<()> {
         let handle = self.handle_or_err(inst)?;
-        let _ = handle.rest.logout().await;
+        if let Err(err) = handle.rest.logout().await {
+            self.emit(CoreEvent::Error(format!(
+                "Signed out here, but the server could not be told ({err}). End this session \
+                 from another device if it matters."
+            )));
+        }
         self.disconnect(inst, &handle);
         Ok(())
     }
@@ -864,6 +888,10 @@ impl Core {
     /// Changes my presence on every instance.
     pub fn set_presence(&self, status: PresenceStatus) {
         *self.inner.presence.lock().expect("presence") = status;
+        // Whoever goes invisible stays invisible after a restart.
+        if let Err(err) = self.set_setting("general.presence", presence_name(status)) {
+            tracing::warn!("presence not saved: {err}");
+        }
         for handle in self.inner.instances.lock().expect("instances").values() {
             handle.gateway.send(Command::Presence(status));
         }
@@ -1586,7 +1614,8 @@ impl Core {
             }
             sent.insert(channel, now);
         }
-        if !self.config().privacy.send_typing {
+        let invisible = self.presence() == PresenceStatus::Invisible;
+        if invisible || !self.config().privacy.send_typing {
             return;
         }
         tokio::spawn(async move {

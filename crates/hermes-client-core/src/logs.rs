@@ -13,7 +13,7 @@ use crate::time;
 /// Rotated logs are kept this long.
 pub const KEEP_OLD: Duration = Duration::from_secs(7 * 86_400);
 /// Crash and freeze reports are kept this long.
-pub const KEEP_REPORTS: Duration = Duration::from_secs(30 * 86_400);
+pub const KEEP_REPORTS: Duration = Duration::from_secs(3 * 86_400);
 /// The folder for rotated logs, inside the logs folder.
 pub const OLD_DIR: &str = "logs_old";
 
@@ -276,15 +276,16 @@ mod tests {
         fs::write(dir.join(OLD_DIR).join("hermes-2026-01-01.log"), "x").unwrap();
         fs::write(dir.join("crash-2026-01-01-000000.log"), "x").unwrap();
         fs::write(dir.join("notes.txt"), "not ours").unwrap();
-        let in_8_days = SystemTime::now() + Duration::from_secs(8 * 86_400);
-        clean(&dir, in_8_days);
-        assert!(names(&dir.join(OLD_DIR)).is_empty(), "7 days for old logs");
+        clean(&dir, SystemTime::now() + Duration::from_secs(2 * 86_400));
         assert!(dir.join("crash-2026-01-01-000000.log").exists());
-        clean(&dir, SystemTime::now() + Duration::from_secs(31 * 86_400));
+        assert!(!names(&dir.join(OLD_DIR)).is_empty());
+        clean(&dir, SystemTime::now() + Duration::from_secs(4 * 86_400));
         assert!(
             !dir.join("crash-2026-01-01-000000.log").exists(),
-            "30 days for reports"
+            "3 days for reports"
         );
+        clean(&dir, SystemTime::now() + Duration::from_secs(8 * 86_400));
+        assert!(names(&dir.join(OLD_DIR)).is_empty(), "7 days for old logs");
         assert!(dir.join("notes.txt").exists());
         let _ = fs::remove_dir_all(dir);
     }
