@@ -97,6 +97,10 @@ const RECENT_CHANNELS: usize = 10;
 /// How long an info line stays.
 const INFO_FOR: Duration = Duration::from_secs(5);
 
+type MemberGroupsCache = std::cell::RefCell<
+    HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
+>;
+
 pub struct Shell {
     pub core: Core,
     pub runtime: Handle,
@@ -167,6 +171,11 @@ pub struct Shell {
     pub rail_scroll: gpui_kit::ScrollHandle,
     /// The rail slot last selected: the pill springs on from there.
     pub rail_pill_slot: std::cell::Cell<f32>,
+    /// Message text parsed already, by what it depends on. Parsing and resolving mentions per
+    /// visible row per frame was the biggest cost of drawing a chat.
+    pub markup_cache: std::cell::RefCell<HashMap<u64, std::rc::Rc<Vec<crate::markup::Block>>>>,
+    /// The member list, grouped and sorted, per server.
+    pub member_groups_cache: MemberGroupsCache,
     /// Plays mouse-wheel notches back smoothly.
     pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
     /// Sound and video files that were clicked: loading, playing or paused.
@@ -312,6 +321,8 @@ impl Shell {
             keys_dialog: None,
             rail_scroll: gpui_kit::ScrollHandle::new(),
             rail_pill_slot: std::cell::Cell::new(0.),
+            markup_cache: Default::default(),
+            member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
             crop: None,
             media: Default::default(),
@@ -550,6 +561,21 @@ impl Shell {
                 return;
             }
             CoreEvent::StoreChanged { inst, what } => {
+                let people_changed = matches!(
+                    what,
+                    Changed::All
+                        | Changed::Me
+                        | Changed::Spaces
+                        | Changed::Space(_)
+                        | Changed::Members(_)
+                        | Changed::Users
+                );
+                if people_changed || matches!(what, Changed::Channel(_) | Changed::Dms) {
+                    self.markup_cache.borrow_mut().clear();
+                }
+                if people_changed || matches!(what, Changed::Presence(_)) {
+                    self.member_groups_cache.borrow_mut().clear();
+                }
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
                     Changed::All => {
@@ -565,7 +591,9 @@ impl Shell {
                     }
                     _ => {}
                 }
-                self.load_avatars(cx);
+                if people_changed {
+                    self.load_avatars(cx);
+                }
             }
             // The views read the store directly; the other events only trigger a redraw.
             CoreEvent::InstanceStatus { .. }

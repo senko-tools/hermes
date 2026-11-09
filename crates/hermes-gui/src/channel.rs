@@ -70,6 +70,9 @@ pub struct Viewer {
     pub image: Img,
 }
 
+/// Parsed messages kept; it is emptied when full.
+const MARKUP_CACHE_SIZE: usize = 4096;
+
 /// How long the message jumped to stays highlighted.
 const HIGHLIGHT_FOR: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -473,6 +476,29 @@ impl Shell {
         if self.open_channel().as_ref() == Some(&key) {
             self.mark_open_read(cx);
         }
+    }
+
+    /// What `content` looks like parsed, from the cache when it was parsed before.
+    fn cached_blocks(
+        &self,
+        content: &str,
+        s: &hermes_client_core::store::InstanceStore,
+        space: Option<Id>,
+    ) -> std::rc::Rc<Vec<markup::Block>> {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (content, space, s.me_id()).hash(&mut hasher);
+        let key = hasher.finish();
+        let mut cache = self.markup_cache.borrow_mut();
+        if let Some(found) = cache.get(&key) {
+            return found.clone();
+        }
+        if cache.len() >= MARKUP_CACHE_SIZE {
+            cache.clear();
+        }
+        let blocks = std::rc::Rc::new(markup::blocks(content, s, space));
+        cache.insert(key, blocks.clone());
+        blocks
     }
 
     /// A setting that changes how messages look moved: every open chat follows it at once.
@@ -1261,13 +1287,24 @@ impl Shell {
             std::process::id(),
             self.next_upload
         ));
-        let saved = std::fs::create_dir_all(&dir)
-            .map_err(|e| e.to_string())
-            .and_then(|()| buffer.save(&path).map_err(|e| e.to_string()));
-        match saved {
-            Ok(()) => self.start_upload(key, path, Some("pasted image.png".into()), cx),
-            Err(err) => self.error(format!("could not keep the pasted image: {err}"), cx),
-        }
+        // Encoding a large screenshot takes long enough to be felt on the UI thread.
+        let key = key.clone();
+        let written = path.clone();
+        self.run(
+            cx,
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                    buffer.save(&written).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            },
+            move |this, saved, _, cx| match saved {
+                Ok(()) => this.start_upload(&key, path, Some("pasted image.png".into()), cx),
+                Err(err) => this.error(format!("could not keep the pasted image: {err}"), cx),
+            },
+        );
         true
     }
 
@@ -2171,10 +2208,10 @@ impl Shell {
             );
         }
         let revealed = view.is_some_and(|v| v.revealed.contains(&id));
-        let blocks = markup::blocks(&msg.content, s, space);
+        let blocks = self.cached_blocks(&msg.content, s, space);
         let last = blocks.len().saturating_sub(1);
         let system = m.system;
-        for (i, block) in blocks.into_iter().enumerate() {
+        for (i, block) in blocks.iter().cloned().enumerate() {
             let edited = i == last && msg.edited_at.is_some();
             body.push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
         }

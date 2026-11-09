@@ -201,10 +201,9 @@ impl Shell {
     /// visibly move: a window redraw is what costs, not the meter.
     pub fn start_meter_timer(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut wait = std::time::Duration::from_secs_f32(1.0 / METER_FPS);
             loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs_f32(1.0 / METER_FPS))
-                    .await;
+                cx.background_executor().timer(wait).await;
                 let alive = this.update(cx, |this, cx| {
                     let showing = this
                         .settings
@@ -214,7 +213,7 @@ impl Shell {
                     let seconds = now.duration_since(this.meter_drawn).as_secs_f32();
                     this.meter_drawn = now;
                     if !showing {
-                        return;
+                        return false;
                     }
                     let next = meter_step(this.meter_shown, this.input_level, seconds);
                     let moved = (next - this.meter_shown).abs();
@@ -222,10 +221,17 @@ impl Shell {
                     if moved >= METER_STEP_DB {
                         cx.notify();
                     }
+                    true
                 });
-                if alive.is_err() {
+                let Ok(showing) = alive else {
                     return;
-                }
+                };
+                // Hardly anything to do while the Voice tab is closed.
+                wait = std::time::Duration::from_secs_f32(if showing {
+                    1.0 / METER_FPS
+                } else {
+                    0.25
+                });
             }
         })
         .detach();

@@ -65,7 +65,13 @@ impl Shell {
         }
         match s.space_of(channel) {
             Some(space) => {
-                for group in view::member_groups(s, space) {
+                let groups = self
+                    .member_groups_cache
+                    .borrow_mut()
+                    .entry((inst.clone(), space))
+                    .or_insert_with(|| std::rc::Rc::new(view::member_groups(s, space)))
+                    .clone();
+                for group in groups.iter().cloned() {
                     content.push(heading(format!(
                         "{} — {}",
                         group.title.to_uppercase(),
