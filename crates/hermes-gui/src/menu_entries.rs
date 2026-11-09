@@ -117,6 +117,12 @@ pub enum Action {
     Volume,
     MuteForMe,
     UnmuteForMe,
+    MoveServerUp,
+    MoveServerDown,
+    MarkUnreadHere,
+    CopyLink,
+    EditNote,
+    EditLocalName,
     Report,
     Block,
     Unblock,
@@ -231,6 +237,12 @@ impl Action {
             Action::CopyUserId => "Copy user ID",
             Action::ChangeNickname => "Change nickname…",
             Action::ManageRoles => "Roles…",
+            Action::MoveServerUp => "Move up",
+            Action::MoveServerDown => "Move down",
+            Action::MarkUnreadHere => "Mark unread from here",
+            Action::CopyLink => "Copy link",
+            Action::EditNote => "Personal note…",
+            Action::EditLocalName => "Name them for me…",
             Action::Report => "Report…",
             Action::Block => "Block",
             Action::Unblock => "Unblock",
@@ -412,6 +424,8 @@ pub fn entries_with(
             push(&mut out, [Action::RemoveInstance]);
         }
         Target::Space(_, space) => {
+            push(&mut out, [Action::MoveServerUp, Action::MoveServerDown]);
+            out.push(None);
             let Some(s) = s else { return out };
             let can = |p| view::can_in_space(s, *space, p);
             push(&mut out, [Action::MarkSpaceRead, Action::SearchSpace]);
@@ -531,6 +545,7 @@ pub fn entries_with(
             if manage {
                 push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
             }
+            push(&mut out, [Action::MarkUnreadHere, Action::CopyLink]);
             if !own {
                 push(&mut out, [Action::Report]);
             }
@@ -559,6 +574,7 @@ pub fn entries_with(
                 }
             }
             if let (false, Some(s)) = (me, s) {
+                push(&mut out, [Action::EditNote, Action::EditLocalName]);
                 push(
                     &mut out,
                     [if s.blocked.contains(user) {

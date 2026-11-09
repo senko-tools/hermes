@@ -15,6 +15,10 @@ use crate::tree::Row;
 impl Shell {
     pub fn on_key(&mut self, event: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if self.capture_key(keystroke, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let key = keystroke.key.as_str();
         let plain = !keystroke.modifiers.modified();
         if self.command_bar_key(key, plain) {

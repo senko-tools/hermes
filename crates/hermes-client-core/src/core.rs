@@ -505,7 +505,11 @@ impl Core {
         StoreRef(self.inner.store.read().expect("store lock"))
     }
 
-    fn with_store<T>(&self, inst: &str, f: impl FnOnce(&mut InstanceStore) -> T) -> Option<T> {
+    pub(crate) fn with_store<T>(
+        &self,
+        inst: &str,
+        f: impl FnOnce(&mut InstanceStore) -> T,
+    ) -> Option<T> {
         StoreRef::check_unlocked();
         let mut store = self.inner.store.write().expect("store lock");
         store.instances.get_mut(inst).map(f)
@@ -898,6 +902,8 @@ impl Core {
                 core.with_store(&inst, |s| s.blocked = list.into_iter().collect());
                 core.changed(&inst, [Changed::Users]);
             }
+            core.load_local_names(&inst);
+            core.resend_outbox(&inst);
         });
     }
 
@@ -1146,7 +1152,15 @@ impl Core {
         let Some(s) = store.instance(inst) else {
             return;
         };
-        if let Some(notification) = notify::check(s, message, focused, presence, now) {
+        let rules = self.config().notifications;
+        let offset = crate::time::local_offset_secs();
+        let minute = ((now / 1000 + offset).rem_euclid(86_400) / 60) as u32;
+        if notify::quiet(&rules.quiet_from, &rules.quiet_to, minute) {
+            return;
+        }
+        let keyword = notify::has_keyword(&rules.keywords, &message.content);
+        if let Some(notification) = notify::check_with(s, message, focused, presence, now, keyword)
+        {
             drop(store);
             self.emit(CoreEvent::Notification {
                 inst: inst.to_owned(),
@@ -1649,6 +1663,44 @@ impl Core {
                 }
             });
         }
+    }
+
+    /// Puts a channel back to unread from `message` on.
+    pub fn mark_unread(&self, inst: &str, channel: Id, message: Id) {
+        let Some(handle) = self.handle(inst) else {
+            return;
+        };
+        let before = Id(message.0.saturating_sub(1));
+        self.with_store(inst, |s| {
+            let mention_count = s.read_states.get(&channel).map_or(0, |r| r.mention_count);
+            s.read_states.insert(
+                channel,
+                hermes_proto::models::ReadState {
+                    channel_id: channel,
+                    last_read_id: before,
+                    mention_count,
+                },
+            );
+        });
+        self.changed(inst, [Changed::ReadState(channel)]);
+        if self.config().privacy.send_read_marks {
+            tokio::spawn(async move {
+                if let Err(err) = handle.rest.ack(channel, before).await {
+                    tracing::info!("ack {channel}: {err}");
+                }
+            });
+        }
+    }
+
+    /// Whether this instance connects when Hermes starts.
+    pub fn set_autoconnect(&self, inst: &str, autoconnect: bool) -> Result<()> {
+        {
+            let mut config = self.inner.config.write().expect("config lock");
+            for entry in config.instances.iter_mut().filter(|e| e.id == inst) {
+                entry.autoconnect = autoconnect;
+            }
+        }
+        self.save_config()
     }
 
     /// Tells others I am typing (at most every 8 s per channel).

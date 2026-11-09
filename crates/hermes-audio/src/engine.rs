@@ -29,6 +29,8 @@ const OUTPUT_TARGET: Duration = Duration::from_millis(30);
 const OUTPUT_IDLE: Duration = Duration::from_secs(3);
 /// How long to wait before retrying a device that could not be opened.
 const RETRY: Duration = Duration::from_secs(2);
+/// How often a chosen device that is missing is looked for.
+const DEVICE_CHECK_EVERY: Duration = Duration::from_secs(5);
 /// The shortest time between input level reports while metering: less than the 20 ms tick, so every
 /// tick reports (one frame of audio, 50 times a second).
 const LEVEL_INTERVAL: Duration = Duration::from_millis(15);
@@ -230,6 +232,8 @@ enum Backend {
 }
 
 struct Worker {
+    /// When the chosen devices were last looked for.
+    device_check: Instant,
     settings: AudioSettings,
     events: Box<dyn Fn(AudioEvent) + Send>,
     backend: Backend,
@@ -271,6 +275,7 @@ impl Worker {
             },
         };
         let mut worker = Worker {
+            device_check: Instant::now(),
             settings,
             events,
             backend,
@@ -591,6 +596,28 @@ impl Worker {
         {
             *input = None;
             *input_retry = None;
+        }
+        // The device someone chose came back: use it again instead of the fallback.
+        if self.device_check.elapsed() >= DEVICE_CHECK_EVERY {
+            self.device_check = Instant::now();
+            let wanted =
+                |name: &Option<String>| name.clone().filter(|n| !n.is_empty() && n != "default");
+            if let (Some(name), Some((device, _))) =
+                (wanted(&settings.input_device), input.as_ref())
+                && device.name() != name
+                && devices::find(Some(&name), true).is_ok()
+            {
+                *input = None;
+                *input_retry = None;
+            }
+            if let (Some(name), Some((device, _))) =
+                (wanted(&settings.output_device), output.as_ref())
+                && device.name() != name
+                && devices::find(Some(&name), false).is_ok()
+            {
+                *output = None;
+                *output_retry = None;
+            }
         }
         if !wants_input {
             *input = None;

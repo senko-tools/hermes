@@ -61,6 +61,8 @@ impl Capture {
 
     /// Takes over changed settings without losing the stream position.
     pub fn apply(&mut self, settings: &AudioSettings) {
+        self.encoder
+            .set_options(settings.opus_fec, settings.opus_dtx);
         self.input_volume = volume_gain(settings.input_volume);
         self.gate.mode = settings.mode;
         self.gate.sensitivity_db = settings.vad_sensitivity_db;

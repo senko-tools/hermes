@@ -57,6 +57,18 @@ struct Pins {
     sealed_since: BTreeMap<Id, Id>,
     /// This instance was seen to encrypt its channels.
     instance_sealed: bool,
+    /// What was being written in each conversation.
+    #[serde(default)]
+    drafts: BTreeMap<Id, String>,
+    /// Messages that had not gone out when Hermes closed: channel, text, what they answer.
+    #[serde(default)]
+    outbox: Vec<(Id, String, Option<Id>)>,
+    /// My own notes on people.
+    #[serde(default)]
+    notes: BTreeMap<Id, String>,
+    /// Names I gave people, shown instead of theirs.
+    #[serde(default)]
+    local_names: BTreeMap<Id, String>,
 }
 
 /// The ring's file.
@@ -786,6 +798,146 @@ impl Core {
             }
         }
         Ok(())
+    }
+
+    /// What was being written in a conversation.
+    pub fn draft(&self, inst: &str, channel: Id) -> Option<String> {
+        let keys = self.account_keys(inst)?;
+        let ring = keys.ring.lock().expect("ring");
+        ring.pins.drafts.get(&channel).cloned()
+    }
+
+    /// Keeps what is being written, sealed; an empty text forgets it.
+    pub fn set_draft(&self, inst: &str, channel: Id, text: &str) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let mut ring = keys.ring.lock().expect("ring");
+        let changed = if text.trim().is_empty() {
+            ring.pins.drafts.remove(&channel).is_some()
+        } else if ring.pins.drafts.get(&channel).map(String::as_str) == Some(text) {
+            false
+        } else {
+            ring.pins.drafts.insert(channel, text.to_owned());
+            true
+        };
+        if changed {
+            ring.save();
+        }
+    }
+
+    /// Keeps what has not been sent yet, sealed, for the next start. Files stay behind: they
+    /// are uploaded before a message waits.
+    pub fn save_outbox(&self) {
+        for inst in self.instance_ids() {
+            let Some(keys) = self.account_keys(&inst) else {
+                continue;
+            };
+            let waiting: Vec<(Id, String, Option<Id>)> =
+                self.store().instance(&inst).map_or_else(Vec::new, |s| {
+                    s.windows
+                        .iter()
+                        .flat_map(|(channel, w)| {
+                            w.pending
+                                .iter()
+                                .filter(|p| p.state == crate::store::PendingState::Queued)
+                                .filter(|p| p.attachments.is_empty())
+                                .map(|p| (*channel, p.content.clone(), p.reply_to))
+                        })
+                        .collect()
+                });
+            let mut ring = keys.ring.lock().expect("ring");
+            if ring.pins.outbox != waiting {
+                ring.pins.outbox = waiting;
+                ring.save();
+            }
+        }
+    }
+
+    /// Sends again what was waiting when Hermes closed.
+    pub(crate) fn resend_outbox(&self, inst: &str) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let waiting = {
+            let mut ring = keys.ring.lock().expect("ring");
+            let waiting = std::mem::take(&mut ring.pins.outbox);
+            if !waiting.is_empty() {
+                ring.save();
+            }
+            waiting
+        };
+        for (channel, content, reply_to) in waiting {
+            let draft = crate::core::Draft {
+                content,
+                reply_to,
+                attachments: Vec::new(),
+            };
+            if let Err(err) = self.send_message(inst, channel, draft) {
+                tracing::warn!("a waiting message could not be queued: {err}");
+            }
+        }
+    }
+
+    /// My note on someone.
+    pub fn note(&self, inst: &str, user: Id) -> Option<String> {
+        let keys = self.account_keys(inst)?;
+        let ring = keys.ring.lock().expect("ring");
+        ring.pins.notes.get(&user).cloned()
+    }
+
+    pub fn set_note(&self, inst: &str, user: Id, text: &str) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let mut ring = keys.ring.lock().expect("ring");
+        if text.trim().is_empty() {
+            ring.pins.notes.remove(&user);
+        } else {
+            ring.pins.notes.insert(user, text.to_owned());
+        }
+        ring.save();
+    }
+
+    /// The name I gave someone, shown only to me.
+    pub fn local_name(&self, inst: &str, user: Id) -> Option<String> {
+        let keys = self.account_keys(inst)?;
+        let ring = keys.ring.lock().expect("ring");
+        ring.pins.local_names.get(&user).cloned()
+    }
+
+    pub fn set_local_name(&self, inst: &str, user: Id, name: &str) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        {
+            let mut ring = keys.ring.lock().expect("ring");
+            if name.trim().is_empty() {
+                ring.pins.local_names.remove(&user);
+            } else {
+                ring.pins.local_names.insert(user, name.trim().to_owned());
+            }
+            ring.save();
+        }
+        self.load_local_names(inst);
+    }
+
+    /// Brings the names I gave people into the store.
+    pub(crate) fn load_local_names(&self, inst: &str) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let names: HashMap<Id, String> = keys
+            .ring
+            .lock()
+            .expect("ring")
+            .pins
+            .local_names
+            .iter()
+            .map(|(id, name)| (*id, name.clone()))
+            .collect();
+        self.with_store(inst, |s| s.local_names = names);
+        self.changed(inst, [Changed::Users]);
     }
 
     pub async fn channel_key_policy(&self, inst: &str, channel: Id) -> Result<KeyPolicyOverride> {

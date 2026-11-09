@@ -71,7 +71,7 @@ fn unread_dot() -> Div {
     div()
         .flex_shrink_0()
         .size(px(8.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .bg(theme::text())
 }
 
@@ -271,7 +271,32 @@ impl Shell {
                 spaces.push((inst.clone(), *id, state.space.name.clone(), badge));
             }
         }
+        // Those without a place of their own keep the server's order, after the others.
+        let order = &self.config.sidebar.server_order;
+        spaces.sort_by_key(|(inst, id, ..)| {
+            let key = format!("{inst}/{id}");
+            order.iter().position(|e| *e == key).unwrap_or(usize::MAX)
+        });
         spaces
+    }
+
+    /// Moves a server one place up or down the rail. The order is this device's own.
+    pub fn move_server(&mut self, inst: &InstanceId, space: Id, up: bool, cx: &mut Context<Self>) {
+        let mut keys: Vec<String> = self
+            .rail_spaces()
+            .into_iter()
+            .map(|(inst, id, ..)| format!("{inst}/{id}"))
+            .collect();
+        let key = format!("{inst}/{space}");
+        let Some(at) = keys.iter().position(|k| *k == key) else {
+            return;
+        };
+        let other = if up { at.checked_sub(1) } else { Some(at + 1) };
+        if let Some(other) = other.filter(|o| *o < keys.len()) {
+            keys.swap(at, other);
+            let list = toml::Value::Array(keys.into_iter().map(toml::Value::String).collect());
+            self.persist("sidebar.server_order", &list.to_string(), cx);
+        }
     }
 
     /// What the Friends icon's badge shows: mentions in DMs, and a dot for anything else unread.
@@ -737,7 +762,7 @@ impl Shell {
                         .items_center()
                         .justify_center()
                         .size(px(20.))
-                        .rounded(px(4.))
+                        .rounded(theme::radius_small())
                         .group("category-add")
                         .child(
                             icon(assets::PLUS, 16., theme::category_text())
@@ -1095,7 +1120,7 @@ impl Shell {
             .gap(px(8.))
             .h(px(40.))
             .px(px(4.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .child(avatar)

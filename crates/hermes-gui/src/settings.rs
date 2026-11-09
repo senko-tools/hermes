@@ -145,6 +145,23 @@ impl SelectItem for DeviceChoice {
     }
 }
 
+/// The installed fonts, with the one in use even if it is not installed any more.
+fn font_choices(names: &[String], current: &str) -> (Vec<DeviceChoice>, usize) {
+    let mut all: Vec<String> = names.to_vec();
+    if !all.iter().any(|n| n == current) {
+        all.insert(0, current.to_owned());
+    }
+    let selected = all.iter().position(|n| n == current).unwrap_or(0);
+    let choices = all
+        .into_iter()
+        .map(|name| DeviceChoice {
+            name: SharedString::from(name.clone()),
+            value: name,
+        })
+        .collect();
+    (choices, selected)
+}
+
 /// The choices for the device saved as `current`: the system default, what is plugged in, and the
 /// saved device even when it is not there, so the dropdown says what is really set.
 fn device_choices(names: &[String], current: &str) -> (Vec<DeviceChoice>, usize) {
@@ -179,6 +196,8 @@ pub struct SettingsPage {
     pub tab: Tab,
     pub account_inst: Option<InstanceId>,
     pub sessions: Remote<Vec<SessionInfo>>,
+    /// The action waiting for a key press, by its config name.
+    pub capturing_key: Option<&'static str>,
     /// Whether this account has two-factor login, once known.
     two_factor: Option<bool>,
     admin_users: Remote<Vec<hermes_client_core::proto::api::AdminUser>>,
@@ -189,8 +208,8 @@ pub struct SettingsPage {
     pub mic_test: bool,
     /// Held while the Voice tab and its level meter show.
     fine_timers: Option<crate::desktop::window::FineTimers>,
-    font: Entity<InputState>,
-    mono_font: Entity<InputState>,
+    font: Entity<SelectState<Vec<DeviceChoice>>>,
+    mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     ptt_key: Entity<InputState>,
     sliders: Vec<(SliderKind, Entity<SliderState>)>,
@@ -261,18 +280,27 @@ impl Shell {
                 input
             })
         };
-        let font_input = text_field(
-            font.family.clone(),
-            "Installed font, e.g. Segoe UI",
-            window,
-            cx,
-        );
-        let mono_input = text_field(
-            font.mono_family.clone(),
-            "Installed font, e.g. Consolas",
-            window,
-            cx,
-        );
+        let mut installed = cx.text_system().all_font_names();
+        installed.sort();
+        installed.dedup();
+        let mut font_select = |current: &str, key: &'static str| {
+            let (choices, selected) = font_choices(&installed, current);
+            let state =
+                cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+            let events = cx.subscribe(
+                &state,
+                move |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                    if let SelectEvent::Confirm(Some(value)) = event {
+                        this.persist(key, &toml_string(value.clone()), cx);
+                        this.reload_theme(cx);
+                        this.remeasure_chats();
+                    }
+                },
+            );
+            (state, events)
+        };
+        let (font_input, font_events) = font_select(&font.family, "font.family");
+        let (mono_input, mono_events) = font_select(&font.mono_family, "font.mono_family");
         let time_format = text_field(
             self.config.buffer.timestamp_format.clone(),
             "%H:%M",
@@ -281,20 +309,8 @@ impl Shell {
         );
         let ptt_key = text_field(voice.ptt_key.clone(), "e.g. Mouse4", window, cx);
         let mut events = vec![
-            cx.subscribe_in(&font_input, window, |this, input, event, _, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let value = input.read(cx).value().trim().to_owned();
-                    this.persist("font.family", &toml_string(value), cx);
-                    this.reload_theme(cx);
-                }
-            }),
-            cx.subscribe_in(&mono_input, window, |this, input, event, _, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let value = input.read(cx).value().trim().to_owned();
-                    this.persist("font.mono_family", &toml_string(value), cx);
-                    this.reload_theme(cx);
-                }
-            }),
+            font_events,
+            mono_events,
             cx.subscribe_in(&time_format, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
@@ -408,6 +424,7 @@ impl Shell {
             tab: self.settings_tab,
             account_inst: None,
             sessions: Remote::Idle,
+            capturing_key: None,
             two_factor: None,
             admin_users: Remote::Idle,
             admin_log: Remote::Idle,
@@ -835,7 +852,7 @@ impl Shell {
             Tab::Notifications => self.tab_notifications(cx),
             Tab::Privacy => self.tab_privacy(cx),
             Tab::Admin => self.tab_admin(page, cx),
-            Tab::Keybinds => self.tab_keybinds(),
+            Tab::Keybinds => self.tab_keybinds(page, cx),
             Tab::About => self.tab_about(cx),
         };
         Some(frame(
@@ -1241,13 +1258,34 @@ impl Shell {
             vec![
                 setting(
                     "Font",
-                    "Any installed font. Enter saves.",
-                    Input::new(&page.font),
+                    "Any font installed on this computer.",
+                    Select::new(&page.font).cursor_pointer(),
                 ),
                 setting(
                     "Code font",
-                    "For code. Enter saves.",
-                    Input::new(&page.mono_font),
+                    "For code blocks.",
+                    Select::new(&page.mono_font).cursor_pointer(),
+                ),
+                setting(
+                    "Size of titles",
+                    "",
+                    wrap().children(
+                        [(2, "Small"), (4, "Normal"), (8, "Large")]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, (extra, name))| {
+                                chip(
+                                    ("heading-extra", n),
+                                    name,
+                                    config.font.heading_extra == extra,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist("font.heading_extra", &extra.to_string(), cx);
+                                    },
+                                ))
+                            }),
+                    ),
                 ),
                 setting(
                     "Font size",
@@ -1404,6 +1442,36 @@ impl Shell {
                             &format!("Within {} minutes", b.group_minutes),
                             self.slider(page, SliderKind::GroupMinutes),
                         ),
+                        setting(
+                            "Quick reactions",
+                            &self.config.buffer.quick_reactions,
+                            Button::new("edit-reactions")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_quick_reactions(window, cx);
+                                })),
+                        ),
+                        setting(
+                            "Status line stays",
+                            &format!("{} seconds", self.config.general.status_seconds),
+                            wrap().children([3, 5, 10].into_iter().enumerate().map(|(n, secs)| {
+                                chip(
+                                    ("status-seconds", n),
+                                    format!("{secs} s"),
+                                    self.config.general.status_seconds == secs,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist(
+                                            "general.status_seconds",
+                                            &secs.to_string(),
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            })),
+                        ),
                         self.flag(
                             "Compact messages",
                             "Less space between messages.",
@@ -1548,6 +1616,52 @@ impl Shell {
                                 })),
                         ),
                 ),
+                setting(
+                    "Size of pictures and videos",
+                    &format!("{} %", self.config.buffer.media_scale),
+                    wrap().children(
+                        [(75, "Small"), (100, "Normal"), (150, "Large")]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, (scale, name))| {
+                                chip(
+                                    ("media-scale", n),
+                                    name,
+                                    self.config.buffer.media_scale == scale,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist("buffer.media_scale", &scale.to_string(), cx);
+                                    },
+                                ))
+                            }),
+                    ),
+                ),
+                setting(
+                    "Saved on this device",
+                    "Thumbnails come back as needed, the search index fills up again.",
+                    wrap()
+                        .child(
+                            Button::new("clear-thumbs")
+                                .cursor_pointer()
+                                .label("Clear pictures")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.clear_pictures();
+                                    this.info("Pictures cleared", cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("clear-index")
+                                .cursor_pointer()
+                                .label("Clear search index")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    for inst in this.core.instance_ids() {
+                                        this.core.clear_search_index(&inst);
+                                    }
+                                    this.info("Search index cleared", cx);
+                                })),
+                        ),
+                ),
                 self.flag(
                     "Ask where to save",
                     "Choose a place for each download.",
@@ -1609,6 +1723,28 @@ impl Shell {
                                 this.open_form_two_factor_disable(form_inst.clone(), window, cx);
                             } else {
                                 this.open_form_two_factor_begin(form_inst.clone(), window, cx);
+                            }
+                        })),
+                ),
+                setting(
+                    "Connect when Hermes starts",
+                    "",
+                    Switch::new("autoconnect")
+                        .cursor_pointer()
+                        .checked(
+                            self.config
+                                .instances
+                                .iter()
+                                .find(|e| e.id == *inst)
+                                .is_none_or(|e| e.autoconnect),
+                        )
+                        .on_click(cx.listener({
+                            let inst = inst.clone();
+                            move |this, on: &bool, _, cx| {
+                                if let Err(err) = this.core.set_autoconnect(&inst, *on) {
+                                    this.error(err.to_string(), cx);
+                                }
+                                this.apply_config(cx);
                             }
                         })),
                 ),
@@ -1814,11 +1950,32 @@ impl Shell {
             vec![
                 group(
                     "Who can make an account",
-                    vec![setting(
-                        "Registration",
-                        "Takes effect at once, and over the config file.",
-                        wrap().children(chips),
-                    )],
+                    vec![
+                        setting(
+                            "Registration",
+                            "Takes effect at once, and over the config file.",
+                            wrap().children(chips),
+                        ),
+                        setting(
+                            "Channels must be encrypted",
+                            "Set in the server's config file.",
+                            muted(
+                                if self
+                                    .core
+                                    .store()
+                                    .instance(&inst)
+                                    .and_then(|s| {
+                                        s.instance.as_ref().map(|i| i.limits.channels_encrypted)
+                                    })
+                                    .unwrap_or(false)
+                                {
+                                    "Yes"
+                                } else {
+                                    "No"
+                                },
+                            ),
+                        ),
+                    ],
                 ),
                 group("Accounts", users),
                 group("Log", log),
@@ -2036,6 +2193,28 @@ impl Shell {
             "Processing",
             vec![
                 setting(
+                    "Rebuild lost sound",
+                    "Sends a little extra, so a dropped packet can be recovered.",
+                    Switch::new("opus-fec")
+                        .cursor_pointer()
+                        .checked(v.opus_fec)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.change_voice(cx, |voice| voice.opus_fec = on);
+                        })),
+                ),
+                setting(
+                    "Send nothing during silence",
+                    "Saves bandwidth.",
+                    Switch::new("opus-dtx")
+                        .cursor_pointer()
+                        .checked(v.opus_dtx)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.change_voice(cx, |voice| voice.opus_dtx = on);
+                        })),
+                ),
+                setting(
                     "Noise suppression",
                     if v.noise_suppression {
                         "Removes fans, keyboards and the like."
@@ -2200,6 +2379,34 @@ impl Shell {
                             cx,
                         ),
                         self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
+                        setting(
+                            "Quiet hours",
+                            &if n.quiet_from.is_empty() {
+                                "None".to_owned()
+                            } else {
+                                format!("{} to {}", n.quiet_from, n.quiet_to)
+                            },
+                            Button::new("quiet-hours")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_quiet_hours(window, cx);
+                                })),
+                        ),
+                        setting(
+                            "Words that notify me",
+                            &if n.keywords.is_empty() {
+                                "None".to_owned()
+                            } else {
+                                n.keywords.clone()
+                            },
+                            Button::new("keywords")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_keywords(window, cx);
+                                })),
+                        ),
                         self.flag(
                             "Pop up for DMs",
                             "",
@@ -2334,17 +2541,86 @@ impl Shell {
         )
     }
 
-    fn tab_keybinds(&self) -> AnyElement {
+    /// A key pressed while a keybind waits for one. Whether it was taken.
+    pub fn capture_key(&mut self, keystroke: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(page) = self.settings.as_mut() else {
+            return false;
+        };
+        let Some(name) = page.capturing_key else {
+            return false;
+        };
+        page.capturing_key = None;
+        if keystroke.key == "escape" {
+            cx.notify();
+            return true;
+        }
+        let m = keystroke.modifiers;
+        let mut combo = String::new();
+        for (on, part) in [(m.control, "Ctrl+"), (m.shift, "Shift+"), (m.alt, "Alt+")] {
+            if on {
+                combo.push_str(part);
+            }
+        }
+        combo.push_str(&keystroke.key.to_uppercase());
+        let taken = ACTIONS
+            .iter()
+            .filter(|(_, other, ..)| *other != name)
+            .find(|(action, ..)| {
+                Keybinds::combo_text(&self.config.keys, *action).is_some_and(|text| text == combo)
+            })
+            .map(|(.., title)| *title);
+        if let Some(title) = taken {
+            self.warn(format!("{combo} was already used for {title}"), cx);
+        }
+        self.persist(&format!("keys.{name}"), &toml_string(combo), cx);
+        true
+    }
+
+    fn tab_keybinds(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let mut groups: Vec<AnyElement> = KEY_GROUPS
             .iter()
             .map(|(title, actions)| {
                 let rows = actions
                     .iter()
                     .filter_map(|action| ACTIONS.iter().find(|(a, ..)| a == action))
-                    .map(|(action, _, _, title)| {
+                    .map(|(action, name, default, title)| {
                         let combo =
                             Keybinds::combo_text(&self.config.keys, *action).unwrap_or_default();
-                        setting(title, "", key_caps(&combo))
+                        let (name, default): (&'static str, &'static str) = (name, default);
+                        let waiting = page.capturing_key == Some(name);
+                        setting(
+                            title,
+                            if waiting {
+                                "Press the keys; Escape cancels."
+                            } else {
+                                ""
+                            },
+                            wrap()
+                                .child(key_caps(&combo))
+                                .child(
+                                    Button::new(SharedString::from(format!("bind-{name}")))
+                                        .cursor_pointer()
+                                        .label(if waiting { "Waiting…" } else { "Change" })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(page) = &mut this.settings {
+                                                page.capturing_key = Some(name);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("unbind-{name}")))
+                                        .cursor_pointer()
+                                        .label("Reset")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.persist(
+                                                &format!("keys.{name}"),
+                                                &toml_string(default.to_owned()),
+                                                cx,
+                                            );
+                                        })),
+                                ),
+                        )
                     })
                     .collect();
                 group(title, rows)
@@ -2356,9 +2632,18 @@ impl Shell {
                 "Right-click anything for more. Drag channels and roles to reorder them.",
             )],
         ));
+        groups.push(group(
+            "These do not change",
+            vec![
+                setting("Close what is on top", "", key_caps("Escape")),
+                setting("Copy what is selected", "", key_caps("Ctrl+C")),
+                setting("Open the menu", "", key_caps("Shift+F10")),
+                setting("Edit your last message", "", key_caps("Up")),
+            ],
+        ));
         page_body(
             "Keybinds",
-            Some("Change them in [keys] of config.toml, e.g. \"Ctrl+K\"."),
+            Some("Click Change, then press the keys."),
             groups,
         )
     }
@@ -2828,7 +3113,7 @@ fn theme_card(
                 .w_full()
                 .h(px(PREVIEW_HEIGHT))
                 .overflow_hidden()
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .when(chosen, |d| d.border_2().border_color(theme::accent()))
                 .when(!chosen, |d| {
                     d.border_1()
@@ -2877,7 +3162,7 @@ fn key_caps(combo: &str) -> AnyElement {
             div()
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(4.))
+                .rounded(theme::radius_small())
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::raised())

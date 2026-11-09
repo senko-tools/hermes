@@ -65,6 +65,34 @@ pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
 pub struct Images {
     pub thumbs: HashMap<(InstanceId, Id), Img>,
     pub avatars: HashMap<(InstanceId, Id), Img>,
+    /// The thumbnails in the order they were asked for: the oldest go first.
+    thumb_order: std::collections::VecDeque<(InstanceId, Id)>,
+    /// Pictures no longer used, to be freed the next time the window draws.
+    pub retired: Vec<Arc<RenderImage>>,
+}
+
+/// Thumbnails kept in memory.
+const MAX_THUMBNAILS: usize = 400;
+
+impl Images {
+    fn retire(&mut self, picture: Img) {
+        if let Img::Ready(picture) = picture {
+            self.retired.push(picture.still);
+            self.retired.extend(picture.moving);
+        }
+    }
+
+    /// Makes room for one more thumbnail.
+    fn evict_thumbnails(&mut self) {
+        while self.thumb_order.len() >= MAX_THUMBNAILS {
+            let Some(oldest) = self.thumb_order.pop_front() else {
+                break;
+            };
+            if let Some(picture) = self.thumbs.remove(&oldest) {
+                self.retire(picture);
+            }
+        }
+    }
 }
 
 /// Decodes image bytes for drawing. gpui wants BGRA.
@@ -317,6 +345,15 @@ impl Shell {
         }
     }
 
+    /// Frees every thumbnail; those on screen load again.
+    pub fn clear_pictures(&mut self) {
+        let pictures: Vec<Img> = self.images.thumbs.drain().map(|(_, p)| p).collect();
+        self.images.thumb_order.clear();
+        for picture in pictures {
+            self.images.retire(picture);
+        }
+    }
+
     /// Starts loading an attachment's thumbnail unless that was done already.
     pub fn load_thumbnail(
         &mut self,
@@ -330,6 +367,8 @@ impl Shell {
         if self.images.thumbs.contains_key(&key) {
             return;
         }
+        self.images.evict_thumbnails();
+        self.images.thumb_order.push_back(key.clone());
         self.images.thumbs.insert(key.clone(), Img::Loading);
         let core = self.core.clone();
         let inst = inst.clone();

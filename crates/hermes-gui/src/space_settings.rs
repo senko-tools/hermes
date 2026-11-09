@@ -2558,7 +2558,7 @@ fn list_row(id: String, selected: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
         .gap(px(8.))
         .h(px(32.))
         .px(px(8.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))

@@ -1,6 +1,7 @@
 //! Dialogs over the whole window. The kit's dialogs rebuild their content from a closure that holds
 //! no state of ours, so these draw from the shell's state like everything else.
 
+use gpui_kit::AnimationExt as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
@@ -68,7 +69,11 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .border_color(theme::border())
                     .text_color(theme::text())
                     .font_family(theme::font())
-                    .child(card),
+                    .child(div().child(card).with_animation(
+                        id,
+                        gpui_kit::Animation::new(std::time::Duration::from_millis(120)),
+                        |d, t| d.opacity(t),
+                    )),
             ),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)

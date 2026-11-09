@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
 use hermes_client_core::address::{AddTarget, HostPort, InviteLink};
 use hermes_client_core::proto::api::RegistrationMode;
+use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Invite;
 use hermes_client_core::{CertStatus, Core, CoreError, InstanceId, Probe};
 
@@ -59,6 +60,19 @@ pub enum Tab {
     Register,
 }
 
+/// `hermes://<instance>/channels/<channel>/<message>`, from "Copy link".
+fn parse_message_link(link: &str) -> Option<(InstanceId, Id, Id)> {
+    let rest = link.trim().strip_prefix("hermes://")?;
+    let mut parts = rest.split('/');
+    let inst = parts.next()?;
+    if parts.next()? != "channels" {
+        return None;
+    }
+    let channel = parts.next()?.parse::<u64>().ok()?;
+    let message = parts.next()?.parse::<u64>().ok()?;
+    Some((inst.to_owned(), Id(channel), Id(message)))
+}
+
 /// `submit` says this when the password was right and a code is still needed.
 const NEEDS_CODE: &str = "two-factor code needed";
 
@@ -99,6 +113,12 @@ impl Shell {
     /// Starts the add-instance flow with an invite link or address (command line, a forwarded
     /// `hermes://` link) and goes on with it.
     pub fn open_link(&mut self, link: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((inst, channel, message)) = parse_message_link(&link)
+            && self.core.instance_ids().contains(&inst)
+        {
+            self.jump_to(inst, channel, message, window, cx);
+            return;
+        }
         self.open_add_instance(link, window, cx);
         self.submit_address(cx);
     }
@@ -563,7 +583,7 @@ fn tab_button(
         .id(name)
         .px(px(12.))
         .py(px(6.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected && enabled, |d| {

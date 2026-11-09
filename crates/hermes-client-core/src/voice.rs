@@ -250,6 +250,8 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
         close_mic_when_muted: v.close_mic_when_muted,
+        opus_fec: v.opus_fec,
+        opus_dtx: v.opus_dtx,
         sounds: v.sounds,
         sounds_volume: v.sounds_volume as f32,
     }
@@ -271,6 +273,8 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
     v.close_mic_when_muted = s.close_mic_when_muted;
+    v.opus_fec = s.opus_fec;
+    v.opus_dtx = s.opus_dtx;
     v.sounds = s.sounds;
     v.sounds_volume = f64::from(s.sounds_volume);
 }

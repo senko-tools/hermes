@@ -565,7 +565,7 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
         .gap(px(2.))
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .hover(|d| d.bg(theme::hover()))
         .on_click(cx.listener(move |this, _, window, cx| {

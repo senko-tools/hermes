@@ -126,6 +126,8 @@ pub struct General {
     pub check_for_updates: bool,
     /// Hermes starts when I sign in to the computer.
     pub start_on_login: bool,
+    /// How long a line in the status bar stays, in seconds.
+    pub status_seconds: u32,
     /// Minutes without input before the status turns idle; 0 = never.
     pub auto_idle_minutes: u32,
     /// The status chosen last: `online`, `idle`, `dnd` or `invisible`.
@@ -152,6 +154,7 @@ impl Default for General {
             close_to_tray: true,
             check_for_updates: true,
             start_on_login: false,
+            status_seconds: 5,
             auto_idle_minutes: 10,
             presence: "online".into(),
             reduce_motion: false,
@@ -171,6 +174,8 @@ pub struct Font {
     pub mono_family: String,
     pub size: u16,
     pub ui_scale: f64,
+    /// How much larger titles are than the text.
+    pub heading_extra: i32,
 }
 
 impl Default for Font {
@@ -180,6 +185,7 @@ impl Default for Font {
             mono_family: "JetBrainsMono Nerd Font".into(),
             size: 11,
             ui_scale: 1.0,
+            heading_extra: 4,
         }
     }
 }
@@ -192,6 +198,8 @@ pub struct Sidebar {
     pub show_voice_users: bool,
     /// Width of the member list (desktop client).
     pub member_list_width: u16,
+    /// The servers on the rail, as `instance/id`; those not listed follow.
+    pub server_order: Vec<String>,
     /// The member list shows beside a chat.
     pub show_members: bool,
     /// The sidebar shows (Ctrl+B hides it).
@@ -207,6 +215,7 @@ impl Default for Sidebar {
             width: 240,
             show_voice_users: true,
             member_list_width: 232,
+            server_order: Vec::new(),
             show_members: true,
             visible: true,
             show_unread_dots: true,
@@ -228,6 +237,10 @@ pub struct Buffer {
     pub markdown: bool,
     /// Less space between messages.
     pub compact: bool,
+    /// Pictures and videos in the chat, in percent of their normal size.
+    pub media_scale: u32,
+    /// The reactions offered first, separated by spaces.
+    pub quick_reactions: String,
 }
 
 impl Default for Buffer {
@@ -241,6 +254,8 @@ impl Default for Buffer {
             show_typing: true,
             markdown: true,
             compact: false,
+            media_scale: 100,
+            quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
         }
     }
 }
@@ -261,6 +276,10 @@ pub struct Voice {
     pub auto_gain: bool,
     /// While muted the microphone is really closed, so the system shows it as unused.
     pub close_mic_when_muted: bool,
+    /// Sends extra data so that lost packets can be rebuilt.
+    pub opus_fec: bool,
+    /// Sends nothing at all during silence.
+    pub opus_dtx: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
     /// The volume of sound and video files in the chat, as a slider position (1.0 = 100 %).
@@ -293,6 +312,8 @@ impl Default for Voice {
             noise_suppression: true,
             auto_gain: false,
             close_mic_when_muted: false,
+            opus_fec: true,
+            opus_dtx: true,
             sounds: true,
             sounds_volume: 0.6,
             media_volume: 1.0,
@@ -318,6 +339,11 @@ pub struct Notifications {
     pub sound_dms: bool,
     pub sound_mentions: bool,
     pub sound_other: bool,
+    /// No notifications between these times (`HH:MM`, local); empty = none.
+    pub quiet_from: String,
+    pub quiet_to: String,
+    /// Words that notify like a mention, separated by spaces.
+    pub keywords: String,
 }
 
 impl Default for Notifications {
@@ -333,6 +359,9 @@ impl Default for Notifications {
             sound_dms: true,
             sound_mentions: true,
             sound_other: true,
+            quiet_from: String::new(),
+            quiet_to: String::new(),
+            keywords: String::new(),
         }
     }
 }

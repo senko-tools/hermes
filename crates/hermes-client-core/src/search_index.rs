@@ -245,6 +245,16 @@ impl SearchIndex {
     }
 
     /// Saves it and lets it go, unless it was used a moment ago or the history pass needs it.
+    /// Forgets everything; it is built again from the conversations.
+    fn wipe(&mut self) {
+        self.data = None;
+        self.pending.clear();
+        self.dirty = false;
+        if let Some(path) = &self.path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
     fn unload_if_idle(&mut self) {
         if !self.syncing && now_ms() - self.used >= IDLE_MS {
             self.save();
@@ -254,6 +264,13 @@ impl SearchIndex {
 }
 
 impl Core {
+    /// Empties this device's search index for an instance; it fills up again by itself.
+    pub fn clear_search_index(&self, inst: &str) {
+        if let Some(keys) = self.account_keys(inst) {
+            keys.index.lock().expect("index").wipe();
+        }
+    }
+
     /// Notes the words of a message just opened.
     pub(crate) fn index_message(&self, keys: &AccountKeys, message: &Message) {
         let mut text = message.content.clone();
@@ -307,15 +324,25 @@ impl Core {
         let hits = self.local_hits(inst, &keys, query).await;
         merged.total += hits.len() as u64;
         // Enough of each list to fill a page: the server's are sorted already.
+        // Whole pages around the hits: fewer requests, and the server cannot tell which of the
+        // messages on a page was the match.
+        let mut by_channel: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
         for (channel, id) in hits.into_iter().take(limit) {
-            let around = HistoryQuery {
-                around: Some(id),
-                limit: Some(3),
-                ..HistoryQuery::default()
-            };
-            let page = rest.messages(channel, &around).await?;
-            if let Some(message) = page.into_iter().find(|m| m.id == id && !m.deleted) {
-                merged.messages.push(message);
+            by_channel.entry(channel).or_default().insert(id);
+        }
+        for (channel, mut wanted) in by_channel {
+            while let Some(first) = wanted.iter().next().copied() {
+                let around = HistoryQuery {
+                    around: Some(first),
+                    limit: Some(SYNC_PAGE),
+                    ..HistoryQuery::default()
+                };
+                wanted.remove(&first);
+                for message in rest.messages(channel, &around).await? {
+                    if (message.id == first || wanted.remove(&message.id)) && !message.deleted {
+                        merged.messages.push(message);
+                    }
+                }
             }
         }
         merged.messages.sort_by_key(|m| std::cmp::Reverse(m.id));

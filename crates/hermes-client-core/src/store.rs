@@ -210,6 +210,8 @@ pub struct InstanceStore {
     pub relationships: HashMap<Id, Relationship>,
     /// People I blocked.
     pub blocked: std::collections::HashSet<Id>,
+    /// Names I gave people, shown only to me.
+    pub local_names: HashMap<Id, String>,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }
@@ -382,6 +384,9 @@ impl InstanceStore {
 
     /// Display name in a space (nickname, display name, username) or globally.
     pub fn display_name(&self, space: Option<Id>, user: Id) -> String {
+        if let Some(name) = self.local_names.get(&user) {
+            return name.clone();
+        }
         if let Some(member) = space.and_then(|s| self.member(s, user)) {
             if let Some(nick) = &member.nickname {
                 return nick.clone();

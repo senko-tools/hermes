@@ -32,10 +32,16 @@ use crate::selection::{self, FilePlace, Part};
 use crate::shell::{ChannelKey, Page, Shell};
 use crate::theme::{self, px};
 
-/// Quick reactions offered by the palette.
-pub const QUICK_REACTIONS: [&str; 8] = ["👍", "❤️", "😂", "😮", "😢", "🎉", "👀", "🔥"];
 const MAX_IMAGE_WIDTH: f32 = 400.0;
 const MAX_IMAGE_HEIGHT: f32 = 300.0;
+
+/// `buffer.media_scale`, for the functions that only have a picture's size to go on.
+pub static MEDIA_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(100);
+
+/// How much larger than normal pictures and videos are drawn.
+pub fn media_scale() -> f32 {
+    MEDIA_SCALE.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.
+}
 /// Suggestions shown at most.
 const MAX_SUGGESTIONS: usize = 8;
 /// Older history loads when this many rows from the top are showing.
@@ -178,7 +184,9 @@ pub fn display_size(a: &Attachment) -> (f32, f32) {
     match (a.width, a.height) {
         (Some(w), Some(h)) if w > 0 && h > 0 => {
             let (w, h) = (w as f32, h as f32);
-            let scale = (MAX_IMAGE_WIDTH / w).min(MAX_IMAGE_HEIGHT / h).min(1.0);
+            let scale = (MAX_IMAGE_WIDTH * media_scale() / w)
+                .min(MAX_IMAGE_HEIGHT * media_scale() / h)
+                .min(1.0);
             (w * scale, h * scale)
         }
         _ => (300.0, 200.0),
@@ -414,6 +422,12 @@ impl Shell {
                 _input_events: events,
             },
         );
+        if let Some(text) = self.core.draft(&key.0, key.1)
+            && let Some(view) = self.chats.get(key)
+        {
+            view.input
+                .update(cx, |input, cx| input.set_value(text, window, cx));
+        }
     }
 
     /// Shows a channel's chat and loads its latest messages.
@@ -425,6 +439,9 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let key = (inst.clone(), channel);
+        if let Some(left) = self.open_channel().filter(|open| *open != key) {
+            self.remember_draft(&left, cx);
+        }
         // Pictures that failed get another chance.
         self.images
             .thumbs
@@ -511,6 +528,14 @@ impl Shell {
         blocks
     }
 
+    /// Keeps what is written in the composer of `key` for when Hermes comes back.
+    pub fn remember_draft(&self, key: &ChannelKey, cx: &Context<Self>) {
+        if let Some(view) = self.chats.get(key) {
+            let text = view.input.read(cx).value().to_string();
+            self.core.set_draft(&key.0, key.1, &text);
+        }
+    }
+
     /// Says so above the chat when messages are not getting through.
     fn render_connection_banner(
         &self,
@@ -535,7 +560,7 @@ impl Shell {
                 .mx(px(16.))
                 .mb(px(6.))
                 .p(px(8.))
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .bg(theme::raised())
                 .border_1()
                 .border_color(theme::warning())
@@ -666,9 +691,10 @@ impl Shell {
                 core.load_history(&inst, channel, HistoryAnchor::Before(oldest))
                     .await
             },
-            move |this, result, _, _| {
+            move |this, result, _, cx| {
                 if let Err(err) = result {
                     tracing::warn!("older messages: {err}");
+                    this.error(format!("could not load older messages: {err}"), cx);
                 }
                 if let Some(view) = this.chats.get_mut(&done) {
                     view.loading_older = false;
@@ -707,9 +733,10 @@ impl Shell {
                 core.load_history(&inst, channel, HistoryAnchor::After(newest))
                     .await
             },
-            move |this, result, _, _| {
+            move |this, result, _, cx| {
                 if let Err(err) = result {
                     tracing::warn!("newer messages: {err}");
+                    this.error(format!("could not load newer messages: {err}"), cx);
                 }
                 if let Some(view) = this.chats.get_mut(&done) {
                     view.loading_newer = false;
@@ -1576,6 +1603,17 @@ impl Shell {
                     view.anchor = Some(message);
                 }
             }
+            (Target::Message(inst, channel, message), Action::MarkUnreadHere) => {
+                self.core.mark_unread(&inst, channel, message);
+                cx.notify();
+            }
+            (Target::Message(inst, channel, message), Action::CopyLink) => {
+                self.copy(
+                    format!("hermes://{inst}/channels/{channel}/{message}"),
+                    "Message link",
+                    cx,
+                );
+            }
             (Target::Message(inst, channel, message), Action::Report) => {
                 let excerpt = self
                     .core
@@ -1816,7 +1854,7 @@ impl Shell {
                         .left(px(16.))
                         .px(px(8.))
                         .py(px(2.))
-                        .rounded(px(4.))
+                        .rounded(theme::radius_small())
                         .bg(theme::background())
                         .text_size(theme::caption_size())
                         .text_color(theme::text_secondary())
@@ -1964,7 +2002,7 @@ impl Shell {
                     .id(("suggestion", n))
                     .px(px(8.))
                     .py(px(5.))
-                    .rounded(px(4.))
+                    .rounded(theme::radius_small())
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
                     .when(n == view.suggestion, |d| d.bg(theme::selected()))
@@ -2031,7 +2069,7 @@ impl Shell {
                 .gap(px(6.))
                 .px(px(8.))
                 .py(px(4.))
-                .rounded(px(4.))
+                .rounded(theme::radius_small())
                 .bg(theme::selected())
                 .text_size(theme::caption_size())
                 .child(icon(assets::FILE, 14., theme::text_secondary()))
@@ -2423,7 +2461,7 @@ impl Shell {
             .pb(px(if m.ends_group { 8. } else { 1. }))
             .pl(px(8.))
             .pr(px(8.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .when(selected, |d| d.bg(theme::accent_soft()))
             .when(jumped && !selected, |d| d.bg(theme::selected()))
             .when(highlight && !selected && !jumped, |d| {
@@ -2532,7 +2570,29 @@ impl Shell {
         message: Id,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let buttons = QUICK_REACTIONS.iter().enumerate().map(|(n, emoji)| {
+        let quick: Vec<String> = self
+            .config
+            .buffer
+            .quick_reactions
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let more_inst = inst.clone();
+        let more = div()
+            .id(("quick-reaction", usize::MAX))
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(30.))
+            .rounded(theme::radius_small())
+            .cursor_pointer()
+            .hover(|d| d.bg(theme::hover()))
+            .child("…")
+            .on_click(cx.listener(move |this, _, window, cx| {
+                cx.stop_propagation();
+                this.open_form_react(more_inst.clone(), channel, message, window, cx);
+            }));
+        let buttons = quick.into_iter().enumerate().map(|(n, emoji)| {
             let inst = inst.clone();
             div()
                 .id(("quick-reaction", n))
@@ -2540,22 +2600,16 @@ impl Shell {
                 .items_center()
                 .justify_center()
                 .size(px(30.))
-                .rounded(px(4.))
+                .rounded(theme::radius_small())
                 .cursor_pointer()
                 .hover(|d| d.bg(theme::hover()))
-                .child(*emoji)
+                .child(emoji.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.react(
-                        inst.clone(),
-                        channel,
-                        message,
-                        (*emoji).to_owned(),
-                        true,
-                        cx,
-                    );
+                    this.react(inst.clone(), channel, message, emoji.clone(), true, cx);
                 }))
         });
+        let buttons = buttons.chain(std::iter::once(more));
         let close_inst = inst.clone();
         div()
             .id("palette")
@@ -2566,7 +2620,7 @@ impl Shell {
             .items_center()
             .gap(px(2.))
             .p(px(3.))
-            .rounded(px(6.))
+            .rounded(theme::row_radius())
             .bg(theme::sidebar())
             .border_1()
             .border_color(theme::border())
@@ -2631,7 +2685,7 @@ impl Shell {
                             .relative()
                             .cursor_text()
                             .p(px(8.))
-                            .rounded(px(4.))
+                            .rounded(theme::radius_small())
                             .bg(theme::code_background())
                             .border_1()
                             .border_color(theme::border())
@@ -2788,7 +2842,7 @@ impl Shell {
                     .mt(px(4.))
                     .w(px(w))
                     .h(px(h))
-                    .rounded(px(6.))
+                    .rounded(theme::row_radius())
                     .overflow_hidden()
                     .cursor_pointer()
                     .group(IMAGE_GROUP)
@@ -2796,7 +2850,7 @@ impl Shell {
                         img(image.shown(self.animating()))
                             .w(px(w))
                             .h(px(h))
-                            .rounded(px(6.))
+                            .rounded(theme::row_radius())
                             .id(SharedString::from(format!("image-pic-{}", a.id))),
                     )
                     // What opening or saving it downloads, under the mouse.
@@ -2836,7 +2890,7 @@ impl Shell {
                 .mt(px(4.))
                 .w(px(w))
                 .h(px(h))
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .bg(theme::code_background())
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
@@ -2861,7 +2915,7 @@ impl Shell {
             .max_w(px(420.))
             .px(px(12.))
             .py(px(8.))
-            .rounded(px(6.))
+            .rounded(theme::row_radius())
             .bg(theme::sidebar())
             .border_1()
             .border_color(theme::border())
@@ -3116,7 +3170,7 @@ pub fn icon_button(
         .items_center()
         .justify_center()
         .size(px(28.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .group(ICON_BUTTON)
         .child(

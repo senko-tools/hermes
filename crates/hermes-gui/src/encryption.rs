@@ -81,7 +81,7 @@ impl Shell {
                 .child(
                     div()
                         .p(px(12.))
-                        .rounded(px(6.))
+                        .rounded(theme::row_radius())
                         .bg(theme::raised())
                         .font_family(theme::mono_font())
                         .font_weight(FontWeight::MEDIUM)
@@ -196,7 +196,7 @@ impl Shell {
                 .mx(px(16.))
                 .mb(px(6.))
                 .p(px(8.))
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .bg(theme::raised())
                 .border_1()
                 .border_color(theme::warning())

@@ -130,6 +130,8 @@ pub struct AudioSettings {
     pub noise_suppression: bool,
     /// Closes the microphone while muted, at the price of a moment's delay on unmuting.
     pub close_mic_when_muted: bool,
+    pub opus_fec: bool,
+    pub opus_dtx: bool,
     pub auto_gain: bool,
     /// Join/leave/mute sounds.
     pub sounds: bool,
@@ -149,6 +151,8 @@ impl Default for AudioSettings {
             vad_sensitivity_db: -50.0,
             noise_suppression: true,
             close_mic_when_muted: false,
+            opus_fec: true,
+            opus_dtx: true,
             auto_gain: false,
             sounds: true,
             sounds_volume: 0.6,

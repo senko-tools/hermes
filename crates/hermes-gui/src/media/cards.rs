@@ -565,7 +565,10 @@ impl Shell {
                     if item.full {
                         full_box
                     } else {
-                        (VIDEO_W, VIDEO_H)
+                        (
+                            VIDEO_W * crate::channel::media_scale(),
+                            VIDEO_H * crate::channel::media_scale(),
+                        )
                     },
                 );
                 let factor = theme::scale() * scale;

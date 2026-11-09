@@ -945,9 +945,34 @@ pub struct Directory {
     revision: u64,
     /// The file could not be read and was set aside.
     damaged: bool,
+    /// Seals the file, which says who this person talks to.
+    wrap: Option<Zeroizing<[u8; 32]>>,
 }
 
 impl Directory {
+    /// [`Directory::load`], with the file sealed under `wrap`. One from before that still reads.
+    pub fn load_sealed(path: Option<PathBuf>, wrap: Zeroizing<[u8; 32]>) -> Directory {
+        let bytes = path.as_ref().and_then(|p| std::fs::read(p).ok());
+        let users = bytes.as_ref().and_then(|bytes| {
+            open_local(&wrap, bytes)
+                .ok()
+                .and_then(|plain| serde_json::from_slice(&plain).ok())
+                .or_else(|| serde_json::from_slice(bytes).ok())
+        });
+        let damaged = bytes.is_some() && users.is_none();
+        if damaged && let Some(path) = &path {
+            let _ = std::fs::rename(path, path.with_extension("damaged"));
+        }
+        Directory {
+            path,
+            users: users.unwrap_or_default(),
+            fetched: HashMap::new(),
+            revision: 0,
+            damaged,
+            wrap: Some(wrap),
+        }
+    }
+
     pub fn load(path: Option<PathBuf>) -> Directory {
         let bytes = path.as_ref().and_then(|p| std::fs::read(p).ok());
         let users = bytes
@@ -964,6 +989,7 @@ impl Directory {
             fetched: HashMap::new(),
             revision: 0,
             damaged,
+            wrap: None,
         }
     }
 
@@ -1001,12 +1027,17 @@ impl Directory {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            match serde_json::to_vec_pretty(&self.users) {
-                Ok(bytes) => {
+            let written = serde_json::to_vec_pretty(&self.users).map(|plain| match &self.wrap {
+                Some(wrap) => seal_local(wrap, &plain).unwrap_or_default(),
+                None => plain,
+            });
+            match written {
+                Ok(bytes) if !bytes.is_empty() => {
                     if let Err(err) = write_atomic(path, &bytes) {
                         tracing::warn!("known encryption keys not saved: {err}");
                     }
                 }
+                Ok(_) => tracing::warn!("known encryption keys not saved"),
                 Err(err) => tracing::warn!("known encryption keys not saved: {err}"),
             }
         }

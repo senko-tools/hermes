@@ -169,7 +169,7 @@ impl Shell {
             .gap(px(8.))
             .h(px(42.))
             .px(px(6.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .text_size(theme::body_size())

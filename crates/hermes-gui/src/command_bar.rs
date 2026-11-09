@@ -164,7 +164,7 @@ impl Shell {
                     .gap(px(8.))
                     .px(px(8.))
                     .py(px(6.))
-                    .rounded(px(4.))
+                    .rounded(theme::radius_small())
                     .cursor_pointer()
                     .when(n == bar.selected, |d| d.bg(theme::selected()))
                     .when(n != bar.selected, |d| d.hover(|d| d.bg(theme::hover())))

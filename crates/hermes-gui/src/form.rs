@@ -110,6 +110,22 @@ pub enum Purpose {
         password: String,
         invite: Option<String>,
     },
+    QuickReactions,
+    QuietHours,
+    Keywords,
+    React {
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+    },
+    Note {
+        inst: InstanceId,
+        user: Id,
+    },
+    LocalName {
+        inst: InstanceId,
+        user: Id,
+    },
     TwoFactorBegin(InstanceId),
     TwoFactorConfirm(InstanceId),
     TwoFactorDisable(InstanceId),
@@ -656,6 +672,89 @@ impl Shell {
         self.finish(fields);
     }
 
+    pub fn open_form_quick_reactions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.buffer.quick_reactions.clone();
+        let form = Form::new(Purpose::QuickReactions, "Quick reactions", "Save")
+            .text("The reactions offered first, separated by spaces.");
+        let fields = Self::fields(form, window, cx).text("Reactions", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_quiet_hours(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (from, to) = (
+            self.config.notifications.quiet_from.clone(),
+            self.config.notifications.quiet_to.clone(),
+        );
+        let form = Form::new(Purpose::QuietHours, "Quiet hours", "Save")
+            .text("No notifications between these times, like 22:00 and 07:00. Empty: none.");
+        let fields = Self::fields(form, window, cx)
+            .text("From", "22:00", from)
+            .text("Until", "07:00", to);
+        self.finish(fields);
+    }
+
+    pub fn open_form_keywords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.notifications.keywords.clone();
+        let form = Form::new(Purpose::Keywords, "Words that notify me", "Save")
+            .text("Messages with these words notify like a mention. Separate them with spaces.");
+        let fields = Self::fields(form, window, cx).text("Words", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_react(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::React {
+                inst,
+                channel,
+                message,
+            },
+            "React with an emoji",
+            "React",
+        )
+        .text("Type an emoji, or its name such as thumbsup.");
+        let fields = Self::fields(form, window, cx).text("Emoji", "", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_note(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.core.note(&inst, user).unwrap_or_default();
+        let form = Form::new(Purpose::Note { inst, user }, "Personal note", "Save")
+            .text("Only you see this, and only on this device.");
+        let fields = Self::fields(form, window, cx).text("Note", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_local_name(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.core.local_name(&inst, user).unwrap_or_default();
+        let form = Form::new(
+            Purpose::LocalName { inst, user },
+            "Name them for me",
+            "Save",
+        )
+        .text("Shown instead of their name, only to you. Empty goes back to theirs.");
+        let fields = Self::fields(form, window, cx).text("Name", "", current);
+        self.finish(fields);
+    }
+
     pub fn open_form_login_code(
         &mut self,
         host: hermes_client_core::address::HostPort,
@@ -812,7 +911,7 @@ impl Shell {
     }
 
     /// Starts the request of a submitted form, or says what to fix first.
-    fn start_submit(&self, form: &Form, cx: &mut Context<Self>) -> Result<(), String> {
+    fn start_submit(&mut self, form: &Form, cx: &mut Context<Self>) -> Result<(), String> {
         let core = self.core.clone();
         match form.purpose.clone() {
             Purpose::CreateSpace(inst) => {
@@ -1033,6 +1132,63 @@ impl Shell {
                     }
                     Ok(format!("Signed in to {inst}"))
                 });
+            }
+            Purpose::QuickReactions => {
+                let value = form.value(0, cx);
+                self.persist(
+                    "buffer.quick_reactions",
+                    &toml::Value::String(value).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::QuietHours => {
+                let (from, to) = (form.value(0, cx), form.value(1, cx));
+                self.persist(
+                    "notifications.quiet_from",
+                    &toml::Value::String(from).to_string(),
+                    cx,
+                );
+                self.persist(
+                    "notifications.quiet_to",
+                    &toml::Value::String(to).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::Keywords => {
+                let value = form.value(0, cx);
+                self.persist(
+                    "notifications.keywords",
+                    &toml::Value::String(value).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::React {
+                inst,
+                channel,
+                message,
+            } => {
+                let typed = form.required(0, "an emoji", cx)?;
+                let emoji = hermes_client_core::view::search_emoji(&typed, 1)
+                    .into_iter()
+                    .next()
+                    .map_or(typed, |(emoji, _)| emoji);
+                self.react(inst, channel, message, emoji, true, cx);
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::Note { inst, user } => {
+                let text = form.value(0, cx);
+                self.core.set_note(&inst, user, &text);
+                cx.notify();
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::LocalName { inst, user } => {
+                let name = form.value(0, cx);
+                self.core.set_local_name(&inst, user, &name);
+                cx.notify();
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
             }
             Purpose::TwoFactorBegin(inst) => {
                 let password = form.raw(0, cx);
@@ -1274,7 +1430,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                     .id(SharedString::from(format!("form-{i}-{n}")))
                     .px(px(10.))
                     .py(px(5.))
-                    .rounded(px(4.))
+                    .rounded(theme::radius_small())
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
                     .when(chosen, |d| {

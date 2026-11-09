@@ -431,7 +431,7 @@ impl Shell {
             .flex_col()
             .gap(px(2.))
             .p(px(4.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             // Text in plain divs ignores gpui's group hover, so the place takes the hover colour
             // from here (the status line has its own colour).
@@ -489,7 +489,7 @@ impl Shell {
             .gap(px(6.))
             .px(px(4.))
             .py(px(2.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             .text_size(theme::caption_size())
             .text_color(theme::text_tertiary())
@@ -912,7 +912,7 @@ impl Shell {
             .h(px(30.))
             .pl(px(if nested { 46. } else { 36. }))
             .pr(px(8.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .text_size(theme::secondary_size())
             .text_color(if speaking {
                 theme::text()
@@ -1135,7 +1135,7 @@ impl Shell {
                             .left(px(8.))
                             .px(px(8.))
                             .py(px(4.))
-                            .rounded(px(4.))
+                            .rounded(theme::radius_small())
                             .bg(theme::scrim())
                             .child(name_row),
                     )
@@ -1351,7 +1351,7 @@ impl Shell {
                 .gap(px(8.))
                 .w(px(240.))
                 .p(px(10.))
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .bg(theme::sidebar())
                 .border_1()
                 .border_color(theme::border())
@@ -1667,7 +1667,7 @@ pub fn chip(
         .id(id.into())
         .px(px(10.))
         .py(px(5.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .max_w_full()
         .truncate()
@@ -1736,7 +1736,7 @@ pub fn voice_button(
         .items_center()
         .justify_center()
         .size(px(32.))
-        .rounded(px(6.))
+        .rounded(theme::row_radius())
         .cursor_pointer()
         .when(look.hover_bg, |d| {
             d.hover(|d| d.bg(theme::alpha(look.on, 0.16)))

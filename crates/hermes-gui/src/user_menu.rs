@@ -275,6 +275,17 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        if let Some(note) = self.core.note(&card.inst, card.user) {
+            details.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(section("Your note"))
+                    .child(note)
+                    .into_any_element(),
+            );
+        }
         if let Some(last_online) = last_online {
             details.push(
                 div()
@@ -327,13 +338,13 @@ impl Shell {
                                     .gap(px(4.))
                                     .px(px(6.))
                                     .py(px(2.))
-                                    .rounded(px(4.))
+                                    .rounded(theme::radius_small())
                                     .bg(theme::raised())
                                     .text_size(theme::caption_size())
                                     .child(
                                         div()
                                             .size(px(8.))
-                                            .rounded(px(4.))
+                                            .rounded(theme::radius_small())
                                             .bg(color.unwrap_or_else(theme::text_secondary)),
                                     )
                                     .child(role)
@@ -463,7 +474,7 @@ impl Shell {
                             div()
                                 .px(px(10.))
                                 .py(px(6.))
-                                .rounded(px(6.))
+                                .rounded(theme::row_radius())
                                 .bg(theme::raised())
                                 .text_color(theme::text_secondary())
                                 .child(text)

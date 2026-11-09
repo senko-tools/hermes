@@ -157,7 +157,7 @@ impl Core {
                 .join("e2ee")
                 .join(format!("{}-{me}-search.bin", safe_file_name(inst)))
         });
-        let directory = Directory::load(path);
+        let directory = Directory::load_sealed(path, wrap.clone());
         let ring = crate::channel_keys::KeyRing::load(ring_path, wrap);
         if directory.damaged() || ring.damaged() {
             self.emit(CoreEvent::Error(
@@ -199,6 +199,11 @@ impl Core {
             let request = keys.identity.registration(keys.me);
             if let Err(err) = rest.register_device(&request).await {
                 tracing::warn!("could not publish this device's encryption keys: {err}");
+                core.emit(CoreEvent::Error(
+                    "This device's encryption keys could not be published; others may not be able \
+                     to write to it yet."
+                        .to_owned(),
+                ));
             }
             // My own other devices get a copy of what I send.
             let _ = core.fetch_devices(&inst, &keys, &[keys.me], 0).await;

@@ -171,6 +171,36 @@ impl Shell {
         lines
     }
 
+    /// What someone sees before they have added a server.
+    pub fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .text_size(theme::heading_size())
+                    .child("Welcome to Hermes"),
+            )
+            .child(
+                div()
+                    .text_size(theme::body_size())
+                    .text_color(theme::text_secondary())
+                    .child("Add a server by its address, or paste an invite link."),
+            )
+            .child(
+                gpui_kit::component::button::Button::new("welcome-add")
+                    .cursor_pointer()
+                    .label("Add an instance")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_add_instance(String::new(), window, cx);
+                    })),
+            )
+    }
+
     pub fn render_friends(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let lines = self.friends_lines();
         let pending_count = lines

@@ -247,6 +247,18 @@ impl Shell {
                 );
             }
 
+            (Target::Space(inst, space), Action::MoveServerUp) => {
+                self.move_server(&inst, space, true, cx);
+            }
+            (Target::Space(inst, space), Action::MoveServerDown) => {
+                self.move_server(&inst, space, false, cx);
+            }
+            (Target::Member(inst, _, user), Action::EditNote) => {
+                self.open_form_note(inst, user, window, cx);
+            }
+            (Target::Member(inst, _, user), Action::EditLocalName) => {
+                self.open_form_local_name(inst, user, window, cx);
+            }
             (Target::Member(inst, _, user), Action::Block) => {
                 let core = self.core.clone();
                 self.run_status(cx, async move {

@@ -656,9 +656,18 @@ pub fn mono_font() -> SharedString {
     with(|a| a.mono.clone())
 }
 
+/// `font.heading_extra`.
+pub static HEADING_EXTRA: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(4);
+
+/// Small corners: buttons, chips, boxes inside rows. Follows the theme's shape.
+pub fn radius_small() -> Pixels {
+    with(|a| gpui_kit::px(f32::from(a.theme.shape.row_radius) * (2. / 3.) * a.scale))
+}
+
 /// Page and dialog titles.
 pub fn heading_size() -> Pixels {
-    with(|a| gpui_kit::px((a.text + 4.0) * a.scale))
+    let extra = HEADING_EXTRA.load(std::sync::atomic::Ordering::Relaxed) as f32;
+    with(|a| gpui_kit::px((a.text + extra) * a.scale))
 }
 /// What is read: messages, row labels, setting names, inputs and buttons.
 pub fn body_size() -> Pixels {

@@ -94,8 +94,8 @@ pub enum Level {
 /// How many recently open channels each server remembers.
 const RECENT_CHANNELS: usize = 10;
 
-/// How long an info line stays.
-const INFO_FOR: Duration = Duration::from_secs(5);
+/// How long an info line stays: `general.status_seconds`.
+static INFO_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
 
 type MemberGroupsCache = std::cell::RefCell<
     HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
@@ -695,7 +695,10 @@ impl Shell {
         });
         if level == Level::Info {
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(INFO_FOR).await;
+                let seconds = INFO_SECONDS.load(std::sync::atomic::Ordering::Relaxed);
+                cx.background_executor()
+                    .timer(Duration::from_secs(seconds))
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     if this.status.as_ref().is_some_and(|s| s.serial == serial) {
                         this.status = None;
@@ -751,6 +754,18 @@ impl Shell {
     fn apply_motion(&self, cx: &mut Context<Self>) {
         let general = &self.config.general;
         cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
+        INFO_SECONDS.store(
+            u64::from(general.status_seconds.max(1)),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        theme::HEADING_EXTRA.store(
+            self.config.font.heading_extra.clamp(0, 16),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::channel::MEDIA_SCALE.store(
+            self.config.buffer.media_scale.clamp(25, 300),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.smooth_scroll
             .configure(general.smooth_scroll, general.scroll_speed as f32);
     }
@@ -935,7 +950,7 @@ impl Shell {
             .h(px(28.))
             .px(px(8.))
             .mr(px(8.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             .bg(crate::theme::raised())
             .text_size(crate::theme::caption_size())
@@ -1081,7 +1096,11 @@ impl Shell {
     }
 
     /// Writes what is open to `[[layout]]` in `config.toml`.
-    pub fn save_layout(&mut self) {
+    pub fn save_layout(&mut self, cx: &Context<Self>) {
+        if let Some(open) = self.open_channel() {
+            self.remember_draft(&open, cx);
+        }
+        self.core.save_outbox();
         let mut table = toml::Table::new();
         match &self.page {
             Page::Chat(inst, channel) => {
@@ -1261,6 +1280,9 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        for image in self.images.retired.drain(..) {
+            let _ = window.drop_image(image);
+        }
         self.scale = window.scale_factor();
         self.viewport = window.viewport_size();
         let title = self.page_title();
@@ -1282,6 +1304,9 @@ impl Render for Shell {
         let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
         let main = match self.page.clone() {
+            Page::Friends if self.core.instance_ids().is_empty() => {
+                self.render_welcome(cx).into_any_element()
+            }
             Page::Friends => self.render_friends(cx).into_any_element(),
             Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
             Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
