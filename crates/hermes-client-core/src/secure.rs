@@ -39,6 +39,9 @@ const STORED_NAME: &str = "encrypted.bin";
 pub const NOT_FOR_THIS_DEVICE: &str =
     "Encrypted before this device was signed in, so it cannot be read here.";
 pub const TAMPERED: &str = "This encrypted message could not be verified, so it is not shown.";
+pub const UNSEALED: &str = "This message was not encrypted although this conversation is, so it may not be from who it says. It is not shown.";
+const REPLAYED: &str =
+    "This encrypted message does not match where the server put it, so it is not shown.";
 
 /// This account's keys on one instance.
 pub(crate) struct AccountKeys {
@@ -152,11 +155,26 @@ impl Core {
                 .join("e2ee")
                 .join(format!("{}-{me}-search.bin", safe_file_name(inst)))
         });
+        let directory = Directory::load(path);
+        let ring = crate::channel_keys::KeyRing::load(ring_path, wrap);
+        if directory.damaged() || ring.damaged() {
+            self.emit(CoreEvent::Error(
+                "A file holding this device's encryption records was damaged and has been set \
+                 aside. Compare numbers with the people you write to."
+                    .to_owned(),
+            ));
+        }
+        if crate::tokens::take_fallback_warning() {
+            self.emit(CoreEvent::Error(
+                "No credential store is available, so your keys are kept in a file on this device."
+                    .to_owned(),
+            ));
+        }
         let keys = Arc::new(AccountKeys {
             me,
             identity,
-            directory: Mutex::new(Directory::load(path)),
-            ring: Mutex::new(crate::channel_keys::KeyRing::load(ring_path, wrap)),
+            directory: Mutex::new(directory),
+            ring: Mutex::new(ring),
             channels: Mutex::default(),
             index: Arc::new(Mutex::new(crate::search_index::SearchIndex::new(
                 index_path, index_key,
@@ -271,6 +289,16 @@ impl Core {
         let directory = keys.directory.lock().expect("directory");
         for user in users {
             let live = directory.live_devices(user);
+            if directory.is_verified(user) && directory.unseen(user) > 0 {
+                let name = self
+                    .store()
+                    .instance(inst)
+                    .map_or_else(|| user.to_string(), |s| s.display_name(None, user));
+                return Err(CoreError::Voice(format!(
+                    "{name} has a new device. Compare numbers or press OK on the notice before \
+                     sending."
+                )));
+            }
             if live.is_empty() && user != keys.me {
                 let name = self
                     .store()
@@ -298,6 +326,7 @@ impl Core {
         content: &str,
         attachments: &[Attachment],
         reply_to: Option<Id>,
+        edits: Option<Id>,
     ) -> Result<hermes_proto::e2ee::Envelope> {
         let keys = self
             .account_keys(inst)
@@ -313,6 +342,8 @@ impl Core {
             attachments: attachments.iter().filter_map(inner_attachment).collect(),
             reply_to,
             reply_excerpt,
+            sent_at: Some(now_ms()),
+            edits,
         };
         let sealed = if self.channel_is_private(inst, channel) {
             let devices = self.devices_for(inst, &keys, channel).await?;
@@ -324,11 +355,33 @@ impl Core {
         sealed.map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
     }
 
+    /// A plain message after the first sealed one of its conversation did not come from a client
+    /// that encrypts, and all of them do: the server can write anything in clear under any name.
+    fn check_plain(&self, inst: &str, message: &mut Message) {
+        if message.deleted || message.kind != MessageKind::Default {
+            return;
+        }
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let since = keys
+            .ring
+            .lock()
+            .expect("ring")
+            .sealed_since(message.channel_id);
+        if since.is_some_and(|first| message.id > first) {
+            refuse(message, MessageLock::Unsealed, UNSEALED);
+        }
+    }
+
     /// Opens a message from the server in place: `content` and the attachments become what the
     /// author wrote, or say why it cannot be shown. The server's copy is dropped either way.
     pub async fn open_message(&self, inst: &str, message: &mut Message) {
         let Some(envelope) = message.e2ee.take() else {
-            message.lock = MessageLock::Plain;
+            // Opened before, when it is not plain any more.
+            if message.lock == MessageLock::Plain {
+                self.check_plain(inst, message);
+            }
             return;
         };
         let Some(keys) = self.account_keys(inst) else {
@@ -359,6 +412,18 @@ impl Core {
             refuse(message, MessageLock::Tampered, TAMPERED);
             return;
         };
+        // What a device signs after it was removed does not count.
+        let written = message
+            .edited_at
+            .unwrap_or(message.id.timestamp_ms() as i64);
+        if keys.directory.lock().expect("directory").revoked_before(
+            author,
+            &envelope.device,
+            written,
+        ) {
+            refuse(message, MessageLock::Tampered, TAMPERED);
+            return;
+        }
         let opened = match envelope.epoch {
             Some(epoch) => {
                 let key = self
@@ -383,7 +448,14 @@ impl Core {
             ),
         };
         match opened {
+            Ok((inner, _)) if e2ee::replayed(&inner, message.id, message.edited_at) => {
+                refuse(message, MessageLock::Tampered, REPLAYED);
+            }
             Ok((inner, key)) => {
+                keys.ring
+                    .lock()
+                    .expect("ring")
+                    .note_sealed(message.channel_id, message.id);
                 apply_inner(message, inner);
                 open_reactions(message, &key);
                 message.message_key = Some(key.to_string());
@@ -564,6 +636,67 @@ impl Core {
         let mut directory = keys.directory.lock().expect("directory");
         for user in users {
             directory.acknowledge(user);
+        }
+    }
+
+    /// Whether I have compared numbers with everyone else in this conversation.
+    pub fn conversation_verified(&self, inst: &str, channel: Id) -> bool {
+        let Some(keys) = self.account_keys(inst) else {
+            return false;
+        };
+        let users = self.recipients(inst, channel, keys.me);
+        let directory = keys.directory.lock().expect("directory");
+        let mut others = users.into_iter().filter(|user| *user != keys.me).peekable();
+        others.peek().is_some() && others.all(|user| directory.is_verified(user))
+    }
+
+    /// Remembers that the numbers of this conversation were compared, or forgets it.
+    pub fn set_conversation_verified(&self, inst: &str, channel: Id, verified: bool) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let users = self.recipients(inst, channel, keys.me);
+        let mut directory = keys.directory.lock().expect("directory");
+        for user in users.into_iter().filter(|user| *user != keys.me) {
+            directory.set_verified(user, verified);
+        }
+    }
+
+    /// Forgets everything this device keeps for an instance's accounts: its keys, the channels'
+    /// keys, the search index and whom it has seen.
+    pub(crate) fn wipe_local_keys(&self, inst: &str) {
+        self.inner.accounts.lock().expect("accounts").remove(inst);
+        let Some(paths) = self.paths() else {
+            return;
+        };
+        let dir = paths.dir.join("e2ee");
+        let prefix = format!("{}-", safe_file_name(inst));
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let tokens = self.tokens();
+        for file in files.flatten() {
+            let name = file.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            // `<instance>-<me>...`: an instance whose name goes on after a dash has no number here.
+            let number = rest.split(['-', '.']).next().unwrap_or_default();
+            let Ok(me) = number.parse::<u64>().map(Id) else {
+                continue;
+            };
+            for slot in [
+                Self::secret_slot(me),
+                format!("e2ee-ring-{me}"),
+                format!("e2ee-index-{me}"),
+            ] {
+                if let Err(err) = tokens.delete(inst, &slot) {
+                    tracing::warn!("could not delete a key of {inst}: {err}");
+                }
+            }
+            if let Err(err) = std::fs::remove_file(file.path()) {
+                tracing::warn!("could not delete {name}: {err}");
+            }
         }
     }
 

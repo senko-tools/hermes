@@ -23,6 +23,14 @@ pub enum TokenStore {
     Failing,
 }
 
+/// Secrets went to the file because there is no credential store.
+static FALLBACK_USED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the user still has to be told that secrets are in a file.
+pub(crate) fn take_fallback_warning() -> bool {
+    FALLBACK_USED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 fn account(instance: &str, username: &str) -> String {
     format!("{username}@{instance}")
 }
@@ -72,6 +80,7 @@ impl TokenStore {
                         tracing::warn!(
                             "credential store unavailable ({err}); using the token file"
                         );
+                        FALLBACK_USED.store(true, std::sync::atomic::Ordering::Relaxed);
                         write_to_file(fallback, &account, token)
                     }
                 }
@@ -144,14 +153,37 @@ fn remove_from_file(path: &Path, account: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Owner-only permissions. On Windows the per-user config directory is already private.
+/// Owner-only permissions.
 #[cfg(unix)]
 fn restrict(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
-#[cfg(not(unix))]
+/// Only the current user, also where the folder is not private (portable mode).
+#[cfg(windows)]
+fn restrict(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(user) = std::env::var("USERNAME") else {
+        return Ok(());
+    };
+    let status = std::process::Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("{user}:F"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    if !status.is_ok_and(|s| s.success()) {
+        tracing::warn!("could not restrict {} to this user", path.display());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn restrict(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

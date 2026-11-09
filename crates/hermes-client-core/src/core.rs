@@ -865,6 +865,7 @@ impl Core {
         if self.handle(inst).is_some() {
             self.logout(inst).await?;
         }
+        self.wipe_local_keys(inst);
         self.inner
             .config
             .write()
@@ -1341,6 +1342,7 @@ impl Core {
                         &request.content,
                         &attachments,
                         request.reply_to_id,
+                        None,
                     )
                     .await
                 {
@@ -1453,7 +1455,14 @@ impl Core {
                 )
             };
             let envelope = self
-                .seal(inst, channel, content, &attachments, reply_to)
+                .seal(
+                    inst,
+                    channel,
+                    content,
+                    &attachments,
+                    reply_to,
+                    Some(message),
+                )
                 .await?;
             hermes_proto::api::EditMessageRequest {
                 content: String::new(),

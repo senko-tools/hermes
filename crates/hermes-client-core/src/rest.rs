@@ -38,6 +38,31 @@ use crate::tls::{self, Trust};
 /// Requests that take longer fail (uploads have their own, longer limit).
 const TIMEOUT: Duration = Duration::from_secs(30);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// The most a server may send in answer: a hostile one must not be able to fill the memory.
+const MAX_JSON_BYTES: usize = 64 << 20;
+const MAX_ERROR_BYTES: usize = 64 << 10;
+const MAX_THUMBNAIL_BYTES: usize = 32 << 20;
+const MAX_FILE_BYTES: usize = 8 << 30;
+/// How much of an unreadable error is shown.
+const MAX_ERROR_SHOWN: usize = 300;
+const MAX_MEMBER_PAGES: usize = 2000;
+
+/// The body of `res`, or an error once it goes past `max` bytes.
+async fn read_capped(mut res: reqwest::Response, max: usize) -> Result<Vec<u8>> {
+    let too_large = || Error::Decode("the answer is too large".to_owned());
+    let declared = res.content_length().unwrap_or(0);
+    if declared > max as u64 {
+        return Err(too_large());
+    }
+    let mut out = Vec::with_capacity(declared as usize);
+    while let Some(chunk) = res.chunk().await.map_err(network)? {
+        if out.len() + chunk.len() > max {
+            return Err(too_large());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -159,19 +184,19 @@ impl Rest {
             return Ok(res);
         }
         let status = res.status();
-        let bytes = res.bytes().await.map_err(network)?;
+        let bytes = read_capped(res, MAX_ERROR_BYTES).await?;
         match serde_json::from_slice::<ErrorBody>(&bytes) {
             Ok(body) => Err(Error::Api(body.error)),
             Err(_) => Err(Error::Decode(format!(
                 "HTTP {status}: {}",
-                String::from_utf8_lossy(&bytes)
+                String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_ERROR_SHOWN)])
             ))),
         }
     }
 
     async fn json<T: DeserializeOwned>(req: reqwest::RequestBuilder) -> Result<T> {
         let res = Self::send(req).await?;
-        let bytes = res.bytes().await.map_err(network)?;
+        let bytes = read_capped(res, MAX_JSON_BYTES).await?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Decode(e.to_string()))
     }
 
@@ -479,15 +504,17 @@ impl Rest {
     pub async fn all_members(&self, space: Id) -> Result<Vec<Member>> {
         let mut all = Vec::new();
         let mut after = None;
-        loop {
+        // A server that never stops answering must not keep this going for ever.
+        for _ in 0..MAX_MEMBER_PAGES {
             let page = self.members(space, after, 100).await?;
             let done = page.len() < 100;
             after = page.last().map(|m| m.user.id);
             all.extend(page);
             if done || after.is_none() {
-                return Ok(all);
+                break;
             }
         }
+        Ok(all)
     }
 
     /// `user` may be `None` for `@me`.
@@ -814,15 +841,14 @@ impl Rest {
             )
             .timeout(UPLOAD_TIMEOUT);
         let res = Self::send(req).await?;
-        // Takes the buffer over without copying it when it can.
-        Ok(Vec::from(res.bytes().await.map_err(network)?))
+        read_capped(res, MAX_FILE_BYTES).await
     }
 
     pub async fn thumbnail(&self, attachment: Id) -> Result<Vec<u8>> {
         let res =
             Self::send(self.request(Method::GET, &format!("/attachments/{attachment}/thumb")))
                 .await?;
-        Ok(Vec::from(res.bytes().await.map_err(network)?))
+        read_capped(res, MAX_THUMBNAIL_BYTES).await
     }
 
     // ---- DMs ------------------------------------------------------------------------------

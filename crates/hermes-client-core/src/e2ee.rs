@@ -317,6 +317,34 @@ pub struct Inner {
     pub reply_to: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_excerpt: Option<String>,
+    /// When it was written, so that the server cannot post an old message as a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<i64>,
+    /// The message this text replaces, when it is an edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edits: Option<Id>,
+}
+
+/// How far a message's own clock may be from the server's before it counts as replayed.
+const REPLAY_WINDOW_MS: i64 = 60 * 60 * 1000;
+
+/// Whether what a message says of itself contradicts where the server put it. Messages from
+/// before these fields existed have neither and pass.
+pub(crate) fn replayed(inner: &Inner, message: Id, edited_at: Option<i64>) -> bool {
+    if let Some(edits) = inner.edits
+        && (edits != message || edited_at.is_none())
+    {
+        return true;
+    }
+    let Some(sent_at) = inner.sent_at else {
+        return false;
+    };
+    // An edited message showing its original text.
+    if edited_at.is_some() && inner.edits.is_none() {
+        return true;
+    }
+    let stamped = edited_at.unwrap_or(message.timestamp_ms() as i64);
+    (stamped - sent_at).abs() > REPLAY_WINDOW_MS
 }
 
 fn message_transcript(
@@ -897,6 +925,12 @@ struct KnownUser {
     /// Device IDs added since I was last told, waiting to be shown.
     #[serde(default)]
     unseen: BTreeSet<String>,
+    /// I compared numbers with them: a new device of theirs holds my messages back until seen.
+    #[serde(default)]
+    verified: bool,
+    /// When each device stopped being listed. It signs nothing after that.
+    #[serde(default)]
+    revoked_at: BTreeMap<String, i64>,
 }
 
 /// The keys seen for each user on one instance (trust on first use), kept in a file so a server that
@@ -909,21 +943,53 @@ pub struct Directory {
     fetched: HashMap<Id, i64>,
     /// Goes up whenever anyone's devices change, so voice knows to hand out keys again.
     revision: u64,
+    /// The file could not be read and was set aside.
+    damaged: bool,
 }
 
 impl Directory {
     pub fn load(path: Option<PathBuf>) -> Directory {
-        let users = path
+        let bytes = path.as_ref().and_then(|p| std::fs::read(p).ok());
+        let users = bytes
             .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .and_then(|bytes| serde_json::from_slice(bytes).ok());
+        // Starting over silently would make everyone a first contact again.
+        let damaged = bytes.is_some() && users.is_none();
+        if damaged && let Some(path) = &path {
+            let _ = std::fs::rename(path, path.with_extension("damaged"));
+        }
         Directory {
             path,
-            users,
+            users: users.unwrap_or_default(),
             fetched: HashMap::new(),
             revision: 0,
+            damaged,
         }
+    }
+
+    pub fn damaged(&self) -> bool {
+        self.damaged
+    }
+
+    /// Whether I have compared numbers with `user`.
+    pub fn is_verified(&self, user: Id) -> bool {
+        self.users.get(&user).is_some_and(|u| u.verified)
+    }
+
+    pub fn set_verified(&mut self, user: Id, verified: bool) {
+        let entry = self.users.entry(user).or_default();
+        if entry.verified != verified {
+            entry.verified = verified;
+            self.save();
+        }
+    }
+
+    /// Whether `device` had stopped being listed by the time `at`.
+    pub fn revoked_before(&self, user: Id, device: &str, at: i64) -> bool {
+        self.users
+            .get(&user)
+            .and_then(|u| u.revoked_at.get(device))
+            .is_some_and(|revoked| *revoked < at)
     }
 
     pub fn revision(&self) -> u64 {
@@ -964,6 +1030,13 @@ impl Directory {
             if device.revoked != revoked {
                 device.revoked = revoked;
                 changed = true;
+                if revoked {
+                    entry.revoked_at.insert(id.clone(), now);
+                } else {
+                    // A device that comes back is news, as a new one would be.
+                    entry.revoked_at.remove(id);
+                    entry.unseen.insert(id.clone());
+                }
             }
         }
         for device in &devices {
@@ -973,7 +1046,7 @@ impl Directory {
             }
             match entry.devices.get(&device.device_id) {
                 // An ID is a hash of the key, so a known ID with another key cannot pass the check
-                // above; and a known device coming back is no news.
+                // above.
                 Some(_) => {}
                 None => {
                     if !first_contact && !device.revoked {
@@ -1203,6 +1276,63 @@ pub struct VoiceCrypto {
     /// By participant, then generation.
     recv: HashMap<u16, BTreeMap<u8, StreamKeys>>,
     next_generation: u8,
+    /// What has been received, by participant, generation and stream.
+    seen: std::sync::Mutex<HashMap<(u16, u8, u8), ReplayWindow>>,
+}
+
+/// Which recent packet numbers of a stream have been seen, so that one recorded earlier cannot be
+/// played again.
+#[derive(Debug, Default)]
+struct ReplayWindow {
+    started: bool,
+    highest: u64,
+    /// Bit `n`: `highest - n` has been seen.
+    recent: u128,
+}
+
+impl ReplayWindow {
+    /// Whether `counter` is new; if so it now counts as seen.
+    fn accept(&mut self, counter: u64) -> bool {
+        if !self.started {
+            self.started = true;
+            self.highest = counter;
+            self.recent = 1;
+            return true;
+        }
+        if counter > self.highest {
+            let ahead = counter - self.highest;
+            self.recent = if ahead >= 128 {
+                0
+            } else {
+                self.recent << ahead
+            };
+            self.recent |= 1;
+            self.highest = counter;
+            return true;
+        }
+        let back = self.highest - counter;
+        if back >= 128 {
+            return false;
+        }
+        let bit = 1u128 << back;
+        let new = self.recent & bit == 0;
+        self.recent |= bit;
+        new
+    }
+}
+
+impl VoiceCrypto {
+    /// Whether this packet of `sender`'s stream has not been seen before.
+    fn fresh(&self, sender: u16, stream: Stream, prefix: &[u8; SEAL_PREFIX]) -> bool {
+        let mut counter = [0u8; 8];
+        counter[2..].copy_from_slice(&prefix[1..]);
+        self.seen
+            .lock()
+            .expect("replay windows")
+            .entry((sender, prefix[0], stream as u8))
+            .or_default()
+            .accept(u64::from_be_bytes(counter))
+    }
 }
 
 impl std::fmt::Debug for VoiceCrypto {
@@ -1329,6 +1459,9 @@ impl VoiceCrypto {
                 },
             )
             .ok()?;
+        if !self.fresh(header.sender_id, kind.into(), prefix) {
+            return None;
+        }
         let len = u16::from_be_bytes([*plain.get(2)?, *plain.get(3)?]) as usize;
         let opus = plain.get(4..4 + len)?;
         let open = AudioHeader {
@@ -1376,7 +1509,8 @@ impl VoiceCrypto {
         let keys = self.recv.get(&sender)?.get(&prefix[0])?;
         let mut aad = video_aad(header);
         aad.extend_from_slice(prefix);
-        keys.video
+        let frame = keys
+            .video
             .decrypt(
                 &nonce_of(prefix).into(),
                 Payload {
@@ -1384,7 +1518,8 @@ impl VoiceCrypto {
                     aad: &aad,
                 },
             )
-            .ok()
+            .ok()?;
+        self.fresh(sender, Stream::Video, prefix).then_some(frame)
     }
 }
 
@@ -1891,5 +2026,84 @@ mod tests {
         assert_eq!(open_local(&key, &sealed).unwrap().as_slice(), b"keys");
         assert!(open_local(&new_channel_key(), &sealed).is_err());
         assert!(open_local(&key, &sealed[..10]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+
+    fn device() -> DeviceKeys {
+        Identity::generate().public(Id(1))
+    }
+
+    #[test]
+    fn a_device_that_comes_back_is_news_and_signs_nothing_while_gone() {
+        let mut directory = Directory::load(None);
+        let (a, b) = (device(), device());
+        directory.update(Id(1), vec![a.clone(), b.clone()], 0);
+        assert_eq!(directory.unseen(Id(1)), 0);
+        directory.update(Id(1), vec![a.clone()], 10);
+        assert!(directory.revoked_before(Id(1), &b.device_id, 20));
+        assert!(!directory.revoked_before(Id(1), &b.device_id, 5));
+        directory.update(Id(1), vec![a, b.clone()], 30);
+        assert_eq!(directory.unseen(Id(1)), 1);
+        assert!(!directory.revoked_before(Id(1), &b.device_id, 40));
+    }
+
+    #[test]
+    fn a_damaged_file_is_set_aside_and_said() {
+        let dir = std::env::temp_dir().join(format!("hermes-damaged-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known.json");
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(Directory::load(Some(path.clone())).damaged());
+        assert!(dir.join("known.damaged").exists());
+        assert!(!Directory::load(Some(path)).damaged());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_packet_counts_once() {
+        let mut window = ReplayWindow::default();
+        assert!(window.accept(10));
+        assert!(!window.accept(10));
+        assert!(window.accept(12));
+        assert!(window.accept(11), "late but new");
+        assert!(!window.accept(11));
+        assert!(window.accept(1000));
+        assert!(!window.accept(12), "too old to tell");
+    }
+
+    #[test]
+    fn a_message_cannot_be_moved_or_rolled_back() {
+        let at = |ms: u64| Id((ms - hermes_proto::id::HERMES_EPOCH_MS) << 22);
+        let now = 1_800_000_000_000_u64;
+        let id = at(now);
+        let inner = |sent: u64, edits| Inner {
+            sent_at: Some(sent as i64),
+            edits,
+            ..Inner::default()
+        };
+        assert!(!replayed(&inner(now, None), id, None));
+        assert!(!replayed(&Inner::default(), id, None), "older clients");
+        assert!(
+            replayed(&inner(now - 86_400_000, None), id, None),
+            "old as new"
+        );
+        let edited = Some(now as i64 + 5000);
+        assert!(!replayed(&inner(now + 5000, Some(id)), id, edited));
+        assert!(
+            replayed(&inner(now + 5000, Some(Id(7))), id, edited),
+            "another's edit"
+        );
+        assert!(
+            replayed(&inner(now + 5000, Some(id)), id, None),
+            "edit as new"
+        );
+        assert!(
+            replayed(&inner(now, None), id, edited),
+            "back to the original"
+        );
     }
 }

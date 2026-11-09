@@ -1,5 +1,6 @@
 //! When a message notifies (PLAN.md section 14.5). The UI decides how to show it.
 
+use hermes_proto::e2ee::MessageLock;
 use hermes_proto::id::Id;
 use hermes_proto::models::{Channel, Message, NotificationLevel, PresenceStatus};
 
@@ -50,6 +51,8 @@ pub fn check(
         || my_status == PresenceStatus::Dnd
         || Some(message.author.id) == store.me_id()
         || message.deleted
+        // Nobody can say who wrote it.
+        || message.lock == MessageLock::Unsealed
         // A message request notified once, when it arrived.
         || store.channel(message.channel_id).is_some_and(|c| c.request)
     {

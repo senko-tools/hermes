@@ -3,7 +3,7 @@
 //! replaces it when someone who held it can no longer read the channel; members hand them to
 //! devices that lack them, by themselves or only when someone approves, as the channel's rules say.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +14,7 @@ use hermes_proto::e2ee::{
 };
 use hermes_proto::id::Id;
 use hermes_proto::permissions::Permissions;
+use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::config::write_atomic;
@@ -40,22 +41,130 @@ pub(crate) struct KeyRing {
     path: Option<PathBuf>,
     wrap: Zeroizing<[u8; 32]>,
     keys: BTreeMap<(Id, u32), Zeroizing<[u8; 32]>>,
+    pins: Pins,
+    /// The file could not be read and was set aside.
+    damaged: bool,
+}
+
+/// What a server must not be able to talk this device out of.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct Pins {
+    /// Channels seen to need approval before a key is handed over.
+    approved: BTreeSet<Id>,
+    /// Channels seen to keep the past from new members.
+    hidden_history: BTreeSet<Id>,
+    /// The first sealed message seen in each conversation.
+    sealed_since: BTreeMap<Id, Id>,
+    /// This instance was seen to encrypt its channels.
+    instance_sealed: bool,
+}
+
+/// The ring's file.
+#[derive(Serialize, Deserialize)]
+struct Stored<K> {
+    keys: Vec<(Id, u32, K)>,
+    pins: Pins,
 }
 
 impl KeyRing {
     pub(crate) fn load(path: Option<PathBuf>, wrap: Zeroizing<[u8; 32]>) -> KeyRing {
         let mut keys = BTreeMap::new();
-        let stored = path
-            .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|sealed| e2ee::open_local(&wrap, &sealed).ok())
-            .and_then(|plain| serde_json::from_slice::<Vec<(Id, u32, String)>>(&plain).ok());
-        for (channel, epoch, key) in stored.unwrap_or_default() {
+        let file = path.as_ref().and_then(|path| std::fs::read(path).ok());
+        let stored = file.as_ref().and_then(|sealed| {
+            let plain = e2ee::open_local(&wrap, sealed).ok()?;
+            serde_json::from_slice::<Stored<String>>(&plain)
+                .ok()
+                .or_else(|| {
+                    // The form from before pins were kept.
+                    let keys = serde_json::from_slice(&plain).ok()?;
+                    Some(Stored {
+                        keys,
+                        pins: Pins::default(),
+                    })
+                })
+        });
+        let damaged = file.is_some() && stored.is_none();
+        if damaged && let Some(path) = &path {
+            let _ = std::fs::rename(path, path.with_extension("damaged"));
+        }
+        let (list, pins) = stored.map_or_else(Default::default, |s| (s.keys, s.pins));
+        for (channel, epoch, key) in list {
             if let Ok(key) = e2ee::decode_key(&key) {
                 keys.insert((channel, epoch), key);
             }
         }
-        KeyRing { path, wrap, keys }
+        KeyRing {
+            path,
+            wrap,
+            keys,
+            pins,
+            damaged,
+        }
+    }
+
+    pub(crate) fn damaged(&self) -> bool {
+        self.damaged
+    }
+
+    /// The newest key held for a channel; 0 when there is none.
+    fn newest_epoch(&self, channel: Id) -> u32 {
+        self.epochs(channel).last().copied().unwrap_or(0)
+    }
+
+    /// Applies what was pinned to what the server says, and pins what is stricter. Whether the
+    /// server was asking for less than has been seen before.
+    fn pin_policy(&mut self, channel: Id, policy: &mut KeyPolicy) -> bool {
+        let mut loosened = false;
+        let mut changed = false;
+        if policy.handover == KeyHandover::Approved {
+            changed |= self.pins.approved.insert(channel);
+        } else if self.pins.approved.contains(&channel) {
+            policy.handover = KeyHandover::Approved;
+            loosened = true;
+        }
+        if !policy.new_members_read_history {
+            changed |= self.pins.hidden_history.insert(channel);
+        } else if self.pins.hidden_history.contains(&channel) {
+            policy.new_members_read_history = false;
+            loosened = true;
+        }
+        if changed {
+            self.save();
+        }
+        loosened
+    }
+
+    /// I changed this channel's rules myself, so whatever the server says next is real.
+    fn unpin_policy(&mut self, channel: Id) {
+        let removed = self.pins.approved.remove(&channel);
+        if self.pins.hidden_history.remove(&channel) || removed {
+            self.save();
+        }
+    }
+
+    /// Remembers the earliest sealed message seen in a conversation.
+    pub(crate) fn note_sealed(&mut self, channel: Id, message: Id) {
+        let first = self.pins.sealed_since.entry(channel).or_insert(message);
+        let earlier = message < *first;
+        let new = *first == message;
+        if earlier {
+            *first = message;
+        }
+        if earlier || new {
+            self.save();
+        }
+    }
+
+    /// The first sealed message seen in a conversation.
+    pub(crate) fn sealed_since(&self, channel: Id) -> Option<Id> {
+        self.pins.sealed_since.get(&channel).copied()
+    }
+
+    fn remember_instance_sealed(&mut self) {
+        if !self.pins.instance_sealed {
+            self.pins.instance_sealed = true;
+            self.save();
+        }
     }
 
     fn get(&self, channel: Id, epoch: u32) -> Option<Zeroizing<[u8; 32]>> {
@@ -71,7 +180,10 @@ impl KeyRing {
     }
 
     fn insert(&mut self, channel: Id, epoch: u32, key: Zeroizing<[u8; 32]>) {
-        if self.keys.insert((channel, epoch), key).is_none() {
+        // A key already held is never replaced: whoever hands one over cannot swap it.
+        if let std::collections::btree_map::Entry::Vacant(free) = self.keys.entry((channel, epoch))
+        {
+            free.insert(key);
             self.save();
         }
     }
@@ -95,7 +207,11 @@ impl KeyRing {
             .iter()
             .map(|(channel, epoch, key)| (*channel, *epoch, key.as_str()))
             .collect();
-        let Ok(plain) = serde_json::to_vec(&list).map(Zeroizing::new) else {
+        let stored = Stored {
+            keys: list,
+            pins: self.pins.clone(),
+        };
+        let Ok(plain) = serde_json::to_vec(&stored).map(Zeroizing::new) else {
             return;
         };
         let Ok(sealed) = e2ee::seal_local(&self.wrap, &plain) else {
@@ -125,6 +241,8 @@ pub(crate) struct ChannelKeyCache {
     states: HashMap<Id, ChannelState>,
     asked_at: HashMap<Id, i64>,
     waiting: Vec<KeyRequest>,
+    /// Channels already warned about, so that it is said once.
+    warned: HashSet<Id>,
 }
 
 fn locked(err: impl std::fmt::Display) -> CoreError {
@@ -134,9 +252,22 @@ fn locked(err: impl std::fmt::Display) -> CoreError {
 impl Core {
     /// Whether what is written in this channel is encrypted.
     pub fn channel_is_encrypted(&self, inst: &str, channel: Id) -> bool {
-        self.store()
-            .instance(inst)
-            .is_some_and(|s| s.channel_encrypted(channel))
+        let (said, server_channel) = self.store().instance(inst).map_or((false, false), |s| {
+            (
+                s.channel_encrypted(channel),
+                s.channel(channel)
+                    .is_some_and(|c| !c.kind.is_private() && c.kind.has_messages()),
+            )
+        });
+        let Some(keys) = self.account_keys(inst) else {
+            return said;
+        };
+        let mut ring = keys.ring.lock().expect("ring");
+        if said && server_channel {
+            ring.remember_instance_sealed();
+        }
+        // One word from the server must not be enough to turn encryption off.
+        said || (server_channel && ring.pins.instance_sealed)
     }
 
     fn forget_state(keys: &AccountKeys, channel: Id) {
@@ -174,11 +305,31 @@ impl Core {
                 self.open_sealed_key(inst, keys, channel, sealed).await;
             }
         }
+        let mut policy = response.policy;
+        let loosened = keys
+            .ring
+            .lock()
+            .expect("ring")
+            .pin_policy(channel, &mut policy);
+        if loosened
+            && keys
+                .channels
+                .lock()
+                .expect("channel keys")
+                .warned
+                .insert(channel)
+        {
+            self.emit(CoreEvent::Error(
+                "The server now says a channel's keys need less approval than before. This device \
+                 keeps to the stricter rule."
+                    .to_owned(),
+            ));
+        }
         let state = ChannelState {
             fetched_at: now,
             current: response.current_epoch,
             rotate_needed: response.rotate_needed,
-            policy: response.policy,
+            policy,
         };
         keys.channels
             .lock()
@@ -230,6 +381,7 @@ impl Core {
         channel: Id,
         state: ChannelState,
     ) -> Result<()> {
+        self.refuse_rollback(inst, keys, channel, state).await?;
         let rest = self.rest(inst)?;
         let members = rest.channel_key_members(channel).await?;
         let mut users: Vec<Id> = match state.policy.handover {
@@ -300,6 +452,31 @@ impl Core {
         Ok(())
     }
 
+    /// Refuses a server that offers an older key than this device already holds: it would send
+    /// messages back to a key someone who has left may still have.
+    async fn refuse_rollback(
+        &self,
+        inst: &str,
+        keys: &AccountKeys,
+        channel: Id,
+        state: ChannelState,
+    ) -> Result<()> {
+        let newest = keys.ring.lock().expect("ring").newest_epoch(channel);
+        if newest <= state.current {
+            return Ok(());
+        }
+        // A key may have arrived since this was asked.
+        let fresh = self.channel_state(inst, keys, channel, 0).await?;
+        if newest > fresh.current {
+            return Err(CoreError::Voice(
+                "The server offered an older key for this channel than this device has, so nothing \
+                 was sent."
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The key to write in a channel with. Makes one if there is none or it has to be replaced.
     pub(crate) async fn key_for_sending(
         &self,
@@ -310,6 +487,7 @@ impl Core {
         let mut state = self
             .channel_state(inst, keys, channel, STATE_MAX_AGE_MS)
             .await?;
+        self.refuse_rollback(inst, keys, channel, state).await?;
         if state.current == 0 || state.rotate_needed {
             self.start_epoch(inst, keys, channel, state).await?;
             state = self.channel_state(inst, keys, channel, 0).await?;
@@ -595,7 +773,19 @@ impl Core {
         space: Id,
         policy: KeyPolicy,
     ) -> Result<()> {
-        Ok(self.rest(inst)?.set_space_key_policy(space, policy).await?)
+        self.rest(inst)?.set_space_key_policy(space, policy).await?;
+        if let Some(keys) = self.account_keys(inst) {
+            let channels: Vec<Id> = self.store().instance(inst).map_or_else(Vec::new, |s| {
+                s.spaces
+                    .get(&space)
+                    .map_or_else(Vec::new, |state| state.channels.keys().copied().collect())
+            });
+            let mut ring = keys.ring.lock().expect("ring");
+            for channel in channels {
+                ring.unpin_policy(channel);
+            }
+        }
+        Ok(())
     }
 
     pub async fn channel_key_policy(&self, inst: &str, channel: Id) -> Result<KeyPolicyOverride> {
@@ -608,9 +798,64 @@ impl Core {
         channel: Id,
         policy: KeyPolicyOverride,
     ) -> Result<()> {
-        Ok(self
-            .rest(inst)?
+        self.rest(inst)?
             .set_channel_key_policy(channel, policy)
-            .await?)
+            .await?;
+        if let Some(keys) = self.account_keys(inst) {
+            keys.ring.lock().expect("ring").unpin_policy(channel);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    fn ring() -> KeyRing {
+        KeyRing::load(None, Zeroizing::new([7; 32]))
+    }
+
+    #[test]
+    fn a_stricter_rule_stays_until_i_change_it() {
+        let mut ring = ring();
+        let strict = KeyPolicy {
+            handover: KeyHandover::Approved,
+            new_members_read_history: false,
+        };
+        let mut seen = strict;
+        assert!(!ring.pin_policy(Id(1), &mut seen));
+        let mut looser = KeyPolicy {
+            handover: KeyHandover::Automatic,
+            new_members_read_history: true,
+        };
+        assert!(ring.pin_policy(Id(1), &mut looser));
+        assert_eq!(looser.handover, KeyHandover::Approved);
+        assert!(!looser.new_members_read_history);
+        ring.unpin_policy(Id(1));
+        let mut looser = KeyPolicy {
+            handover: KeyHandover::Automatic,
+            new_members_read_history: true,
+        };
+        assert!(!ring.pin_policy(Id(1), &mut looser));
+    }
+
+    #[test]
+    fn a_key_held_is_never_replaced() {
+        let mut ring = ring();
+        ring.insert(Id(1), 1, Zeroizing::new([1; 32]));
+        ring.insert(Id(1), 1, Zeroizing::new([2; 32]));
+        assert_eq!(*ring.get(Id(1), 1).unwrap(), [1; 32]);
+        assert_eq!(ring.newest_epoch(Id(1)), 1);
+    }
+
+    #[test]
+    fn the_first_sealed_message_only_moves_back() {
+        let mut ring = ring();
+        ring.note_sealed(Id(1), Id(50));
+        ring.note_sealed(Id(1), Id(60));
+        assert_eq!(ring.sealed_since(Id(1)), Some(Id(50)));
+        ring.note_sealed(Id(1), Id(40));
+        assert_eq!(ring.sealed_since(Id(1)), Some(Id(40)));
     }
 }

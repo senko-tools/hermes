@@ -207,6 +207,9 @@ pub enum MessageLock {
     NotForThisDevice,
     /// Encrypted, and the signature or the data is wrong.
     Tampered,
+    /// In clear where everything is encrypted: not something its author can be shown to have
+    /// written.
+    Unsealed,
 }
 
 /// The key of an encrypted attachment, from inside its message. Not on the wire as such: the client
