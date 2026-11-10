@@ -158,14 +158,15 @@ const VOICE_CHIP: f32 = 20.;
 const CHIP_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(520., 22., 1.);
 
 /// A round chip with a speaker in a rail icon's top-right corner while people are in voice there
-/// (the tooltip says how many). Accent when I am one of them. A ring in the rail's colour sets
-/// it off from the picture. It sits inside the icon, so the rail's edge never cuts it.
-fn voice_chip(id: SharedString, here: view::VoiceHere) -> impl IntoElement {
+/// (the tooltip says how many). Accent when I am one of them; on a selected icon, which is accent
+/// itself, only the speaker is. A ring in the rail's colour sets it off from the picture. It sits
+/// inside the icon, so the rail's edge never cuts it.
+fn voice_chip(id: SharedString, here: view::VoiceHere, selected: bool) -> impl IntoElement {
     use gpui_kit::{AnimationExt as _, SpringAnimation};
-    let (bg, fg) = if here.me {
-        (theme::accent(), theme::on_accent())
-    } else {
-        (theme::raised(), theme::text_secondary())
+    let (bg, fg) = match (here.me, selected) {
+        (true, false) => (theme::accent(), theme::on_accent()),
+        (true, true) => (theme::raised(), theme::accent()),
+        (false, _) => (theme::raised(), theme::text_secondary()),
     };
     // A fixed box, so the chip grows from its middle.
     div()
@@ -556,6 +557,7 @@ impl Shell {
                         d.child(div().absolute().top_0().right(px(-4.)).child(voice_chip(
                             SharedString::from(format!("rail-voice-{inst_key}-{id}")),
                             voice,
+                            selected,
                         )))
                     })
                     .into_any_element()

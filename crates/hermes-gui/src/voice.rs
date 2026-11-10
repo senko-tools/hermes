@@ -933,7 +933,7 @@ impl Shell {
             } else {
                 theme::text_secondary()
             })
-            .hover(|d| d.text_color(theme::accent()).bg(theme::hover_soft()))
+            .hover(|d| d.text_color(theme::accent()).bg(theme::hover()))
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     cx.stop_propagation();
