@@ -651,6 +651,31 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         visual.run_until_parked();
     }
 
+    // A left click on a name opens the person's profile, not their menu.
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    let name = visual
+        .update(|_, cx| shell.read(cx).selection.bounds_of(author_part))
+        .expect("the name is drawn")
+        .center();
+    visual.simulate_mouse_move(name, None, Modifiers::none());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.simulate_click(name, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        shell.update(cx, |this, cx| {
+            assert!(this.menu.is_none(), "no menu on a left click");
+            assert_eq!(this.profile.as_ref().map(|p| p.user), Some(person));
+            this.profile = None;
+            cx.notify();
+        });
+    });
+
     // The speaker opens a slider, and going from one to the other never closes it.
     let sound = visual.update(|_, cx| {
         let core = shell.read(cx).core.clone();

@@ -177,8 +177,8 @@ impl Shell {
             .child(avatar)
             .child(div().flex_1().min_w_0().truncate().child(name))
             .on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu(open.clone(), event.position(), window, cx);
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.open_profile(&open, event.position(), cx);
                 }),
             );
         self.with_menu(element, target, cx).into_any_element()

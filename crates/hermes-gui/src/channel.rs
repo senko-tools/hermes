@@ -2372,6 +2372,7 @@ impl Shell {
                     .text_size(theme::body_size())
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(color)
+                    .hover(|d| d.underline())
                     .child(name)
                     .child(name_record),
                 inst,
@@ -2623,7 +2624,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// `element` opens the person's menu on either click.
+    /// `element` opens the person's profile on a left click and their menu on a right click.
     fn author_menu(
         &self,
         element: gpui_kit::Stateful<gpui_kit::Div>,
@@ -2636,10 +2637,10 @@ impl Shell {
         let left = target.clone();
         self.with_own_menu(element, target, cx)
             .on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     cx.stop_propagation();
                     if !this.selection.dragged {
-                        this.open_menu(left.clone(), event.position(), window, cx);
+                        this.open_profile(&left, event.position(), cx);
                     }
                 }),
             )

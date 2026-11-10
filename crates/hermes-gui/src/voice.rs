@@ -915,6 +915,7 @@ impl Shell {
             )
         };
         let target = Target::Member(inst.clone(), space, user);
+        let profile = target.clone();
         let element = div()
             .id(SharedString::from(format!("voice-user-{user}")))
             .flex()
@@ -925,13 +926,20 @@ impl Shell {
             .pl(px(if nested { 46. } else { 36. }))
             .pr(px(8.))
             .rounded(theme::radius_small())
+            .cursor_pointer()
             .text_size(theme::secondary_size())
             .text_color(if speaking {
                 theme::text()
             } else {
                 theme::text_secondary()
             })
-            .hover(|d| d.text_color(theme::accent()))
+            .hover(|d| d.text_color(theme::accent()).bg(theme::hover_soft()))
+            .on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.open_profile(&profile, event.position(), cx);
+                }),
+            )
             .child(
                 div()
                     .flex_shrink_0()

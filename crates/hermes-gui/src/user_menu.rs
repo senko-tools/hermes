@@ -26,6 +26,40 @@ pub struct ProfileCard {
 }
 
 impl Shell {
+    /// A left click on someone (a voice row, a member, a name or picture in the chat): their
+    /// profile, beside what was clicked. Their menu stays on the right click.
+    pub fn open_profile(
+        &mut self,
+        target: &Target,
+        position: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Target::Member(inst, space, user) = target.clone() else {
+            return;
+        };
+        let at = self.popup_from(position);
+        self.show_profile(inst, space, user, at, cx);
+    }
+
+    fn show_profile(
+        &mut self,
+        inst: InstanceId,
+        space: Option<Id>,
+        user: Id,
+        at: crate::modal::PopupFrom,
+        cx: &mut Context<Self>,
+    ) {
+        self.profile = Some(ProfileCard {
+            inst,
+            space,
+            user,
+            at,
+            last_online: None,
+        });
+        self.fetch_last_online(cx);
+        cx.notify();
+    }
+
     /// The person's entries of a member menu. `false` if `action` is not one of them.
     pub fn run_member_action(
         &mut self,
@@ -44,15 +78,8 @@ impl Shell {
         };
         match action {
             Action::Profile => {
-                self.profile = Some(ProfileCard {
-                    inst,
-                    space,
-                    user,
-                    at: self.menu_from,
-                    last_online: None,
-                });
-                self.fetch_last_online(cx);
-                cx.notify();
+                let at = self.menu_from;
+                self.show_profile(inst, space, user, at, cx);
             }
             Action::Volume => {
                 let at = self.menu_from;
