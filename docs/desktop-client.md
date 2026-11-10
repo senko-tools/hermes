@@ -63,8 +63,17 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   (`Action::is_negative`); only `is_destructive` ones are confirmed.
 - **Motion (2026-11-08):** one rail pill springs between servers; pages, settings tabs and the sidebar's
   list fade in (`theme::enter`); popups opened by a click (share, network, volume, profile) go through
-  `modal::popup`, which opens them from the click towards the window's middle with a gap. Right-click
-  menus keep their own placement.
+  `modal::popup`. Right-click menus keep their own placement.
+- **Popups hug what was clicked (2026-11-10):** elements with a menu (`with_menu`) and the buttons that open
+  popups (`hug_target`, the network line) note their painted bounds (`popup_trigger`). A popup sits beside the
+  smallest of them under the click, 12 px away, on the side towards the window's middle (above or below
+  when there is no room beside it), and follows the click only within that element (`modal::hug`).
+- **Connection icon (2026-11-10):** a fixed 20 px slot between my name and the voice buttons: grey-green when
+  connected, amber and pulsing after 3 s of reconnecting, red when the connection gave up or the session
+  ended. Its tooltip lists each instance; a click reconnects. The sidebar only shows instances that need the
+  person (sign in, failed), and the chat's "reconnecting" banner waits 15 s.
+- **Voice on the rail (2026-11-10):** a server's icon gets a chip at its top right with a speaker and how many
+  are in its voice channels that I can see (up to 9+), in the accent colour when I am there too.
 - **Scrolling:** `smooth_scroll.rs` catches wheel notches at the root and replays them as eased pixel
   scrolls, 1.25x the old distance. Touchpad pixel scrolls and Ctrl+wheel pass through.
 - **Pictures:** server icons and avatars fill their shape (`ObjectFit::Cover`). Picking one opens the
