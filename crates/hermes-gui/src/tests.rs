@@ -627,6 +627,11 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
             window.refresh();
             window.draw(cx).clear(cx);
         });
+        visual.update(|_, cx| {
+            // Over a file its message's highlight stays off; over a name it does not.
+            let on_file = matches!(wanted, Target::File(..)).then_some(with_file.id);
+            assert_eq!(shell.read(cx).hovered_file, on_file);
+        });
         visual.simulate_mouse_down(at, right, Modifiers::none());
         visual.run_until_parked();
         visual.update(|_, cx| {

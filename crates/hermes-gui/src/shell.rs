@@ -119,6 +119,8 @@ pub struct Shell {
     status_serial: u64,
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
+    /// The message whose file the mouse is over: its highlight stays off.
+    pub hovered_file: Option<hermes_client_core::proto::id::Id>,
     /// Chat text selected with the mouse.
     pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
@@ -298,6 +300,7 @@ impl Shell {
             status: None,
             status_serial: 0,
             right_pressed: None,
+            hovered_file: None,
             selection: Default::default(),
             menu: None,
             menu_at: Point::default(),

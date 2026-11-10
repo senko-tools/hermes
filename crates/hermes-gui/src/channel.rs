@@ -315,6 +315,8 @@ fn signature(row: &Row, s: &InstanceStore, channel: Id) -> u64 {
     match row {
         Row::Message(m) => {
             m.grouped.hash(&mut hash);
+            m.ends_group.hash(&mut hash);
+            m.next_starts_with_file.hash(&mut hash);
             if let Some(message) = window.and_then(|w| w.get(m.id)) {
                 message.content.hash(&mut hash);
                 message.edited_at.hash(&mut hash);
@@ -2369,7 +2371,15 @@ impl Shell {
                 message: id,
                 index,
             };
-            body.push(self.render_attachment(inst, place, attachment, cx));
+            // A file keeps a little more room from what is above it. When nothing is, the row's
+            // own space holds it (`rows::padding`), so the highlight stays even.
+            let after_something = !body.is_empty();
+            body.push(
+                div()
+                    .when(after_something, |d| d.mt(px(crate::rows::FILE_SPACE)))
+                    .child(self.render_attachment(inst, place, attachment, cx))
+                    .into_any_element(),
+            );
         }
         if !msg.reactions.is_empty() {
             let chips = msg.reactions.iter().enumerate().map(|(n, r)| {
@@ -2446,6 +2456,7 @@ impl Shell {
         let jumped = view.is_some_and(|v| v.highlight == Some(id));
         let palette_open = view.is_some_and(|v| v.palette == Some(id));
         let highlight = m.mentions_me;
+        let (top, bottom) = crate::rows::padding(m, self.config.buffer.compact);
         let (click_inst, press_inst) = (inst.clone(), inst.clone());
         let target = Target::Message(inst.clone(), channel, id);
         let element = div()
@@ -2454,18 +2465,8 @@ impl Shell {
             .relative()
             .flex()
             .w_full()
-            .pt(px(match (m.grouped, self.config.buffer.compact) {
-                (true, _) => {
-                    if self.config.buffer.compact {
-                        0.
-                    } else {
-                        1.
-                    }
-                }
-                (false, true) => 3.,
-                (false, false) => 8.,
-            }))
-            .pb(px(if m.ends_group { 8. } else { 1. }))
+            .pt(px(top))
+            .pb(px(bottom))
             .pl(px(8.))
             .pr(px(8.))
             .rounded(theme::radius_small())
@@ -2476,9 +2477,10 @@ impl Shell {
                     .border_l_2()
                     .border_color(theme::accent())
             })
-            .when(!selected && !jumped && !highlight, |d| {
-                d.hover(|d| d.bg(theme::hover_soft()))
-            })
+            .when(
+                !selected && !jumped && !highlight && self.hovered_file != Some(id),
+                |d| d.hover(|d| d.bg(theme::hover_soft())),
+            )
             // Text can be selected from anywhere in the row; names, links and files keep their own.
             .cursor_text()
             .on_mouse_down(
@@ -2848,7 +2850,6 @@ impl Shell {
                 let picture = div()
                     .id(SharedString::from(format!("image-{}", a.id)))
                     .relative()
-                    .mt(px(4.))
                     .w(px(w))
                     .h(px(h))
                     .rounded(theme::row_radius())
@@ -2896,7 +2897,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .justify_center()
-                .mt(px(4.))
+                .cursor_default()
                 .w(px(w))
                 .h(px(h))
                 .rounded(theme::row_radius())
@@ -2920,7 +2921,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(12.))
-            .mt(px(4.))
+            .cursor_default()
             .max_w(px(420.))
             .px(px(12.))
             .py(px(8.))

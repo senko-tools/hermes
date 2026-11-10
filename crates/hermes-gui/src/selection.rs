@@ -489,10 +489,14 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         let at = event.position;
+        // A press on a file (its play button, its seek bar) is the file's, unless on its name.
+        let on_file = self.hovered_file == Some(message);
         let selection = &mut self.selection;
-        let spot = selection
-            .spot_under(at)
-            .or_else(|| selection.spot_nearest(at, Some(message)));
+        let spot = selection.spot_under(at).or_else(|| {
+            (!on_file)
+                .then(|| selection.spot_nearest(at, Some(message)))
+                .flatten()
+        });
         selection.pressed = spot.map(|spot| (at, spot));
         selection.origin = None;
         selection.unit = match event.click_count {
