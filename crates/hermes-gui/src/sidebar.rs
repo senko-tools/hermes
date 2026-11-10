@@ -20,6 +20,83 @@ use crate::shell::{Page, Selected, Shell};
 use crate::theme::{self, px};
 use crate::tree::{self, Badge, Row};
 
+/// A lost connection shows as reconnecting only after this long: resuming takes a moment.
+pub const RECONNECTING_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
+/// The chat's "reconnecting" banner waits this long.
+pub const BANNER_AFTER: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// What the connection icon in the user panel shows, over all instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnLook {
+    Connected,
+    /// Lost for at least [`RECONNECTING_AFTER`] and trying again.
+    Reconnecting,
+    /// Needs the person (sign in again, update, check the address).
+    Disconnected,
+    /// Every instance is offline on request.
+    Offline,
+}
+
+impl ConnLook {
+    /// From each instance's status and how long it has been down.
+    pub fn of(states: &[(ConnStatus, Option<std::time::Duration>)]) -> ConnLook {
+        if states.is_empty() {
+            return ConnLook::Offline;
+        }
+        let mut look = ConnLook::Connected;
+        for (status, down) in states {
+            match status {
+                ConnStatus::Failed { .. } | ConnStatus::LoggedOut => {
+                    return ConnLook::Disconnected;
+                }
+                ConnStatus::Connecting | ConnStatus::Reconnecting { .. }
+                    if down.is_some_and(|d| d >= RECONNECTING_AFTER) =>
+                {
+                    look = ConnLook::Reconnecting;
+                }
+                _ => {}
+            }
+        }
+        if states.iter().all(|(s, _)| *s == ConnStatus::Offline) {
+            return ConnLook::Offline;
+        }
+        look
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            ConnLook::Connected => assets::LAN_CONNECT,
+            ConnLook::Reconnecting => assets::LAN_PENDING,
+            ConnLook::Disconnected | ConnLook::Offline => assets::LAN_DISCONNECT,
+        }
+    }
+
+    fn color(self) -> gpui_kit::Rgba {
+        match self {
+            // Quiet: it is the normal case.
+            ConnLook::Connected => gpui_kit::Rgba {
+                a: 0.55,
+                ..theme::success()
+            },
+            ConnLook::Reconnecting => theme::warning(),
+            ConnLook::Disconnected => theme::danger(),
+            ConnLook::Offline => theme::text_tertiary(),
+        }
+    }
+}
+
+/// One instance's line in the connection icon's tooltip.
+fn status_line(inst: &str, status: &ConnStatus) -> String {
+    match status {
+        ConnStatus::Connected => format!("{inst}: connected"),
+        ConnStatus::Connecting => format!("{inst}: connecting…"),
+        ConnStatus::Reconnecting { attempt } => format!("{inst}: reconnecting (try {attempt})…"),
+        ConnStatus::Failed { reason } => format!("{inst}: {reason}"),
+        ConnStatus::LoggedOut => format!("{inst}: signed out"),
+        ConnStatus::Offline => format!("{inst}: offline"),
+    }
+}
+
 /// The hover groups of channel and category rows.
 const CHANNEL_ROW: &str = "channel-row";
 const CATEGORY_ROW: &str = "category-row";
@@ -565,17 +642,17 @@ impl Shell {
         panels
     }
 
-    /// Instances that need attention: signing in again, or a lost connection.
+    /// Instances that need the person: signing in again, or a connection that gave up. A
+    /// connection that is only reconnecting shows in the user panel's connection icon instead.
     fn instance_notices(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut rows = Vec::new();
         for inst in self.core.instance_ids() {
             let status = self.core.status(&inst);
             let text = match &status {
-                ConnStatus::Connected | ConnStatus::Offline => continue,
-                ConnStatus::Connecting => format!("{inst}: connecting…"),
-                ConnStatus::Reconnecting { attempt } => {
-                    format!("{inst}: reconnecting (try {attempt})…")
-                }
+                ConnStatus::Connected
+                | ConnStatus::Offline
+                | ConnStatus::Connecting
+                | ConnStatus::Reconnecting { .. } => continue,
                 ConnStatus::Failed { reason } => format!("{inst}: {reason}"),
                 ConnStatus::LoggedOut => format!("{inst}: sign in"),
             };
@@ -1157,7 +1234,76 @@ impl Shell {
             .border_color(theme::border())
             .text_size(theme::body_size())
             .child(me)
+            .child(self.render_connection_icon(cx))
             .children(self.render_me_buttons(cx))
+    }
+
+    /// Between my name and the buttons: how the connection to the instances is. Its slot never
+    /// changes size, so nothing moves when it does.
+    fn render_connection_icon(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let instances = self.core.instance_ids();
+        let states: Vec<(ConnStatus, Option<std::time::Duration>)> = instances
+            .iter()
+            .map(|inst| (self.core.status(inst), self.core.down_for(inst)))
+            .collect();
+        let look = ConnLook::of(&states);
+        let tip: SharedString = if instances.is_empty() {
+            "No instance".into()
+        } else {
+            instances
+                .iter()
+                .zip(&states)
+                .map(|(inst, (status, _))| status_line(inst, status))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into()
+        };
+        let glyph = icon(look.icon(), 16., look.color());
+        let glyph = if look == ConnLook::Reconnecting {
+            glyph
+                .with_animation(
+                    "connection-pulse",
+                    gpui_kit::Animation::new(std::time::Duration::from_millis(1600)).repeat(),
+                    |svg, t| {
+                        // Slowly between full and faint and back.
+                        let wave = (t * std::f32::consts::TAU).cos() * 0.5 + 0.5;
+                        svg.opacity(0.35 + 0.65 * wave)
+                    },
+                )
+                .into_any_element()
+        } else {
+            glyph.into_any_element()
+        };
+        div()
+            .id("connection")
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(20.))
+            .rounded(theme::radius_small())
+            .when(look != ConnLook::Connected, |d| {
+                d.cursor_pointer().hover(|d| d.bg(theme::hover()))
+            })
+            .child(glyph)
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                for inst in this.core.instance_ids() {
+                    let status = this.core.status(&inst);
+                    if matches!(
+                        status,
+                        ConnStatus::Connected | ConnStatus::LoggedOut | ConnStatus::Failed { .. }
+                    ) {
+                        continue;
+                    }
+                    if let Err(err) = this.core.set_online(&inst, true) {
+                        this.error(format!("could not reconnect: {err}"), cx);
+                    }
+                }
+                cx.notify();
+            }))
     }
 }
 
@@ -1178,7 +1324,36 @@ fn section_heading_owned(text: String) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::rail_slot_top;
+    use super::{ConnLook, rail_slot_top};
+    use hermes_client_core::gateway::ConnStatus;
+    use std::time::Duration;
+
+    #[test]
+    fn connection_look_ignores_blips_and_shows_the_worst() {
+        let secs = |s| Some(Duration::from_secs(s));
+        let up = (ConnStatus::Connected, None);
+        let blip = (ConnStatus::Reconnecting { attempt: 1 }, secs(1));
+        let lost = (ConnStatus::Reconnecting { attempt: 3 }, secs(5));
+        let failed = (ConnStatus::Failed { reason: "x".into() }, secs(60));
+        let offline = (ConnStatus::Offline, secs(60));
+        assert_eq!(ConnLook::of(std::slice::from_ref(&up)), ConnLook::Connected);
+        assert_eq!(ConnLook::of(&[up.clone(), blip]), ConnLook::Connected);
+        assert_eq!(
+            ConnLook::of(&[up.clone(), lost.clone()]),
+            ConnLook::Reconnecting
+        );
+        assert_eq!(ConnLook::of(&[lost, failed]), ConnLook::Disconnected);
+        assert_eq!(
+            ConnLook::of(std::slice::from_ref(&offline)),
+            ConnLook::Offline
+        );
+        assert_eq!(ConnLook::of(&[offline, up]), ConnLook::Connected);
+        assert_eq!(
+            ConnLook::of(&[(ConnStatus::LoggedOut, None)]),
+            ConnLook::Disconnected
+        );
+        assert_eq!(ConnLook::of(&[]), ConnLook::Offline);
+    }
 
     #[test]
     fn rail_slots_sit_under_each_other() {

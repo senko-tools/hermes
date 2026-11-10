@@ -503,13 +503,20 @@ impl Shell {
         .detach();
     }
 
-    /// Redraws once a second during a call, for the time on the voice channel's row.
+    /// Redraws once a second during a call, for the time on the voice channel's row, and while an
+    /// instance has just lost its connection, so the connection icon and the chat's banner change
+    /// once the outage has lasted long enough to show.
     fn start_call_clock(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.core.voice_channel().is_some() {
+                    let just_lost = this.core.instance_ids().iter().any(|inst| {
+                        this.core.down_for(inst).is_some_and(|d| {
+                            d <= crate::sidebar::BANNER_AFTER + Duration::from_secs(1)
+                        })
+                    });
+                    if this.core.voice_channel().is_some() || just_lost {
                         cx.notify();
                     }
                 });

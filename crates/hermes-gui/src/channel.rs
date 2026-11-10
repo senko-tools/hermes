@@ -536,7 +536,9 @@ impl Shell {
         }
     }
 
-    /// Says so above the chat when messages are not getting through.
+    /// Says so above the chat when messages are not getting through: at once when the
+    /// connection gave up, and after [`crate::sidebar::BANNER_AFTER`] while it is reconnecting
+    /// (a short blip only shows in the connection icon).
     fn render_connection_banner(
         &self,
         inst: &InstanceId,
@@ -544,7 +546,12 @@ impl Shell {
     ) -> Option<AnyElement> {
         use hermes_client_core::gateway::ConnStatus;
         let text = match self.core.status(inst) {
-            ConnStatus::Reconnecting { attempt } => {
+            ConnStatus::Reconnecting { attempt }
+                if self
+                    .core
+                    .down_for(inst)
+                    .is_some_and(|d| d >= crate::sidebar::BANNER_AFTER) =>
+            {
                 format!("Connection lost. Reconnecting (try {attempt})…")
             }
             ConnStatus::Failed { reason } => format!("Not connected: {reason}"),
