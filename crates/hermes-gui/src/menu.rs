@@ -327,13 +327,27 @@ impl Shell {
     }
 
     pub fn render_menu(&self) -> Option<AnyElement> {
+        use gpui_kit::AnimationExt as _;
         let menu = self.menu.as_ref()?;
+        // Each menu fades in as it drops a little away from the pointer.
+        let key = SharedString::from(format!(
+            "menu-in-{}-{}",
+            menu.position.x.as_f32(),
+            menu.position.y.as_f32()
+        ));
         Some(
             deferred(
                 anchored()
                     .position(menu.position)
                     .snap_to_window_with_margin(crate::theme::px(8.))
-                    .child(menu.view.clone()),
+                    .child(
+                        div().relative().child(menu.view.clone()).with_animation(
+                            key,
+                            gpui_kit::Animation::new(crate::theme::FADE)
+                                .with_easing(gpui_kit::ease_out_quint()),
+                            |d, t| d.opacity(t).top(crate::theme::px(-4. * (1. - t))),
+                        ),
+                    ),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
             .into_any_element(),

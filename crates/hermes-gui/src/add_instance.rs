@@ -8,7 +8,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Entity, SharedString, Subscription, Window, div,
+};
 use hermes_client_core::address::{AddTarget, HostPort, InviteLink};
 use hermes_client_core::proto::api::RegistrationMode;
 use hermes_client_core::proto::id::Id;
@@ -552,10 +554,25 @@ impl Shell {
                 );
             }
         }
+        // Each step, and each tab of the account step, fades in where the last one was.
+        let step = match &dialog_state.step {
+            Step::Address => "address".to_owned(),
+            Step::Fingerprint { .. } => "fingerprint".to_owned(),
+            Step::Account(account) => format!("account-{:?}", account.tab),
+        };
         Some(dialog(
             "add-instance",
             480.,
-            div().flex().flex_col().gap(px(14.)).children(body),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .children(body)
+                .with_animation(
+                    SharedString::from(format!("add-instance-{step}")),
+                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t),
+                ),
         ))
     }
 }

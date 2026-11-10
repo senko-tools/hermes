@@ -38,8 +38,13 @@ pub fn error_line(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// The dimmed backdrop with `card` in the middle. `id` names the dialog.
+/// How long a dialog or popup takes to come in.
+pub const POP: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// The dimmed backdrop with `card` in the middle. `id` names the dialog. The backdrop darkens
+/// while the card fades in and rises a little into place.
 pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElement {
+    let scrim = theme::scrim();
     deferred(
         div()
             .id(id)
@@ -50,13 +55,13 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
             .flex()
             .items_center()
             .justify_center()
-            .bg(theme::scrim())
             // The dialog is modal: nothing behind it reacts.
             .occlude()
             .child(
                 div()
                     .id("dialog-card")
                     .occlude()
+                    .relative()
                     .flex()
                     .flex_col()
                     .gap(px(14.))
@@ -68,16 +73,20 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .bg(theme::background())
                     .border_1()
                     .border_color(theme::border())
+                    .shadow_lg()
                     .text_color(theme::text())
                     .font_family(theme::font())
-                    .child(
-                        div().child(card).with_animation(
-                            id,
-                            gpui_kit::Animation::new(theme::FADE)
-                                .with_easing(gpui_kit::ease_out_quint()),
-                            |d, t| d.opacity(t),
-                        ),
+                    .child(card)
+                    .with_animation(
+                        SharedString::from(format!("{id}-card")),
+                        gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
+                        |d, t| d.opacity(t).top(px(8. * (1. - t))),
                     ),
+            )
+            .with_animation(
+                SharedString::from(format!("{id}-scrim")),
+                gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
+                move |d, t| d.bg(theme::alpha(scrim, t)),
             ),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)
@@ -222,7 +231,7 @@ pub fn popup(
             .snap_to_window_with_margin(px(HUG_MARGIN))
             .child(div().relative().child(card).with_animation(
                 id,
-                Animation::new(std::time::Duration::from_millis(150)).with_easing(ease_out_quint()),
+                Animation::new(POP).with_easing(ease_out_quint()),
                 move |d, t| {
                     let back = 6. * (1. - t);
                     d.opacity(t).left(px(-sx * back)).top(px(-sy * back))

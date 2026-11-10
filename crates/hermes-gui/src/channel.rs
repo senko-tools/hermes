@@ -2116,12 +2116,18 @@ impl Shell {
                     .rounded(theme::radius_small())
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
-                    .when(n == view.suggestion, |d| d.bg(theme::selected()))
                     .hover(|d| d.bg(theme::hover()))
                     .child(suggestion.label.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.accept_suggestion(&accept, n, window, cx);
                     }))
+                    // The highlight flows from row to row as the arrows move it.
+                    .with_spring(
+                        ("suggestion-chosen", n),
+                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                            .to(n == view.suggestion),
+                        |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
+                    )
             });
             div()
                 .absolute()
@@ -2130,11 +2136,18 @@ impl Shell {
                 .right(px(16.))
                 .mb(px(6.))
                 .p(px(6.))
-                .rounded(px(8.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .border_1()
                 .border_color(theme::border())
+                .shadow_md()
                 .children(rows)
+                // It rises out of the message box as it fades in.
+                .with_animation(
+                    "suggestions-in",
+                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t).mb(px(6. - 4. * (1. - t))),
+                )
         });
         let cancel_key = key.clone();
         let mode_bar = mode.map(|(glyph, text)| {

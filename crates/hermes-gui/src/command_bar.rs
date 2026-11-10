@@ -3,7 +3,9 @@
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, deferred, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Entity, Subscription, Window, deferred, div,
+};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::proto::permissions::Permissions;
@@ -166,7 +168,6 @@ impl Shell {
                     .py(px(6.))
                     .rounded(theme::radius_small())
                     .cursor_pointer()
-                    .when(n == bar.selected, |d| d.bg(theme::selected()))
                     .when(n != bar.selected, |d| d.hover(|d| d.bg(theme::hover())))
                     .child(
                         div()
@@ -187,6 +188,13 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_command_bar(n, window, cx);
                     }))
+                    // The highlight flows from the row left to the one chosen.
+                    .with_spring(
+                        ("command-chosen", n),
+                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                            .to(n == bar.selected),
+                        |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
+                    )
                     .into_any_element()
             })
             .collect();
@@ -202,7 +210,6 @@ impl Shell {
                     .flex()
                     .justify_center()
                     .pt(px(80.))
-                    .bg(theme::scrim())
                     .occlude()
                     .font_family(theme::font())
                     .text_color(theme::text())
@@ -220,10 +227,12 @@ impl Shell {
                             .w(px(560.))
                             .max_h(px(460.))
                             .p(px(12.))
-                            .rounded(px(10.))
+                            .relative()
+                            .rounded(theme::radius_large())
                             .bg(theme::background())
                             .border_1()
                             .border_color(theme::border())
+                            .shadow_lg()
                             .on_click(|_, _, cx| cx.stop_propagation())
                             .child(Input::new(&bar.input))
                             .child(
@@ -239,7 +248,20 @@ impl Shell {
                                     .when(empty, |d| {
                                         d.child(crate::settings::muted("Nothing matches"))
                                     }),
+                            )
+                            // Like a dialog: it fades in, dropping into place.
+                            .with_animation(
+                                "command-bar-in",
+                                gpui_kit::Animation::new(crate::modal::POP)
+                                    .with_easing(gpui_kit::ease_out_quint()),
+                                |d, t| d.opacity(t).top(px(-8. * (1. - t))),
                             ),
+                    )
+                    .with_animation(
+                        "command-bar-scrim",
+                        gpui_kit::Animation::new(crate::modal::POP)
+                            .with_easing(gpui_kit::ease_out_quint()),
+                        |d, t| d.bg(theme::alpha(theme::scrim(), t)),
                     ),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
