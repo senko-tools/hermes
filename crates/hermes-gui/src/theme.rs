@@ -555,6 +555,18 @@ pub fn enter(
         .into_any_element()
 }
 
+/// Sets every border of `element` to `width`, which may be fractional (a ring that thickens on a
+/// spring); gpui's own setters only come in whole steps.
+pub fn border_width<E: gpui_kit::Styled>(mut element: E, width: Pixels) -> E {
+    let width: gpui_kit::AbsoluteLength = width.into();
+    let edges = &mut element.style().border_widths;
+    edges.top = Some(width);
+    edges.right = Some(width);
+    edges.bottom = Some(width);
+    edges.left = Some(width);
+    element
+}
+
 /// `a` blended towards `b` by `t` (0–1).
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     Rgba {

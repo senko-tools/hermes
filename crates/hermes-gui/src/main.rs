@@ -22,6 +22,7 @@ mod encryption;
 mod fixtures;
 mod form;
 mod friends;
+mod hover;
 mod images;
 mod key_settings;
 mod keybinds;

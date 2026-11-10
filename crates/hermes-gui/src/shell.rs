@@ -126,6 +126,8 @@ pub struct Shell {
     page_serial: u64,
     /// The message whose file the mouse is over: its highlight stays off.
     pub hovered_file: Option<hermes_client_core::proto::id::Id>,
+    /// What the pointer is over, of the things that change on a spring under it (`hover.rs`).
+    pub hovered: HashSet<gpui_kit::SharedString>,
     /// Chat text selected with the mouse.
     pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
@@ -306,6 +308,7 @@ impl Shell {
             status_serial: 0,
             right_pressed: None,
             hovered_file: None,
+            hovered: HashSet::new(),
             shown_page: None,
             leaving: None,
             page_serial: 0,

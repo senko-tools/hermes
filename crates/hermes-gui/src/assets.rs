@@ -39,6 +39,8 @@ pub const MIC_OFF: &str = "microphone-off";
 pub const HEADPHONES: &str = "headphones";
 pub const HEADPHONES_OFF: &str = "headphones-off";
 pub const MONITOR_SHARE: &str = "monitor-share";
+/// A monitor with a cross on its screen: stop sharing (drawn for Hermes from MDI's monitor).
+pub const MONITOR_STOP: &str = "monitor-stop";
 pub const WAVEFORM: &str = "waveform";
 pub const ARROW_LEFT: &str = "arrow-left";
 pub const ACCOUNT: &str = "account-circle";

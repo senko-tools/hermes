@@ -3,7 +3,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div};
+use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, SharedString, Window, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::api::VoiceStatePatchRequest;
 use hermes_client_core::proto::id::Id;
@@ -325,6 +325,7 @@ impl Shell {
             );
         }
         if let Some(place) = in_voice.clone() {
+            let speaking = self.core.is_speaking(&inst, user);
             details.push(
                 div()
                     .flex()
@@ -336,11 +337,23 @@ impl Shell {
                             .flex()
                             .items_center()
                             .gap(px(6.))
-                            .child(crate::assets::icon(
-                                crate::assets::VOLUME,
-                                14.,
-                                theme::speaking(),
-                            ))
+                            // The speaker swells while they talk.
+                            .child(
+                                crate::assets::icon(crate::assets::VOLUME, 14., theme::speaking())
+                                    .with_spring(
+                                        "profile-speaking",
+                                        gpui_kit::SpringAnimation::new(
+                                            gpui_kit::SpringConfig::new(420., 24., 1.),
+                                        )
+                                        .to(speaking),
+                                        |d, phase| {
+                                            let pop = 1. + 0.2 * phase.0.clamp(0., 1.2);
+                                            d.with_transformation(gpui_kit::Transformation::scale(
+                                                gpui_kit::size(pop, pop),
+                                            ))
+                                        },
+                                    ),
+                            )
                             .child(div().min_w_0().truncate().child(place)),
                     )
                     .into_any_element(),
