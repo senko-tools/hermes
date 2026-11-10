@@ -677,9 +677,9 @@ impl Shell {
                     .relative()
                     .with_animation(
                         SharedString::from(format!("sidebar-{:?}", self.selected)),
-                        gpui_kit::Animation::new(std::time::Duration::from_millis(180))
+                        gpui_kit::Animation::new(theme::FADE)
                             .with_easing(gpui_kit::ease_out_quint()),
-                        |d, t| d.opacity(t).top(px(6. * (1. - t))),
+                        |d, t| d.opacity(t),
                     ),
             )
     }

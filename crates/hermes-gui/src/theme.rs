@@ -532,8 +532,11 @@ const BLACK: Rgba = Rgba {
     a: 1.0,
 };
 
-/// Fades `element` in while it rises a few pixels into place, once each time `id` first shows:
-/// a page or tab that just opened. It fills its parent.
+/// How long a page, tab or list takes to fade in, or out under the next one.
+pub const FADE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Fades `element` in where it is, once each time `id` first shows: a page or tab that just
+/// opened. Nothing moves, so the eye stays on the content. It fills its parent.
 pub fn enter(
     id: impl Into<gpui_kit::ElementId>,
     element: impl gpui_kit::IntoElement,
@@ -546,8 +549,8 @@ pub fn enter(
         .child(element)
         .with_animation(
             id,
-            Animation::new(std::time::Duration::from_millis(180)).with_easing(ease_out_quint()),
-            |d, t| d.opacity(t).top(px(6. * (1. - t))),
+            Animation::new(FADE).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t),
         )
         .into_any_element()
 }

@@ -70,11 +70,14 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .border_color(theme::border())
                     .text_color(theme::text())
                     .font_family(theme::font())
-                    .child(div().child(card).with_animation(
-                        id,
-                        gpui_kit::Animation::new(std::time::Duration::from_millis(120)),
-                        |d, t| d.opacity(t),
-                    )),
+                    .child(
+                        div().child(card).with_animation(
+                            id,
+                            gpui_kit::Animation::new(theme::FADE)
+                                .with_easing(gpui_kit::ease_out_quint()),
+                            |d, t| d.opacity(t),
+                        ),
+                    ),
             ),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)

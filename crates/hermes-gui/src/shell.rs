@@ -119,6 +119,11 @@ pub struct Shell {
     status_serial: u64,
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
+    /// The page drawn in the last frame, and the one fading out after a change (with a serial
+    /// for its animation).
+    shown_page: Option<Page>,
+    leaving: Option<(Page, u64)>,
+    page_serial: u64,
     /// The message whose file the mouse is over: its highlight stays off.
     pub hovered_file: Option<hermes_client_core::proto::id::Id>,
     /// Chat text selected with the mouse.
@@ -301,6 +306,9 @@ impl Shell {
             status_serial: 0,
             right_pressed: None,
             hovered_file: None,
+            shown_page: None,
+            leaving: None,
+            page_serial: 0,
             selection: Default::default(),
             menu: None,
             menu_at: Point::default(),
@@ -1293,6 +1301,58 @@ pub fn presence_status(presence: PresenceStatus) -> UserStatus {
     }
 }
 
+impl Shell {
+    /// The main panel for `page`.
+    fn render_page(&mut self, page: Page, cx: &mut Context<Self>) -> AnyElement {
+        match page {
+            Page::Friends if self.core.instance_ids().is_empty() => {
+                self.render_welcome(cx).into_any_element()
+            }
+            Page::Friends => self.render_friends(cx).into_any_element(),
+            Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
+            Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
+            Page::Results(key) => self.render_results(key, cx).into_any_element(),
+        }
+    }
+
+    /// When the page changed since the last frame, the old one fades out under the new one
+    /// fading in, for `theme::FADE`. A voice page is never drawn twice (it holds share video), and
+    /// result pages share one search field, so those only fade in.
+    fn note_page_change(&mut self, cx: &mut Context<Self>) {
+        if self.shown_page.as_ref() == Some(&self.page) {
+            return;
+        }
+        let Some(previous) = self.shown_page.replace(self.page.clone()) else {
+            return;
+        };
+        let voice = |p: &Page| matches!(p, Page::Voice(..));
+        let both_results = matches!(
+            (&previous, &self.page),
+            (Page::Results(_), Page::Results(_))
+        );
+        if voice(&previous) || voice(&self.page) || both_results {
+            self.leaving = None;
+            return;
+        }
+        self.page_serial += 1;
+        let serial = self.page_serial;
+        self.leaving = Some((previous, serial));
+        // Gone once faded, so nothing invisible is left under the mouse.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(theme::FADE + std::time::Duration::from_millis(20))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.leaving.as_ref().is_some_and(|(_, s)| *s == serial) {
+                    this.leaving = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
@@ -1322,15 +1382,27 @@ impl Render for Shell {
 
         let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
-        let main = match self.page.clone() {
-            Page::Friends if self.core.instance_ids().is_empty() => {
-                self.render_welcome(cx).into_any_element()
-            }
-            Page::Friends => self.render_friends(cx).into_any_element(),
-            Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
-            Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
-            Page::Results(key) => self.render_results(key, cx).into_any_element(),
-        };
+        self.note_page_change(cx);
+        // The page that is leaving goes first, so the new one is drawn over it.
+        let leaving = self
+            .leaving
+            .as_ref()
+            .map(|(page, serial)| (page.clone(), *serial));
+        let leaving = leaving.map(|(page, serial)| {
+            use gpui_kit::AnimationExt as _;
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(self.render_page(page, cx))
+                .with_animation(
+                    gpui_kit::SharedString::from(format!("page-leave-{serial}")),
+                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(1. - t),
+                )
+        });
+        let main = self.render_page(self.page.clone(), cx);
         // In a small window the chat needs the room more than the member list does.
         let room = window.viewport_size().width.as_f32() / crate::theme::scale();
         let sidebar_room = if self.sidebar_visible {
@@ -1363,10 +1435,18 @@ impl Render for Shell {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().min_w_0().h_full().child(theme::enter(
-                        gpui_kit::SharedString::from(format!("page-{:?}", self.page)),
-                        main,
-                    )))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .children(leaving)
+                            .child(theme::enter(
+                                gpui_kit::SharedString::from(format!("page-{:?}", self.page)),
+                                main,
+                            )),
+                    )
                     .children(members),
             );
         let full_page = self
