@@ -69,6 +69,9 @@ pub struct Timings {
     /// Announced in `hello`; a connection that sends no heartbeat (or, before that, no identify)
     /// for two intervals is closed with 4009.
     pub heartbeat_interval: Duration,
+    /// A new connection that has not identified or resumed by then is closed with 4009. Once
+    /// it has, only heartbeats count.
+    pub identify_within: Duration,
     /// How long a disconnected session stays resumable, and the age limit of buffered events.
     pub resume_window: Duration,
     /// Events kept per session for resuming.
@@ -81,6 +84,7 @@ impl Default for Timings {
     fn default() -> Self {
         Timings {
             heartbeat_interval: Duration::from_millis(HEARTBEAT_INTERVAL_MS),
+            identify_within: Duration::from_secs(15),
             resume_window: Duration::from_secs(5 * 60),
             resume_buffer: 2000,
             queue_capacity: 1024,

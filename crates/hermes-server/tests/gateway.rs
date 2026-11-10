@@ -258,6 +258,42 @@ async fn missing_heartbeats_close_with_4009() {
 }
 
 #[tokio::test]
+async fn identifying_ends_the_short_wait() {
+    let server = start_with(
+        "gw-identify-within",
+        RegistrationMode::InviteOnly,
+        |state| {
+            state.gateway.timings.identify_within = Duration::from_millis(200);
+            state.gateway.timings.heartbeat_interval = Duration::from_secs(2);
+        },
+    )
+    .await;
+    let (owner, _, _) = server.owner().await;
+
+    // Never identifying still closes after the short wait.
+    let mut ws = server.connect().await;
+    assert_eq!(ws.closed().await, 4009);
+
+    // After identify, the first heartbeat may come a whole interval later.
+    let (mut ws, ready) = server.identify(&owner).await;
+    let session_id = ready["session_id"].as_str().unwrap().to_owned();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    ws.send(json!({ "op": "heartbeat", "d": { "last_seq": 0 } }))
+        .await;
+    assert_eq!(ws.recv_op("heartbeat_ack").await["op"], "heartbeat_ack");
+    drop(ws);
+
+    // The same after resuming.
+    let mut ws = server.connect().await;
+    ws.send_resume(&owner, &session_id, 0).await;
+    ws.recv_op("resumed").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    ws.send(json!({ "op": "heartbeat", "d": { "last_seq": 0 } }))
+        .await;
+    assert_eq!(ws.recv_op("heartbeat_ack").await["op"], "heartbeat_ack");
+}
+
+#[tokio::test]
 async fn revoked_sessions_close_with_4011() {
     let server = start("gw-revoke", RegistrationMode::InviteOnly).await;
     let (owner, _, _) = server.owner().await;

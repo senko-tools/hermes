@@ -26,8 +26,6 @@ use crate::ratelimit::{self, Bucket};
 use crate::state::AppState;
 use bus::{Attached, ResumeError};
 
-/// A connection that has not said who it is by then is closed.
-const IDENTIFY_WITHIN: std::time::Duration = std::time::Duration::from_secs(15);
 /// A client that takes longer than this to accept a frame has stopped reading.
 const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -61,10 +59,11 @@ struct Connection {
 
 async fn connection(state: Arc<AppState>, socket: WebSocket) {
     let interval = state.gateway.timings.heartbeat_interval;
+    let identify_within = state.gateway.timings.identify_within;
     let shutdown = state.gateway.shutting_down();
     let gateway_ops = state.config.limits.gateway_ops_per_minute;
     let mut conn = Connection {
-        deadline: Instant::now() + (interval * 2).min(IDENTIFY_WITHIN),
+        deadline: Instant::now() + (interval * 2).min(identify_within),
         state,
         socket,
         attached: None,
@@ -198,7 +197,7 @@ impl Connection {
             ClientMessage::Resume(resume) => self.resume(resume).await,
             ClientMessage::Heartbeat { .. } => {
                 self.authenticated()?;
-                self.deadline = Instant::now() + self.state.gateway.timings.heartbeat_interval * 2;
+                self.heard_from();
                 self.send_control(ServerEvent::HeartbeatAck {}).await
             }
             ClientMessage::PresenceUpdate { status } => {
@@ -207,6 +206,12 @@ impl Connection {
                 Ok(())
             }
         }
+    }
+
+    /// The client is alive: it has two heartbeat intervals until the next heartbeat. Also after
+    /// identify and resume, so the short wait for identifying does not carry over.
+    fn heard_from(&mut self) {
+        self.deadline = Instant::now() + self.state.gateway.timings.heartbeat_interval * 2;
     }
 
     /// The user of the attached session; 4003 before identify/resume.
@@ -236,6 +241,7 @@ impl Connection {
         let attached = self.state.gateway.create(user_id, auth_session_id);
         let session_id = attached.session.id.clone();
         self.attached = Some(attached);
+        self.heard_from();
         presence::connected(&self.state, user_id);
         let ready = ready::build(&self.state, user_id, session_id, rows)
             .ok_or(End::Close(CloseCode::AuthenticationFailed))?;
@@ -260,6 +266,7 @@ impl Connection {
         {
             Ok((attached, replay)) => {
                 self.attached = Some(attached);
+                self.heard_from();
                 presence::connected(&self.state, user_id);
                 for frame in replay {
                     self.send_text(&frame).await?;
