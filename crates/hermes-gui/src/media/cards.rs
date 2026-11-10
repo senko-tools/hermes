@@ -60,8 +60,6 @@ const KNOB_HELD: f32 = 13.;
 const OPEN_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(420., 38., 1.);
 /// The fill follows the volume quickly, so dragging feels direct and a wheel notch glides.
 const FILL_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(1200., 70., 1.);
-/// The hover group of a video's seek bar: it grows under the mouse.
-const SEEK_GROUP: &str = "media-seek";
 /// A playing video's controls hide after the mouse rests this many seconds, fading this long.
 const CONTROLS_IDLE: f32 = 2.;
 const CONTROLS_FADE: f32 = 0.25;
@@ -217,7 +215,33 @@ fn play_button(
         media_icons::PLAY
     };
     let inner = icon(glyph, size * 0.55, theme::on_accent());
-    let inner = if loading {
+    let inner = if !loading {
+        // Play and pause trade places: one shrinks away as the other grows in.
+        let side = size * 0.55;
+        div()
+            .relative()
+            .size(px(side))
+            .with_spring(
+                SharedString::from(format!("{id}-glyph")),
+                gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(520., 32., 1.))
+                    .to(playing),
+                move |d, phase| {
+                    let t = phase.0.clamp(0., 1.);
+                    let layer = |glyph: &'static str, weight: f32| {
+                        let scale = 0.6 + 0.4 * weight;
+                        div().absolute().inset_0().child(
+                            icon(glyph, side, theme::alpha(theme::on_accent(), weight))
+                                .with_transformation(gpui_kit::Transformation::scale(
+                                    gpui_kit::size(scale, scale),
+                                )),
+                        )
+                    };
+                    d.child(layer(media_icons::PLAY, 1. - t))
+                        .child(layer(media_icons::PAUSE, t))
+                },
+            )
+            .into_any_element()
+    } else {
         inner
             .with_animation(
                 "media-loading",
@@ -225,8 +249,6 @@ fn play_button(
                 |d, t| d.opacity(0.4 + 0.6 * (t * std::f32::consts::PI).sin()),
             )
             .into_any_element()
-    } else {
-        inner.into_any_element()
     };
     div()
         .id(id)
@@ -1311,21 +1333,28 @@ impl Shell {
         let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
         let full_key = key.clone();
         let id = |what: &str| SharedString::from(format!("{what}-{}-{full}", a.id));
+        let seek_hover = id("seek-hover");
+        let seek_hovered = self.is_hovered(&seek_hover);
         let seek = self
             .seek_area((key.clone(), full), inst, a, cx)
             .flex()
             .items_center()
             .w_full()
             .h(px(14.))
-            .group(SEEK_GROUP)
+            .id(id("seek"))
+            .on_hover(self.track_hover(seek_hover.clone(), cx))
             .child(
                 div()
                     .relative()
                     .w_full()
-                    .h(px(3.))
                     .rounded(px(2.))
                     .bg(gpui_kit::hsla(0., 0., 1., 0.3))
-                    .group_hover(SEEK_GROUP, |s| s.h(px(5.)))
+                    // It thickens on a spring under the pointer.
+                    .with_spring(
+                        seek_hover,
+                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(seek_hovered),
+                        |d, phase| d.h(px(3. + 2. * phase.0.clamp(0., 1.2))),
+                    )
                     .child(
                         div()
                             .absolute()

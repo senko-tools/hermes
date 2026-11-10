@@ -266,6 +266,19 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
+/// A reaction's count. When it changes the new number drops in from above; a count that is
+/// only shown again (the row scrolled back) stays still.
+fn reaction_count(key: &str, count: u32) -> impl IntoElement {
+    div().relative().child(count.to_string()).with_spring(
+        SharedString::from(format!("react-count-{key}")),
+        gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(420., 30., 1.)).to(count as f32),
+        move |d, shown| {
+            let behind = (count as f32 - shown).abs().min(1.);
+            d.top(px(-5. * behind)).opacity(1. - 0.6 * behind)
+        },
+    )
+}
+
 /// Three dots that rise and brighten one after another, over and over: someone is typing.
 pub fn typing_dots(id: impl Into<SharedString>, color: gpui_kit::Rgba) -> AnyElement {
     use gpui_kit::{Animation, AnimationExt as _};
@@ -665,6 +678,7 @@ impl Shell {
                 .border_1()
                 .border_color(theme::warning())
                 .text_size(theme::secondary_size())
+                .child(icon(assets::LAN_DISCONNECT, 16., theme::warning()))
                 .child(div().flex_1().min_w_0().truncate().child(text))
                 .child(
                     Button::new("connection-retry")
@@ -675,6 +689,14 @@ impl Shell {
                                 this.error(format!("could not reconnect: {err}"), cx);
                             }
                         })),
+                )
+                // It rises over the message box as it fades in.
+                .relative()
+                .with_animation(
+                    "connection-banner-in",
+                    gpui_kit::Animation::new(theme::FADE * 2)
+                        .with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t).top(px(6. * (1. - t))),
                 )
                 .into_any_element(),
         )
@@ -1920,31 +1942,59 @@ impl Shell {
                 .child(messages)
                 .children(first_unread.map(|marker| {
                     let (jump_inst, jump_channel) = key.clone();
-                    div().absolute().top(px(8.)).right(px(16.)).child(
-                        Button::new("jump-unread")
-                            .cursor_pointer()
-                            .label("Jump to new messages")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(view) =
-                                    this.chats.get_mut(&(jump_inst.clone(), jump_channel))
-                                {
-                                    view.unread_jump_done = true;
-                                }
-                                this.jump_to(jump_inst.clone(), jump_channel, marker, window, cx);
-                            })),
-                    )
+                    div()
+                        .absolute()
+                        .top(px(8.))
+                        .right(px(16.))
+                        .child(
+                            Button::new("jump-unread")
+                                .cursor_pointer()
+                                .label("Jump to new messages")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(view) =
+                                        this.chats.get_mut(&(jump_inst.clone(), jump_channel))
+                                    {
+                                        view.unread_jump_done = true;
+                                    }
+                                    this.jump_to(
+                                        jump_inst.clone(),
+                                        jump_channel,
+                                        marker,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        // It drops in from the top edge.
+                        .with_animation(
+                            "jump-unread-in",
+                            gpui_kit::Animation::new(theme::FADE * 2)
+                                .with_easing(gpui_kit::ease_out_quint()),
+                            |d, t| d.opacity(t).top(px(8. * t)),
+                        )
                 }))
                 .when(!at_end || !live, |d| {
                     d.child(
-                        div().absolute().bottom(px(12.)).right(px(16.)).child(
-                            Button::new("jump-present")
-                                .cursor_pointer()
-                                .primary()
-                                .label("Jump to present")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.jump_to_present(&jump_key, cx);
-                                })),
-                        ),
+                        div()
+                            .absolute()
+                            .bottom(px(12.))
+                            .right(px(16.))
+                            .child(
+                                Button::new("jump-present")
+                                    .cursor_pointer()
+                                    .primary()
+                                    .label("Jump to present")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.jump_to_present(&jump_key, cx);
+                                    })),
+                            )
+                            // It rises from the bottom edge.
+                            .with_animation(
+                                "jump-present-in",
+                                gpui_kit::Animation::new(theme::FADE * 2)
+                                    .with_easing(gpui_kit::ease_out_quint()),
+                                |d, t| d.opacity(t).bottom(px(12. * t)),
+                            ),
                     )
                 })
                 .children(typing.map(|text| {
@@ -2177,6 +2227,14 @@ impl Shell {
                         },
                     )),
                 )
+                // It opens out of the message box instead of pushing it at once.
+                .overflow_hidden()
+                .with_animation(
+                    SharedString::from(format!("composer-mode-{glyph}")),
+                    gpui_kit::Animation::new(theme::FADE * 2)
+                        .with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.max_h(px(44. * t)).opacity(t),
+                )
         });
         let upload_key = key.clone();
         let chips = view.uploads.iter().map(|upload| {
@@ -2187,6 +2245,23 @@ impl Shell {
             };
             let local = upload.local;
             let remove = upload_key.clone();
+            let uploading = matches!(upload.state, UploadState::Uploading);
+            let failed = matches!(upload.state, UploadState::Failed(_));
+            let state = div().text_color(color).child(state);
+            // Still going up: the state breathes.
+            let state = if uploading {
+                state
+                    .with_animation(
+                        ("upload-busy", local as usize),
+                        gpui_kit::Animation::new(std::time::Duration::from_millis(1200))
+                            .repeat()
+                            .with_easing(gpui_kit::pulsating_between(0.4, 1.)),
+                        |d, t| d.opacity(t),
+                    )
+                    .into_any_element()
+            } else {
+                state.into_any_element()
+            };
             div()
                 .flex()
                 .items_center()
@@ -2195,10 +2270,16 @@ impl Shell {
                 .py(px(4.))
                 .rounded(theme::radius_small())
                 .bg(theme::selected())
+                .border_1()
+                .border_color(if failed {
+                    theme::danger()
+                } else {
+                    theme::alpha(theme::border(), 0.)
+                })
                 .text_size(theme::caption_size())
                 .child(icon(assets::FILE, 14., theme::text_secondary()))
                 .child(div().max_w(px(240.)).truncate().child(upload.name.clone()))
-                .child(div().text_color(color).child(state))
+                .child(state)
                 .child(
                     tip_button(("upload-remove", local as usize), assets::CLOSE, "Remove")
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -2331,7 +2412,7 @@ impl Shell {
                     theme::border(),
                 )
             }
-            Row::NewMessages => divider("New messages".into(), theme::danger(), theme::danger()),
+            Row::NewMessages => new_messages_divider(),
             Row::Message(m) => match s.window(channel).and_then(|w| w.get(m.id)) {
                 Some(message) => self.render_message(s, inst, channel, m, message, cx),
                 None => div().into_any_element(),
@@ -2549,20 +2630,23 @@ impl Shell {
                     .border_1()
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
-                    .when(mine, |d| {
-                        d.bg(theme::accent_soft()).border_color(theme::accent())
-                    })
-                    .when(!mine, |d| {
-                        d.bg(theme::sidebar())
-                            .border_color(theme::border())
-                            .hover(|d| d.bg(theme::hover()))
-                    })
+                    .when(!mine, |d| d.hover(|d| d.bg(theme::hover())))
                     .child(r.emoji.clone())
-                    .child(r.count.to_string())
+                    .child(reaction_count(&format!("{id}-{}", r.emoji), r.count))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.react(inst.clone(), channel, id, emoji.clone(), !mine, cx);
                     }))
+                    // Reacting or taking it back: the accent flows in or out.
+                    .with_spring(
+                        SharedString::from(format!("react-mine-{id}-{}", r.emoji)),
+                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(mine),
+                        |d, phase| {
+                            let t = phase.0.clamp(0., 1.);
+                            d.bg(theme::mix(theme::sidebar(), theme::accent_soft(), t))
+                                .border_color(theme::mix(theme::border(), theme::accent(), t))
+                        },
+                    )
             });
             body.push(
                 div()
@@ -2625,7 +2709,24 @@ impl Shell {
             .pr(px(8.))
             .rounded(theme::radius_small())
             .when(selected, |d| d.bg(theme::accent_soft()))
-            .when(jumped && !selected, |d| d.bg(theme::selected()))
+            // The message jumped to glows, then fades back over the time it stays marked.
+            .when(jumped && !selected, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::radius_small())
+                        .with_animation(
+                            SharedString::from(format!("jumped-{id}")),
+                            gpui_kit::Animation::new(HIGHLIGHT_FOR),
+                            |d, t| {
+                                // Full for the first half, then easing away.
+                                let fade = ((t - 0.5) * 2.).clamp(0., 1.);
+                                d.bg(theme::alpha(theme::selected(), 1. - fade * fade))
+                            },
+                        ),
+                )
+            })
             .when(highlight && !selected && !jumped, |d| {
                 d.bg(theme::mention_soft())
                     .border_l_2()
@@ -2674,11 +2775,26 @@ impl Shell {
             )
             .children(palette_open.then(|| self.render_palette(inst, channel, id, cx)));
         // The row fills the list's width; the margin keeps its highlight off the edges.
-        div()
+        let row = div()
             .w_full()
             .px(px(8.))
-            .child(self.with_menu(element, target, cx))
-            .into_any_element()
+            .child(self.with_menu(element, target, cx));
+        // Someone else's message that just arrived fades in, rising into place. Only fresh ones:
+        // the list drops rows scrolled away, and an old one coming back must not replay it.
+        let age = hermes_client_core::now_ms() - msg.created_at() as i64;
+        let fresh = (-500..1500).contains(&age) && s.me_id() != Some(msg.author.id);
+        if fresh {
+            row.relative()
+                .with_animation(
+                    SharedString::from(format!("arrived-{id}")),
+                    gpui_kit::Animation::new(theme::FADE * 2)
+                        .with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t).top(px(6. * (1. - t))),
+                )
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        }
     }
 
     /// `element` opens the person's profile on a left click and their menu on a right click.
@@ -2784,7 +2900,6 @@ impl Shell {
         div()
             .id("palette")
             .absolute()
-            .top(px(-16.))
             .right(px(16.))
             .flex()
             .items_center()
@@ -2806,6 +2921,12 @@ impl Shell {
                         cx.notify();
                     },
                 )),
+            )
+            // It pops up over the message's corner as it fades in.
+            .with_animation(
+                SharedString::from(format!("palette-in-{message}")),
+                gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(t).top(px(-16. + 6. * (1. - t))),
             )
             .into_any_element()
     }
@@ -3046,13 +3167,29 @@ impl Shell {
                     .with_file_menu(picture, inst, place, a.id, cx)
                     .into_any_element();
             }
-            let text = if matches!(picture, Some(Img::Failed)) {
+            let failed = matches!(picture, Some(Img::Failed));
+            let text = if failed {
                 "Image not available"
             } else {
                 "Loading…"
             };
+            // While it loads, the space it will fill breathes softly.
+            let shimmer = (!failed).then(|| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .rounded(theme::row_radius())
+                    .with_animation(
+                        SharedString::from(format!("image-wait-{}", a.id)),
+                        gpui_kit::Animation::new(std::time::Duration::from_millis(1400))
+                            .repeat()
+                            .with_easing(gpui_kit::pulsating_between(0., 1.)),
+                        |d, t| d.bg(theme::alpha(theme::hover(), 0.6 * t)),
+                    )
+            });
             let waiting = div()
                 .id(SharedString::from(format!("image-{}", a.id)))
+                .relative()
                 .flex()
                 .items_center()
                 .justify_center()
@@ -3063,6 +3200,7 @@ impl Shell {
                 .bg(theme::code_background())
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
+                .children(shimmer)
                 .child(text);
             return self
                 .with_file_menu(waiting, inst, place, a.id, cx)
@@ -3348,6 +3486,28 @@ fn divider(text: String, color: gpui_kit::Rgba, line: gpui_kit::Rgba) -> AnyElem
                 .child(text),
         )
         .child(div().flex_1().h(px(1.)).bg(line))
+        .into_any_element()
+}
+
+/// Where the unread messages start: a red line ending in a NEW tag, apart from the day lines.
+fn new_messages_divider() -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .px(px(16.))
+        .py(px(8.))
+        .child(div().flex_1().h(px(1.)).bg(theme::danger()))
+        .child(
+            div()
+                .flex_shrink_0()
+                .px(px(6.))
+                .rounded_r(px(4.))
+                .bg(theme::danger())
+                .text_size(theme::caption_size())
+                .font_weight(FontWeight::BOLD)
+                .text_color(theme::on_accent())
+                .child("NEW"),
+        )
         .into_any_element()
 }
 
