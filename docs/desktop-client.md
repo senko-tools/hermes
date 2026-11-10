@@ -44,7 +44,7 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Words (2026-11-08):** spaces are called "servers" in everything the user reads (code, config keys and
   the protocol keep `space`). Instances stay "instances".
 - **Hover (2026-11-08):** most things turn the accent colour under the pointer (`icon_button`, chips, nav
-  items, channel rows, people under voice channels). People in member lists, messages, search results and
+  items, channel rows, people under voice channels, who also get a background since 2026-11-10). People in member lists, messages, search results and
   emoji keep a background hover. `group_hover` only recolours icons (svg): gpui ignores it for text in
   plain divs, so text takes a direct `.hover` on its row.
 - **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen grey while off and red while
@@ -61,9 +61,15 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   voice rows, tiles) has Profile, Volume…, Mute for me, and for moderators server mute/deafen,
   Move to and Disconnect, checked like the server checks them. Negative entries are red
   (`Action::is_negative`); only `is_destructive` ones are confirmed.
-- **Motion (2026-11-08):** one rail pill springs between servers; pages, settings tabs and the sidebar's
-  list fade in (`theme::enter`); popups opened by a click (share, network, volume, profile) go through
-  `modal::popup`. Right-click menus keep their own placement.
+- **Motion (2026-11-10):** one rail pill springs between servers. Pages, settings tabs and the sidebar's
+  list fade in where they are, without sliding (`theme::enter`, `theme::FADE` = 120 ms). The main page
+  crossfades: the page that left is drawn under the new one while it fades out (`Shell::leaving`), except
+  voice pages (they hold share video) and one result page to another (they share a search field).
+  Popups opened by a click (share, network, volume, profile) go through `modal::popup`. Right-click menus
+  keep their own placement.
+- **People (2026-11-10):** a left click on someone (voice rows, member lists, a name or picture in the chat)
+  opens their profile beside it (`Shell::open_profile`); the right click opens their menu. Voice rows turn
+  the accent colour with a hover background; names in the chat underline under the pointer.
 - **Popups hug what was clicked (2026-11-10):** elements with a menu (`with_menu`) and the buttons that open
   popups (`hug_target`, the network line) note their painted bounds (`popup_trigger`). A popup sits beside the
   smallest of them under the click, 12 px away, on the side towards the window's middle (above or below
@@ -72,8 +78,10 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   connected, amber and pulsing after 3 s of reconnecting, red when the connection gave up or the session
   ended. Its tooltip lists each instance; a click reconnects. The sidebar only shows instances that need the
   person (sign in, failed), and the chat's "reconnecting" banner waits 15 s.
-- **Voice on the rail (2026-11-10):** a server's icon gets a chip at its top right with a speaker and how many
-  are in its voice channels that I can see (up to 9+), in the accent colour when I am there too.
+- **Voice on the rail (2026-11-10):** a server's icon gets a round chip with a speaker inside its top-right
+  corner (so the rail's edge never cuts it) while people I can see are in its voice channels; the
+  tooltip says how many. It is accent when I am there too (on the selected, accent icon only the speaker
+  is), and pops in on a spring.
 - **Scrolling:** `smooth_scroll.rs` catches wheel notches at the root and replays them as eased pixel
   scrolls, 1.25x the old distance. Touchpad pixel scrolls and Ctrl+wheel pass through.
 - **Pictures:** server icons and avatars fill their shape (`ObjectFit::Cover`). Picking one opens the
@@ -99,13 +107,26 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   view), and the seek happens on release; moving the bar never starts a file. Ctrl+wheel over a
   file, the slider that opens from its speaker, or the plain wheel in the full view set one volume
   for all media (`voice.media_volume`, `voice.media_muted`); the plain wheel over a card scrolls the
-  chat. The speaker and slider are one hover area, so moving between them cannot close it. Downloading and
+  chat. The speaker and slider are one hover area, so moving between them cannot close it; they share
+  a pill, the slider has a round knob, opens and closes on a spring, and its fill follows the volume on a
+  quick spring. Downloading and
   the like are in each file's right-click menu. Video controls sit over the picture and fade
   2 s after the mouse rests while playing. Uploads larger than the server's `max_upload_mb` are
   refused before sending (the server checks too).
-- **Selecting text (2026-11-09):** chat text (names, times, messages, code, file names) is selected by dragging, across
-  messages too, in `selection.rs`. Text that can be selected but not clicked shows the line cursor; a drag never counts
-  as a click. Ctrl+C or the message's menu copies it.
+- **Selecting text (2026-11-10):** chat text (names, times, messages, code, file names) is selected by dragging, across
+  messages too, in `selection.rs`. Like a browser: a double click selects a word (`word_at`: letters, digits and `_`,
+  with `'` and `.` inside a word; a run of spaces; or one other character), a triple click the message's whole
+  text, and a drag after either grows by words or whole messages. The line cursor shows over the whole message
+  row; a press in its empty space starts from the message's nearest text. Names, links and files keep their
+  own cursor. A drag or a multi-click never counts as a click. Ctrl+C or the message's menu copies it.
+- **Message spacing (2026-11-10):** inside a group, the space between two messages is split evenly between
+  them (`rows::padding`), so a hovered message's highlight has as much room under it as over it while what is
+  shown keeps its spacing: a file that starts a message is as far from the file above as from text. While the
+  pointer is over a file its message is not highlighted (`Shell::hovered_file`, set in `with_file_menu`).
+  Do not use `block_mouse_except_scroll` for this: it makes the root's `on_mouse_up_out` fire and breaks menus.
+- **Compact messages (2026-11-10):** `buffer.compact` lays a message out like Vencord's compact mode: the time
+  in a column of its own, an 18 px picture, the name and the text on one line, wrapped lines under the text,
+  files and reactions under the picture. Follow-ups show only their text, their time on hover.
 - **Files:** every file has its own right-click menu (`Target::File`, `Shell::with_file_menu`). gpui calls an element's
   listeners last added first, so what stops an event is added before the menu (`with_own_menu`).
 - **Encryption settings:** a server's settings have an Encryption tab (`key_settings.rs`) with its rules, each
@@ -143,9 +164,12 @@ flash, real keyboard modifiers (Ctrl+K, Shift+Enter; the test helper can only se
 drag and drop, and how the sizes compare to Discord. Linux CI packages in `.github/workflows/ci.yml` are untested.
 
 ## How the window was tested
-Run a scratch `hermes-server` copied elsewhere (port 7799, `registration.mode = "open"`), seed it over REST, start the
+Run a scratch `hermes-server` copied elsewhere (port 7799, `registration.mode = "open"`, and
+`privacy.require_channel_encryption = false` so plain REST messages are accepted), seed it over REST, start the
 debug binary with `--config-dir <scratch>`, send mouse messages to its window with `PostMessage` (the real cursor does
 not move), and screenshot with `PrintWindow` flag 2. Check both a large and a small window. A release client of the developer's may be running: select
 windows by the path `target\\debug\\hermes.exe` only. Use `Start-Process`, and
-never run a command that can wait on stdin (a stray `python -` hung a session for 20 minutes). Never screenshot a share
+never run a command that can wait on stdin (a stray `python -` hung a session for 20 minutes). gpui counts
+clicks itself from plain `WM_LBUTTONDOWN`s and ignores `WM_LBUTTONDBLCLK`, so post plain downs for a double
+click. Never screenshot a share
 of the real screen: judge it from the logs and from pixel statistics of the tile.
