@@ -49,8 +49,17 @@ const PILL_W: f32 = 4.;
 /// The hover group of a volume control's speaker.
 const SPEAKER_GROUP: &str = "media-speaker";
 /// How wide a volume slider opens: its track, and the percentage beside it.
-const SLIDER_TRACK_W: f32 = 72.;
-const SLIDER_TEXT_W: f32 = 40.;
+const SLIDER_TRACK_W: f32 = 84.;
+const SLIDER_TEXT_W: f32 = 44.;
+/// The hover group of a volume slider's track: its knob grows under the mouse.
+const TRACK_GROUP: &str = "media-volume-track";
+/// The volume knob, at rest and while hovered or held.
+const KNOB: f32 = 10.;
+const KNOB_HELD: f32 = 13.;
+/// The slider opens and closes in about a fifth of a second, settling without a wobble.
+const OPEN_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(420., 38., 1.);
+/// The fill follows the volume quickly, so dragging feels direct and a wheel notch glides.
+const FILL_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(1200., 70., 1.);
 /// The hover group of a video's seek bar: it grows under the mouse.
 const SEEK_GROUP: &str = "media-seek";
 /// A playing video's controls hide after the mouse rests this many seconds, fading this long.
@@ -809,6 +818,7 @@ impl Shell {
                 theme::text_tertiary().into(),
             )
         };
+        let height = if overlay { 28. } else { 22. };
         let speaker = if overlay {
             Self::overlay_button(id("volume-speaker"), glyph)
         } else {
@@ -818,8 +828,8 @@ impl Shell {
                 .flex_shrink_0()
                 .items_center()
                 .justify_center()
-                .size(px(22.))
-                .rounded(px(4.))
+                .size(px(height))
+                .rounded(px(height / 2.))
                 .cursor_pointer()
                 .group(SPEAKER_GROUP)
                 .hover(|d| d.bg(theme::alpha(theme::text_tertiary(), 0.18)))
@@ -833,87 +843,155 @@ impl Shell {
             cx.stop_propagation();
             this.media_mute(cx);
         }));
-        let slider = open.then(|| {
-            let (drawn, pressed) = (bar.clone(), bar.clone());
-            let sliders = self.media.sliders.clone();
-            let track = div()
-                .relative()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .w(px(SLIDER_TRACK_W))
-                .h_full()
-                .cursor_pointer()
-                .child(
-                    canvas(
-                        move |bounds, _, _| {
-                            sliders.borrow_mut().insert(drawn.clone(), bounds);
-                        },
-                        |_, (), _, _| {},
+        // The track, with the fill and the knob following the volume on a quick spring, so a
+        // wheel notch glides instead of jumping. The knob grows while the track is hovered or held.
+        let (drawn, pressed) = (bar.clone(), bar.clone());
+        let sliders = self.media.sliders.clone();
+        let held = self.media.volume_drag.as_ref() == Some(&bar);
+        let accent = theme::accent();
+        let knob_color: gpui_kit::Hsla = if overlay {
+            gpui_kit::hsla(0., 0., 1., 1.)
+        } else {
+            accent.into()
+        };
+        let rail = div()
+            .relative()
+            .w_full()
+            .h(px(4.))
+            .rounded(px(2.))
+            .bg(track_empty)
+            .with_spring(
+                id("volume-fill"),
+                gpui_kit::SpringAnimation::new(FILL_SPRING).to(gain.clamp(0., 1.)),
+                move |d, gain| {
+                    let gain = gain.clamp(0., 1.);
+                    let knob = if held { KNOB_HELD } else { KNOB };
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .h_full()
+                            .w(gpui_kit::relative(gain))
+                            .rounded(px(2.))
+                            .bg(accent),
                     )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full(),
+                    .child(
+                        // A zero-wide column at the volume, so the knob centres on it.
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(gpui_kit::relative(gain))
+                            .w(px(0.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .size(px(knob))
+                                    .rounded(px(knob / 2.))
+                                    .bg(knob_color)
+                                    .shadow_sm()
+                                    .group_hover(TRACK_GROUP, |s| {
+                                        s.size(px(KNOB_HELD)).rounded(px(KNOB_HELD / 2.))
+                                    }),
+                            ),
+                    )
+                },
+            );
+        let track = div()
+            .relative()
+            .group(TRACK_GROUP)
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .w(px(SLIDER_TRACK_W))
+            .h_full()
+            .px(px(KNOB_HELD / 2.))
+            .cursor_pointer()
+            .child(
+                canvas(
+                    move |bounds, _, _| {
+                        sliders.borrow_mut().insert(drawn.clone(), bounds);
+                    },
+                    |_, (), _, _| {},
                 )
-                .child(
-                    div()
-                        .relative()
-                        .w_full()
-                        .h(px(3.))
-                        .rounded(px(2.))
-                        .bg(track_empty)
-                        .child(
-                            div()
-                                .absolute()
-                                .top_0()
-                                .left_0()
-                                .h_full()
-                                .w(gpui_kit::relative(gain.clamp(0., 1.)))
-                                .rounded(px(2.))
-                                .bg(theme::accent()),
-                        ),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                        cx.stop_propagation();
-                        this.media.volume_drag = Some(pressed.clone());
-                        this.media_slide(&pressed, event.position, cx);
-                    }),
-                );
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .justify_end()
-                .h_full()
-                .overflow_hidden()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .w(px(SLIDER_TEXT_W))
-                        .pr(px(6.))
-                        .text_right()
-                        .text_size(theme::caption_size())
-                        .text_color(text_color)
-                        .child(format!("{:.0}%", gain * 100.)),
-                )
-                .child(track)
-                .with_animation(
-                    id("volume-open"),
-                    gpui_kit::Animation::new(Duration::from_millis(140))
-                        .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.w(px((SLIDER_TRACK_W + SLIDER_TEXT_W) * t)),
-                )
-        });
-        let (over, height) = (bar, if overlay { 28. } else { 22. });
+                .absolute()
+                .top_0()
+                .left(px(KNOB_HELD / 2.))
+                .right(px(KNOB_HELD / 2.))
+                .h_full(),
+            )
+            .child(rail)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.media.volume_drag = Some(pressed.clone());
+                    this.media_slide(&pressed, event.position, cx);
+                }),
+            );
+        // Opens and closes on a spring: it grows out of the speaker and fades in, and back.
+        let slider = div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_end()
+            .h_full()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .w(px(SLIDER_TEXT_W))
+                    .pl(px(10.))
+                    .text_size(theme::caption_size())
+                    .text_color(text_color)
+                    .child(format!("{:.0}%", gain * 100.)),
+            )
+            .child(track)
+            .with_spring(
+                id("volume-open"),
+                gpui_kit::SpringAnimation::new(OPEN_SPRING).to(open),
+                |d, phase| {
+                    let t = phase.0.clamp(0., 1.);
+                    d.w(px((SLIDER_TRACK_W + SLIDER_TEXT_W) * t)).opacity(t)
+                },
+            );
+        // One pill behind the speaker and the slider while it is open.
+        let pill: gpui_kit::Hsla = if overlay {
+            gpui_kit::hsla(0., 0., 0., 0.45)
+        } else {
+            theme::alpha(theme::text_tertiary(), 0.14).into()
+        };
+        let backdrop = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .rounded(px(height / 2.))
+            .with_spring(
+                id("volume-pill"),
+                gpui_kit::SpringAnimation::new(OPEN_SPRING).to(open),
+                move |d, phase| {
+                    let t = phase.0.clamp(0., 1.);
+                    d.bg(gpui_kit::Hsla {
+                        a: pill.a * t,
+                        ..pill
+                    })
+                },
+            );
+        let over = bar;
         div()
             .id(id("volume"))
+            .relative()
             .flex()
             .flex_shrink_0()
             .items_center()
             .h(px(height))
+            .child(backdrop)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
                     this.media.volume_hover = Some(over.clone());
@@ -924,7 +1002,7 @@ impl Shell {
             }))
             // Nothing in here plays or pauses the video underneath.
             .on_click(|_, _, cx: &mut gpui_kit::App| cx.stop_propagation())
-            .children(slider)
+            .child(slider)
             .child(speaker)
     }
 
