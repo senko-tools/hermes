@@ -71,6 +71,31 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
     out
 }
 
+/// Who is in a voice channel of a space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoiceHere {
+    /// People in its voice channels that I can see.
+    pub count: usize,
+    /// I am one of them.
+    pub me: bool,
+}
+
+/// Who is in voice in `space`, counting only channels I can see (others are not in the store).
+pub fn voice_in_space(store: &InstanceStore, space: Id) -> VoiceHere {
+    let Some(state) = store.spaces.get(&space) else {
+        return VoiceHere::default();
+    };
+    let me = store.me.as_ref().map(|m| m.user.id);
+    let mut here = VoiceHere::default();
+    for v in store.voice_states.values() {
+        if state.channels.contains_key(&v.channel_id) {
+            here.count += 1;
+            here.me |= Some(v.user_id) == me;
+        }
+    }
+    here
+}
+
 /// The new positions after dropping channel `moved` onto `onto` in the space's tree (for
 /// `PUT /spaces/{id}/channels/order`): `moved` takes `onto`'s place among its siblings. A channel
 /// dropped on a category goes first into it; a category dropped inside a category takes that
@@ -743,6 +768,41 @@ mod tests {
         );
         assert!(tree[3].unread);
         assert!(!tree[0].unread);
+    }
+
+    #[test]
+    fn voice_counts_only_channels_i_can_see() {
+        use hermes_proto::models::VoiceState;
+        let mut s = store();
+        s.apply(
+            ServerEvent::ChannelCreate(channel(21, Some(10), ChannelKind::Voice, "Lounge")),
+            0,
+        );
+        assert_eq!(voice_in_space(&s, Id(10)), VoiceHere::default());
+        let me = s.me.as_ref().unwrap().user.id;
+        let state = |user, channel| VoiceState {
+            user_id: Id(user),
+            channel_id: Id(channel),
+            self_mute: false,
+            self_deaf: false,
+            server_mute: false,
+            server_deaf: false,
+            joined_at: 0,
+        };
+        // Someone in Lounge, someone in a channel I cannot see.
+        s.voice_states.insert(Id(500), state(500, 21));
+        s.voice_states.insert(Id(501), state(501, 99));
+        assert_eq!(
+            voice_in_space(&s, Id(10)),
+            VoiceHere {
+                count: 1,
+                me: false
+            }
+        );
+        s.voice_states.insert(me, state(me.0, 21));
+        assert_eq!(voice_in_space(&s, Id(10)), VoiceHere { count: 2, me: true });
+        // Another space, or none, has nobody.
+        assert_eq!(voice_in_space(&s, Id(77)), VoiceHere::default());
     }
 
     #[test]

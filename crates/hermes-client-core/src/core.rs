@@ -344,6 +344,8 @@ struct InstanceHandle {
     rest: Rest,
     gateway: Gateway,
     status: Mutex<ConnStatus>,
+    /// Since when the status has not been `Connected`; `None` while connected.
+    down_since: Mutex<Option<std::time::Instant>>,
     connected: tokio::sync::watch::Sender<bool>,
     outbox: Outbox,
     /// channel → newest message to ack, waiting for the debounce.
@@ -575,6 +577,14 @@ impl Core {
         self.handle(inst).map_or(ConnStatus::LoggedOut, |h| {
             h.status.lock().expect("status").clone()
         })
+    }
+
+    /// How long `inst` has not been connected; `None` while it is (or when it is unknown). A
+    /// short blip, such as resuming, can be told apart from a real outage with it.
+    pub fn down_for(&self, inst: &str) -> Option<std::time::Duration> {
+        let handle = self.handle(inst)?;
+        let since = *handle.down_since.lock().expect("down_since");
+        since.map(|at| at.elapsed())
     }
 
     fn handle(&self, inst: &str) -> Option<Arc<InstanceHandle>> {
@@ -819,6 +829,7 @@ impl Core {
             rest,
             gateway,
             status: Mutex::new(ConnStatus::Connecting),
+            down_since: Mutex::new(Some(std::time::Instant::now())),
             connected,
             outbox: Outbox::default(),
             read_marks: Mutex::new(HashMap::new()),
@@ -1000,6 +1011,14 @@ impl Core {
             match event {
                 GatewayEvent::Status(status) => {
                     *handle.status.lock().expect("status") = status.clone();
+                    {
+                        let mut since = handle.down_since.lock().expect("down_since");
+                        if status == ConnStatus::Connected {
+                            *since = None;
+                        } else if since.is_none() {
+                            *since = Some(std::time::Instant::now());
+                        }
+                    }
                     let _ = handle.connected.send(status == ConnStatus::Connected);
                     if status == ConnStatus::Connected {
                         handle.outbox.wake.notify_one();
