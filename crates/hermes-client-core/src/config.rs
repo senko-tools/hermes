@@ -235,7 +235,7 @@ pub struct Buffer {
     pub show_typing: bool,
     /// Bold, code blocks and the like are drawn; off shows messages as they were typed.
     pub markdown: bool,
-    /// Less space between messages.
+    /// Compact messages: time, a small picture, the name and the text on one line.
     pub compact: bool,
     /// Pictures and videos in the chat, in percent of their normal size.
     pub media_scale: u32,

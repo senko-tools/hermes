@@ -1474,7 +1474,7 @@ impl Shell {
                         ),
                         self.flag(
                             "Compact messages",
-                            "Less space between messages.",
+                            "Time, a small picture, the name and the text on one line.",
                             b.compact,
                             "buffer.compact",
                             cx,

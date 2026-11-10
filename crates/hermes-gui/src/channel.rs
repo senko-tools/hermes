@@ -50,6 +50,64 @@ const LOAD_OLDER_WITHIN: usize = 15;
 const GUTTER: f32 = theme::AVATAR + 16.0;
 /// The hover group of a message row, for the time of a grouped message.
 const ROW_GROUP: &str = "message-row";
+/// Compact messages: the picture before the name.
+const COMPACT_AVATAR: f32 = 18.;
+
+/// The height of one line of body text (gpui's default line height).
+fn body_line() -> gpui_kit::Pixels {
+    theme::body_size() * 1.618
+}
+
+/// Compact messages: the time column, as wide as `time_text` in every row so the text lines up,
+/// holding `time` on a group's first line and the time on hover for the rest.
+fn compact_time_slot(time_text: &str, time: Option<AnyElement>) -> AnyElement {
+    let chars = time_text.chars().count().max(5) as f32;
+    let width = gpui_kit::px((chars * 0.62 * theme::caption_size().as_f32()).ceil()) + px(10.);
+    let time = time.unwrap_or_else(|| {
+        // Always laid out and only made visible on hover, so hovering never resizes the row.
+        div()
+            .text_size(theme::caption_size())
+            .text_color(rgba(0))
+            .group_hover(ROW_GROUP, |d| d.text_color(theme::text_tertiary()))
+            .child(time_text.to_owned())
+            .into_any_element()
+    });
+    div()
+        .flex()
+        .items_center()
+        .w(width)
+        .h(body_line())
+        .child(time)
+        .into_any_element()
+}
+
+/// Compact messages: the picture, name and lock (`head`) and then the text, on one line. Each
+/// piece of the head is centred on the text's first line.
+fn compact_line(head: Vec<AnyElement>, texts: Vec<AnyElement>) -> AnyElement {
+    let head = head.into_iter().map(|piece| {
+        div()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .h(body_line())
+            .child(piece)
+    });
+    div()
+        .flex()
+        .items_start()
+        .gap(px(6.))
+        .children(head)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .flex_1()
+                .min_w_0()
+                .children(texts),
+        )
+        .into_any_element()
+}
 
 /// A file being attached.
 #[derive(Debug, Clone, PartialEq)]
@@ -2243,7 +2301,11 @@ impl Shell {
             &self.config.buffer.timestamp_format,
             self.utc_offset,
         );
+        let compact = self.config.buffer.compact;
         let mut body: Vec<AnyElement> = Vec::new();
+        // Compact: what goes before the text on its first line, and the time in front of it.
+        let mut head_line: Vec<AnyElement> = Vec::new();
+        let mut compact_time: Option<AnyElement> = None;
         if let Some(reply) = &m.reply {
             let loaded = s.window(channel).and_then(|w| w.get(reply.id));
             let excerpt = reply_text(loaded, &reply.excerpt);
@@ -2317,28 +2379,53 @@ impl Shell {
                 msg.author.id,
                 cx,
             );
-            body.push(
-                div()
-                    .flex()
-                    .gap(px(8.))
-                    .items_baseline()
-                    .child(author)
-                    .child(
-                        div()
-                            .relative()
-                            .cursor_text()
-                            .text_size(theme::caption_size())
-                            .text_color(theme::text_tertiary())
-                            .child(time)
-                            .child(time_record),
-                    )
-                    .children(crate::encryption::lock_mark(
-                        msg.lock,
-                        s.channel_encrypted(channel)
-                            && msg.kind == hermes_client_core::proto::models::MessageKind::Default,
-                    ))
-                    .into_any_element(),
+            let time = div()
+                .relative()
+                .cursor_text()
+                .text_size(theme::caption_size())
+                .text_color(theme::text_tertiary())
+                .child(time)
+                .child(time_record);
+            let lock = crate::encryption::lock_mark(
+                msg.lock,
+                s.channel_encrypted(channel)
+                    && msg.kind == hermes_client_core::proto::models::MessageKind::Default,
             );
+            if compact {
+                // Time, small picture, name and text on one line.
+                if self.config.buffer.show_avatars {
+                    let name = s.display_name(space, msg.author.id);
+                    let user = s.user(msg.author.id).unwrap_or(&msg.author);
+                    let avatar = self.avatar(inst, Some(user), &name, COMPACT_AVATAR);
+                    head_line.push(
+                        self.author_menu(
+                            div()
+                                .id(SharedString::from(format!("avatar-{id}")))
+                                .cursor_pointer()
+                                .child(avatar),
+                            inst,
+                            space,
+                            msg.author.id,
+                            cx,
+                        )
+                        .into_any_element(),
+                    );
+                }
+                head_line.push(author.into_any_element());
+                head_line.extend(lock.map(IntoElement::into_any_element));
+                compact_time = Some(time.into_any_element());
+            } else {
+                body.push(
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .items_baseline()
+                        .child(author)
+                        .child(time)
+                        .children(lock)
+                        .into_any_element(),
+                );
+            }
         }
         let revealed = view.is_some_and(|v| v.revealed.contains(&id));
         let blocks = if s.blocked.contains(&msg.author.id) && !revealed {
@@ -2352,18 +2439,25 @@ impl Shell {
         };
         let last = blocks.len().saturating_sub(1);
         let system = m.system;
+        let mut texts: Vec<AnyElement> = Vec::new();
         for (i, block) in blocks.iter().cloned().enumerate() {
             let edited = i == last && msg.edited_at.is_some();
-            body.push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
+            texts
+                .push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
         }
         if msg.content.is_empty() && msg.edited_at.is_some() {
-            body.push(
+            texts.push(
                 div()
                     .text_size(theme::caption_size())
                     .text_color(theme::text_tertiary())
                     .child("(edited)")
                     .into_any_element(),
             );
+        }
+        if compact && !(head_line.is_empty() && texts.is_empty()) {
+            body.push(compact_line(head_line, texts));
+        } else {
+            body.extend(texts);
         }
         for (index, attachment) in msg.attachments.iter().enumerate() {
             let place = FilePlace {
@@ -2423,7 +2517,9 @@ impl Shell {
             );
         }
 
-        let gutter: AnyElement = if !m.grouped && self.config.buffer.show_avatars {
+        let gutter: AnyElement = if compact {
+            compact_time_slot(&time_text, compact_time)
+        } else if !m.grouped && self.config.buffer.show_avatars {
             // The user's current picture (the message keeps the one from when it was sent).
             let name = s.display_name(space, msg.author.id);
             let user = s.user(msg.author.id).unwrap_or(&msg.author);
@@ -2503,7 +2599,12 @@ impl Shell {
                 }
                 cx.notify();
             }))
-            .child(div().flex_shrink_0().w(px(GUTTER)).child(gutter))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .when(!compact, |d| d.w(px(GUTTER)))
+                    .child(gutter),
+            )
             .child(
                 div()
                     .flex()
@@ -2976,8 +3077,36 @@ impl Shell {
         let me = s.me_id();
         let name = me.map(|id| s.display_name(None, id)).unwrap_or_default();
         let local_id: LocalId = p.local_id;
+        let compact = self.config.buffer.compact;
+        let time_text = time::format(
+            pending.created_at,
+            &self.config.buffer.timestamp_format,
+            self.utc_offset,
+        );
         let mut body = div().flex().flex_col().gap(px(2.)).flex_1().min_w_0();
-        if !p.grouped {
+        let content = div()
+            .text_size(theme::body_size())
+            .text_color(color)
+            .child(pending.content.clone())
+            .into_any_element();
+        if compact {
+            let mut head = Vec::new();
+            if !p.grouped {
+                if self.config.buffer.show_avatars {
+                    let user = me.and_then(|id| s.user(id));
+                    head.push(self.avatar(inst, user, &name, COMPACT_AVATAR));
+                }
+                head.push(
+                    div()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::role_default())
+                        .child(name.clone())
+                        .into_any_element(),
+                );
+            }
+            body = body.child(compact_line(head, vec![content]));
+        } else if !p.grouped {
             body = body.child(
                 div()
                     .flex()
@@ -2994,20 +3123,13 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child(time::format(
-                                pending.created_at,
-                                &self.config.buffer.timestamp_format,
-                                self.utc_offset,
-                            )),
+                            .child(time_text.clone()),
                     ),
             );
+            body = body.child(content);
+        } else {
+            body = body.child(content);
         }
-        body = body.child(
-            div()
-                .text_size(theme::body_size())
-                .text_color(color)
-                .child(pending.content.clone()),
-        );
         if let Some(note) = note {
             let mut line = div()
                 .flex()
@@ -3050,7 +3172,16 @@ impl Shell {
             }
             body = body.child(line);
         }
-        let gutter = if !p.grouped && self.config.buffer.show_avatars {
+        let gutter = if compact {
+            let shown = (!p.grouped).then(|| {
+                div()
+                    .text_size(theme::caption_size())
+                    .text_color(theme::text_tertiary())
+                    .child(time_text.clone())
+                    .into_any_element()
+            });
+            compact_time_slot(&time_text, shown)
+        } else if !p.grouped && self.config.buffer.show_avatars {
             let user = me.and_then(|id| s.user(id));
             self.avatar(inst, user, &name, theme::AVATAR)
         } else {
@@ -3062,7 +3193,12 @@ impl Shell {
             .pt(px(if p.grouped { 1. } else { 8. }))
             .pb(px(if p.ends_group { 8. } else { 1. }))
             .px(px(16.))
-            .child(div().flex_shrink_0().w(px(GUTTER)).child(gutter))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .when(!compact, |d| d.w(px(GUTTER)))
+                    .child(gutter),
+            )
             .child(body)
             .into_any_element()
     }
