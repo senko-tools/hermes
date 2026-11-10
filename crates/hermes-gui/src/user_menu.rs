@@ -3,7 +3,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, Pixels, Point, SharedString, Window, div};
+use gpui_kit::{AnyElement, Context, FontWeight, SharedString, Window, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::api::VoiceStatePatchRequest;
 use hermes_client_core::proto::id::Id;
@@ -20,7 +20,7 @@ pub struct ProfileCard {
     pub inst: InstanceId,
     pub space: Option<Id>,
     pub user: Id,
-    pub at: Point<Pixels>,
+    pub at: crate::modal::PopupFrom,
     /// When they were last online, once the server has said.
     pub last_online: Option<i64>,
 }
@@ -48,14 +48,14 @@ impl Shell {
                     inst,
                     space,
                     user,
-                    at: self.menu_at,
+                    at: self.menu_from,
                     last_online: None,
                 });
                 self.fetch_last_online(cx);
                 cx.notify();
             }
             Action::Volume => {
-                let at = self.menu_at;
+                let at = self.menu_from;
                 self.open_volume_menu(inst, user, at, window, cx);
             }
             Action::MuteForMe | Action::UnmuteForMe => {
@@ -386,10 +386,11 @@ impl Shell {
                             .on_click(cx.listener(
                                 move |this, event: &gpui_kit::ClickEvent, window, cx| {
                                     this.profile = None;
+                                    let at = this.popup_from(event.position());
                                     this.open_volume_menu(
                                         volume_inst.clone(),
                                         user,
-                                        event.position(),
+                                        at,
                                         window,
                                         cx,
                                     );
@@ -402,6 +403,7 @@ impl Shell {
         Some(crate::modal::popup(
             "profile-card-in",
             card.at,
+            300.,
             self.viewport,
             div()
                 .id("profile-card")

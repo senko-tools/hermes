@@ -6,7 +6,8 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Anchor, AnyElement, Context, Div, Pixels, Point, SharedString, Size, anchored, deferred, div,
+    Anchor, AnyElement, Bounds, Context, Div, Pixels, Point, SharedString, Size, anchored,
+    deferred, div,
 };
 
 use crate::menu_entries::{Action, Target};
@@ -80,46 +81,149 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
     .into_any_element()
 }
 
-/// Which corner of a popup sits at the click: it opens away from the window's nearest edges, so
-/// it lies beside what was clicked instead of being pushed back by an edge.
-fn popup_anchor(at: Point<Pixels>, viewport: Size<Pixels>) -> Anchor {
-    let below = at.y > viewport.height / 2.;
-    let right = at.x > viewport.width / 2.;
-    match (below, right) {
-        (false, false) => Anchor::TopLeft,
-        (false, true) => Anchor::TopRight,
-        (true, false) => Anchor::BottomLeft,
-        (true, true) => Anchor::BottomRight,
+/// Where a popup was asked for: the click, and what was clicked (the row or button it hugs).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupFrom {
+    pub at: Point<Pixels>,
+    pub trigger: Bounds<Pixels>,
+}
+
+impl PopupFrom {
+    /// Nothing known around the click: the popup hugs the point itself.
+    pub fn point(at: Point<Pixels>) -> PopupFrom {
+        PopupFrom {
+            at,
+            trigger: Bounds::new(at, gpui_kit::size(gpui_kit::px(1.), gpui_kit::px(1.))),
+        }
+    }
+
+    /// The smallest of `triggers` under `at` (the most specific thing clicked), else the point.
+    pub fn find(at: Point<Pixels>, triggers: &[Bounds<Pixels>]) -> PopupFrom {
+        let area = |b: &Bounds<Pixels>| b.size.width.as_f32() * b.size.height.as_f32();
+        triggers
+            .iter()
+            .filter(|b| b.contains(&at))
+            .min_by(|a, b| area(a).total_cmp(&area(b)))
+            .map_or_else(
+                || PopupFrom::point(at),
+                |trigger| PopupFrom {
+                    at,
+                    trigger: *trigger,
+                },
+            )
     }
 }
 
-/// A popup opened by a click at `at` (the share menu, the network details, a profile): `card`
-/// opens from there towards the middle of the window, fading in as it slides out a little.
+/// Where a popup goes and which way it slides in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Hug {
+    /// The popup's corner that sits at `position`.
+    pub anchor: Anchor,
+    pub position: Point<Pixels>,
+    /// The way it slides as it opens: (x, y), each -1, 0 or 1.
+    pub slide: (f32, f32),
+}
+
+/// The space between a popup and what was clicked.
+const HUG_GAP: f32 = 12.;
+/// How close a popup comes to the window's edge.
+const HUG_MARGIN: f32 = 8.;
+/// How far the click may be from the popup's near corner along the clicked thing.
+const HUG_LEAD: f32 = 24.;
+
+/// Places a popup `width` wide beside what was clicked, on the side towards the window's middle
+/// (or the other side, if only that one has room), with a fixed gap. Along that edge it follows
+/// the click, but only within the clicked thing's ends. With no room beside it, it goes above or
+/// below instead. The window's edge is kept by gpui's snapping afterwards. All in window pixels.
+pub(crate) fn hug(from: PopupFrom, width: Pixels, viewport: Size<Pixels>, scale: f32) -> Hug {
+    let (gap, margin, lead) = (HUG_GAP * scale, HUG_MARGIN * scale, HUG_LEAD * scale);
+    let t = from.trigger;
+    let (left, right) = (t.origin.x.as_f32(), (t.origin.x + t.size.width).as_f32());
+    let (top, bottom) = (t.origin.y.as_f32(), (t.origin.y + t.size.height).as_f32());
+    let (vw, vh) = (viewport.width.as_f32(), viewport.height.as_f32());
+    let (ax, ay) = (from.at.x.as_f32(), from.at.y.as_f32());
+    let need = width.as_f32() + gap + margin;
+    let room_left = left;
+    let room_right = vw - right;
+    let towards_right = (left + right) / 2. < vw / 2.;
+    let side = match (room_left >= need, room_right >= need) {
+        (true, true) => Some(towards_right),
+        (false, true) => Some(true),
+        (true, false) => Some(false),
+        (false, false) => None,
+    };
+    let point = |x: f32, y: f32| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y));
+    match side {
+        Some(to_right) => {
+            // Opening downwards in the window's upper half, upwards in the lower one.
+            let down = ay <= vh / 2.;
+            let y = if down {
+                (ay - lead).clamp(top, bottom.max(top))
+            } else {
+                (ay + lead).clamp(top, bottom.max(top))
+            };
+            let anchor = match (to_right, down) {
+                (true, true) => Anchor::TopLeft,
+                (true, false) => Anchor::BottomLeft,
+                (false, true) => Anchor::TopRight,
+                (false, false) => Anchor::BottomRight,
+            };
+            let x = if to_right { right + gap } else { left - gap };
+            Hug {
+                anchor,
+                position: point(x, y),
+                slide: (if to_right { 1. } else { -1. }, 0.),
+            }
+        }
+        None => {
+            let below = (top + bottom) / 2. <= vh / 2.;
+            let rightwards = ax <= vw / 2.;
+            let x = if rightwards {
+                (ax - lead).clamp(left, right.max(left))
+            } else {
+                (ax + lead).clamp(left, right.max(left))
+            };
+            let anchor = match (below, rightwards) {
+                (true, true) => Anchor::TopLeft,
+                (true, false) => Anchor::TopRight,
+                (false, true) => Anchor::BottomLeft,
+                (false, false) => Anchor::BottomRight,
+            };
+            let y = if below { bottom + gap } else { top - gap };
+            Hug {
+                anchor,
+                position: point(x, y),
+                slide: (0., if below { 1. } else { -1. }),
+            }
+        }
+    }
+}
+
+/// A popup opened by a click (the share menu, the network details, a profile, a volume menu):
+/// `card`, `width` wide, sits beside what was clicked (see [`hug`]) and fades in as it slides
+/// out from it a little.
 pub fn popup(
     id: &'static str,
-    at: Point<Pixels>,
+    from: PopupFrom,
+    width: f32,
     viewport: Size<Pixels>,
     card: impl IntoElement + 'static,
 ) -> AnyElement {
     use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
-    let anchor = popup_anchor(at, viewport);
-    // It slides away from the click, in the direction it opens.
-    let away = match anchor {
-        Anchor::BottomLeft | Anchor::BottomRight => 1.,
-        _ => -1.,
-    };
-    // A gap from the click, so the button that opened it stays visible.
-    let gap = px(18.) * away;
+    let place = hug(from, px(width), viewport, theme::scale());
+    let (sx, sy) = place.slide;
     deferred(
         anchored()
-            .anchor(anchor)
-            .position(at)
-            .offset(gpui_kit::point(px(0.), -gap))
-            .snap_to_window_with_margin(px(8.))
+            .anchor(place.anchor)
+            .position(place.position)
+            .snap_to_window_with_margin(px(HUG_MARGIN))
             .child(div().relative().child(card).with_animation(
                 id,
                 Animation::new(std::time::Duration::from_millis(150)).with_easing(ease_out_quint()),
-                move |d, t| d.opacity(t).top(px(6. * away * (1. - t))),
+                move |d, t| {
+                    let back = 6. * (1. - t);
+                    d.opacity(t).left(px(-sx * back)).top(px(-sy * back))
+                },
             )),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)
@@ -238,27 +342,88 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use super::popup_anchor;
-    use gpui_kit::{Anchor, point, px, size};
+    use super::{Hug, PopupFrom, hug};
+    use gpui_kit::{Anchor, Bounds, point, px, size};
+
+    fn from(at: (f32, f32), origin: (f32, f32), extent: (f32, f32)) -> PopupFrom {
+        PopupFrom {
+            at: point(px(at.0), px(at.1)),
+            trigger: Bounds::new(
+                point(px(origin.0), px(origin.1)),
+                size(px(extent.0), px(extent.1)),
+            ),
+        }
+    }
+
+    fn place(from: PopupFrom, width: f32) -> Hug {
+        hug(from, px(width), size(px(1200.), px(800.)), 1.)
+    }
 
     #[test]
-    fn popups_open_towards_the_middle() {
-        let window = size(px(1000.), px(800.));
+    fn a_member_row_on_the_right_opens_to_its_left() {
+        // A 240 wide row at the window's right edge, clicked in its middle.
+        let h = place(from((1100., 217.), (960., 200.), (240., 34.)), 300.);
+        assert_eq!(h.anchor, Anchor::TopRight);
+        assert_eq!(h.position, point(px(948.), px(200.)));
+        assert_eq!(h.slide, (-1., 0.));
+    }
+
+    #[test]
+    fn the_top_follows_the_click_within_the_trigger() {
+        // A tall trigger: the top is the click less the lead, not the trigger's top.
+        let h = place(from((1100., 300.), (960., 100.), (240., 300.)), 300.);
+        assert_eq!(h.position.y, px(276.));
+        // Low in the window, it opens upwards with its bottom near the click.
+        let h = place(from((1100., 600.), (960., 590.), (240., 34.)), 300.);
+        assert_eq!(h.anchor, Anchor::BottomRight);
+        assert_eq!(h.position.y, px(624.));
+    }
+
+    #[test]
+    fn a_button_bottom_left_opens_to_its_right() {
+        let h = place(from((200., 770.), (184., 754.), (32., 32.)), 400.);
+        assert_eq!(h.anchor, Anchor::BottomLeft);
+        assert_eq!(h.position, point(px(228.), px(786.)));
+        assert_eq!(h.slide, (1., 0.));
+    }
+
+    #[test]
+    fn with_no_room_beside_it_goes_above_or_below() {
+        // A message across the whole chat.
+        let h = place(from((300., 120.), (0., 100.), (1200., 60.)), 300.);
+        assert_eq!(h.anchor, Anchor::TopLeft);
+        assert_eq!(h.position, point(px(276.), px(172.)));
+        assert_eq!(h.slide, (0., 1.));
+        let h = place(from((900., 700.), (0., 680.), (1200., 60.)), 300.);
+        assert_eq!(h.anchor, Anchor::BottomRight);
+        assert_eq!(h.position, point(px(924.), px(668.)));
+    }
+
+    #[test]
+    fn a_tiny_window_still_places_it() {
+        let h = hug(
+            from((50., 50.), (40., 40.), (20., 20.)),
+            px(300.),
+            size(px(200.), px(150.)),
+            1.,
+        );
+        assert_eq!(h.anchor, Anchor::TopLeft);
+        assert_eq!(h.position.y, px(72.));
+    }
+
+    #[test]
+    fn the_smallest_trigger_under_the_click_wins() {
+        let row = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(40.)));
+        let avatar = Bounds::new(point(px(8.), px(4.)), size(px(32.), px(32.)));
+        let at = point(px(20.), px(20.));
+        assert_eq!(PopupFrom::find(at, &[row, avatar]).trigger, avatar);
         assert_eq!(
-            popup_anchor(point(px(50.), px(750.)), window),
-            Anchor::BottomLeft
+            PopupFrom::find(point(px(200.), px(20.)), &[row, avatar]).trigger,
+            row
         );
         assert_eq!(
-            popup_anchor(point(px(950.), px(100.)), window),
-            Anchor::TopRight
-        );
-        assert_eq!(
-            popup_anchor(point(px(950.), px(700.)), window),
-            Anchor::BottomRight
-        );
-        assert_eq!(
-            popup_anchor(point(px(10.), px(10.)), window),
-            Anchor::TopLeft
+            PopupFrom::find(point(px(900.), px(900.)), &[row]),
+            PopupFrom::point(point(px(900.), px(900.)))
         );
     }
 }

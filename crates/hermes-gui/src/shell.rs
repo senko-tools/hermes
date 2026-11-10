@@ -124,6 +124,11 @@ pub struct Shell {
     pub menu: Option<OpenMenu>,
     /// Where the last menu opened: what its entries open goes there too.
     pub menu_at: Point<Pixels>,
+    /// The same, with what was clicked: popups its entries open hug it.
+    pub menu_from: crate::modal::PopupFrom,
+    /// What popups can hug, as last painted: every element with a menu, and the buttons that
+    /// open popups. Filled while painting, emptied at the start of each frame.
+    pub popup_triggers: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
     /// A destructive menu action waiting for confirmation.
@@ -213,11 +218,11 @@ pub struct Shell {
     /// The window's size, as last drawn.
     pub viewport: Size<Pixels>,
     /// The network details are open, where they were asked for.
-    pub network_open: Option<Point<Pixels>>,
+    pub network_open: Option<crate::modal::PopupFrom>,
     /// The size of the voice room's tile area, as last drawn.
     pub room_area: Size<Pixels>,
     /// The share menu is open, where it was asked for.
-    pub share_menu: Option<Point<Pixels>>,
+    pub share_menu: Option<crate::modal::PopupFrom>,
     /// The screens that can be shared, primary first.
     pub screen_names: Vec<String>,
     /// My running screen share capture.
@@ -296,6 +301,8 @@ impl Shell {
             selection: Default::default(),
             menu: None,
             menu_at: Point::default(),
+            menu_from: crate::modal::PopupFrom::point(Point::default()),
+            popup_triggers: Default::default(),
             profile: None,
             confirm: None,
             add_instance: None,
@@ -1292,6 +1299,8 @@ impl Render for Shell {
         }
         self.scale = window.scale_factor();
         self.viewport = window.viewport_size();
+        // This frame paints them again.
+        self.popup_triggers.borrow_mut().clear();
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);

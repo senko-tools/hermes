@@ -55,6 +55,7 @@ impl Shell {
     ) -> Stateful<Div> {
         let pressed = target.clone();
         element
+            .child(self.popup_trigger())
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _, _, _| this.right_pressed = Some(pressed.clone())),
@@ -67,6 +68,36 @@ impl Shell {
                     }
                 }),
             )
+    }
+
+    /// A child that notes where its parent is painted, so a popup opened from it can hug it.
+    /// It draws nothing; absolute children are placed against their parent in gpui.
+    pub fn popup_trigger(&self) -> AnyElement {
+        let triggers = self.popup_triggers.clone();
+        gpui_kit::canvas(
+            move |bounds, _, _| triggers.borrow_mut().push(bounds),
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// `element` (a button that opens a popup) with a [`Shell::popup_trigger`].
+    pub fn hug_target(&self, element: AnyElement) -> AnyElement {
+        div()
+            .flex()
+            .flex_shrink_0()
+            .child(element)
+            .child(self.popup_trigger())
+            .into_any_element()
+    }
+
+    /// `at` and the most specific thing under it that a popup can hug.
+    pub fn popup_from(&self, at: Point<Pixels>) -> crate::modal::PopupFrom {
+        crate::modal::PopupFrom::find(at, &self.popup_triggers.borrow())
     }
 
     /// The empty space of the rail or of Friends' sidebar: adding instances, and each instance's
@@ -92,6 +123,7 @@ impl Shell {
             return;
         }
         self.menu_at = position;
+        self.menu_from = self.popup_from(position);
         let shell = cx.entity().downgrade();
         let view = build_menu(shell, lines, window, cx);
         view.focus_handle(cx).focus(window, cx);

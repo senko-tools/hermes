@@ -67,7 +67,7 @@ pub struct VolumeMenu {
     pub inst: InstanceId,
     pub user: Id,
     pub name: String,
-    pub at: Point<Pixels>,
+    pub at: crate::modal::PopupFrom,
     pub volume: f32,
     pub muted: bool,
     /// The volume of their screen share's sound, while I watch it.
@@ -496,14 +496,15 @@ impl Shell {
             .hover(|d| d.text_color(theme::accent()))
             .child(div().flex_1().min_w_0().truncate().child(quality))
             .child(self.render_spark())
+            .child(self.popup_trigger())
             .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
                 this.network_open = match this.network_open {
                     Some(_) => None,
-                    None => Some(event.position()),
+                    None => Some(this.popup_from(event.position())),
                 };
                 cx.notify();
             }));
-        let share = voice_button(
+        let share = self.hug_target(voice_button(
             "panel-share",
             assets::MONITOR_SHARE,
             Look::plain(theme::accent()),
@@ -511,7 +512,7 @@ impl Shell {
             cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 this.share_button(event.position(), window, cx);
             }),
-        );
+        ));
         let leave = voice_button(
             "panel-leave",
             assets::HANG_UP,
@@ -712,6 +713,7 @@ impl Shell {
         Some(crate::modal::popup(
             "network-in",
             at,
+            420.,
             self.viewport,
             div()
                 .id("network")
@@ -850,7 +852,7 @@ impl Shell {
                     .border_1()
                     .border_color(theme::border())
                     .shadow_lg()
-                    .child(voice_button(
+                    .child(self.hug_target(voice_button(
                         "bar-share",
                         assets::MONITOR_SHARE,
                         Look::plain(theme::accent()),
@@ -858,7 +860,7 @@ impl Shell {
                         cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                             this.share_button(event.position(), window, cx);
                         }),
-                    ))
+                    )))
                     .child(
                         div()
                             .flex()
@@ -1244,7 +1246,7 @@ impl Shell {
         &mut self,
         inst: InstanceId,
         user: Id,
-        at: Point<Pixels>,
+        at: crate::modal::PopupFrom,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1342,6 +1344,7 @@ impl Shell {
         Some(crate::modal::popup(
             "volume-menu-in",
             menu.at,
+            240.,
             self.viewport,
             div()
                 .id("volume-menu")
@@ -1399,7 +1402,7 @@ impl Shell {
             self.stop_share(cx);
             return;
         }
-        self.share_menu = Some(at);
+        self.share_menu = Some(self.popup_from(at));
         self.load_screens(cx);
         cx.notify();
     }
@@ -1513,6 +1516,7 @@ impl Shell {
         Some(crate::modal::popup(
             "share-menu-in",
             at,
+            400.,
             self.viewport,
             div()
                 .id("share-menu")
