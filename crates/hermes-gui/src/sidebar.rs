@@ -144,38 +144,56 @@ fn count_badge(count: u32) -> Div {
         .child(count.to_string())
 }
 
-/// What a rail icon's voice chip says: how many are in voice there, at most "9+".
-fn voice_count_text(count: usize) -> String {
-    if count > 9 {
-        "9+".to_owned()
-    } else {
-        count.to_string()
+/// A server icon's tooltip: its name, and how many are in voice there.
+fn rail_tooltip(name: &str, in_voice: usize) -> String {
+    match in_voice {
+        0 => name.to_owned(),
+        n => format!("{name} - {n} in voice"),
     }
 }
 
-/// Over a rail icon's top-right corner: a speaker and how many are in voice there. Accent when
-/// I am one of them. A ring in the rail's colour sets it off from the picture.
-fn voice_chip(here: view::VoiceHere) -> Div {
+/// The voice chip's size.
+const VOICE_CHIP: f32 = 20.;
+/// It pops in with a little overshoot when someone joins an empty voice channel.
+const CHIP_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(520., 22., 1.);
+
+/// A round chip with a speaker in a rail icon's top-right corner while people are in voice there
+/// (the tooltip says how many). Accent when I am one of them. A ring in the rail's colour sets
+/// it off from the picture. It sits inside the icon, so the rail's edge never cuts it.
+fn voice_chip(id: SharedString, here: view::VoiceHere) -> impl IntoElement {
+    use gpui_kit::{AnimationExt as _, SpringAnimation};
     let (bg, fg) = if here.me {
         (theme::accent(), theme::on_accent())
     } else {
         (theme::raised(), theme::text_secondary())
     };
+    // A fixed box, so the chip grows from its middle.
     div()
         .flex()
-        .flex_shrink_0()
         .items_center()
-        .gap(px(2.))
-        .h(px(18.))
-        .px(px(4.))
-        .rounded(px(9.))
-        .border_2()
-        .border_color(theme::sidebar())
-        .bg(bg)
-        .text_color(fg)
-        .text_size(theme::caption_size())
-        .child(icon(assets::VOLUME, 11., fg))
-        .child(voice_count_text(here.count))
+        .justify_center()
+        .size(px(VOICE_CHIP))
+        .child(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .border_2()
+                .border_color(theme::sidebar())
+                .bg(bg)
+                .child(icon(assets::VOLUME, 11., fg))
+                .with_spring(
+                    id,
+                    SpringAnimation::new(CHIP_SPRING).to(true).from(false),
+                    |d, phase| {
+                        let size = VOICE_CHIP * (0.6 + 0.4 * phase.0.max(0.));
+                        d.size(px(size))
+                            .rounded(px(size / 2.))
+                            .opacity(phase.0.clamp(0., 1.))
+                    },
+                ),
+        )
 }
 
 fn unread_dot() -> Div {
@@ -509,7 +527,7 @@ impl Shell {
                     })
                     .when(picture.is_none(), |d| d.child(initials(&name)))
                     .tooltip({
-                        let name = SharedString::from(name.clone());
+                        let name = SharedString::from(rail_tooltip(&name, voice.count));
                         move |window, cx| {
                             gpui_kit::component::tooltip::Tooltip::new(name.clone())
                                 .build(window, cx)
@@ -535,13 +553,10 @@ impl Shell {
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
                     )
                     .when(voice.count > 0, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .top(px(-4.))
-                                .right(px(-6.))
-                                .child(voice_chip(voice)),
-                        )
+                        d.child(div().absolute().top_0().right(px(-4.)).child(voice_chip(
+                            SharedString::from(format!("rail-voice-{inst_key}-{id}")),
+                            voice,
+                        )))
                     })
                     .into_any_element()
             })
@@ -1378,10 +1393,9 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn voice_chip_counts_up_to_nine() {
-        assert_eq!(super::voice_count_text(1), "1");
-        assert_eq!(super::voice_count_text(9), "9");
-        assert_eq!(super::voice_count_text(10), "9+");
+    fn the_tooltip_says_how_many_are_in_voice() {
+        assert_eq!(super::rail_tooltip("Home", 0), "Home");
+        assert_eq!(super::rail_tooltip("Home", 3), "Home - 3 in voice");
     }
 
     #[test]
