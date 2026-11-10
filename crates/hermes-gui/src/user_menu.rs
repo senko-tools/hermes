@@ -49,6 +49,7 @@ impl Shell {
         at: crate::modal::PopupFrom,
         cx: &mut Context<Self>,
     ) {
+        self.cancel_closing("profile-card-in");
         self.profile = Some(ProfileCard {
             inst,
             space,
@@ -408,7 +409,7 @@ impl Shell {
                             .w_full()
                             .label(SharedString::from("Message"))
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.profile = None;
+                                this.close_later("profile-card-in", |s| s.profile = None, cx);
                                 this.run_action(
                                     Target::Member(message_inst.clone(), None, user),
                                     Action::SendMessage,
@@ -425,7 +426,7 @@ impl Shell {
                             .label(SharedString::from("Volume\u{2026}"))
                             .on_click(cx.listener(
                                 move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                    this.profile = None;
+                                    this.close_later("profile-card-in", |s| s.profile = None, cx);
                                     let at = this.popup_from(event.position());
                                     this.open_volume_menu(
                                         volume_inst.clone(),
@@ -461,7 +462,7 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.profile = None;
+                    this.close_later("profile-card-in", |s| s.profile = None, cx);
                     cx.notify();
                 }))
                 .child(

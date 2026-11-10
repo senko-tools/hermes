@@ -211,13 +211,15 @@ impl Shell {
     }
 
     pub fn leave_voice(&mut self, cx: &mut Context<Self>) {
+        // The panel closes down: an empty one of its height shrinks away.
+        self.close_later("voice-panel", |_| {}, cx);
         let core = self.core.clone();
         self.run(
             cx,
             async move { core.leave_voice().await },
-            |this, (), _, _| {
+            |this, (), _, cx| {
                 this.net.clear();
-                this.network_open = None;
+                this.close_later("network-in", |s| s.network_open = None, cx);
             },
         );
     }
@@ -466,7 +468,22 @@ impl Shell {
                     .items_center()
                     .gap(px(6.))
                     .child(if connected {
-                        icon(assets::WAVEFORM, 14., state_color).into_any_element()
+                        // Connected: the colour flows from the waiting accent to green.
+                        icon(assets::WAVEFORM, 14., state_color)
+                            .with_spring(
+                                "voice-state-icon",
+                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                                    .to(true)
+                                    .from(false),
+                                |d, phase| {
+                                    d.text_color(theme::mix(
+                                        theme::accent(),
+                                        theme::success(),
+                                        phase.0.clamp(0., 1.),
+                                    ))
+                                },
+                            )
+                            .into_any_element()
                     } else {
                         // Still on its way: the icon breathes.
                         icon(assets::WAVEFORM, 14., state_color)
@@ -486,13 +503,29 @@ impl Shell {
                             .truncate()
                             .text_size(theme::caption_size())
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(state_color)
                             .child(match status {
                                 VoiceStatus::Connected { .. } => "Voice connected",
                                 VoiceStatus::Connecting => "Voice connecting",
                                 VoiceStatus::Reconnecting { .. } => "Voice reconnecting",
                                 VoiceStatus::Disconnected => "Voice disconnected",
-                            }),
+                            })
+                            .with_spring(
+                                "voice-state-text",
+                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                                    .to(connected),
+                                move |d, phase| {
+                                    let from = if connected {
+                                        theme::accent()
+                                    } else {
+                                        state_color
+                                    };
+                                    d.text_color(theme::mix(
+                                        from,
+                                        state_color,
+                                        phase.0.clamp(0., 1.),
+                                    ))
+                                },
+                            ),
                     )
                     .children(ptt.map(|held| {
                         div()
@@ -532,10 +565,12 @@ impl Shell {
             .child(self.render_spark())
             .child(self.popup_trigger())
             .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
-                this.network_open = match this.network_open {
-                    Some(_) => None,
-                    None => Some(this.popup_from(event.position())),
-                };
+                if this.network_open.is_some() && !crate::modal::closing("network-in") {
+                    this.close_later("network-in", |s| s.network_open = None, cx);
+                } else {
+                    this.cancel_closing("network-in");
+                    this.network_open = Some(this.popup_from(event.position()));
+                }
                 cx.notify();
             }));
         let share = self.share_voice_button("panel-share", cx);
@@ -571,12 +606,24 @@ impl Shell {
                 )
                 .child(encryption)
                 .child(network)
-                // Joining: the panel rises into place as it fades in.
+                // Its height, for the empty panel that shrinks away after leaving.
+                .child({
+                    let seen = self.voice_panel_height.clone();
+                    canvas(
+                        move |bounds, _, _| seen.set(bounds.size.height.as_f32()),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0()
+                })
+                .relative()
+                .overflow_hidden()
+                // Joining: the panel opens upwards out of the user panel as it fades in.
                 .with_animation(
                     "voice-panel-in",
                     gpui_kit::Animation::new(theme::FADE * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.relative().top(px(10. * (1. - t))).opacity(t),
+                    |d, t| d.max_h(px(VOICE_PANEL_MAX * t)).opacity(t),
                 )
                 .into_any_element(),
         )
@@ -788,7 +835,7 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.network_open = None;
+                    this.close_later("network-in", |s| s.network_open = None, cx);
                     cx.notify();
                 }))
                 .child(
@@ -808,7 +855,7 @@ impl Shell {
                         .child(
                             crate::channel::tip_button("network-close", assets::CLOSE, "Close")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.network_open = None;
+                                    this.close_later("network-in", |s| s.network_open = None, cx);
                                     cx.notify();
                                 })),
                         ),
@@ -1255,7 +1302,14 @@ impl Shell {
                             .py(px(4.))
                             .rounded(theme::radius_small())
                             .bg(theme::scrim())
-                            .child(name_row),
+                            .child(name_row)
+                            // Like the stop button, only while the pointer is over the share.
+                            .with_spring(
+                                SharedString::from(format!("share-name-show-{}", p.user)),
+                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                                    .to(tile_hovered),
+                                |d, phase| d.opacity(phase.0.clamp(0., 1.)),
+                            ),
                     )
                     // Stop watching shows while the pointer is over the share, so the screen
                     // stays clean.
@@ -1365,11 +1419,11 @@ impl Shell {
                 ))
             },
         );
+        let (w, h) = tile;
         let tile = div()
             .id(SharedString::from(format!("tile-{user}")))
             .relative()
-            .w(px(tile.0))
-            .h(px(tile.1))
+            .size_full()
             .rounded(radius)
             .overflow_hidden()
             .bg(theme::sidebar())
@@ -1394,7 +1448,46 @@ impl Shell {
                 }
                 cx.notify();
             }));
-        self.with_menu(tile, target, cx).into_any_element()
+        let speaking = p.speaking;
+        // A soft green glow behind the tile while they speak, outside its edge.
+        let glow = div().absolute().inset_0().rounded(radius).with_spring(
+            SharedString::from(format!("tile-glow-{user}")),
+            gpui_kit::SpringAnimation::new(RING_SPRING).to(speaking),
+            move |d, phase| {
+                let t = phase.0.clamp(0., 1.);
+                d.shadow(vec![gpui_kit::BoxShadow {
+                    color: theme::alpha(theme::speaking(), 0.45 * t).into(),
+                    offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+                    blur_radius: px(14. * t),
+                    spread_radius: px(1. * t),
+                    inset: false,
+                }])
+            },
+        );
+        // The tile's place stays put while the tile grows into it from a little smaller.
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .w(px(w))
+            .h(px(h))
+            .child(
+                div()
+                    .relative()
+                    .child(glow)
+                    .child(self.with_menu(tile, target, cx))
+                    .with_animation(
+                        SharedString::from(format!("tile-grow-{user}-{enlarged}")),
+                        gpui_kit::Animation::new(theme::FADE * 2)
+                            .with_easing(gpui_kit::ease_out_quint()),
+                        move |d, t| {
+                            let scale = 0.96 + 0.04 * t;
+                            d.w(px(w * scale)).h(px(h * scale))
+                        },
+                    ),
+            )
+            .into_any_element()
     }
 
     // ---- the volume menu ----------------------------------------------------------------------
@@ -1470,6 +1563,7 @@ impl Shell {
             ));
             state
         });
+        self.cancel_closing("volume-menu-in");
         self.volume_menu = Some(VolumeMenu {
             muted: self.core.user_muted(&inst, user),
             inst,
@@ -1519,7 +1613,7 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.volume_menu = None;
+                    this.close_later("volume-menu-in", |s| s.volume_menu = None, cx);
                     cx.notify();
                 }))
                 .child(
@@ -1559,6 +1653,7 @@ impl Shell {
             self.stop_share(cx);
             return;
         }
+        self.cancel_closing("share-menu-in");
         self.share_menu = Some(self.popup_from(at));
         self.load_screens(cx);
         cx.notify();
@@ -1690,7 +1785,7 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.share_menu = None;
+                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
                     cx.notify();
                 }))
                 .child(
@@ -1713,7 +1808,7 @@ impl Shell {
                         .child(
                             crate::channel::tip_button("share-close", assets::CLOSE, "Close")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.share_menu = None;
+                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
                                     cx.notify();
                                 })),
                         ),
@@ -1756,7 +1851,7 @@ impl Shell {
                                 .cursor_pointer()
                                 .label("Cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.share_menu = None;
+                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
                                     cx.notify();
                                 })),
                         )
@@ -1766,7 +1861,7 @@ impl Shell {
                                 .primary()
                                 .label("Start sharing")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.share_menu = None;
+                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
                                     this.start_share(cx);
                                 })),
                         ),
@@ -1889,6 +1984,12 @@ impl Look {
 /// A little bouncy: a toggle overshoots once and settles in about a quarter second.
 const TOGGLE_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(420., 24., 1.);
 
+/// Taller than the voice panel ever is: it opens towards this.
+const VOICE_PANEL_MAX: f32 = 200.;
+
+/// How much wider Leave grows under the pointer, for its name.
+const LEAVE_LABEL: f32 = 48.;
+
 /// Soft, without overshoot: a speaking ring follows the voice without flickering.
 const RING_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(260., 34., 1.);
 
@@ -1951,15 +2052,21 @@ impl Shell {
         } = button;
         let hovered = self.is_hovered(id);
         let tip = SharedString::from(if on { tips.1 } else { tips.0 });
+        // Leave grows into a pill with its name, so its width follows the inside.
+        let grows = hover == OnHover::Fill;
         div()
             .id(id)
             .flex_shrink_0()
-            .size(px(32.))
+            .h(px(32.))
+            .when(!grows, |d| d.w(px(32.)))
             .cursor_pointer()
             .on_hover(self.track_hover(id, cx))
             .on_click(click)
-            .tooltip(move |window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            // Leave names itself as it grows; the others say what they do.
+            .when(!grows, |d| {
+                d.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
             })
             .with_spring(
                 id,
@@ -1971,7 +2078,8 @@ impl Shell {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .size_full()
+                            .h_full()
+                            .when(!grows, |d| d.w_full())
                             .rounded(theme::row_radius())
                             .with_spring(
                                 SharedString::from(format!("{id}-hover")),
@@ -2029,6 +2137,34 @@ fn paint_voice_button(
             color = theme::mix(color, theme::on_accent(), h);
             bg = theme::alpha(look.on, 0.16 * t + h * (1. - 0.16 * t));
             tilt = -0.4 * h;
+            // The handset keeps its square; the name slides out of it to the right.
+            let glyph = icon(off_glyph, 18., color).with_transformation(
+                Transformation::scale(size(pop, pop)).with_rotation(radians(tilt)),
+            );
+            return d
+                .relative()
+                .overflow_hidden()
+                .justify_start()
+                .w(px(32. + LEAVE_LABEL * h))
+                .bg(bg)
+                .child(
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .size(px(32.))
+                        .child(glyph),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .pr(px(10.))
+                        .text_size(theme::caption_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme::alpha(theme::on_accent(), h))
+                        .child("Leave"),
+                );
         }
     }
     // One layer per glyph, so a glyph that stays does not dim while its weights trade.

@@ -128,9 +128,10 @@ impl Shell {
         let view = build_menu(shell, lines, window, cx);
         view.focus_handle(cx).focus(window, cx);
         let dismiss = cx.subscribe_in(&view, window, |this, _, _: &DismissEvent, _, cx| {
-            this.menu = None;
+            this.close_later("menu", |s| s.menu = None, cx);
             cx.notify();
         });
+        self.cancel_closing("menu");
         self.menu = Some(OpenMenu {
             view,
             position,
@@ -330,8 +331,10 @@ impl Shell {
         use gpui_kit::AnimationExt as _;
         let menu = self.menu.as_ref()?;
         // Each menu fades in as it drops a little away from the pointer.
+        let leaving = crate::modal::closing("menu");
         let key = SharedString::from(format!(
-            "menu-in-{}-{}",
+            "menu-{}-{}-{}",
+            if leaving { "out" } else { "in" },
             menu.position.x.as_f32(),
             menu.position.y.as_f32()
         ));
@@ -345,7 +348,10 @@ impl Shell {
                             key,
                             gpui_kit::Animation::new(crate::theme::FADE)
                                 .with_easing(gpui_kit::ease_out_quint()),
-                            |d, t| d.opacity(t).top(crate::theme::px(-4. * (1. - t))),
+                            move |d, t| {
+                                let t = if leaving { 1. - t } else { t };
+                                d.opacity(t).top(crate::theme::px(-4. * (1. - t)))
+                            },
                         ),
                     ),
             )
@@ -465,7 +471,7 @@ fn add_lines(
                 });
                 menu.item(row.checked(checked).on_click(move |_, window, cx| {
                     let _ = shell.update(cx, |this, cx| {
-                        this.menu = None;
+                        this.close_later("menu", |s| s.menu = None, cx);
                         run(this, window, cx);
                         cx.notify();
                     });

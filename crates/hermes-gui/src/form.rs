@@ -336,7 +336,7 @@ impl Shell {
     ) {
         let form = Form::new(Purpose::CreateSpace(inst), "Create a server", "Create")
             .text("A server is a home for your group, with its own channels, roles and members.");
-        self.form = None;
+        self.close_later("form", |s| s.form = None, cx);
         let built = Self::fields(form, window, cx).text("Name", "e.g. Friends", "");
         self.finish(built);
     }
@@ -349,6 +349,7 @@ impl Shell {
         {
             input.update(cx, |input, cx| input.focus(window, cx));
         }
+        self.cancel_closing("form");
         self.form = Some(form);
         cx.notify();
     }
@@ -879,7 +880,7 @@ impl Shell {
     fn form_done(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
         match result {
             Ok(text) => {
-                self.form = None;
+                self.close_later("form", |s| s.form = None, cx);
                 self.info(text, cx);
             }
             Err(err) => {
@@ -897,10 +898,12 @@ impl Shell {
     pub fn submit_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.form.take() else { return };
         if form.busy {
+            self.cancel_closing("form");
             self.form = Some(form);
             return;
         }
         let result = self.start_submit(&form, cx);
+        self.cancel_closing("form");
         self.form = Some(form);
         let form = self.form.as_mut().expect("just put back");
         match result {
@@ -1107,7 +1110,7 @@ impl Shell {
                     },
                     move |this, result, _, cx| match result {
                         Ok(Some(link)) => {
-                            this.form = None;
+                            this.close_later("form", |s| s.form = None, cx);
                             this.copy(link, "Invite link", cx);
                             this.invite_created(inst, space, cx);
                         }
@@ -1206,7 +1209,7 @@ impl Shell {
                     },
                     move |this, result: Result<_, CoreError>, window, cx| match result {
                         Ok(begun) => {
-                            this.form = None;
+                            this.close_later("form", |s| s.form = None, cx);
                             this.open_form_two_factor_confirm(next, begun.secret, window, cx);
                         }
                         Err(err) => this.form_done(Err(err.to_string()), cx),
@@ -1361,7 +1364,7 @@ impl Shell {
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.form = None;
+                this.close_later("form", |s| s.form = None, cx);
                 cx.notify();
             }));
         let label = if form.busy {

@@ -64,6 +64,8 @@ pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
 #[derive(Default)]
 pub struct Images {
     pub thumbs: HashMap<(InstanceId, Id), Img>,
+    /// When each thumbnail arrived: one that just did fades in, one shown again does not.
+    pub thumb_arrived: HashMap<(InstanceId, Id), std::time::Instant>,
     pub avatars: HashMap<(InstanceId, Id), Img>,
     /// The thumbnails in the order they were asked for: the oldest go first.
     thumb_order: std::collections::VecDeque<(InstanceId, Id)>,
@@ -88,6 +90,7 @@ impl Images {
             let Some(oldest) = self.thumb_order.pop_front() else {
                 break;
             };
+            self.thumb_arrived.remove(&oldest);
             if let Some(picture) = self.thumbs.remove(&oldest) {
                 self.retire(picture);
             }
@@ -406,6 +409,11 @@ impl Shell {
                         Img::Failed
                     }
                 };
+                if matches!(img, Img::Ready(_)) {
+                    this.images
+                        .thumb_arrived
+                        .insert(key.clone(), std::time::Instant::now());
+                }
                 this.images.thumbs.insert(key, img);
             },
         );

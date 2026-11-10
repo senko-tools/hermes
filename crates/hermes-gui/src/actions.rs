@@ -23,8 +23,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = None;
+        self.close_later("menu", |s| s.menu = None, cx);
         if action.is_destructive() {
+            self.cancel_closing("confirm");
             self.confirm = Some((target, action));
             cx.notify();
         } else {

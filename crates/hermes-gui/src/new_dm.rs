@@ -31,6 +31,7 @@ impl Shell {
             }
         });
         input.update(cx, |input, cx| input.focus(window, cx));
+        self.cancel_closing("new-dm");
         self.new_dm = Some(NewDm {
             inst,
             input,
@@ -77,7 +78,7 @@ impl Shell {
             },
             move |this, result, window, cx| match result {
                 Ok(channel) => {
-                    this.new_dm = None;
+                    this.close_later("new-dm", |s| s.new_dm = None, cx);
                     this.select(inst, channel, window, cx);
                 }
                 Err(err) => {
@@ -117,7 +118,7 @@ impl Shell {
                                 .large()
                                 .label("Cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.new_dm = None;
+                                    this.close_later("new-dm", |s| s.new_dm = None, cx);
                                     cx.notify();
                                 })),
                         )

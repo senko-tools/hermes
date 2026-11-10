@@ -1222,6 +1222,7 @@ impl Shell {
                     .danger()
                     .label("Delete server")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::DeleteSpace,
@@ -1238,6 +1239,7 @@ impl Shell {
                     .danger()
                     .label("Leave server")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::LeaveSpace,
@@ -1692,6 +1694,7 @@ impl Shell {
                                 "Delete channel"
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                this.cancel_closing("confirm");
                                 this.confirm = Some((
                                     Target::Channel(delete_inst.clone(), id),
                                     Action::DeleteChannel,
@@ -2091,6 +2094,7 @@ impl Shell {
                     .danger()
                     .label("Kick")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((kick.clone(), Action::Kick));
                         cx.notify();
                     })),
@@ -2120,6 +2124,7 @@ impl Shell {
                     .danger()
                     .label("Transfer…")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((target.clone(), Action::TransferOwnership));
                         cx.notify();
                     })),
@@ -2273,6 +2278,7 @@ impl Shell {
                             .danger()
                             .label("Revoke")
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                this.cancel_closing("confirm");
                                 this.confirm = Some((
                                     Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
                                     Action::RevokeInvite,

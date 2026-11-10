@@ -161,6 +161,7 @@ impl Shell {
             }),
         ];
         address.update(cx, |input, cx| input.focus(window, cx));
+        self.cancel_closing("add-instance");
         self.add_instance = Some(AddInstance {
             step: Step::Address,
             busy: false,
@@ -326,11 +327,11 @@ impl Shell {
                 dialog.busy = false;
                 match result {
                     Ok(inst) => {
-                        this.add_instance = None;
+                        this.close_later("add-instance", |s| s.add_instance = None, cx);
                         this.info(format!("Signed in to {inst}"), cx);
                     }
                     Err(err) if err == NEEDS_CODE => {
-                        this.add_instance = None;
+                        this.close_later("add-instance", |s| s.add_instance = None, cx);
                         this.open_form_login_code(
                             retry.host.clone(),
                             retry.username.trim().to_owned(),
@@ -367,7 +368,7 @@ impl Shell {
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.add_instance = None;
+                this.close_later("add-instance", |s| s.add_instance = None, cx);
                 cx.notify();
             }));
         let back = Button::new("add-back")

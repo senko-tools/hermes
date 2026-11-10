@@ -136,6 +136,18 @@ pub struct Shell {
     pub hovered: HashSet<gpui_kit::SharedString>,
     /// The copy button used a moment ago: it says "Copied".
     pub copied: Option<String>,
+    /// What is playing its way out, with the serial of its close (`modal.rs`).
+    pub closing_serials: HashMap<&'static str, u64>,
+    pub closing_serial: u64,
+    /// Messages and reaction chips drawn before (`channel.rs`).
+    pub reactions_seen: std::cell::RefCell<crate::channel::ReactionsSeen>,
+    /// Instances whose connection banner showed: `None` while it does, then when the
+    /// connection came back (the banner says so for a moment).
+    pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
+    /// Each sidebar row's place in the list as last drawn, and whether it is a category.
+    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, (usize, bool)>>>,
+    /// The voice panel's height as last painted, in window pixels.
+    pub voice_panel_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Chat text selected with the mouse.
     pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
@@ -319,6 +331,12 @@ impl Shell {
             hovered_file: None,
             hovered: HashSet::new(),
             copied: None,
+            closing_serials: HashMap::new(),
+            closing_serial: 0,
+            reactions_seen: Default::default(),
+            reconnect_banner: Default::default(),
+            sidebar_order: Default::default(),
+            voice_panel_height: Default::default(),
             shown_page: None,
             leaving: None,
             page_serial: 0,
@@ -726,6 +744,7 @@ impl Shell {
     pub fn show_status(&mut self, text: String, level: Level, cx: &mut Context<Self>) {
         self.status_serial += 1;
         let serial = self.status_serial;
+        self.cancel_closing("status");
         self.status = Some(Status {
             text,
             level,
@@ -739,8 +758,7 @@ impl Shell {
                     .await;
                 let _ = this.update(cx, |this, cx| {
                     if this.status.as_ref().is_some_and(|s| s.serial == serial) {
-                        this.status = None;
-                        cx.notify();
+                        this.close_later("status", |s| s.status = None, cx);
                     }
                 });
             })
@@ -1122,6 +1140,7 @@ impl Shell {
             Level::Error => (theme::danger(), assets::BAN),
         };
         let serial = status.serial;
+        let leaving = crate::modal::closing("status");
         // An info line goes by itself: a thin bar runs out until it does.
         let countdown = (status.level == Level::Info).then(|| {
             let seconds = INFO_SECONDS
@@ -1159,17 +1178,23 @@ impl Shell {
                 .child(
                     crate::channel::tip_button("status-dismiss", assets::CLOSE, "Dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.status = None;
-                            cx.notify();
+                            this.close_later("status", |s| s.status = None, cx);
                         })),
                 )
                 .children(countdown)
-                // Each new line fades in.
+                // Each new line fades in, and out when it goes.
                 .with_animation(
-                    gpui_kit::SharedString::from(format!("status-in-{serial}")),
-                    gpui_kit::Animation::new(theme::FADE * 2)
-                        .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.opacity(t),
+                    gpui_kit::SharedString::from(format!(
+                        "status-{}-{serial}",
+                        if leaving { "out" } else { "in" }
+                    )),
+                    gpui_kit::Animation::new(if leaving {
+                        crate::modal::POP
+                    } else {
+                        theme::FADE * 2
+                    })
+                    .with_easing(gpui_kit::ease_out_quint()),
+                    move |d, t| d.opacity(if leaving { 1. - t } else { t }),
                 )
                 .into_any_element(),
         )

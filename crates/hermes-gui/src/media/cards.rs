@@ -51,8 +51,6 @@ const SPEAKER_GROUP: &str = "media-speaker";
 /// How wide a volume slider opens: its track, and the percentage beside it.
 const SLIDER_TRACK_W: f32 = 84.;
 const SLIDER_TEXT_W: f32 = 44.;
-/// The hover group of a volume slider's track: its knob grows under the mouse.
-const TRACK_GROUP: &str = "media-volume-track";
 /// The volume knob, at rest and while hovered or held.
 const KNOB: f32 = 10.;
 const KNOB_HELD: f32 = 13.;
@@ -870,6 +868,9 @@ impl Shell {
         let (drawn, pressed) = (bar.clone(), bar.clone());
         let sliders = self.media.sliders.clone();
         let held = self.media.volume_drag.as_ref() == Some(&bar);
+        let track_key = id("volume-track");
+        let knob_key = id("volume-knob");
+        let big = held || self.is_hovered(&track_key);
         let accent = theme::accent();
         let knob_color: gpui_kit::Hsla = if overlay {
             gpui_kit::hsla(0., 0., 1., 1.)
@@ -887,7 +888,6 @@ impl Shell {
                 gpui_kit::SpringAnimation::new(FILL_SPRING).to(gain.clamp(0., 1.)),
                 move |d, gain| {
                     let gain = gain.clamp(0., 1.);
-                    let knob = if held { KNOB_HELD } else { KNOB };
                     d.child(
                         div()
                             .absolute()
@@ -909,23 +909,30 @@ impl Shell {
                             .flex()
                             .items_center()
                             .justify_center()
+                            // The knob grows on a spring under the pointer and while held.
                             .child(
                                 div()
                                     .flex_shrink_0()
-                                    .size(px(knob))
-                                    .rounded(px(knob / 2.))
                                     .bg(knob_color)
                                     .shadow_sm()
-                                    .group_hover(TRACK_GROUP, |s| {
-                                        s.size(px(KNOB_HELD)).rounded(px(KNOB_HELD / 2.))
-                                    }),
+                                    .with_spring(
+                                        knob_key,
+                                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                                            .to(big),
+                                        |d, phase| {
+                                            let size =
+                                                KNOB + (KNOB_HELD - KNOB) * phase.0.clamp(0., 1.2);
+                                            d.size(px(size)).rounded(px(size / 2.))
+                                        },
+                                    ),
                             ),
                     )
                 },
             );
         let track = div()
+            .id(track_key.clone())
             .relative()
-            .group(TRACK_GROUP)
+            .on_hover(self.track_hover(track_key.clone(), cx))
             .flex()
             .flex_shrink_0()
             .items_center()

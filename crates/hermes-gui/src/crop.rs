@@ -325,6 +325,7 @@ impl Shell {
                 }
                 cx.notify();
             });
+        self.cancel_closing("crop");
         self.crop = Some(Crop {
             purpose,
             bytes,
@@ -409,7 +410,7 @@ impl Shell {
             },
             |this, result, _, cx| match result {
                 Ok(text) => {
-                    this.crop = None;
+                    this.close_later("crop", |s| s.crop = None, cx);
                     this.info(text, cx);
                 }
                 Err(err) => {
@@ -569,7 +570,7 @@ impl Shell {
                             .cursor_pointer()
                             .label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.crop = None;
+                                this.close_later("crop", |s| s.crop = None, cx);
                                 cx.notify();
                             })),
                     )

@@ -38,6 +38,7 @@ pub fn lock_mark(lock: MessageLock, private: bool) -> Option<Div> {
 impl Shell {
     /// Opens the safety number of a conversation; asks the server for the latest keys.
     pub fn open_keys_dialog(&mut self, inst: InstanceId, channel: Id, cx: &mut Context<Self>) {
+        self.cancel_closing("keys-dialog");
         self.keys_dialog = Some(KeysDialog {
             inst: inst.clone(),
             channel,
@@ -156,7 +157,7 @@ impl Shell {
                             .large()
                             .label("Close")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.keys_dialog = None;
+                                this.close_later("keys-dialog", |s| s.keys_dialog = None, cx);
                                 cx.notify();
                             })),
                     ),

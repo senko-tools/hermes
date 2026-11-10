@@ -216,6 +216,24 @@ pub fn padding(m: &MessageRow, compact: bool) -> (f32, f32) {
     (top, bottom)
 }
 
+/// A message still being sent: spaced like the message it becomes (text, no files), so
+/// nothing moves when the server confirms it.
+pub fn pending_padding(p: &PendingRow, compact: bool) -> (f32, f32) {
+    padding(
+        &MessageRow {
+            id: hermes_client_core::proto::id::Id(0),
+            grouped: p.grouped,
+            ends_group: p.ends_group,
+            starts_with_file: false,
+            next_starts_with_file: false,
+            system: false,
+            mentions_me: false,
+            reply: None,
+        },
+        compact,
+    )
+}
+
 /// A pending message right after another pending one is grouped with it.
 fn pending_follows_pending(rows: &[Row]) -> bool {
     matches!(rows.last(), Some(Row::Pending(_)))

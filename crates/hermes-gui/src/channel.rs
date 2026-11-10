@@ -138,6 +138,19 @@ const BULK_DELETE_AT_ONCE: usize = 100;
 /// Parsed messages kept; it is emptied when full.
 const MARKUP_CACHE_SIZE: usize = 4096;
 
+/// Messages and reaction chips already drawn: a chip that is new on a message already shown
+/// pops in. Emptied when large; the worst that does is skip a pop.
+#[derive(Default)]
+pub struct ReactionsSeen {
+    pub messages: HashSet<Id>,
+    pub chips: HashSet<(Id, String)>,
+}
+
+const REACTIONS_SEEN_MAX: usize = 20_000;
+
+/// How long the banner says "Reconnected" once the connection is back.
+const RECONNECTED_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// How long the message jumped to stays highlighted.
 const HIGHLIGHT_FOR: std::time::Duration = std::time::Duration::from_secs(4);
 
@@ -164,6 +177,8 @@ pub struct ChatView {
     pub load_failed: bool,
     /// The jump to the first new message was used this visit.
     pub unread_jump_done: bool,
+    /// The row after the last one shown: the messages from there on are below the view.
+    pub shown_end: usize,
     /// Messages selected to delete together (only ones I may delete).
     pub selected: BTreeSet<Id>,
     /// The message the last selecting click was on: Shift+click selects from there.
@@ -463,8 +478,12 @@ impl Shell {
             // the list here panics. Deferred work runs once the event has been dispatched.
             let near_top = event.visible_range.start < LOAD_OLDER_WITHIN;
             let at_end = event.visible_range.end >= event.count;
+            let shown_end = event.visible_range.end;
             let key = scroll_key.clone();
             cx.defer_in(window, move |this, _, cx| {
+                if let Some(view) = this.chats.get_mut(&key) {
+                    view.shown_end = shown_end;
+                }
                 this.chat_scrolled(&key, near_top, at_end, cx);
             });
         }));
@@ -517,6 +536,7 @@ impl Shell {
                 highlight: None,
                 load_failed: false,
                 unread_jump_done: false,
+                shown_end: 0,
                 selected: BTreeSet::new(),
                 anchor: None,
                 input,
@@ -661,8 +681,49 @@ impl Shell {
                 format!("Connection lost. Reconnecting (try {attempt})…")
             }
             ConnStatus::Failed { reason } => format!("Not connected: {reason}"),
-            _ => return None,
+            // Back after the banner showed: it says so in green for a moment, then goes.
+            status => {
+                let mut banners = self.reconnect_banner.borrow_mut();
+                match banners.get(inst) {
+                    Some(None) if status == ConnStatus::Connected => {
+                        let now = std::time::Instant::now();
+                        banners.insert(inst.clone(), Some(now));
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(RECONNECTED_FOR).await;
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
+                    Some(Some(at)) if at.elapsed() < RECONNECTED_FOR => {}
+                    _ => {
+                        banners.remove(inst);
+                        return None;
+                    }
+                }
+                return Some(
+                    div()
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(8.))
+                        .mx(px(16.))
+                        .mb(px(6.))
+                        .p(px(8.))
+                        .rounded(theme::row_radius())
+                        .bg(theme::raised())
+                        .border_1()
+                        .border_color(theme::success())
+                        .text_size(theme::secondary_size())
+                        .text_color(theme::success())
+                        .child(icon(assets::LAN_CONNECT, 16., theme::success()))
+                        .child(div().flex_1().child("Reconnected"))
+                        .into_any_element(),
+                );
+            }
         };
+        self.reconnect_banner
+            .borrow_mut()
+            .insert(inst.clone(), None);
         let inst = inst.clone();
         Some(
             div()
@@ -1864,6 +1925,21 @@ impl Shell {
             .unwrap_or_default();
         let typing = s.and_then(|s| self.typing_line(s, channel));
         let at_end = view.list.is_scrolled_to_end() != Some(false);
+        // How many messages are below what shows, when all of them are loaded.
+        let below = view
+            .rows
+            .iter()
+            .skip(view.shown_end)
+            .filter(|r| matches!(r, Row::Message(_)))
+            .count();
+        let jump_label = if live && below > 0 {
+            SharedString::from(format!(
+                "{below} newer message{} · Jump to present",
+                if below == 1 { "" } else { "s" }
+            ))
+        } else {
+            SharedString::from("Jump to present")
+        };
         let newest = window_state.and_then(|w| w.messages.iter().last().map(|m| m.id));
         let first_unread = view
             .read_marker
@@ -1983,7 +2059,7 @@ impl Shell {
                                 Button::new("jump-present")
                                     .cursor_pointer()
                                     .primary()
-                                    .label("Jump to present")
+                                    .label(jump_label)
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.jump_to_present(&jump_key, cx);
                                     })),
@@ -2130,6 +2206,7 @@ impl Shell {
                             view.selected.retain(|id| selectable.contains(id));
                             let ids: Vec<Id> = view.selected.iter().copied().collect();
                             if !ids.is_empty() {
+                                this.cancel_closing("confirm");
                                 this.confirm = Some((
                                     Target::Messages(delete_key.0.clone(), delete_key.1, ids),
                                     Action::DeleteMessage,
@@ -2518,13 +2595,26 @@ impl Shell {
                 msg.author.id,
                 cx,
             );
+            // An edited message says when, under the pointer over its time.
+            let edited_tip = msg.edited_at.map(|at| {
+                SharedString::from(format!(
+                    "Edited {}",
+                    time::format(at, &self.config.buffer.timestamp_format, self.utc_offset)
+                ))
+            });
             let time = div()
+                .id(SharedString::from(format!("time-{id}")))
                 .relative()
                 .cursor_text()
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
                 .child(time)
-                .child(time_record);
+                .child(time_record)
+                .when_some(edited_tip, |d, tip| {
+                    d.tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+                });
             let lock = crate::encryption::lock_mark(
                 msg.lock,
                 s.channel_encrypted(channel)
@@ -2614,12 +2704,28 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        // Messages and chips drawn before: a chip new on a message already shown pops in, one
+        // only shown again (scrolled back into view) does not.
+        let shown_before = {
+            let mut seen = self.reactions_seen.borrow_mut();
+            if seen.messages.len() > REACTIONS_SEEN_MAX {
+                seen.messages.clear();
+                seen.chips.clear();
+            }
+            !seen.messages.insert(id)
+        };
         if !msg.reactions.is_empty() {
             let chips = msg.reactions.iter().enumerate().map(|(n, r)| {
+                let fresh_chip = self
+                    .reactions_seen
+                    .borrow_mut()
+                    .chips
+                    .insert((id, r.emoji.clone()))
+                    && shown_before;
                 let (mine, emoji) = (r.me, r.emoji.clone());
                 let (inst, emoji_id) =
                     (inst.clone(), SharedString::from(format!("react-{id}-{n}")));
-                div()
+                let chip = div()
                     .id(emoji_id)
                     .flex()
                     .items_center()
@@ -2646,7 +2752,28 @@ impl Shell {
                             d.bg(theme::mix(theme::sidebar(), theme::accent_soft(), t))
                                 .border_color(theme::mix(theme::border(), theme::accent(), t))
                         },
-                    )
+                    );
+                if fresh_chip {
+                    // New on a message already shown: it pops up into its place.
+                    div()
+                        .relative()
+                        .child(chip)
+                        .with_spring(
+                            SharedString::from(format!("react-new-{id}-{}", r.emoji)),
+                            gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(
+                                520., 22., 1.,
+                            ))
+                            .to(true)
+                            .from(false),
+                            |d, phase| {
+                                d.opacity(phase.0.clamp(0., 1.))
+                                    .top(px(6. * (1. - phase.0)))
+                            },
+                        )
+                        .into_any_element()
+                } else {
+                    chip.into_any_element()
+                }
             });
             body.push(
                 div()
@@ -2709,6 +2836,28 @@ impl Shell {
             .pr(px(8.))
             .rounded(theme::radius_small())
             .when(selected, |d| d.bg(theme::accent_soft()))
+            // Just edited while it shows: a soft flash says it changed.
+            .when(
+                msg.edited_at
+                    .is_some_and(|at| (-500..1500).contains(&(hermes_client_core::now_ms() - at))),
+                |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .rounded(theme::radius_small())
+                            .with_animation(
+                                SharedString::from(format!(
+                                    "edited-flash-{id}-{}",
+                                    msg.edited_at.unwrap_or_default()
+                                )),
+                                gpui_kit::Animation::new(std::time::Duration::from_millis(900))
+                                    .with_easing(gpui_kit::ease_out_quint()),
+                                |d, t| d.bg(theme::alpha(theme::accent_soft(), 1. - t)),
+                            ),
+                    )
+                },
+            )
             // The message jumped to glows, then fades back over the time it stays marked.
             .when(jumped && !selected, |d| {
                 d.child(
@@ -2782,8 +2931,9 @@ impl Shell {
         // Someone else's message that just arrived fades in, rising into place. Only fresh ones:
         // the list drops rows scrolled away, and an old one coming back must not replay it.
         let age = hermes_client_core::now_ms() - msg.created_at() as i64;
-        let fresh = (-500..1500).contains(&age) && s.me_id() != Some(msg.author.id);
-        if fresh {
+        let fresh = (-500..1500).contains(&age);
+        let mine = s.me_id() == Some(msg.author.id);
+        if fresh && !mine {
             row.relative()
                 .with_animation(
                     SharedString::from(format!("arrived-{id}")),
@@ -2792,6 +2942,14 @@ impl Shell {
                     |d, t| d.opacity(t).top(px(6. * (1. - t))),
                 )
                 .into_any_element()
+        } else if fresh {
+            // Mine, just confirmed: it brightens from the dimmed row it was while sending.
+            row.with_animation(
+                SharedString::from(format!("confirmed-{id}")),
+                gpui_kit::Animation::new(theme::FADE * 2).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(0.6 + 0.4 * t),
+            )
+            .into_any_element()
         } else {
             row.into_any_element()
         }
@@ -3136,13 +3294,32 @@ impl Shell {
                     .overflow_hidden()
                     .cursor_pointer()
                     .group(IMAGE_GROUP)
-                    .child(
-                        img(image.shown(self.animating()))
+                    .child({
+                        let picture = img(image.shown(self.animating()))
                             .w(px(w))
                             .h(px(h))
                             .rounded(theme::row_radius())
-                            .id(SharedString::from(format!("image-pic-{}", a.id))),
-                    )
+                            .id(SharedString::from(format!("image-pic-{}", a.id)));
+                        // It just arrived: it fades in over its placeholder.
+                        let just_arrived = self
+                            .images
+                            .thumb_arrived
+                            .get(&(inst.clone(), a.id))
+                            .is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(400));
+                        if just_arrived {
+                            div()
+                                .child(picture)
+                                .with_animation(
+                                    SharedString::from(format!("image-in-{}", a.id)),
+                                    gpui_kit::Animation::new(theme::FADE * 2)
+                                        .with_easing(gpui_kit::ease_out_quint()),
+                                    |d, t| d.opacity(t),
+                                )
+                                .into_any_element()
+                        } else {
+                            picture.into_any_element()
+                        }
+                    })
                     // What opening or saving it downloads, under the mouse.
                     .child(
                         div()
@@ -3266,8 +3443,9 @@ impl Shell {
             return div().into_any_element();
         };
         let (color, note) = match &pending.state {
-            PendingState::Sending => (theme::text_tertiary(), None),
-            PendingState::Queued => (theme::text_tertiary(), Some("waiting for connection")),
+            // The row itself is dimmed while on its way: the text keeps its colour.
+            PendingState::Sending => (theme::text(), None),
+            PendingState::Queued => (theme::text(), Some("waiting for connection")),
             PendingState::Failed(_) => (theme::danger(), Some("not sent")),
         };
         let me = s.me_id();
@@ -3383,12 +3561,16 @@ impl Shell {
         } else {
             div().into_any_element()
         };
+        let (top, bottom) = crate::rows::pending_padding(p, compact);
+        // On its way it is dimmed as a whole; one that failed is not, so its buttons read.
+        let on_its_way = !matches!(pending.state, PendingState::Failed(_));
         div()
             .flex()
             .w_full()
-            .pt(px(if p.grouped { 1. } else { 8. }))
-            .pb(px(if p.ends_group { 8. } else { 1. }))
+            .pt(px(top))
+            .pb(px(bottom))
             .px(px(16.))
+            .when(on_its_way, |d| d.opacity(0.6))
             .child(
                 div()
                     .flex_shrink_0()

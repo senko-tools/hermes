@@ -44,7 +44,8 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Words (2026-11-08):** spaces are called "servers" in everything the user reads (code, config keys and
   the protocol keep `space`). Instances stay "instances".
 - **Hover (2026-11-08):** most things turn the accent colour under the pointer (`icon_button`, chips, nav
-  items, channel rows, people under voice channels, who also get a background since 2026-11-10). People in member lists, messages, search results and
+  items, channel rows, people under voice channels, who also get a background since 2026-11-10). Inside a
+  highlighted voice block the rows are inset pills that leave its bar alone (2026-11-11). People in member lists, messages, search results and
   emoji keep a background hover. `group_hover` only recolours icons (svg): gpui ignores it for text in
   plain divs, so text takes a direct `.hover` on its row.
 - **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen grey while off and red while
@@ -67,6 +68,19 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   voice pages (they hold share video) and one result page to another (they share a search field).
   Popups opened by a click (share, network, volume, profile) go through `modal::popup`. Right-click menus
   keep their own placement.
+- **Motion, round 18 (2026-11-11):** things that change under the pointer note it in `Shell::hovered`
+  (`hover.rs`: `track_hover`, `is_hovered`, `HOVER_SPRING`) and spring towards it, since gpui's `.hover`
+  switches at once. Springs start at their target when they mount, so a row scrolled back into the
+  virtual chat list never replays one; fades keyed by an id do replay, so in the chat they only play for
+  what is new (a message less than 1.5 s old, a thumbnail that just arrived, a chip new on a message
+  already drawn). Dialogs, popups, menus, the status line and the voice panel also play their way out:
+  close them with `Shell::close_later(id, clear, cx)` (`modal.rs`), never by setting the field to `None`,
+  and call `cancel_closing(id)` where they open. Durations: `theme::FADE` (120 ms) for fades,
+  `modal::POP` (150 ms) for dialogs and popups. Voice buttons (`Shell::voice_button`, `OnHover`):
+  sharing turns into a red stop button under the pointer, muted and deafened preview being turned off,
+  Leave grows into a red "Leave" pill. Divs cannot be scaled in gpui: grow their size instead (tiles, the
+  rail's pills, badges), and draw rings as an overlay (`theme::border_width`) so the content never moves.
+  Hard-coded corner radii are only for circles and pills; cards and popups use the theme's shape.
 - **People (2026-11-10):** a left click on someone (voice rows, member lists, a name or picture in the chat)
   opens their profile beside it (`Shell::open_profile`); the right click opens their menu. Voice rows turn
   the accent colour with a hover background; names in the chat underline under the pointer.

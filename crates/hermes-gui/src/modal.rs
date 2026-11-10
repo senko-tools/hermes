@@ -38,8 +38,68 @@ pub fn error_line(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// How long a dialog or popup takes to come in.
+/// How long a dialog or popup takes to come in, and to go.
 pub const POP: std::time::Duration = std::time::Duration::from_millis(150);
+
+thread_local! {
+    /// Dialogs, popups and menus playing their way out (`Shell::close_later`), by id.
+    static CLOSING: std::cell::RefCell<std::collections::HashSet<&'static str>> =
+        Default::default();
+}
+
+/// Whether `id` is on its way out: it plays its coming in backwards.
+pub fn closing(id: &str) -> bool {
+    CLOSING.with(|c| c.borrow().contains(id))
+}
+
+/// How far in a dialog or popup is at `t` of its animation: coming in, or going.
+fn shown(id: &str, t: f32) -> f32 {
+    if closing(id) { 1. - t } else { t }
+}
+
+/// The key its animation plays under: a new one when it starts going, so it plays again.
+fn animation_key(id: &str, part: &str) -> SharedString {
+    let way = if closing(id) { "out" } else { "in" };
+    SharedString::from(format!("{id}-{part}-{way}"))
+}
+
+impl Shell {
+    /// Closes `id` after it played its way out: `clear` runs once it is gone. Opening it again
+    /// before then (`cancel_closing`) keeps it.
+    pub fn close_later(
+        &mut self,
+        id: &'static str,
+        clear: impl FnOnce(&mut Shell) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if closing(id) {
+            return;
+        }
+        CLOSING.with(|c| c.borrow_mut().insert(id));
+        self.closing_serial += 1;
+        let serial = self.closing_serial;
+        self.closing_serials.insert(id, serial);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(POP).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.closing_serials.get(id) == Some(&serial) {
+                    this.closing_serials.remove(id);
+                    CLOSING.with(|c| c.borrow_mut().remove(id));
+                    clear(this);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// `id` opened again while it was going: it stays, and comes in again.
+    pub fn cancel_closing(&mut self, id: &'static str) {
+        self.closing_serials.remove(id);
+        CLOSING.with(|c| c.borrow_mut().remove(id));
+    }
+}
 
 /// The dimmed backdrop with `card` in the middle. `id` names the dialog. The backdrop darkens
 /// while the card fades in and rises a little into place.
@@ -78,15 +138,18 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .font_family(theme::font())
                     .child(card)
                     .with_animation(
-                        SharedString::from(format!("{id}-card")),
+                        animation_key(id, "card"),
                         gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
-                        |d, t| d.opacity(t).top(px(8. * (1. - t))),
+                        move |d, t| {
+                            let t = shown(id, t);
+                            d.opacity(t).top(px(8. * (1. - t)))
+                        },
                     ),
             )
             .with_animation(
-                SharedString::from(format!("{id}-scrim")),
+                animation_key(id, "scrim"),
                 gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
-                move |d, t| d.bg(theme::alpha(scrim, t)),
+                move |d, t| d.bg(theme::alpha(scrim, shown(id, t))),
             ),
     )
     .with_priority(gpui_kit::base::POPUP_PRIORITY)
@@ -230,9 +293,10 @@ pub fn popup(
             .position(place.position)
             .snap_to_window_with_margin(px(HUG_MARGIN))
             .child(div().relative().child(card).with_animation(
-                id,
+                animation_key(id, "popup"),
                 Animation::new(POP).with_easing(ease_out_quint()),
                 move |d, t| {
+                    let t = shown(id, t);
                     let back = 6. * (1. - t);
                     d.opacity(t).left(px(-sx * back)).top(px(-sy * back))
                 },
@@ -268,7 +332,7 @@ impl Shell {
             .cursor_pointer()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.confirm = None;
+                this.close_later("confirm", |s| s.confirm = None, cx);
                 cx.notify();
             }));
         let ok = Button::new("confirm-ok")

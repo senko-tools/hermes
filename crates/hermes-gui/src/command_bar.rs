@@ -122,13 +122,14 @@ impl Shell {
             _events: events,
         };
         bar.filter("");
+        self.cancel_closing("command-bar");
         self.command_bar = Some(bar);
         cx.notify();
     }
 
     pub fn run_command_bar(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let command = self.command_bar.as_ref().and_then(|bar| bar.command(n));
-        self.command_bar = None;
+        self.close_later("command-bar", |s| s.command_bar = None, cx);
         match command {
             Some(Command::Open(inst, channel)) => self.select(inst, channel, window, cx),
             Some(Command::MessageUser(inst, user)) => self.message_user(inst, user, window, cx),
@@ -199,6 +200,7 @@ impl Shell {
             })
             .collect();
         let empty = rows.is_empty();
+        let leaving = crate::modal::closing("command-bar");
         Some(
             deferred(
                 div()
@@ -214,7 +216,7 @@ impl Shell {
                     .font_family(theme::font())
                     .text_color(theme::text())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.command_bar = None;
+                        this.close_later("command-bar", |s| s.command_bar = None, cx);
                         cx.notify();
                     }))
                     .child(
@@ -256,17 +258,31 @@ impl Shell {
                             )
                             // Like a dialog: it fades in, dropping into place.
                             .with_animation(
-                                "command-bar-in",
+                                if leaving {
+                                    "command-bar-out"
+                                } else {
+                                    "command-bar-in"
+                                },
                                 gpui_kit::Animation::new(crate::modal::POP)
                                     .with_easing(gpui_kit::ease_out_quint()),
-                                |d, t| d.opacity(t).top(px(-8. * (1. - t))),
+                                move |d, t| {
+                                    let t = if leaving { 1. - t } else { t };
+                                    d.opacity(t).top(px(-8. * (1. - t)))
+                                },
                             ),
                     )
                     .with_animation(
-                        "command-bar-scrim",
+                        if leaving {
+                            "command-bar-scrim-out"
+                        } else {
+                            "command-bar-scrim"
+                        },
                         gpui_kit::Animation::new(crate::modal::POP)
                             .with_easing(gpui_kit::ease_out_quint()),
-                        |d, t| d.bg(theme::alpha(theme::scrim(), t)),
+                        move |d, t| {
+                            let t = if leaving { 1. - t } else { t };
+                            d.bg(theme::alpha(theme::scrim(), t))
+                        },
                     ),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)

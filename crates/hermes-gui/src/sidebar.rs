@@ -330,6 +330,21 @@ fn state_bar(row: &str, state: RowState) -> impl IntoElement {
         )
 }
 
+/// A highlighted row's background, under its content. It fades in each time the row takes a
+/// new state; `hover`: it shows the state's hover colour under the pointer.
+fn state_fill(row: &str, state: RowState, hover: bool) -> impl IntoElement {
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    div()
+        .absolute()
+        .inset_0()
+        .when(hover, |d| d.hover(move |d| d.bg(state.hover)))
+        .with_animation(
+            SharedString::from(format!("{row}-fill-{}", state.name)),
+            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            move |d, t| d.bg(theme::alpha(state.background, t)),
+        )
+}
+
 /// Between two rows of a category that was just opened.
 const STAGGER: std::time::Duration = std::time::Duration::from_millis(18);
 
@@ -870,6 +885,25 @@ impl Shell {
     /// Under the rail and the sidebar, across both: the voice panel and the user panel.
     pub fn render_bottom_panels(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut panels: Vec<AnyElement> = self.render_voice_panel(cx).into_iter().collect();
+        // Just left: the panel's place closes instead of vanishing.
+        if panels.is_empty() && crate::modal::closing("voice-panel") {
+            use gpui_kit::AnimationExt as _;
+            let height = self.voice_panel_height.get();
+            panels.push(
+                div()
+                    .flex_shrink_0()
+                    .bg(theme::footer())
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .with_animation(
+                        "voice-panel-out",
+                        gpui_kit::Animation::new(crate::modal::POP)
+                            .with_easing(gpui_kit::ease_out_quint()),
+                        move |d, t| d.h(gpui_kit::px(height * (1. - t))),
+                    )
+                    .into_any_element(),
+            );
+        }
         panels.push(self.render_me(cx).into_any_element());
         panels
     }
@@ -991,6 +1025,22 @@ impl Shell {
         // The category last opened by a click, and how many of its rows came so far: they fade
         // in one after another.
         let mut opening: Option<(Id, u32)> = None;
+        // The order rows are shown in, for where a drop lands.
+        {
+            let mut order = self.sidebar_order.borrow_mut();
+            order.clear();
+            for (n, row) in tree_rows.clone().enumerate() {
+                match row {
+                    Row::Category { id, .. } => {
+                        order.insert(id, (n, true));
+                    }
+                    Row::Channel { id, .. } => {
+                        order.insert(id, (n, false));
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut index = 0;
         while let Some(tree_row) = tree_rows.next() {
             // The space itself is the header above the list.
@@ -1063,7 +1113,7 @@ impl Shell {
                     .when(nested, |d| d.ml(px(10.)))
                     .rounded(theme::row_radius())
                     .overflow_hidden()
-                    .bg(state.background)
+                    .child(state_fill(&format!("voice-block-{id}"), state, false))
                     // The block itself stays still: its rows light up one at a time, clear of
                     // the bar on the left.
                     .child(state_bar(&format!("voice-block-{id}"), state))
@@ -1310,8 +1360,7 @@ impl Shell {
             .when(nested && !in_block, |d| d.ml(px(10.)))
             .group(CHANNEL_ROW)
             .when_some(state, |d, state| {
-                d.bg(state.background)
-                    .hover(move |d| d.bg(state.hover))
+                d.child(state_fill(&format!("channel-{id}"), state, true))
                     .child(state_bar(&format!("channel-{id}"), state))
             })
             .when(muted, |d| d.text_color(theme::text_tertiary()))
@@ -1401,14 +1450,28 @@ impl Shell {
         };
         let target = item.clone();
         let over = item.clone();
+        let order = self.sidebar_order.clone();
         element
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
             .drag_over::<Item>(move |style, dragged, _, _| {
-                // Where it would land: tinted with the accent.
-                if dragged.can_drop_on(&over) {
-                    style.bg(theme::alpha(theme::accent(), 0.18))
+                if !dragged.can_drop_on(&over) {
+                    return style;
+                }
+                // Where it would land: a line on that edge, over a light accent tint. Dragged
+                // down it goes after the row, up before it, onto a category into it.
+                let order = order.borrow();
+                let after = match (order.get(&dragged.id), order.get(&over.id)) {
+                    (_, Some((_, true))) => true,
+                    (Some((from, _)), Some((to, _))) => from < to,
+                    _ => true,
+                };
+                let style = style
+                    .bg(theme::alpha(theme::accent(), 0.1))
+                    .border_color(theme::accent());
+                if after {
+                    style.border_b_2()
                 } else {
-                    style
+                    style.border_t_2()
                 }
             })
             .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
