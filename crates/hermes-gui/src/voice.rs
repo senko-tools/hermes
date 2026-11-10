@@ -504,7 +504,7 @@ impl Shell {
                 };
                 cx.notify();
             }));
-        let share = self.hug_target(voice_button(
+        let share = voice_button(
             "panel-share",
             assets::MONITOR_SHARE,
             Look::plain(theme::accent()),
@@ -512,7 +512,7 @@ impl Shell {
             cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                 this.share_button(event.position(), window, cx);
             }),
-        ));
+        );
         let leave = voice_button(
             "panel-leave",
             assets::HANG_UP,
@@ -536,8 +536,18 @@ impl Shell {
                         .items_center()
                         .gap(px(4.))
                         .child(div().flex_1().min_w_0().child(info))
-                        .child(share)
-                        .child(leave),
+                        // The share menu hugs both buttons, so it covers neither.
+                        .child(
+                            self.hug_target(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .child(share)
+                                    .child(leave)
+                                    .into_any_element(),
+                            ),
+                        ),
                 )
                 .child(encryption)
                 .child(network)
