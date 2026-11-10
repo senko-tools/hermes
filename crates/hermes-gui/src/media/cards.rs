@@ -315,15 +315,26 @@ impl Shell {
         self.run(
             cx,
             async move {
+                let started = std::time::Instant::now();
                 let bytes = core
                     .download(&inst, &attachment)
                     .await
                     .map_err(|e| e.to_string())?;
-                tokio::task::spawn_blocking(move || {
+                let downloaded = started.elapsed();
+                let size = bytes.len();
+                let player = tokio::task::spawn_blocking(move || {
                     Player::open(Arc::new(bytes), shared, Some(&device), volume, at)
                 })
                 .await
-                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+                tracing::info!(
+                    "media {}: {:.1} MB fetched in {} ms, opened in {} ms",
+                    attachment.id,
+                    size as f64 / 1e6,
+                    downloaded.as_millis(),
+                    (started.elapsed() - downloaded).as_millis()
+                );
+                player
             },
             move |this, result, _, cx| {
                 let Some(item) = this.media.items.get_mut(&key) else {

@@ -61,6 +61,8 @@ pub struct Player {
     video: Option<Decoder>,
     /// The picture shown now.
     pub current: Option<Arc<RenderImage>>,
+    /// When the decoders last started, until the first picture showed (for the log).
+    first_picture: Option<Instant>,
 }
 
 impl Player {
@@ -100,6 +102,7 @@ impl Player {
             audio: None,
             video: None,
             current: None,
+            first_picture: None,
         })
     }
 
@@ -271,6 +274,7 @@ impl Player {
         }
         self.start_ms = ms;
         self.wall = Instant::now();
+        self.first_picture = Some(self.wall);
         self.restart_video(ms);
     }
 
@@ -307,10 +311,16 @@ impl Player {
         let mut dropped = Vec::new();
         let mut pictures = self.pictures.lock().unwrap_or_else(|e| e.into_inner());
         while pictures.front().is_some_and(|(at, _)| *at <= now) {
-            if let Some((_, picture)) = pictures.pop_front()
-                && let Some(old) = self.current.replace(picture)
-            {
-                dropped.push(old);
+            if let Some((_, picture)) = pictures.pop_front() {
+                if let Some(started) = self.first_picture.take() {
+                    tracing::info!(
+                        "media: first picture {} ms after play",
+                        started.elapsed().as_millis()
+                    );
+                }
+                if let Some(old) = self.current.replace(picture) {
+                    dropped.push(old);
+                }
             }
         }
         let empty = pictures.is_empty();
@@ -340,6 +350,8 @@ fn audio_decoder(mut child: Child, output: &MediaOutput) -> Decoder {
             if let Some(mut stdout) = stdout {
                 let mut bytes = vec![0u8; 16 * 1024];
                 let mut carry = Vec::new();
+                let started = Instant::now();
+                let mut first = true;
                 loop {
                     while !sink.wants_more() {
                         if thread_stop.load(Ordering::Relaxed) {
@@ -363,6 +375,13 @@ fn audio_decoder(mut child: Child, output: &MediaOutput) -> Decoder {
                         .map(|b| f32::from_le_bytes(*b))
                         .collect();
                     carry.drain(..whole);
+                    if first && !samples.is_empty() {
+                        first = false;
+                        tracing::info!(
+                            "media: first sound {} ms after play",
+                            started.elapsed().as_millis()
+                        );
+                    }
                     sink.push(&samples);
                 }
             }

@@ -152,14 +152,19 @@ impl Shell {
     ) -> Stateful<Div> {
         let target = Target::File(inst.to_owned(), place.channel, place.message, attachment);
         let message = place.message;
-        let element = element.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
-            if *hovered {
-                this.hovered_file = Some(message);
-            } else if this.hovered_file == Some(message) {
-                this.hovered_file = None;
-            }
-            cx.notify();
-        }));
+        // On a wrapper: gpui allows one hover listener per element, and a playing video's
+        // surface has its own (its controls fade with the pointer).
+        let element = div()
+            .id(SharedString::from(format!("file-{attachment}-hover")))
+            .child(element)
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.hovered_file = Some(message);
+                } else if this.hovered_file == Some(message) {
+                    this.hovered_file = None;
+                }
+                cx.notify();
+            }));
         self.with_own_menu(element, target, cx)
     }
 
