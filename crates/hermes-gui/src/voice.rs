@@ -890,7 +890,8 @@ impl Shell {
             .into_any_element()
     }
 
-    /// Someone in a voice room, under its channel in the sidebar.
+    /// Someone in a voice room, under its channel in the sidebar. `in_block`: inside a highlighted
+    /// channel's block, whose bar on the left the row's hover must leave alone.
     #[allow(clippy::too_many_arguments)]
     pub fn render_voice_user(
         &self,
@@ -903,6 +904,7 @@ impl Shell {
         speaking: bool,
         nested: bool,
         _dm: bool,
+        in_block: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (avatar, space) = {
@@ -925,6 +927,13 @@ impl Shell {
             .h(px(30.))
             .pl(px(if nested { 46. } else { 36. }))
             .pr(px(8.))
+            // The pill starts after the bar and the name stays where it was.
+            .when(in_block, |d| {
+                d.ml(theme::indicator_width() + px(2.))
+                    .mr(px(2.))
+                    .pl(px(if nested { 44. } else { 34. }) - theme::indicator_width())
+                    .pr(px(6.))
+            })
             .rounded(theme::radius_small())
             .cursor_pointer()
             .text_size(theme::secondary_size())
@@ -943,7 +952,7 @@ impl Shell {
             .child(
                 div()
                     .flex_shrink_0()
-                    .rounded(px(12.))
+                    .rounded_full()
                     .border_2()
                     .border_color(if speaking {
                         theme::speaking()

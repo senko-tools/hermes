@@ -846,12 +846,22 @@ impl Shell {
             // Highlighted: the channel's highlight goes around the people in it too.
             let head = self.render_channel_row(tree_row, true, cx);
             let mut people = Vec::new();
-            while tree_rows
-                .peek()
-                .is_some_and(|r| matches!(r, Row::VoiceUser { .. }))
+            while let Some(Row::VoiceUser {
+                inst,
+                channel,
+                user,
+                name,
+                muted,
+                deafened,
+                speaking,
+                nested,
+                dm,
+                ..
+            }) = tree_rows.next_if(|r| matches!(r, Row::VoiceUser { .. }))
             {
-                let person = tree_rows.next().expect("just looked at it");
-                people.push(self.render_tree_row(person, false, cx));
+                people.push(self.render_voice_user(
+                    inst, channel, user, name, muted, deafened, speaking, nested, dm, true, cx,
+                ));
             }
             rows.push(
                 div()
@@ -865,7 +875,8 @@ impl Shell {
                     .rounded(theme::row_radius())
                     .overflow_hidden()
                     .bg(state.background)
-                    .hover(move |d| d.bg(state.hover))
+                    // The block itself stays still: its rows light up one at a time, clear of
+                    // the bar on the left.
                     .child(
                         div()
                             .absolute()
@@ -973,7 +984,7 @@ impl Shell {
                 dm,
                 ..
             } => self.render_voice_user(
-                inst, channel, user, name, muted, deafened, speaking, nested, dm, cx,
+                inst, channel, user, name, muted, deafened, speaking, nested, dm, false, cx,
             ),
             Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
                 .text_size(theme::body_size())
@@ -1112,6 +1123,13 @@ impl Shell {
             // Plain rows brighten their text and icon under the pointer.
             .when(state.is_none() && !in_block, |d| {
                 d.hover(|d| d.text_color(theme::accent()))
+            })
+            // Inside a highlighted block: an inset pill beside the bar, the text where it was.
+            .when(in_block, |d| {
+                d.ml(theme::indicator_width() + px(2.))
+                    .mr(px(2.))
+                    .pl(px(6.) - theme::indicator_width())
+                    .hover(|d| d.bg(theme::hover()).text_color(theme::accent()))
             })
             .child(
                 icon(
