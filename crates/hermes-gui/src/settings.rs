@@ -2,6 +2,7 @@
 //! Chat, Voice & Audio, Notifications, Keybinds and About. Every change is written to
 //! `config.toml`.
 
+use gpui_kit::AnimationExt as _;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -933,9 +934,14 @@ impl Shell {
                 .child(
                     Button::new("account-username-copy")
                         .cursor_pointer()
-                        .label("Copy")
+                        .label(self.copy_label("account-username-copy", "Copy"))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy(copy_handle.clone(), "Username", cx);
+                            this.copy_from(
+                                "account-username-copy",
+                                copy_handle.clone(),
+                                "Username",
+                                cx,
+                            );
                         })),
                 )
                 .child(
@@ -1116,7 +1122,7 @@ impl Shell {
 
         let mut device_rows: Vec<AnyElement> = Vec::new();
         match &page.sessions {
-            Remote::Idle | Remote::Loading => device_rows.push(muted("Loading…")),
+            Remote::Idle | Remote::Loading => device_rows.push(theme::skeleton("devices", 3)),
             Remote::Failed(err) => device_rows.push(
                 div()
                     .text_size(theme::secondary_size())
@@ -1879,7 +1885,7 @@ impl Shell {
         });
         let mut users: Vec<AnyElement> = Vec::new();
         match &page.admin_users {
-            Remote::Idle | Remote::Loading => users.push(muted("Loading…")),
+            Remote::Idle | Remote::Loading => users.push(theme::skeleton("users", 4)),
             Remote::Failed(err) => users.push(muted(err.clone())),
             Remote::Ready(list) => {
                 for entry in list {
@@ -1930,7 +1936,7 @@ impl Shell {
         }
         let mut log: Vec<AnyElement> = Vec::new();
         match &page.admin_log {
-            Remote::Idle | Remote::Loading => log.push(muted("Loading…")),
+            Remote::Idle | Remote::Loading => log.push(theme::skeleton("log", 5)),
             Remote::Failed(err) => log.push(muted(err.clone())),
             Remote::Ready(list) if list.is_empty() => log.push(muted("Nothing yet.")),
             Remote::Ready(list) => {
@@ -2127,11 +2133,19 @@ impl Shell {
                     .h_full()
                     .rounded(px(3.))
                     .w(gpui_kit::relative(fill))
-                    .bg(if open {
-                        theme::speaking()
-                    } else {
-                        theme::text_tertiary()
-                    }),
+                    // Green while the voice would go through, blending so it does not flicker.
+                    .with_spring(
+                        "meter-open",
+                        gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(260., 34., 1.))
+                            .to(open),
+                        |d, phase| {
+                            d.bg(theme::mix(
+                                theme::text_tertiary(),
+                                theme::speaking(),
+                                phase.0.clamp(0., 1.),
+                            ))
+                        },
+                    ),
             );
         let mut input_rows = vec![setting("Input mode", "", wrap().children(mode_chips))];
         if ptt_mode {
@@ -2703,10 +2717,10 @@ impl Shell {
                     .child(
                         Button::new("about-debug")
                             .cursor_pointer()
-                            .label("Copy debug info")
+                            .label(self.copy_label("about-debug", "Copy debug info"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let text = this.debug_info();
-                                this.copy(text, "Debug info", cx);
+                                this.copy_from("about-debug", text, "Debug info", cx);
                             })),
                     )
                     .child(
@@ -2768,8 +2782,25 @@ pub fn nav_item(
     selected: bool,
     id: String,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    // The chosen tab's background flows out of the last one and into the new one.
+    let pill = div()
+        .absolute()
+        .inset_0()
+        .rounded(theme::row_radius())
+        .with_spring(
+            SharedString::from(format!("{id}-pill")),
+            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(selected),
+            |d, phase| {
+                let t = phase.0.clamp(0., 1.);
+                // It grows from the left edge as it fills in.
+                d.bg(theme::alpha(theme::selected(), t))
+                    .right(gpui_kit::relative(0.3 * (1. - t)))
+            },
+        );
     div()
         .id(SharedString::from(id))
+        .relative()
+        .child(pill)
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -2785,7 +2816,6 @@ pub fn nav_item(
             theme::text_secondary()
         })
         .group(NAV_ITEM)
-        .when(selected, |d| d.bg(theme::selected()))
         .when(!selected, |d| d.hover(|d| d.text_color(theme::accent())))
         .child(
             icon(glyph, 18., theme::text_tertiary())
@@ -3110,17 +3140,35 @@ fn theme_card(
         .cursor_pointer()
         .child(
             div()
+                .relative()
                 .w_full()
                 .h(px(PREVIEW_HEIGHT))
                 .overflow_hidden()
                 .rounded(theme::row_radius())
-                .when(chosen, |d| d.border_2().border_color(theme::accent()))
-                .when(!chosen, |d| {
-                    d.border_1()
-                        .border_color(theme::border())
-                        .group_hover("theme-card", |d| d.border_color(theme::text_tertiary()))
-                })
-                .child(picture),
+                .child(picture)
+                // The ring lies over the preview, so choosing never shrinks it; it thickens and
+                // takes the accent on a spring.
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::row_radius())
+                        .when(!chosen, |d| {
+                            d.group_hover("theme-card", |d| d.border_color(theme::text_tertiary()))
+                        })
+                        .with_spring(
+                            ("theme-card-ring", n),
+                            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(chosen),
+                            |d, phase| {
+                                let t = phase.0.clamp(0., 1.);
+                                theme::border_width(d, px(1. + t)).border_color(theme::mix(
+                                    theme::border(),
+                                    theme::accent(),
+                                    t,
+                                ))
+                            },
+                        ),
+                ),
         )
         .child(
             div()

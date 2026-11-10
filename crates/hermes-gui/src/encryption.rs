@@ -72,7 +72,13 @@ impl Shell {
                 .map_or_else(|| user.to_string(), |s| s.display_name(None, user))
         };
         let details: AnyElement = match &open.keys {
-            None => paragraph("Asking for the latest keys…").into_any_element(),
+            None => div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(paragraph("Asking for the latest keys…"))
+                .child(theme::skeleton("keys", 3))
+                .into_any_element(),
             Some(Err(err)) => error_line(err.clone()).into_any_element(),
             Some(Ok(keys)) => div()
                 .flex()

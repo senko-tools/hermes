@@ -1824,24 +1824,34 @@ pub fn chip(
     label: impl Into<SharedString>,
     chosen: bool,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id.into())
+    let id = id.into();
+    let key = SharedString::from(format!("{id:?}-chosen"));
+    // Choosing it: the accent flows in, and out of the one chosen before.
+    let face = div()
+        .id("face")
         .px(px(10.))
         .py(px(5.))
         .rounded(theme::radius_small())
+        .truncate()
+        .when(!chosen, |d| d.hover(|d| d.text_color(theme::accent())))
+        .child(label.into())
+        .with_spring(
+            key,
+            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(chosen),
+            |d, phase| {
+                let t = phase.0.clamp(0., 1.);
+                d.bg(theme::mix(theme::selected(), theme::accent(), t))
+                    .text_color(theme::mix(theme::text_secondary(), theme::on_accent(), t))
+            },
+        );
+    div()
+        .id(id)
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .max_w_full()
-        .truncate()
+        .overflow_hidden()
         .text_size(theme::secondary_size())
-        .when(chosen, |d| {
-            d.bg(theme::accent()).text_color(theme::on_accent())
-        })
-        .when(!chosen, |d| {
-            d.bg(theme::selected())
-                .text_color(theme::text_secondary())
-                .hover(|d| d.text_color(theme::accent()))
-        })
-        .child(label.into())
+        .child(face)
 }
 
 /// The colours of a voice button: its icon at rest and under the pointer, and while it is on.

@@ -63,6 +63,7 @@ pub mod media_icons {
     pub const FULLSCREEN_EXIT: &str = "fullscreen-exit";
 }
 pub const BELL: &str = "bell-outline";
+pub const ACCOUNT_PLUS: &str = "account-plus";
 pub const LINK: &str = "link-variant";
 pub const BAN: &str = "cancel";
 pub const FOLDER_PLUS: &str = "folder-plus-outline";

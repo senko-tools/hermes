@@ -1178,21 +1178,20 @@ impl Shell {
             .filter(|c| c.kind.has_messages())
             .count();
         let owner = s.display_name(Some(space), st.space.owner_id);
-        let mut about =
-            vec![setting(
-                "About",
-                &format!(
-                    "Owned by {owner} · {members} member{} · {channels} channel{}",
-                    plural(members),
-                    plural(channels)
-                ),
-                Button::new("space-copy-id")
-                    .cursor_pointer()
-                    .label("Copy server ID")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.copy(space.to_string(), "Server ID", cx)
-                    })),
-            )];
+        let mut about = vec![setting(
+            "About",
+            &format!(
+                "Owned by {owner} · {members} member{} · {channels} channel{}",
+                plural(members),
+                plural(channels)
+            ),
+            Button::new("space-copy-id")
+                .cursor_pointer()
+                .label(self.copy_label("space-copy-id", "Copy server ID"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
+                })),
+        )];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             let invite_inst = inst.clone();
             about.push(setting(
@@ -2141,7 +2140,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let text = match remote {
-            Remote::Idle | Remote::Loading => "Loading…".to_owned(),
+            Remote::Idle | Remote::Loading => return Some(theme::skeleton("list", 4)),
             Remote::Failed(err) => format!("Could not load: {err}"),
             Remote::Ready(_) if empty => empty_text.to_owned(),
             Remote::Ready(_) => return None,
@@ -2251,10 +2250,20 @@ impl Shell {
                     .child(
                         Button::new(("invite-copy", n))
                             .cursor_pointer()
-                            .label("Copy link")
+                            .label(
+                                self.copy_label(
+                                    &format!("invite-copy-{}", invite.code),
+                                    "Copy link",
+                                ),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
-                                    this.copy(link, "Invite link", cx);
+                                    this.copy_from(
+                                        format!("invite-copy-{copy_code}"),
+                                        link,
+                                        "Invite link",
+                                        cx,
+                                    );
                                 }
                             })),
                     )

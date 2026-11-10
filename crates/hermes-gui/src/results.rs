@@ -414,7 +414,7 @@ impl Shell {
             } else {
                 "Loading…".to_owned()
             })),
-            Remote::Loading => list.push(muted("Loading…".to_owned())),
+            Remote::Loading => list.push(theme::skeleton("results", 5)),
             Remote::Failed(err) => list.push(
                 div()
                     .text_size(theme::secondary_size())
@@ -422,13 +422,26 @@ impl Shell {
                     .child(format!("Could not load: {err}"))
                     .into_any_element(),
             ),
-            Remote::Ready(items) if items.is_empty() => list.push(muted(match &key {
-                Key::Search(..) => format!("Nothing found for “{}”.", state.searched),
-                Key::Mentions => "Nobody mentioned you yet.".to_owned(),
-                Key::Pins(..) => {
-                    "Nothing is pinned here. Right-click a message and choose Pin.".to_owned()
-                }
-            })),
+            Remote::Ready(items) if items.is_empty() => list.push(match &key {
+                Key::Search(..) => theme::empty_state(
+                    "search",
+                    crate::assets::SEARCH,
+                    "Nothing found",
+                    format!("Nothing found for “{}”.", state.searched),
+                ),
+                Key::Mentions => theme::empty_state(
+                    "mentions",
+                    crate::assets::AT,
+                    "No mentions",
+                    "Nobody mentioned you yet.",
+                ),
+                Key::Pins(..) => theme::empty_state(
+                    "pins",
+                    crate::assets::PIN,
+                    "Nothing pinned",
+                    "Right-click a message and choose Pin.",
+                ),
+            }),
             Remote::Ready(items) => {
                 if let (Key::Search(..), Some(total)) = (&key, state.total) {
                     list.push(muted(format!(

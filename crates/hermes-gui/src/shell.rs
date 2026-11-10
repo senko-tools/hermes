@@ -6,6 +6,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
@@ -91,6 +92,9 @@ pub enum Level {
     Error,
 }
 
+/// How long a copy button says "Copied".
+const COPIED_FOR: Duration = Duration::from_millis(1200);
+
 /// How many recently open channels each server remembers.
 const RECENT_CHANNELS: usize = 10;
 
@@ -130,6 +134,8 @@ pub struct Shell {
     pub hovered_file: Option<hermes_client_core::proto::id::Id>,
     /// What the pointer is over, of the things that change on a spring under it (`hover.rs`).
     pub hovered: HashSet<gpui_kit::SharedString>,
+    /// The copy button used a moment ago: it says "Copied".
+    pub copied: Option<String>,
     /// Chat text selected with the mouse.
     pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
@@ -312,6 +318,7 @@ impl Shell {
             right_pressed: None,
             hovered_file: None,
             hovered: HashSet::new(),
+            copied: None,
             shown_page: None,
             leaving: None,
             page_serial: 0,
@@ -824,6 +831,38 @@ impl Shell {
         self.info(format!("{what} copied"), cx);
     }
 
+    /// The same from a copy button named `button`: it says "Copied" for a moment.
+    pub fn copy_from(
+        &mut self,
+        button: impl Into<String>,
+        text: String,
+        what: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy(text, what, cx);
+        let button = button.into();
+        self.copied = Some(button.clone());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.copied.as_deref() == Some(button.as_str()) {
+                    this.copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A copy button's label: `label`, or "Copied" just after it was used.
+    pub fn copy_label(&self, button: &str, label: &'static str) -> &'static str {
+        if self.copied.as_deref() == Some(button) {
+            "Copied"
+        } else {
+            label
+        }
+    }
+
     // ---- navigation ---------------------------------------------------------------------------
 
     pub fn open_friends(&mut self, cx: &mut Context<Self>) {
@@ -1039,6 +1078,13 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_members(cx);
                     }))
+                    // Pressed in while the list shows; the press flows in and out.
+                    .with_spring(
+                        "header-members-on",
+                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
+                            .to(self.show_members),
+                        |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
+                    )
                     .into_any_element(),
             );
             controls.push(
@@ -1068,15 +1114,35 @@ impl Shell {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::AnimationExt as _;
         let status = self.status.as_ref()?;
-        let color = match status.level {
-            Level::Info => theme::text_secondary(),
-            Level::Warning => theme::accent(),
-            Level::Error => theme::danger(),
+        let (color, glyph) = match status.level {
+            Level::Info => (theme::text_secondary(), assets::INFO),
+            Level::Warning => (theme::accent(), assets::INFO),
+            Level::Error => (theme::danger(), assets::BAN),
         };
+        let serial = status.serial;
+        // An info line goes by itself: a thin bar runs out until it does.
+        let countdown = (status.level == Level::Info).then(|| {
+            let seconds = INFO_SECONDS
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            div()
+                .absolute()
+                .left_0()
+                .bottom_0()
+                .h(px(2.))
+                .bg(theme::alpha(theme::accent(), 0.5))
+                .with_animation(
+                    gpui_kit::SharedString::from(format!("status-countdown-{serial}")),
+                    gpui_kit::Animation::new(Duration::from_secs(seconds)),
+                    |d, t| d.w(gpui_kit::relative(1. - t)),
+                )
+        });
         Some(
             div()
                 .id("status-line")
+                .relative()
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -1088,16 +1154,22 @@ impl Shell {
                 .border_color(theme::border())
                 .text_size(theme::secondary_size())
                 .text_color(color)
+                .child(icon(glyph, 16., color))
                 .child(div().flex_1().min_w_0().child(status.text.clone()))
                 .child(
-                    div()
-                        .id("status-dismiss")
-                        .cursor_pointer()
-                        .child(icon(assets::CLOSE, 16., theme::text_tertiary()))
+                    crate::channel::tip_button("status-dismiss", assets::CLOSE, "Dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.status = None;
                             cx.notify();
                         })),
+                )
+                .children(countdown)
+                // Each new line fades in.
+                .with_animation(
+                    gpui_kit::SharedString::from(format!("status-in-{serial}")),
+                    gpui_kit::Animation::new(theme::FADE * 2)
+                        .with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t),
                 )
                 .into_any_element(),
         )
@@ -1404,8 +1476,10 @@ impl Render for Shell {
                 .child(self.render_page(page, cx))
                 .with_animation(
                     gpui_kit::SharedString::from(format!("page-leave-{serial}")),
-                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.opacity(1. - t),
+                    // It holds on while the new page comes in over it, and goes at the end,
+                    // so the two never both show faint.
+                    gpui_kit::Animation::new(theme::FADE),
+                    |d, t| d.opacity(1. - t * t * t),
                 )
         });
         let main = self.render_page(self.page.clone(), cx);

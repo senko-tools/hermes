@@ -1372,6 +1372,7 @@ impl Shell {
         let submit = Button::new("form-submit")
             .cursor_pointer()
             .large()
+            .loading(form.busy)
             .label(label)
             .disabled(form.busy)
             .when(form.busy, |b| b.cursor_default())
@@ -1426,30 +1427,19 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
             let chips = options.iter().enumerate().map(|(n, option)| {
                 let chosen = option == selected;
                 let value = option.clone();
-                div()
-                    .id(SharedString::from(format!("form-{i}-{n}")))
-                    .px(px(10.))
-                    .py(px(5.))
-                    .rounded(theme::radius_small())
-                    .cursor_pointer()
-                    .text_size(theme::secondary_size())
-                    .when(chosen, |d| {
-                        d.bg(theme::accent()).text_color(theme::on_accent())
-                    })
-                    .when(!chosen, |d| {
-                        d.bg(theme::selected())
-                            .text_color(theme::text_secondary())
-                            .hover(|d| d.text_color(theme::accent()))
-                    })
-                    .child(SharedString::from(option.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(Field::Choice { selected, .. }) =
-                            this.form.as_mut().and_then(|f| f.fields.get_mut(i))
-                        {
-                            selected.clone_from(&value);
-                        }
-                        cx.notify();
-                    }))
+                crate::voice::chip(
+                    SharedString::from(format!("form-{i}-{n}")),
+                    option.clone(),
+                    chosen,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(Field::Choice { selected, .. }) =
+                        this.form.as_mut().and_then(|f| f.fields.get_mut(i))
+                    {
+                        selected.clone_from(&value);
+                    }
+                    cx.notify();
+                }))
             });
             column
                 .child(name_line(label))

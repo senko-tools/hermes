@@ -555,6 +555,86 @@ pub fn enter(
         .into_any_element()
 }
 
+/// What an empty list says: an icon in a soft circle, a title and a hint, fading in. `id`
+/// names the list, so another list's empty state fades in again.
+pub fn empty_state(
+    id: impl Into<SharedString>,
+    glyph: &str,
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(8.))
+        .w_full()
+        .py(px(32.))
+        .child(
+            gpui_kit::div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(56.))
+                .rounded(px(28.))
+                .bg(alpha(accent(), 0.12))
+                .child(crate::assets::icon(glyph, 28., accent())),
+        )
+        .child(
+            gpui_kit::div()
+                .mt(px(4.))
+                .text_size(body_size())
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(text())
+                .child(title.into()),
+        )
+        .child(
+            gpui_kit::div()
+                .max_w(px(360.))
+                .text_center()
+                .text_size(secondary_size())
+                .text_color(text_tertiary())
+                .child(hint.into()),
+        )
+        .relative()
+        .with_animation(
+            SharedString::from(format!("empty-{}", id.into())),
+            Animation::new(FADE * 2).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t).top(px(6. * (1. - t))),
+        )
+        .into_any_element()
+}
+
+/// Grey bars where a list will be while it loads, breathing softly. `id` names the list.
+pub fn skeleton(id: &str, rows: usize) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, pulsating_between, relative};
+    // Uneven widths read as lines of text rather than a table.
+    const WIDTHS: [f32; 5] = [0.9, 0.62, 0.78, 0.5, 0.7];
+    gpui_kit::div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .w_full()
+        .children((0..rows).map(|n| {
+            gpui_kit::div()
+                .h(px(14.))
+                .w(relative(WIDTHS[n % WIDTHS.len()]))
+                .rounded(px(4.))
+                .bg(hover())
+        }))
+        .with_animation(
+            SharedString::from(format!("skeleton-{id}")),
+            Animation::new(std::time::Duration::from_millis(1400))
+                .repeat()
+                .with_easing(pulsating_between(0.45, 1.)),
+            |d, t| d.opacity(t),
+        )
+        .into_any_element()
+}
+
 /// Sets every border of `element` to `width`, which may be fractional (a ring that thickens on a
 /// spring); gpui's own setters only come in whole steps.
 pub fn border_width<E: gpui_kit::Styled>(mut element: E, width: Pixels) -> E {

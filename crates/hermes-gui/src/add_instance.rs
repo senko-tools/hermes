@@ -536,6 +536,7 @@ impl Shell {
                     .cursor_pointer()
                     .large()
                     .primary()
+                    .loading(busy)
                     .label(match (busy, tab) {
                         (true, _) => "Please wait…",
                         (false, Tab::SignIn) => "Sign in",

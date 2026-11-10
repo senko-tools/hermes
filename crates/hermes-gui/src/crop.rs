@@ -578,6 +578,7 @@ impl Shell {
                             .cursor_pointer()
                             .primary()
                             .disabled(saving)
+                            .loading(saving)
                             .label(if saving { "Saving…" } else { "Save" })
                             .on_click(cx.listener(|this, _, _, cx| this.save_crop(cx))),
                     ),

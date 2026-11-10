@@ -246,7 +246,12 @@ impl Shell {
                                     .overflow_y_scroll()
                                     .children(rows)
                                     .when(empty, |d| {
-                                        d.child(crate::settings::muted("Nothing matches"))
+                                        d.child(theme::empty_state(
+                                            "command-bar",
+                                            crate::assets::SEARCH,
+                                            "Nothing matches",
+                                            "Try fewer or other letters.",
+                                        ))
                                     }),
                             )
                             // Like a dialog: it fades in, dropping into place.

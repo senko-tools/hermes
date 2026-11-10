@@ -202,11 +202,11 @@ impl Shell {
                      server stores them but cannot read them.";
         let (inst, space) = (page.inst.clone(), page.space);
         let Remote::Ready(policy) = page.keys.policy else {
-            let text = match &page.keys.policy {
-                Remote::Failed(err) => format!("Could not load the rules: {err}"),
-                _ => "Loading…".to_owned(),
+            let body = match &page.keys.policy {
+                Remote::Failed(err) => muted(format!("Could not load the rules: {err}")),
+                _ => theme::skeleton("encryption", 4),
             };
-            return page_body("Encryption", Some(intro), vec![muted(text)]);
+            return page_body("Encryption", Some(intro), vec![body]);
         };
         let key = (inst.clone(), space);
         let owner = s.spaces.get(&space).map(|st| st.space.owner_id) == s.me_id();

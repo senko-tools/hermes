@@ -126,6 +126,7 @@ impl Shell {
                                 .cursor_pointer()
                                 .large()
                                 .primary()
+                                .loading(state.busy)
                                 .label(if state.busy { "Please wait…" } else { "Open" })
                                 .disabled(state.busy)
                                 .when(state.busy, |b| b.cursor_default())

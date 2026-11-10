@@ -4,7 +4,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div};
+use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, SharedString, div};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{RelationshipKind, Status};
 use hermes_client_core::{InstanceId, view};
@@ -244,21 +244,30 @@ impl Shell {
             .collect();
         let mut content: Vec<AnyElement> = Vec::new();
         if shown.is_empty() {
-            content.push(
-                div()
-                    .mt(px(20.))
-                    .text_size(theme::body_size())
-                    .text_color(theme::text_tertiary())
-                    .child(match tab {
-                        FriendsTab::Online => "No friends online right now.",
-                        FriendsTab::All => {
-                            "No friends yet. Add someone with the button above: you need their name and # number."
-                        }
-                        FriendsTab::Pending => "No requests waiting.",
-                        FriendsTab::People => "Nobody here yet. Add an instance to get started.",
-                    })
-                    .into_any_element(),
-            );
+            let (glyph, title, hint) = match tab {
+                FriendsTab::Online => (
+                    assets::USERS,
+                    "Nobody is online",
+                    "No friends online right now.",
+                ),
+                FriendsTab::All => (
+                    assets::ACCOUNT_PLUS,
+                    "No friends yet",
+                    "Add someone with the button above: you need their name and # number.",
+                ),
+                FriendsTab::Pending => (assets::BELL, "All caught up", "No requests waiting."),
+                FriendsTab::People => (
+                    assets::SERVER,
+                    "Nobody here yet",
+                    "Add an instance to get started.",
+                ),
+            };
+            content.push(theme::empty_state(
+                format!("friends-{}", tab.label()),
+                glyph,
+                title,
+                hint,
+            ));
         } else {
             content.push(heading(format!(
                 "{} — {}",
@@ -303,7 +312,12 @@ impl Shell {
                             })),
                     ),
             )
-            .children(content)
+            // Another tab's list fades in where the last one was.
+            .child(div().flex().flex_col().children(content).with_animation(
+                SharedString::from(format!("friends-tab-{}", tab.label())),
+                gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(t),
+            ))
     }
 
     fn person_row(&self, line: Line, cx: &mut Context<Self>) -> AnyElement {
