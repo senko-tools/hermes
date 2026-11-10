@@ -1122,7 +1122,7 @@ impl Shell {
                     .gap(px(4.))
                     .h(px(28.))
                     .mt(px(10.))
-                    .pl(px(4.))
+                    .pl(px(8.))
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
                     .text_color(theme::category_text())

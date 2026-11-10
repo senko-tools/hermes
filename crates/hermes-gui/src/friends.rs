@@ -396,7 +396,7 @@ impl Shell {
             .gap(px(12.))
             .h(px(62.))
             .px(px(10.))
-            .rounded(px(6.))
+            .rounded(theme::row_radius())
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .on_click(cx.listener(move |this, _, window, cx| match kind {

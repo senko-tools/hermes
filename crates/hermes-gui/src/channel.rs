@@ -2095,7 +2095,7 @@ impl Shell {
             .mt(px(8.))
             .px(px(12.))
             .py(px(8.))
-            .rounded(px(8.))
+            .rounded(theme::row_radius())
             .bg(theme::selected())
             .child(div().text_size(theme::body_size()).child(what))
             .child(

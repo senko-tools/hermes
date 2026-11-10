@@ -1104,7 +1104,7 @@ impl Shell {
                     .children(picture.map(|picture| {
                         gpui_kit::img(picture)
                             .size(px(40.))
-                            .rounded(px(10.))
+                            .rounded(theme::radius_large())
                             .object_fit(gpui_kit::ObjectFit::Cover)
                             .id("space-icon-picture")
                     }))

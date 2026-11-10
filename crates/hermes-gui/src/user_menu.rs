@@ -452,7 +452,7 @@ impl Shell {
                 .flex_col()
                 .w(px(300.))
                 .overflow_hidden()
-                .rounded(px(10.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .border_1()
                 .border_color(theme::border())

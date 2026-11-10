@@ -438,7 +438,7 @@ impl Shell {
             .w(px(area_w))
             .h(px(area_h))
             .overflow_hidden()
-            .rounded(px(8.))
+            .rounded(theme::radius_large())
             .bg(theme::sidebar())
             .cursor_grab()
             .child(

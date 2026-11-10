@@ -497,7 +497,7 @@ impl Shell {
                     .children(ptt.map(|held| {
                         div()
                             .px(px(6.))
-                            .rounded(px(3.))
+                            .rounded(theme::radius_small())
                             .border_1()
                             .border_color(theme::border())
                             .text_size(theme::caption_size())
@@ -706,7 +706,7 @@ impl Shell {
                     .gap(px(2.))
                     .px(px(10.))
                     .py(px(8.))
-                    .rounded(px(8.))
+                    .rounded(theme::row_radius())
                     .cursor_pointer()
                     .border_1()
                     .when(!selected, |d| d.hover(|d| d.border_color(theme::border())))
@@ -779,7 +779,7 @@ impl Shell {
                 .max_h(self.viewport.height - px(16.))
                 .overflow_y_scroll()
                 .p(px(14.))
-                .rounded(px(10.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .border_1()
                 .border_color(theme::border())
@@ -939,7 +939,7 @@ impl Shell {
                     .items_center()
                     .gap(px(10.))
                     .p(px(6.))
-                    .rounded(px(12.))
+                    .rounded(theme::radius_large())
                     .bg(theme::raised())
                     .border_1()
                     .border_color(theme::border())
@@ -948,7 +948,7 @@ impl Shell {
                     .child(
                         div()
                             .flex()
-                            .rounded(px(8.))
+                            .rounded(theme::row_radius())
                             .bg(theme::selected())
                             .child(mute)
                             .child(deafen),
@@ -1008,7 +1008,7 @@ impl Shell {
                     .pl(px(if nested { 44. } else { 34. }) - theme::indicator_width())
                     .pr(px(6.))
             })
-            .rounded(theme::radius_small())
+            .rounded(theme::row_radius())
             .cursor_pointer()
             .text_size(theme::secondary_size())
             .text_color(if speaking {
@@ -1201,7 +1201,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let share_key = (inst.clone(), p.user);
-        let radius = px(10.);
+        let radius = theme::radius_large();
         let watched = self.watching_shares.contains(&share_key);
         let picture = self.screens.get(&share_key);
         let state_icon = if p.deafened {
@@ -1681,7 +1681,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .w(px(400.))
-                .rounded(px(10.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .border_1()
                 .border_color(theme::border())
@@ -2257,7 +2257,7 @@ impl Shell {
                     .relative()
                     .h(px(HEIGHT))
                     .overflow_hidden()
-                    .rounded(px(3.))
+                    .rounded(theme::radius_small())
                     .bg(theme::code_background())
                     .child(chart)
                     .child(scale(unit(top)).top(px(1.)))

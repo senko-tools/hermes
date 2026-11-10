@@ -2679,7 +2679,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(56.))
-                            .rounded(px(12.))
+                            .rounded(theme::radius_large())
                             .bg(theme::accent_soft())
                             .child(icon(assets::FEATHER, 28., theme::accent())),
                     )
@@ -2931,7 +2931,7 @@ pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> An
                 .flex_col()
                 .gap(px(14.))
                 .p(px(14.))
-                .rounded(px(8.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .children(rows),
         )

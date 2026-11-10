@@ -1068,7 +1068,7 @@ impl Shell {
                 .get(key)
                 .is_some_and(|i| matches!(i.load, Load::Ready(_)))
             || self.media.resume.contains_key(key);
-        let size = human_size(a.size);
+        let size = crate::channel::human_size(a.size);
         if started {
             format!("{} / {}  ·  {size}", clock(position), clock(duration))
         } else if let Some(ms) = a.duration_ms {
@@ -1181,7 +1181,7 @@ impl Shell {
             .pl(px(12.))
             .pr(px(8.))
             .py(px(8.))
-            .rounded(px(8.))
+            .rounded(theme::row_radius())
             .bg(theme::sidebar())
             .border_1()
             .border_color(theme::border())
@@ -1278,8 +1278,8 @@ impl Shell {
     /// A video's top bar: its name, length and size.
     fn video_top(&self, inst: &InstanceId, place: Option<FilePlace>, a: &Attachment) -> Div {
         let meta = match a.duration_ms {
-            Some(ms) => format!("{}  ·  {}", clock(ms), human_size(a.size)),
-            None => human_size(a.size),
+            Some(ms) => format!("{}  ·  {}", clock(ms), crate::channel::human_size(a.size)),
+            None => crate::channel::human_size(a.size),
         };
         let (name, name_record) = self.selectable_file_name(inst, place, &a.filename);
         div()
@@ -1507,7 +1507,7 @@ impl Shell {
             .cursor_default()
             .w(px(w))
             .h(px(h))
-            .rounded(px(8.))
+            .rounded(theme::row_radius())
             .overflow_hidden()
             .bg(gpui_kit::rgb(0x000000))
             .border_1()
@@ -1608,10 +1608,6 @@ impl Shell {
                 .cloned()
         })
     }
-}
-
-fn human_size(bytes: u64) -> String {
-    crate::channel::human_size(bytes)
 }
 
 #[cfg(test)]
