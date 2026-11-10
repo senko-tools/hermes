@@ -443,7 +443,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// An avatar with the presence dot on its corner.
+    /// An avatar with the presence dot on its corner, on the sidebar's colour.
     pub fn avatar_with_status(
         &self,
         inst: &str,
@@ -452,27 +452,61 @@ impl Shell {
         size: f32,
         status: Status,
     ) -> AnyElement {
+        self.avatar_with_status_on(inst, user, name, size, status, theme::sidebar())
+    }
+
+    /// The same on another surface: `ground` is the colour around the avatar, which the dot's
+    /// ring and cut-outs take so they read as holes. A new status pops the dot.
+    pub fn avatar_with_status_on(
+        &self,
+        inst: &str,
+        user: Option<&User>,
+        name: &str,
+        size: f32,
+        status: Status,
+        ground: gpui_kit::Rgba,
+    ) -> AnyElement {
+        use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
         let dot = (size / 3.).max(10.);
+        let who = user.map_or_else(|| name.to_owned(), |u| u.id.to_string());
         div()
             .relative()
             .flex_shrink_0()
             .size(px(size))
             .child(self.avatar(inst, user, name, size))
             .child(
+                // A box of the dot's size, so the dot grows from its middle.
                 div()
                     .absolute()
                     .bottom(px(-1.))
                     .right(px(-1.))
                     .size(px(dot))
-                    .rounded(px(dot / 2.))
-                    .border_2()
-                    .border_color(theme::sidebar())
-                    .bg(theme::status(status))
-                    .overflow_hidden()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .children(presence_shape(status, dot)),
+                    .with_spring(
+                        SharedString::from(format!("presence-{inst}-{who}-{status:?}")),
+                        SpringAnimation::new(SpringConfig::new(520., 22., 1.))
+                            .to(true)
+                            .from(false),
+                        move |d, phase| {
+                            let grown = dot * (0.55 + 0.45 * phase.0.max(0.));
+                            d.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .size(px(grown))
+                                    .rounded(px(grown / 2.))
+                                    .border_2()
+                                    .border_color(ground)
+                                    .bg(theme::status(status))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .children(presence_shape(status, grown, ground)),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
     }
@@ -480,8 +514,8 @@ impl Shell {
 
 /// What is cut out of a presence dot, so that a status never depends on its colour alone:
 /// a bar for do-not-disturb, a crescent for idle, a ring for offline.
-fn presence_shape(status: Status, dot: f32) -> Option<gpui_kit::Div> {
-    let cut = || div().bg(theme::sidebar());
+fn presence_shape(status: Status, dot: f32, ground: gpui_kit::Rgba) -> Option<gpui_kit::Div> {
+    let cut = move || div().bg(ground);
     let inner = dot - 4.;
     match status {
         Status::Online => None,

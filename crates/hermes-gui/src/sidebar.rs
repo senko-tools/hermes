@@ -201,7 +201,7 @@ fn unread_dot() -> Div {
     div()
         .flex_shrink_0()
         .size(px(8.))
-        .rounded(theme::radius_small())
+        .rounded(px(4.))
         .bg(theme::text())
 }
 
@@ -216,17 +216,59 @@ fn badge_element(badge: Badge, counts: bool, dots: bool) -> Option<Div> {
     }
 }
 
+/// The key a badge's pop plays under: a new one when it appears or its count changes.
+fn badge_key(id: &str, badge: Badge, counts: bool) -> String {
+    if badge.mentions > 0 && counts {
+        format!("badge-{id}-{}", badge.mentions)
+    } else {
+        format!("badge-{id}-dot")
+    }
+}
+
 impl Shell {
-    /// A row's badge, as the settings want it shown.
-    fn badge(&self, badge: Badge) -> Option<Div> {
+    /// A row's badge, as the settings want it shown. It pops in on a spring when it appears and
+    /// again when its count changes; `id` names the row.
+    fn badge(&self, id: &str, badge: Badge) -> Option<AnyElement> {
+        use gpui_kit::{AnimationExt as _, SpringAnimation};
         let sidebar = &self.config.sidebar;
-        badge_element(badge, sidebar.show_mention_counts, sidebar.show_unread_dots)
+        let counts = sidebar.show_mention_counts;
+        badge_element(badge, counts, sidebar.show_unread_dots)?;
+        let key = badge_key(id, badge, counts);
+        let mentions = (badge.mentions > 0 && counts).then_some(badge.mentions);
+        // A box as tall as the largest badge, so the row never moves while one grows in it.
+        Some(
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .h(px(18.))
+                .with_spring(
+                    SharedString::from(key),
+                    SpringAnimation::new(CHIP_SPRING).to(true).from(false),
+                    move |d, phase| {
+                        let pop = 0.5 + 0.5 * phase.0.max(0.);
+                        let badge = match mentions {
+                            Some(count) => count_badge(count)
+                                .h(px(18. * pop))
+                                .min_w(px(18. * pop))
+                                .rounded(px(9. * pop)),
+                            None => unread_dot().size(px(8. * pop)).rounded(px(4. * pop)),
+                        };
+                        d.min_w(px(if mentions.is_some() { 18. } else { 8. }))
+                            .child(badge.opacity(phase.0.clamp(0., 1.)))
+                    },
+                )
+                .into_any_element(),
+        )
     }
 }
 
 /// How a sidebar row looks in a state: the bar on its left edge and its backgrounds.
 #[derive(Clone, Copy)]
 struct RowState {
+    /// Which state: the bar grows in again when it changes.
+    name: &'static str,
     bar: gpui_kit::Rgba,
     background: gpui_kit::Rgba,
     hover: gpui_kit::Rgba,
@@ -237,24 +279,28 @@ impl RowState {
     fn of(selected: bool, connected: bool, badge: Badge) -> Option<RowState> {
         if selected {
             Some(RowState {
+                name: "selected",
                 bar: theme::row_selected_bar(),
                 background: theme::row_selected_bg(),
                 hover: theme::row_selected_hover(),
             })
         } else if connected {
             Some(RowState {
+                name: "connected",
                 bar: theme::row_connected_bar(),
                 background: theme::row_connected_bg(),
                 hover: theme::row_connected_hover(),
             })
         } else if badge.mentions > 0 {
             Some(RowState {
+                name: "mention",
                 bar: theme::row_mention_bar(),
                 background: theme::row_mention_bg(),
                 hover: theme::row_mention_hover(),
             })
         } else if badge.unread {
             Some(RowState {
+                name: "unread",
                 bar: theme::row_unread_bar(),
                 background: theme::row_unread_bg(),
                 hover: theme::row_unread_hover(),
@@ -263,6 +309,53 @@ impl RowState {
             None
         }
     }
+}
+
+/// The bar on a highlighted row's left edge. It grows out from its middle each time the row
+/// takes a new state.
+fn state_bar(row: &str, state: RowState) -> impl IntoElement {
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint, relative};
+    div()
+        .absolute()
+        .left_0()
+        .w(theme::indicator_width())
+        .bg(state.bar)
+        .with_animation(
+            SharedString::from(format!("{row}-bar-{}", state.name)),
+            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            |d, t| {
+                let inset = relative(0.5 * (1. - t));
+                d.top(inset).bottom(inset)
+            },
+        )
+}
+
+/// Between two rows of a category that was just opened.
+const STAGGER: std::time::Duration = std::time::Duration::from_millis(18);
+
+/// The `n`th row of a category that was just opened: it fades in and drops into place a moment
+/// after the one above it.
+fn stagger_in(element: AnyElement, key: &str, n: u32) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _};
+    let delay = STAGGER * n;
+    let total = theme::FADE * 2 + delay;
+    let ease = gpui_kit::ease_out_quint();
+    div()
+        .relative()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .child(element)
+        .with_animation(
+            SharedString::from(format!("{key}-{n}")),
+            Animation::new(total),
+            move |d, t| {
+                let elapsed = total.as_secs_f32() * t - delay.as_secs_f32();
+                let local = ease((elapsed / (theme::FADE * 2).as_secs_f32()).clamp(0., 1.));
+                d.opacity(local).top(px(-4. * (1. - local)))
+            },
+        )
+        .into_any_element()
 }
 
 /// An icon of the rail; [`rail_morph`] gives it its shape.
@@ -279,44 +372,87 @@ fn rail_icon(id: impl Into<SharedString>) -> Stateful<Div> {
         .text_size(theme::body_size())
 }
 
-/// Morphs a rail icon from round to a rounded square as it gets selected, and back, while its
-/// background fades to the accent. A server's `picture` fills it, in the same shape.
+/// Morphs a rail icon from round to a rounded square as it gets selected or hovered, and back,
+/// while its background fades to the accent as it gets selected. A server's `picture` fills it,
+/// in the same shape.
 fn rail_morph(
-    id: impl Into<gpui_kit::ElementId>,
+    id: &str,
     element: Stateful<Div>,
     selected: bool,
+    hovered: bool,
     picture: Option<std::sync::Arc<gpui_kit::RenderImage>>,
 ) -> AnyElement {
     use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
+    let plain = picture.is_none();
     element
         .with_spring(
-            id,
-            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected),
+            SharedString::from(format!("{id}-shape")),
+            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected || hovered),
             move |d, phase| {
                 let shape = phase.0.clamp(0., 1.2);
                 let radius = px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * shape);
+                d.rounded(radius).children(picture.map(|picture| {
+                    let id =
+                        SharedString::from(format!("pic-{:p}", std::sync::Arc::as_ptr(&picture)));
+                    gpui_kit::img(picture)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .rounded(radius)
+                        .object_fit(gpui_kit::ObjectFit::Cover)
+                        .id(id)
+                }))
+            },
+        )
+        // Under a picture the background would show at the rounded edge.
+        .with_spring(
+            SharedString::from(format!("{id}-fade")),
+            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected),
+            move |d, phase| {
                 let fade = phase.0.clamp(0., 1.);
-                d.rounded(radius)
-                    // Under a picture it would show at the rounded edge.
-                    .when(picture.is_none(), |d| {
-                        d.bg(theme::mix(theme::selected(), theme::accent(), fade))
+                d.map_element(|e| {
+                    e.when(plain, |e| {
+                        e.bg(theme::mix(theme::selected(), theme::accent(), fade))
                     })
-                    .children(picture.map(|picture| {
-                        let id = SharedString::from(format!(
-                            "pic-{:p}",
-                            std::sync::Arc::as_ptr(&picture)
-                        ));
-                        gpui_kit::img(picture)
-                            .absolute()
-                            .inset_0()
-                            .size_full()
-                            .rounded(radius)
-                            .object_fit(gpui_kit::ObjectFit::Cover)
-                            .id(id)
-                    }))
+                })
             },
         )
         .into_any_element()
+}
+
+/// How tall an icon's own pill at the rail's edge is: a dot while unread, longer under the
+/// pointer, none while selected (the rail's one pill is there).
+fn rail_mark_height(selected: bool, hovered: bool, unread: bool) -> f32 {
+    if selected {
+        0.
+    } else if hovered {
+        20.
+    } else if unread {
+        8.
+    } else {
+        0.
+    }
+}
+
+/// An icon's own pill at the rail's edge, springing between the heights above.
+fn rail_mark(id: &str, height: f32) -> impl IntoElement {
+    use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
+    div()
+        .absolute()
+        .left(px(-(theme::RAIL_WIDTH - theme::RAIL_ICON) / 2.))
+        .w(px(4.))
+        .rounded_r(px(2.))
+        .bg(theme::text())
+        .with_spring(
+            SharedString::from(format!("{id}-mark")),
+            SpringAnimation::new(SpringConfig::new(420., 30., 1.)).to(height),
+            |d, h| {
+                let h = h.max(0.);
+                d.h(px(h))
+                    .top(px((theme::RAIL_ICON - h) / 2.))
+                    .opacity((h / 4.).min(1.))
+            },
+        )
 }
 
 /// The rail's top padding, and the gap between its icons.
@@ -480,14 +616,30 @@ impl Shell {
                 },
             ))
             .children(
-                self.badge(home_badge)
+                self.badge("home", home_badge)
                     .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
             )
+            .on_hover(self.track_hover("rail-home", cx))
             .on_click(cx.listener(|this, _, _, cx| {
                 this.close_pages(cx);
                 this.open_friends(cx);
             }));
-        let home = rail_morph("home-morph", home, home_selected, None);
+        let home_hovered = self.is_hovered("rail-home");
+        let home_unread = home_badge.unread || home_badge.mentions > 0;
+        let home = div()
+            .relative()
+            .flex_shrink_0()
+            .child(rail_mark(
+                "rail-home",
+                rail_mark_height(home_selected, home_hovered, home_unread),
+            ))
+            .child(rail_morph(
+                "home-morph",
+                home,
+                home_selected,
+                home_hovered,
+                None,
+            ));
 
         let rail_spaces = self.rail_spaces();
         let slot = if home_selected {
@@ -534,23 +686,31 @@ impl Shell {
                                 .build(window, cx)
                         }
                     })
+                    .on_hover(self.track_hover(format!("rail-{inst_key}-{id}"), cx))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.close_pages(cx);
                         this.select_space(inst.clone(), id, window, cx);
                     }));
                 let element = self.with_menu(element, target, cx);
+                let hovered = self.is_hovered(&format!("rail-{inst_key}-{id}"));
+                let unread = badge.unread || badge.mentions > 0;
                 // The badge goes over the picture, so it comes after it.
                 div()
                     .relative()
                     .flex_shrink_0()
+                    .child(rail_mark(
+                        &format!("rail-{inst_key}-{id}"),
+                        rail_mark_height(selected, hovered, unread),
+                    ))
                     .child(rail_morph(
-                        SharedString::from(format!("rail-morph-{inst_key}-{id}")),
+                        &format!("rail-morph-{inst_key}-{id}"),
                         element,
                         selected,
+                        hovered,
                         picture,
                     ))
                     .children(
-                        self.badge(badge)
+                        self.badge(&format!("rail-{inst_key}-{id}"), badge)
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
                     )
                     .when(voice.count > 0, |d| {
@@ -565,15 +725,15 @@ impl Shell {
             .collect();
 
         let add = rail_icon("rail-add")
-            .rounded(px(theme::RAIL_ICON / 2.))
-            .bg(theme::selected())
             .hover(|d| d.bg(theme::hover()))
+            .on_hover(self.track_hover("rail-add", cx))
             .child(icon(assets::PLUS, 24., theme::accent()))
             .on_click(
                 cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.open_menu(Target::Instances, event.position(), window, cx);
                 }),
             );
+        let add = rail_morph("rail-add", add, false, self.is_hovered("rail-add"), None);
 
         div()
             .relative()
@@ -636,6 +796,7 @@ impl Shell {
             .size_full()
             .bg(theme::sidebar())
             .children(header.map(|(inst, space, name)| {
+                let key = SharedString::from(format!("sidebar-header-{inst}-{space}"));
                 let target = Target::Space(inst, space);
                 let open = target.clone();
                 let element = div()
@@ -665,7 +826,12 @@ impl Shell {
                             this.open_menu(open.clone(), event.position(), window, cx);
                         },
                     ));
-                self.with_menu(element, target, cx)
+                // Another server's name fades in with its channels.
+                self.with_menu(element, target, cx).with_animation(
+                    key,
+                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t),
+                )
             }))
             .child(
                 div()
@@ -822,11 +988,34 @@ impl Shell {
             .into_iter()
             .filter(|row| show_people || !matches!(row, Row::VoiceUser { .. }))
             .peekable();
+        // The category last opened by a click, and how many of its rows came so far: they fade
+        // in one after another.
+        let mut opening: Option<(Id, u32)> = None;
+        let mut index = 0;
         while let Some(tree_row) = tree_rows.next() {
             // The space itself is the header above the list.
             if matches!(tree_row, Row::Space { .. }) {
                 continue;
             }
+            match &tree_row {
+                Row::Category { id, .. } => {
+                    opening = self
+                        .category_opened
+                        .get(&(inst.clone(), *id))
+                        .map(|generation| (*id, *generation));
+                    index = 0;
+                }
+                Row::Channel { nested: false, .. } => opening = None,
+                _ => {}
+            }
+            let stagger = opening.map(|(category, generation)| {
+                index += 1;
+                (format!("open-{category}-{generation}"), index)
+            });
+            let stagger = move |element: AnyElement| match &stagger {
+                Some((key, n)) => stagger_in(element, key, *n),
+                None => element,
+            };
             let block = match &tree_row {
                 Row::Channel {
                     kind: ChannelKind::Voice,
@@ -840,7 +1029,7 @@ impl Shell {
                 _ => None,
             };
             let Some((state, nested, id)) = block else {
-                rows.push(self.render_tree_row(tree_row, false, cx));
+                rows.push(stagger(self.render_tree_row(tree_row, false, cx)));
                 continue;
             };
             // Highlighted: the channel's highlight goes around the people in it too.
@@ -863,7 +1052,7 @@ impl Shell {
                     inst, channel, user, name, muted, deafened, speaking, nested, dm, true, cx,
                 ));
             }
-            rows.push(
+            rows.push(stagger(
                 div()
                     .id(SharedString::from(format!("voice-block-{id}")))
                     .relative()
@@ -877,19 +1066,11 @@ impl Shell {
                     .bg(state.background)
                     // The block itself stays still: its rows light up one at a time, clear of
                     // the bar on the left.
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(theme::indicator_width())
-                            .bg(state.bar),
-                    )
+                    .child(state_bar(&format!("voice-block-{id}"), state))
                     .child(head)
                     .children(people)
                     .into_any_element(),
-            );
+            ));
         }
         rows
     }
@@ -908,6 +1089,7 @@ impl Shell {
             } => {
                 let node = Node::Category(inst.clone(), id);
                 let target = Target::Channel(inst.clone(), id);
+                let open_inst = inst.clone();
                 let add = drag.is_some().then(|| {
                     let inst = inst.clone();
                     div()
@@ -947,24 +1129,36 @@ impl Shell {
                     .group(CATEGORY_ROW)
                     .hover(|d| d.text_color(theme::accent()))
                     .child(div().min_w_0().truncate().child(name.clone()))
+                    // The chevron turns to point right as the category folds, and back.
                     .child(
-                        icon(
-                            if collapsed {
-                                assets::CHEVRON_RIGHT
-                            } else {
-                                assets::CHEVRON_DOWN
-                            },
-                            14.,
-                            theme::category_text(),
-                        )
-                        .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent())),
+                        icon(assets::CHEVRON_DOWN, 14., theme::category_text())
+                            .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent()))
+                            .with_spring(
+                                SharedString::from(format!("category-chevron-{id}")),
+                                gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(
+                                    420., 32., 1.,
+                                ))
+                                .to(collapsed),
+                                |d, phase| {
+                                    d.with_transformation(gpui_kit::Transformation::rotate(
+                                        gpui_kit::radians(-std::f32::consts::FRAC_PI_2 * phase.0),
+                                    ))
+                                },
+                            ),
                     )
                     .child(div().flex_1())
-                    .children(self.badge(badge))
+                    .children(self.badge(&format!("category-{id}"), badge))
                     .children(add)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Err(err) = this.collapsed.toggle(&node) {
                             this.error(format!("could not save the sidebar state: {err}"), cx);
+                        }
+                        // Opening it: its rows fade in, one after another.
+                        if collapsed {
+                            *this
+                                .category_opened
+                                .entry((open_inst.clone(), id))
+                                .or_default() += 1;
                         }
                         cx.notify();
                     }));
@@ -1048,16 +1242,28 @@ impl Shell {
             } => {
                 let target = Target::Channel(inst.clone(), id);
                 let avatar = self.dm_avatar(&inst, peer, &name);
+                let typing =
+                    self.config.buffer.show_typing
+                        && self.core.store().instance(&inst).is_some_and(|s| {
+                            !s.typing(id, hermes_client_core::now_ms()).is_empty()
+                        });
                 let element = row(format!("dm-{id}"), selected, 44.)
                     .when(badge.unread || badge.mentions > 0, |d| {
                         d.text_color(theme::text())
                     })
                     .child(avatar)
                     .child(div().flex_1().min_w_0().truncate().child(name))
+                    // They are writing something: dots beside their name.
+                    .when(typing, |d| {
+                        d.child(crate::channel::typing_dots(
+                            SharedString::from(format!("dm-typing-{id}")),
+                            theme::text_secondary(),
+                        ))
+                    })
                     .when(connected, |d| {
                         d.child(icon(assets::PHONE, 16., theme::speaking()))
                     })
-                    .children(self.badge(badge))
+                    .children(self.badge(&format!("dm-{id}"), badge))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select(inst.clone(), id, window, cx);
                     }));
@@ -1106,15 +1312,7 @@ impl Shell {
             .when_some(state, |d, state| {
                 d.bg(state.background)
                     .hover(move |d| d.bg(state.hover))
-                    .child(
-                        div()
-                            .absolute()
-                            .left_0()
-                            .top_0()
-                            .bottom_0()
-                            .w(theme::indicator_width())
-                            .bg(state.bar),
-                    )
+                    .child(state_bar(&format!("channel-{id}"), state))
             })
             .when(muted, |d| d.text_color(theme::text_tertiary()))
             .when(strong && !muted, |d| {
@@ -1154,7 +1352,7 @@ impl Shell {
                     .text_color(theme::success())
                     .child(text)
             }))
-            .children(self.badge(badge))
+            .children(self.badge(&format!("channel-{id}"), badge))
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.select(inst.clone(), id, window, cx);
@@ -1206,8 +1404,9 @@ impl Shell {
         element
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
             .drag_over::<Item>(move |style, dragged, _, _| {
+                // Where it would land: tinted with the accent.
                 if dragged.can_drop_on(&over) {
-                    style.bg(theme::selected())
+                    style.bg(theme::alpha(theme::accent(), 0.18))
                 } else {
                     style
                 }
@@ -1261,12 +1460,13 @@ impl Shell {
                 .map_or_else(|| "Not signed in".to_owned(), |u| u.name().to_owned());
             let handle = me.as_ref().map(User::handle);
             let presence = crate::shell::presence_status(self.core.presence());
-            let avatar = self.avatar_with_status(
+            let avatar = self.avatar_with_status_on(
                 inst.as_deref().unwrap_or(""),
                 me.as_ref(),
                 &name,
                 theme::AVATAR_SMALL,
                 presence,
+                theme::footer(),
             );
             (name, handle, avatar)
         };

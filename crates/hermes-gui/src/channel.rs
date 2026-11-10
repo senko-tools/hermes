@@ -11,9 +11,9 @@ use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
 use gpui_kit::component::{RopeExt as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, ExternalPaths, FontStyle, FontWeight, HighlightStyle,
-    InteractiveText, ListAlignment, ListScrollEvent, ListState, MouseButton, SharedString,
-    StrikethroughStyle, Subscription, UnderlineStyle, Window, div, img, list, rgba,
+    AnimationExt as _, AnyElement, App, Context, Entity, ExternalPaths, FontStyle, FontWeight,
+    HighlightStyle, InteractiveText, ListAlignment, ListScrollEvent, ListState, MouseButton,
+    SharedString, StrikethroughStyle, Subscription, UnderlineStyle, Window, div, img, list, rgba,
 };
 use hermes_client_core::commands::{self, SlashCommand};
 use hermes_client_core::proto::id::Id;
@@ -264,6 +264,39 @@ pub fn human_size(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+/// Three dots that rise and brighten one after another, over and over: someone is typing.
+pub fn typing_dots(id: impl Into<SharedString>, color: gpui_kit::Rgba) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _};
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(3.))
+        .h(px(10.))
+        .with_animation(
+            id.into(),
+            Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+            move |d, t| {
+                d.children((0..3).map(|n| {
+                    // Each dot's bump comes a little after the one before.
+                    let at = (t - n as f32 * 0.16).rem_euclid(1.);
+                    let bump = if at < 0.4 {
+                        (at / 0.4 * std::f32::consts::PI).sin()
+                    } else {
+                        0.
+                    };
+                    div()
+                        .size(px(4.))
+                        .rounded(px(2.))
+                        .relative()
+                        .top(px(-2. * bump))
+                        .bg(theme::alpha(color, 0.35 + 0.65 * bump))
+                }))
+            },
+        )
+        .into_any_element()
 }
 
 /// `Bob is typing…`, `Bob and Carol are typing…`, `Several people are typing…`.
@@ -1919,13 +1952,24 @@ impl Shell {
                         .absolute()
                         .bottom(px(2.))
                         .left(px(16.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
                         .px(px(8.))
                         .py(px(2.))
                         .rounded(theme::radius_small())
                         .bg(theme::background())
                         .text_size(theme::caption_size())
                         .text_color(theme::text_secondary())
+                        .child(typing_dots("typing-dots", theme::text_secondary()))
                         .child(text)
+                        // It fades in when someone starts.
+                        .with_animation(
+                            "typing-in",
+                            gpui_kit::Animation::new(theme::FADE)
+                                .with_easing(gpui_kit::ease_out_quint()),
+                            |d, t| d.opacity(t),
+                        )
                 }))
                 .into_any_element()
         };

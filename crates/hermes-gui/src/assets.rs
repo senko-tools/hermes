@@ -27,7 +27,8 @@ pub const REPLY: &str = "reply";
 pub const PENCIL: &str = "pencil";
 pub const CLOSE: &str = "close";
 pub const CHEVRON_DOWN: &str = "chevron-down";
-pub const CHEVRON_RIGHT: &str = "chevron-right";
+/// The handle on a row being dragged.
+pub const DRAG: &str = "dots-vertical";
 pub const ATTACH: &str = "paperclip";
 pub const CHAT: &str = "message-outline";
 pub const PHONE: &str = "phone";

@@ -113,6 +113,8 @@ pub struct Shell {
     /// space is selected again, and the one before when it is deleted.
     pub recent_channels: HashMap<(InstanceId, Id), Vec<Id>>,
     pub collapsed: Collapsed,
+    /// How many times each category was opened by a click: its rows fade in under a new key.
+    pub category_opened: HashMap<(InstanceId, Id), u32>,
     pub chats: HashMap<ChannelKey, ChatView>,
     pub images: Images,
     pub status: Option<Status>,
@@ -302,6 +304,7 @@ impl Shell {
             selected: Selected::Home,
             recent_channels: HashMap::new(),
             collapsed,
+            category_opened: HashMap::new(),
             chats: HashMap::new(),
             images: Images::default(),
             status: None,

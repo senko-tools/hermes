@@ -2527,8 +2527,9 @@ impl Shell {
         element
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
             .drag_over::<Item>(move |style, dragged, _, _| {
+                // Where it would land: tinted with the accent.
                 if dragged.can_drop_on(&over) {
-                    style.bg(theme::selected())
+                    style.bg(theme::alpha(theme::accent(), 0.18))
                 } else {
                     style
                 }
