@@ -144,6 +144,40 @@ fn count_badge(count: u32) -> Div {
         .child(count.to_string())
 }
 
+/// What a rail icon's voice chip says: how many are in voice there, at most "9+".
+fn voice_count_text(count: usize) -> String {
+    if count > 9 {
+        "9+".to_owned()
+    } else {
+        count.to_string()
+    }
+}
+
+/// Over a rail icon's top-right corner: a speaker and how many are in voice there. Accent when
+/// I am one of them. A ring in the rail's colour sets it off from the picture.
+fn voice_chip(here: view::VoiceHere) -> Div {
+    let (bg, fg) = if here.me {
+        (theme::accent(), theme::on_accent())
+    } else {
+        (theme::raised(), theme::text_secondary())
+    };
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(2.))
+        .h(px(18.))
+        .px(px(4.))
+        .rounded(px(9.))
+        .border_2()
+        .border_color(theme::sidebar())
+        .bg(bg)
+        .text_color(fg)
+        .text_size(theme::caption_size())
+        .child(icon(assets::VOLUME, 11., fg))
+        .child(voice_count_text(here.count))
+}
+
 fn unread_dot() -> Div {
     div()
         .flex_shrink_0()
@@ -458,6 +492,12 @@ impl Shell {
                 let target = Target::Space(inst.clone(), id);
                 let inst_key = inst.clone();
                 let picture = self.space_picture(&inst, id);
+                let voice = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .map(|s| view::voice_in_space(s, id))
+                    .unwrap_or_default();
                 let element = rail_icon(format!("rail-space-{inst}-{id}"))
                     .text_color(if selected {
                         theme::on_accent()
@@ -494,6 +534,15 @@ impl Shell {
                         self.badge(badge)
                             .map(|badge| div().absolute().bottom_0().right_0().child(badge)),
                     )
+                    .when(voice.count > 0, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-4.))
+                                .right(px(-6.))
+                                .child(voice_chip(voice)),
+                        )
+                    })
                     .into_any_element()
             })
             .collect();
@@ -1327,6 +1376,13 @@ mod tests {
     use super::{ConnLook, rail_slot_top};
     use hermes_client_core::gateway::ConnStatus;
     use std::time::Duration;
+
+    #[test]
+    fn voice_chip_counts_up_to_nine() {
+        assert_eq!(super::voice_count_text(1), "1");
+        assert_eq!(super::voice_count_text(9), "9");
+        assert_eq!(super::voice_count_text(10), "9+");
+    }
 
     #[test]
     fn connection_look_ignores_blips_and_shows_the_worst() {
