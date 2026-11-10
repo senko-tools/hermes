@@ -2479,10 +2479,12 @@ impl Shell {
             .when(!selected && !jumped && !highlight, |d| {
                 d.hover(|d| d.bg(theme::hover_soft()))
             })
+            // Text can be selected from anywhere in the row; names, links and files keep their own.
+            .cursor_text()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                    this.text_press(&press_inst, channel, event.position, cx);
+                    this.text_press(&press_inst, channel, id, event, cx);
                 }),
             )
             .on_click(cx.listener(move |this, _, window, cx| {

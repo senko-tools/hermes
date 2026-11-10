@@ -345,7 +345,7 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
             &inst,
             channel,
             Draft {
-                content: "hello".into(),
+                content: "hello there, friend".into(),
                 ..Draft::default()
             },
         )
@@ -499,7 +499,63 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         let this = shell.read(cx);
         assert!(this.selection.dragged, "the press became a drag");
         assert!(!this.selection.dragging(), "the release ended it");
-        assert_eq!(this.selected_text().as_deref(), Some("hello"));
+        assert_eq!(this.selected_text().as_deref(), Some("hello there, friend"));
+    });
+
+    // A double click selects a word, and a triple click the whole text; neither is a click.
+    for (clicks, expected) in [(2, "hello"), (3, "hello there, friend")] {
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        for click_count in 1..=clicks {
+            visual.simulate_event(gpui_kit::MouseDownEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: from,
+                modifiers: Modifiers::none(),
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui_kit::MouseUpEvent {
+                button: gpui_kit::MouseButton::Left,
+                position: from,
+                modifiers: Modifiers::none(),
+                click_count,
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        }
+        visual.update(|_, cx| {
+            let this = shell.read(cx);
+            assert!(this.selection.dragged, "{clicks} clicks are no click");
+            assert_eq!(this.selected_text().as_deref(), Some(expected));
+        });
+    }
+
+    // A press in the row's empty space, left of the text, starts from the nearest text.
+    let empty = point(text.left() - px(60.), text.center().y);
+    visual.simulate_mouse_move(empty, None, Modifiers::none());
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.simulate_mouse_down(empty, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    visual.simulate_mouse_move(to, Some(gpui_kit::MouseButton::Left), Modifiers::none());
+    visual.simulate_mouse_up(to, gpui_kit::MouseButton::Left, Modifiers::none());
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        assert_eq!(
+            shell.read(cx).selected_text().as_deref(),
+            Some("hello there, friend")
+        );
     });
 
     // A plain click elsewhere clears it.

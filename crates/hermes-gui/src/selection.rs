@@ -72,8 +72,18 @@ impl FilePlace {
     }
 }
 
-/// What was painted in the last frame: where each part is, and how its text is laid out.
-type Laid = Rc<RefCell<BTreeMap<Part, (Bounds<Pixels>, TextLayout)>>>;
+/// What was painted in the last frame: where each part is, how its text is laid out, and the text.
+type Laid = Rc<RefCell<BTreeMap<Part, (Bounds<Pixels>, TextLayout, SharedString)>>>;
+
+/// What a press selects, by how many clicks it took: like a browser, one click selects by
+/// letters, a double click by words, a triple click a message's whole text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Unit {
+    #[default]
+    Letter,
+    Word,
+    Message,
+}
 
 #[derive(Default)]
 pub struct TextSelection {
@@ -83,6 +93,9 @@ pub struct TextSelection {
     head: Option<Spot>,
     /// The left button is down on text: where, and on which spot.
     pressed: Option<(Point<Pixels>, Spot)>,
+    unit: Unit,
+    /// What a double or triple click selected; a drag after it keeps it and grows from it.
+    origin: Option<(Spot, Spot)>,
     dragging: bool,
     /// The last press became a drag, so its release is no click.
     pub dragged: bool,
@@ -97,7 +110,7 @@ impl TextSelection {
     /// Where `part` was painted last.
     #[cfg(test)]
     pub fn bounds_of(&self, part: Part) -> Option<Bounds<Pixels>> {
-        self.laid.borrow().get(&part).map(|(bounds, _)| *bounds)
+        self.laid.borrow().get(&part).map(|(bounds, _, _)| *bounds)
     }
 
     /// The ends of the selection, first one first.
@@ -134,24 +147,157 @@ impl TextSelection {
     /// The spot of the text under `at`, if there is any.
     fn spot_under(&self, at: Point<Pixels>) -> Option<Spot> {
         let laid = self.laid.borrow();
-        let (part, (_, layout)) = laid.iter().find(|(_, (b, _))| b.contains(&at))?;
+        let (part, (_, layout, _)) = laid.iter().find(|(_, (b, _, _))| b.contains(&at))?;
         Some(Spot {
             part: *part,
             byte: layout.index_for_position(at).unwrap_or_else(|i| i),
         })
     }
 
-    /// The spot of the text nearest to `at`: first by line, then along it.
-    fn spot_nearest(&self, at: Point<Pixels>) -> Option<Spot> {
+    /// The spot of the text nearest to `at`: first by line, then along it. Only in `message`
+    /// when one is given.
+    fn spot_nearest(&self, at: Point<Pixels>, message: Option<Id>) -> Option<Spot> {
         let laid = self.laid.borrow();
-        let (part, (_, layout)) = laid.iter().min_by(|(_, (a, _)), (_, (b, _))| {
-            let (a, b) = (distance(*a, at), distance(*b, at));
-            a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
-        })?;
+        let (part, (_, layout, _)) = laid
+            .iter()
+            .filter(|(part, _)| message.is_none_or(|m| part.message == m))
+            .min_by(|(_, (a, _, _)), (_, (b, _, _))| {
+                let (a, b) = (distance(*a, at), distance(*b, at));
+                a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+            })?;
         Some(Spot {
             part: *part,
             byte: layout.index_for_position(at).unwrap_or_else(|i| i),
         })
+    }
+
+    /// The `unit` around `spot`: its word, or its message's whole text.
+    fn unit_around(&self, spot: Spot, unit: Unit) -> (Spot, Spot) {
+        let laid = self.laid.borrow();
+        let at = |part: Part, byte: usize| Spot { part, byte };
+        match unit {
+            Unit::Letter => (spot, spot),
+            Unit::Word => match laid.get(&spot.part) {
+                Some((_, _, text)) => {
+                    let word = word_at(text, spot.byte);
+                    (at(spot.part, word.start), at(spot.part, word.end))
+                }
+                None => (spot, spot),
+            },
+            Unit::Message => {
+                let is_block = |p: &Part| (BLOCKS..FILES).contains(&p.index);
+                let whole = |part: Part| {
+                    let len = laid.get(&part).map_or(0, |(_, _, text)| text.len());
+                    (at(part, 0), at(part, len))
+                };
+                if !is_block(&spot.part) {
+                    // A name, a time or a file name: just that.
+                    return whole(spot.part);
+                }
+                let mut blocks = laid
+                    .keys()
+                    .filter(|p| p.message == spot.part.message && is_block(p));
+                let first = blocks.next().copied().unwrap_or(spot.part);
+                let last = blocks.next_back().copied().unwrap_or(first);
+                (whole(first).0, whole(last).1)
+            }
+        }
+    }
+
+    /// Moves the head to the text nearest `at`, by the unit the press chose.
+    fn extend_to(&mut self, at: Point<Pixels>) {
+        let Some(nearest) = self.spot_nearest(at, None) else {
+            return;
+        };
+        match self.origin {
+            Some((start, end)) if self.unit != Unit::Letter => {
+                let (from, to) = self.unit_around(nearest, self.unit);
+                if nearest < start {
+                    self.anchor = Some(end);
+                    self.head = Some(from);
+                } else {
+                    self.anchor = Some(start);
+                    self.head = Some(to.max(end));
+                }
+            }
+            _ => self.head = Some(nearest),
+        }
+    }
+}
+
+/// How a character counts when a double click looks for a word.
+#[derive(PartialEq)]
+enum Kind {
+    Word,
+    Space,
+    Other,
+}
+
+fn kind(c: char) -> Kind {
+    if c.is_alphanumeric() || c == '_' {
+        Kind::Word
+    } else if c.is_whitespace() {
+        Kind::Space
+    } else {
+        Kind::Other
+    }
+}
+
+/// What a double click at `byte` selects in `text`: the word there, with apostrophes and dots
+/// inside it (`don't`, `3.14`); a run of spaces; or a single other character, such as a comma.
+fn word_at(text: &str, byte: usize) -> Range<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    if chars.is_empty() {
+        return 0..0;
+    }
+    let byte = byte.min(text.len());
+    // The character starting at `byte`, or the one before it at the end of the text.
+    let mut i = chars
+        .iter()
+        .position(|(at, _)| *at >= byte)
+        .unwrap_or(chars.len() - 1);
+    // A press just after a word (on its right half, or before the space or comma after it) means
+    // that word, as in a browser.
+    if i > 0 && kind(chars[i].1) != Kind::Word && kind(chars[i - 1].1) == Kind::Word {
+        i -= 1;
+    }
+    let end_of = |i: usize| chars.get(i + 1).map_or(text.len(), |(at, _)| *at);
+    match kind(chars[i].1) {
+        Kind::Other => chars[i].0..end_of(i),
+        Kind::Space => {
+            let (mut from, mut to) = (i, i);
+            while from > 0 && kind(chars[from - 1].1) == Kind::Space {
+                from -= 1;
+            }
+            while to + 1 < chars.len() && kind(chars[to + 1].1) == Kind::Space {
+                to += 1;
+            }
+            chars[from].0..end_of(to)
+        }
+        Kind::Word => {
+            let joins = |c: char| matches!(c, '\'' | '\u{2019}' | '.');
+            let word = |j: usize| chars.get(j).is_some_and(|(_, c)| kind(*c) == Kind::Word);
+            let (mut from, mut to) = (i, i);
+            loop {
+                if from > 0 && word(from - 1) {
+                    from -= 1;
+                } else if from > 1 && joins(chars[from - 1].1) && word(from - 2) {
+                    from -= 2;
+                } else {
+                    break;
+                }
+            }
+            loop {
+                if word(to + 1) {
+                    to += 1;
+                } else if to + 2 < chars.len() && joins(chars[to + 1].1) && word(to + 2) {
+                    to += 2;
+                } else {
+                    break;
+                }
+            }
+            chars[from].0..end_of(to)
+        }
     }
 }
 
@@ -283,14 +429,15 @@ impl Shell {
             }
             None => highlights,
         };
-        let styled = StyledText::new(text).with_highlights(highlights);
+        let styled = StyledText::new(text.clone()).with_highlights(highlights);
         let layout = styled.layout().clone();
         let laid = self.selection.laid.clone();
         // While painting: only what is really on screen has a finished layout.
         let record = canvas(
             |_, _, _| (),
             move |bounds, (), _, _| {
-                laid.borrow_mut().insert(part, (bounds, layout.clone()));
+                laid.borrow_mut()
+                    .insert(part, (bounds, layout.clone(), text.clone()));
             },
         )
         .absolute()
@@ -330,20 +477,44 @@ impl Shell {
             .into_any_element()
     }
 
-    /// A press in a message: on text, it may become a selection.
+    /// A press in `message`: it may become a selection, from the text under it or, in the row's
+    /// empty space, from the message's nearest text. A double click selects the word there and a
+    /// triple click the message's whole text, as in a browser.
     pub fn text_press(
         &mut self,
         inst: &InstanceId,
         channel: Id,
-        at: Point<Pixels>,
+        message: Id,
+        event: &MouseDownEvent,
         cx: &mut Context<Self>,
     ) {
+        let at = event.position;
         let selection = &mut self.selection;
-        selection.pressed = selection.spot_under(at).map(|spot| (at, spot));
-        if selection.pressed.is_some() {
-            selection.chat = Some((inst.clone(), channel));
-            cx.notify();
+        let spot = selection
+            .spot_under(at)
+            .or_else(|| selection.spot_nearest(at, Some(message)));
+        selection.pressed = spot.map(|spot| (at, spot));
+        selection.origin = None;
+        selection.unit = match event.click_count {
+            0 | 1 => Unit::Letter,
+            2 => Unit::Word,
+            _ => Unit::Message,
+        };
+        let Some(spot) = spot else {
+            return;
+        };
+        selection.chat = Some((inst.clone(), channel));
+        if selection.unit != Unit::Letter {
+            let (from, to) = selection.unit_around(spot, selection.unit);
+            selection.anchor = Some(from);
+            selection.head = Some(to);
+            selection.origin = Some((from, to));
+            selection.at = at;
+            // Selected already, so this press is no click, and moving grows it at once.
+            selection.dragging = true;
+            selection.dragged = true;
         }
+        cx.notify();
     }
 
     /// While there is a selection or a press: listens to the mouse in the whole window.
@@ -410,9 +581,7 @@ impl Shell {
             selection.dragged = true;
             selection.anchor = Some(spot);
         }
-        if let Some(head) = selection.spot_nearest(event.position) {
-            selection.head = Some(head);
-        }
+        selection.extend_to(event.position);
         cx.notify();
     }
 
@@ -445,9 +614,8 @@ impl Shell {
             };
             if scroll != 0. {
                 view.list.scroll_by(gpui_kit::px(scroll * EDGE_SCROLL));
-                if let Some(head) = self.selection.spot_nearest(self.selection.at) {
-                    self.selection.head = Some(head);
-                }
+                let at = self.selection.at;
+                self.selection.extend_to(at);
                 window.request_animation_frame();
             }
         }
@@ -644,6 +812,31 @@ mod tests {
         let (text, hidden) = block_text(&block, false, true);
         assert_eq!(visible(&text, 0..text.len(), &hidden), "a secret b");
         assert_eq!(visible(&text, 3..5, &hidden), "ec");
+    }
+
+    /// The word a double click at the first `|` in `marked` selects.
+    fn word(marked: &str) -> String {
+        let at = marked.find('|').unwrap();
+        let text = marked.replacen('|', "", 1);
+        text[word_at(&text, at)].to_owned()
+    }
+
+    #[test]
+    fn a_double_click_selects_a_word() {
+        assert_eq!(word("|hello there, friend"), "hello");
+        assert_eq!(word("hello th|ere, friend"), "there");
+        assert_eq!(word("hello there|, friend"), "there");
+        assert_eq!(word("hello there,| friend"), " ");
+        assert_eq!(word("hello there, frien|d"), "friend");
+        assert_eq!(word("hello there, friend|"), "friend");
+        assert_eq!(word("oisko visio jos teikäl|äine latais"), "teikäläine");
+        assert_eq!(word("don|'t stop"), "don't");
+        assert_eq!(word("pi is 3|.14."), "3.14");
+        assert_eq!(word("a  |   b"), "     ");
+        assert_eq!(word("wow |(nice)"), "(");
+        assert_eq!(word("springing-it-spring|trap"), "springtrap");
+        assert_eq!(word("snake_ca|se"), "snake_case");
+        assert_eq!(word("|"), "");
     }
 
     #[test]
