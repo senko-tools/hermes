@@ -46,7 +46,7 @@ pub fn measure_file(path: &std::path::Path) -> (Option<Vec<u8>>, Option<u64>) {
     let Ok(bytes) = std::fs::read(path) else {
         return (None, None);
     };
-    let Ok(served) = serve::serve(Arc::new(bytes)) else {
+    let Ok(served) = serve::serve(serve::Source::Memory(Arc::new(bytes))) else {
         return (None, None);
     };
     let Ok(probe) = ffmpeg::probe(&served.url) else {
@@ -106,7 +106,7 @@ mod tests {
             eprintln!("FFmpeg is not installed: skipped");
             return;
         };
-        let served = serve::serve(Arc::new(bytes)).unwrap();
+        let served = serve::serve(serve::Source::Memory(Arc::new(bytes))).unwrap();
         let probe = ffmpeg::probe(&served.url).unwrap();
         assert!(probe.audio);
         assert_eq!(probe.video.map(|(w, h, _)| (w, h)), Some((160, 90)));

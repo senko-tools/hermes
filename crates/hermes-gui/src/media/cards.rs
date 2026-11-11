@@ -308,6 +308,15 @@ impl Shell {
             .filter(|(on, _)| *on == device)
             .and_then(|(_, output)| output.upgrade());
         let volume = self.media_gain();
+        // Read in parts while it plays, when it allows that; else fetched whole first.
+        let remote = match self.core.remote_file(&inst, &attachment) {
+            Ok(file) => file.map(Arc::new),
+            Err(err) => {
+                tracing::warn!("media {}: {err}", attachment.id);
+                None
+            }
+        };
+        let runtime = self.runtime.clone();
         let at = self.media.resume.remove(&key).map_or(0, |(at, _)| at);
         let measure = attachment.waveform.is_none()
             && !self.media.measured.contains_key(&key)
@@ -316,24 +325,39 @@ impl Shell {
             cx,
             async move {
                 let started = std::time::Instant::now();
-                let bytes = core
-                    .download(&inst, &attachment)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let downloaded = started.elapsed();
-                let size = bytes.len();
+                let (source, fetched) = match remote {
+                    Some(file) => (super::serve::Source::Remote(file, runtime), None),
+                    None => {
+                        let bytes = core
+                            .download(&inst, &attachment)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let size = bytes.len();
+                        (
+                            super::serve::Source::Memory(Arc::new(bytes)),
+                            Some((size, started.elapsed())),
+                        )
+                    }
+                };
                 let player = tokio::task::spawn_blocking(move || {
-                    Player::open(Arc::new(bytes), shared, Some(&device), volume, at)
+                    Player::open(source, shared, Some(&device), volume, at)
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-                tracing::info!(
-                    "media {}: {:.1} MB fetched in {} ms, opened in {} ms",
-                    attachment.id,
-                    size as f64 / 1e6,
-                    downloaded.as_millis(),
-                    (started.elapsed() - downloaded).as_millis()
-                );
+                match fetched {
+                    Some((size, took)) => tracing::info!(
+                        "media {}: {:.1} MB fetched whole in {} ms, opened in {} ms",
+                        attachment.id,
+                        size as f64 / 1e6,
+                        took.as_millis(),
+                        (started.elapsed() - took).as_millis()
+                    ),
+                    None => tracing::info!(
+                        "media {}: streaming, opened in {} ms",
+                        attachment.id,
+                        started.elapsed().as_millis()
+                    ),
+                }
                 player
             },
             move |this, result, _, cx| {

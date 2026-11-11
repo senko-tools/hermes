@@ -41,6 +41,12 @@ const VOICE_SIG: &[u8] = b"hermes-e2ee/v1/voice-key";
 const DEVICE_SIG: &[u8] = b"hermes-e2ee/v1/device";
 const SAFETY: &[u8] = b"hermes-e2ee/v1/safety-number";
 const FILE_AAD: &[u8] = b"hermes-e2ee/v1/file";
+const FILE_CHUNK_AAD: &[u8] = b"hermes-e2ee/v1/file-chunk";
+
+/// How much of a file each sealed piece holds (see [`seal_file_chunked`]).
+pub const FILE_CHUNK: u32 = 64 * 1024;
+/// What sealing adds to each piece: its tag.
+pub const CHUNK_TAG: u64 = 16;
 const CHANNEL_MESSAGE_SIG: &[u8] = b"hermes-e2ee/v1/channel-message";
 const CHANNEL_WRAP_AAD: &[u8] = b"hermes-e2ee/v1/channel-wrap";
 const CHANNEL_KEY_SIG: &[u8] = b"hermes-e2ee/v1/channel-key";
@@ -304,6 +310,9 @@ pub struct InnerAttachment {
     pub compression: Option<hermes_proto::e2ee::Compression>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumb: Option<hermes_proto::e2ee::SealedThumb>,
+    /// Sealed in pieces of this size ([`seal_file_chunked`]); `None`: one block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<u32>,
 }
 
 /// What a message says, inside its envelope.
@@ -848,6 +857,100 @@ pub fn seal_file(bytes: &[u8]) -> Result<(Vec<u8>, String, String), E2eeError> {
         )
         .map_err(|_| E2eeError::Malformed)?;
     Ok((sealed, b64(&*key), b64(&nonce)))
+}
+
+/// The nonce of piece `index`: the file's random 15-byte prefix, the index, and whether it is
+/// the last piece. A piece moved, repeated or cut off then fails to open (the STREAM
+/// construction); the key is the file's own, so prefixes never meet across files.
+fn chunk_nonce(prefix: &[u8; 15], index: u64, last: bool) -> [u8; 24] {
+    let mut nonce = [0u8; 24];
+    nonce[..15].copy_from_slice(prefix);
+    nonce[15..23].copy_from_slice(&index.to_be_bytes());
+    nonce[23] = u8::from(last);
+    nonce
+}
+
+/// How many pieces a file of `size` bytes is sealed in: at least one, so an empty file still
+/// has its last piece.
+pub fn chunk_count(size: u64, chunk: u32) -> u64 {
+    size.div_ceil(u64::from(chunk.max(1))).max(1)
+}
+
+/// Encrypts a file in pieces of `chunk` bytes, each sealed on its own, so any part of it can be
+/// fetched and opened without the rest: `(sealed bytes, key, nonce prefix)`. Piece `i` is at
+/// `i * (chunk + CHUNK_TAG)` in the sealed bytes.
+pub fn seal_file_chunked(bytes: &[u8], chunk: u32) -> Result<(Vec<u8>, String, String), E2eeError> {
+    let key = Zeroizing::new(random::<32>());
+    let prefix: [u8; 15] = random();
+    let cipher = XChaCha20Poly1305::new(&(*key).into());
+    let count = chunk_count(bytes.len() as u64, chunk);
+    let mut sealed = Vec::with_capacity(bytes.len() + (count * CHUNK_TAG) as usize);
+    for index in 0..count {
+        let start = (index * u64::from(chunk)) as usize;
+        let end = (start + chunk as usize).min(bytes.len());
+        let nonce = chunk_nonce(&prefix, index, index + 1 == count);
+        let piece = cipher
+            .encrypt(
+                &nonce.into(),
+                Payload {
+                    msg: &bytes[start..end],
+                    aad: FILE_CHUNK_AAD,
+                },
+            )
+            .map_err(|_| E2eeError::Malformed)?;
+        sealed.extend_from_slice(&piece);
+    }
+    Ok((sealed, b64(&*key), b64(&prefix)))
+}
+
+/// Opens piece `index` of a file sealed by [`seal_file_chunked`]; `last` says whether it is the
+/// file's last piece (from the file's size, which the message vouches for).
+pub fn open_chunk(
+    sealed: &[u8],
+    key: &str,
+    prefix: &str,
+    index: u64,
+    last: bool,
+) -> Result<Vec<u8>, E2eeError> {
+    let key = Zeroizing::new(unb64_array::<32>(key)?);
+    let prefix: [u8; 15] = unb64_array(prefix)?;
+    XChaCha20Poly1305::new(&(*key).into())
+        .decrypt(
+            &chunk_nonce(&prefix, index, last).into(),
+            Payload {
+                msg: sealed,
+                aad: FILE_CHUNK_AAD,
+            },
+        )
+        .map_err(|_| E2eeError::Tampered)
+}
+
+/// Opens a whole file sealed in pieces of `chunk` bytes, `size` bytes when open.
+pub fn open_file_chunked(
+    sealed: &[u8],
+    key: &str,
+    prefix: &str,
+    chunk: u32,
+    size: u64,
+) -> Result<Vec<u8>, E2eeError> {
+    let count = chunk_count(size, chunk);
+    let step = u64::from(chunk) + CHUNK_TAG;
+    if sealed.len() as u64 != size + count * CHUNK_TAG {
+        return Err(E2eeError::Tampered);
+    }
+    let mut out = Vec::with_capacity(size as usize);
+    for index in 0..count {
+        let start = (index * step) as usize;
+        let end = (start + step as usize).min(sealed.len());
+        out.extend(open_chunk(
+            &sealed[start..end],
+            key,
+            prefix,
+            index,
+            index + 1 == count,
+        )?);
+    }
+    Ok(out)
 }
 
 pub fn open_file(sealed: &[u8], key: &str, nonce: &str) -> Result<Vec<u8>, E2eeError> {
@@ -1676,6 +1779,60 @@ mod tests {
         assert_eq!(open_file(&bad, &key, &nonce), Err(E2eeError::Tampered));
         let (_, other, _) = seal_file(b"x").unwrap();
         assert_eq!(open_file(&sealed, &other, &nonce), Err(E2eeError::Tampered));
+    }
+
+    /// Pieces of 4 bytes: 10 bytes are pieces 0, 1 and a last one of 2.
+    fn pieces(sealed: &[u8]) -> Vec<&[u8]> {
+        sealed.chunks(4 + CHUNK_TAG as usize).collect()
+    }
+
+    #[test]
+    fn a_file_sealed_in_pieces_opens_whole_and_piece_by_piece() {
+        let (sealed, key, prefix) = seal_file_chunked(b"0123456789", 4).unwrap();
+        assert_eq!(sealed.len(), 10 + 3 * CHUNK_TAG as usize);
+        assert_eq!(
+            open_file_chunked(&sealed, &key, &prefix, 4, 10).unwrap(),
+            b"0123456789"
+        );
+        let p = pieces(&sealed);
+        assert_eq!(open_chunk(p[1], &key, &prefix, 1, false).unwrap(), b"4567");
+        assert_eq!(open_chunk(p[2], &key, &prefix, 2, true).unwrap(), b"89");
+        // An empty file is one empty last piece.
+        let (empty, key2, prefix2) = seal_file_chunked(b"", 4).unwrap();
+        assert_eq!(
+            open_file_chunked(&empty, &key2, &prefix2, 4, 0).unwrap(),
+            b""
+        );
+    }
+
+    #[test]
+    fn pieces_cannot_be_moved_cut_off_or_changed() {
+        let (sealed, key, prefix) = seal_file_chunked(b"0123456789", 4).unwrap();
+        let p = pieces(&sealed);
+        // Moved: piece 1 read as piece 0.
+        assert_eq!(
+            open_chunk(p[1], &key, &prefix, 0, false),
+            Err(E2eeError::Tampered)
+        );
+        // Cut off: a middle piece passed off as the last.
+        assert_eq!(
+            open_chunk(p[1], &key, &prefix, 1, true),
+            Err(E2eeError::Tampered)
+        );
+        let short = &sealed[..2 * (4 + CHUNK_TAG as usize)];
+        assert_eq!(
+            open_file_chunked(short, &key, &prefix, 4, 8),
+            Err(E2eeError::Tampered)
+        );
+        // Changed.
+        let mut bad = sealed.clone();
+        bad[5] ^= 1;
+        assert_eq!(
+            open_file_chunked(&bad, &key, &prefix, 4, 10),
+            Err(E2eeError::Tampered)
+        );
+        // A whole-file key and nonce do not open pieces, nor the other way round.
+        assert!(open_file(&sealed, &key, &prefix).is_err());
     }
 
     #[test]

@@ -1,6 +1,7 @@
-//! Hands media in memory to FFmpeg: a tiny HTTP server on the loopback address, one random path
-//! per file, with range requests so FFmpeg can seek (an MP4 often keeps its index at the end).
-//! Nothing decrypted is written to disk this way.
+//! Hands media to FFmpeg: a tiny HTTP server on the loopback address, one random path per file,
+//! with range requests so FFmpeg can seek (an MP4 often keeps its index at the end). A file is in
+//! memory, or read from the server in parts as FFmpeg asks for them, so it plays while it
+//! downloads. Nothing decrypted is written to disk this way.
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -13,35 +14,63 @@ const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 struct Server {
     port: u16,
-    files: Mutex<HashMap<String, Weak<Vec<u8>>>>,
+    files: Mutex<HashMap<String, Weak<Source>>>,
 }
+
+/// Where a served file's bytes come from.
+pub enum Source {
+    Memory(Arc<Vec<u8>>),
+    /// Read from the server in parts, on the app's async runtime.
+    Remote(
+        Arc<hermes_client_core::remote_file::RemoteFile>,
+        tokio::runtime::Handle,
+    ),
+}
+
+impl Source {
+    fn len(&self) -> u64 {
+        match self {
+            Source::Memory(bytes) => bytes.len() as u64,
+            Source::Remote(file, _) => file.size(),
+        }
+    }
+}
+
+/// The first part fetched for a request, and the most: each part fetched is twice the last, so
+/// playback starts after a small one and then reads in few requests.
+const FIRST_PART: u64 = 256 * 1024;
+const MAX_PART: u64 = 4 * 1024 * 1024;
 
 static SERVER: OnceLock<Result<Arc<Server>, String>> = OnceLock::new();
 
 /// A file being served: its address stays valid while this lives.
 pub struct Served {
     pub url: String,
-    _bytes: Arc<Vec<u8>>,
+    source: Arc<Source>,
 }
 
 impl Served {
-    /// How many bytes the file has.
+    /// How many of its bytes are in memory.
     pub fn size(&self) -> usize {
-        self._bytes.len()
+        match &*self.source {
+            Source::Memory(bytes) => bytes.len(),
+            Source::Remote(file, _) => file.kept_bytes(),
+        }
     }
 }
 
-/// Serves `bytes` until the returned [`Served`] is dropped.
-pub fn serve(bytes: Arc<Vec<u8>>) -> Result<Served, String> {
+/// Serves `source` until the returned [`Served`] is dropped.
+pub fn serve(source: Source) -> Result<Served, String> {
     let server = SERVER.get_or_init(start).clone()?;
     let path = token();
+    let source = Arc::new(source);
     let mut files = server.files.lock().unwrap_or_else(|e| e.into_inner());
     // Forget files nobody holds any more.
     files.retain(|_, file| file.strong_count() > 0);
-    files.insert(path.clone(), Arc::downgrade(&bytes));
+    files.insert(path.clone(), Arc::downgrade(&source));
     Ok(Served {
         url: format!("http://127.0.0.1:{}/{path}", server.port),
-        _bytes: bytes,
+        source,
     })
 }
 
@@ -130,7 +159,7 @@ fn answer(server: &Server, stream: &TcpStream) -> std::io::Result<()> {
             b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
     };
-    let len = file.len() as u64;
+    let len = file.len();
     let (start, end) = match range.as_deref().and_then(|r| parse_range(r, len)) {
         Some(span) => span,
         None if range.is_some() => {
@@ -141,11 +170,7 @@ fn answer(server: &Server, stream: &TcpStream) -> std::io::Result<()> {
         }
         None => (0, len.saturating_sub(1)),
     };
-    let body = if len == 0 {
-        &file[..0]
-    } else {
-        &file[start as usize..=end as usize]
-    };
+    let body_len = if len == 0 { 0 } else { end - start + 1 };
     let status = if range.is_some() {
         format!("206 Partial Content\r\nContent-Range: bytes {start}-{end}/{len}")
     } else {
@@ -153,14 +178,59 @@ fn answer(server: &Server, stream: &TcpStream) -> std::io::Result<()> {
     };
     let head = format!(
         "HTTP/1.1 {status}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
-        body.len()
+        body_len
     );
     out.write_all(head.as_bytes())?;
-    if method != "HEAD" {
-        // FFmpeg closes the connection when it seeks: that error is expected.
-        let _ = out.write_all(body);
+    if method == "HEAD" || body_len == 0 {
+        return Ok(());
+    }
+    // FFmpeg closes the connection when it seeks: a write error then is expected.
+    match &*file {
+        Source::Memory(bytes) => {
+            let _ = out.write_all(&bytes[start as usize..=end as usize]);
+        }
+        Source::Remote(remote, runtime) => {
+            stream_remote(remote, runtime, start, end + 1, out);
+        }
     }
     Ok(())
+}
+
+/// Writes `from..to` of a remote file as its parts arrive, fetching the next part while the
+/// last is written.
+fn stream_remote(
+    file: &Arc<hermes_client_core::remote_file::RemoteFile>,
+    runtime: &tokio::runtime::Handle,
+    from: u64,
+    to: u64,
+    mut out: &TcpStream,
+) {
+    let fetch = |at: u64, len: u64| {
+        let file = file.clone();
+        runtime.spawn(async move { file.read(at, len).await })
+    };
+    let mut part = FIRST_PART;
+    let mut at = from;
+    let mut next = Some(fetch(at, part.min(to - at)));
+    while let Some(pending) = next.take() {
+        let bytes = match runtime.block_on(pending) {
+            Ok(Ok(bytes)) if !bytes.is_empty() => bytes,
+            Ok(Err(err)) => {
+                tracing::warn!("media part at {at}: {err}");
+                return;
+            }
+            _ => return,
+        };
+        at += bytes.len() as u64;
+        if at < to {
+            part = (part * 2).min(MAX_PART);
+            next = Some(fetch(at, part.min(to - at)));
+        }
+        if out.write_all(&bytes).is_err() {
+            // FFmpeg went elsewhere: what was being fetched is kept for later.
+            return;
+        }
+    }
 }
 
 /// `bytes=a-b`, `bytes=a-` or `bytes=-n` as an inclusive span within `len`.
@@ -208,7 +278,7 @@ mod tests {
 
     #[test]
     fn serves_a_file_and_its_ranges_until_dropped() {
-        let served = serve(Arc::new(b"hello world".to_vec())).unwrap();
+        let served = serve(Source::Memory(Arc::new(b"hello world".to_vec()))).unwrap();
         let whole = get(&served.url, None);
         assert!(whole.starts_with("HTTP/1.1 200"), "{whole}");
         assert!(whole.ends_with("hello world"));

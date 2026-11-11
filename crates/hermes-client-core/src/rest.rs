@@ -977,6 +977,31 @@ impl Rest {
         read_capped(res, MAX_FILE_BYTES).await
     }
 
+    /// Bytes `start..=end` of a stored file: media reads what it plays, not the whole file.
+    pub async fn download_range(
+        &self,
+        attachment: Id,
+        filename: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>> {
+        let req = self
+            .request(
+                Method::GET,
+                &format!("/attachments/{attachment}/{}", encode(filename)),
+            )
+            .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+            .timeout(UPLOAD_TIMEOUT);
+        let res = Self::send(req).await?;
+        if res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(Error::Decode(format!(
+                "the server sent HTTP {} for a part of a file",
+                res.status()
+            )));
+        }
+        read_capped(res, (end - start + 1) as usize).await
+    }
+
     pub async fn thumbnail(&self, attachment: Id) -> Result<Vec<u8>> {
         let res =
             Self::send(self.request(Method::GET, &format!("/attachments/{attachment}/thumb")))

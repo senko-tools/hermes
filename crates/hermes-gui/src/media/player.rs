@@ -69,13 +69,13 @@ impl Player {
     /// Opens a file in memory: probes it and takes the sound output (`shared`, else a new one on
     /// `device`), paused at `at` ms. Blocks: call it off the UI thread.
     pub fn open(
-        bytes: Arc<Vec<u8>>,
+        source: super::serve::Source,
         shared: Option<Arc<MediaOutput>>,
         device: Option<&str>,
         volume: f32,
         at: u64,
     ) -> Result<Player, String> {
-        let served = super::serve::serve(bytes)?;
+        let served = super::serve::serve(source)?;
         let probe = ffmpeg::probe(&served.url)?;
         if !probe.audio && probe.video.is_none() {
             return Err("this file has no sound or picture".into());

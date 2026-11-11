@@ -792,6 +792,77 @@ async fn files_in_direct_messages_are_encrypted_with_their_names() {
     assert!(!bytes.windows(6).any(|w| w == b"secret"));
 }
 
+/// Bytes that do not compress, so the file is sealed in pieces.
+fn noise(len: usize) -> Vec<u8> {
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn encrypted_media_can_be_read_in_parts_while_it_downloads() {
+    let server = start("e2ee-parts").await;
+    let (alice, _a_events, a, bob, _b_events, b, dm) = dm_pair(&server).await;
+    let plain = noise(300_000);
+    let path = server.dir.join("clip.mp4");
+    std::fs::write(&path, &plain).unwrap();
+    let attachment = alice
+        .upload_to(&a, dm, &path, Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        attachment.sealed.as_ref().and_then(|s| s.chunk_size),
+        Some(hermes_client_core::e2ee::FILE_CHUNK)
+    );
+    alice
+        .send_message(
+            &a,
+            dm,
+            Draft {
+                content: "a clip".into(),
+                reply_to: None,
+                attachments: vec![attachment],
+            },
+        )
+        .unwrap();
+    wait_for_window(&bob, &b, dm, "a clip").await;
+    let received = {
+        let store = bob.store();
+        let window = store.instance(&b).unwrap().window(dm).unwrap();
+        let message = window
+            .messages
+            .iter()
+            .find(|m| m.content == "a clip")
+            .unwrap();
+        message.attachments[0].clone()
+    };
+    let file = bob
+        .remote_file(&b, &received)
+        .unwrap()
+        .expect("readable in parts");
+    assert_eq!(file.size(), 300_000);
+    // Across two pieces, the very end, past the end, and a part read again from memory.
+    let chunk = hermes_client_core::e2ee::FILE_CHUNK as usize;
+    for (start, len) in [
+        (chunk - 10, 20),
+        (299_990, 10),
+        (299_990, 100),
+        (0, 1000),
+        (chunk - 10, 20),
+    ] {
+        let got = file.read(start as u64, len as u64).await.unwrap();
+        let end = (start + len).min(plain.len());
+        assert_eq!(got, &plain[start..end], "{start}+{len}");
+    }
+    assert_eq!(bob.download(&b, &received).await.unwrap(), plain);
+}
+
 #[tokio::test]
 async fn a_new_device_reads_only_what_comes_after_and_is_announced() {
     let server = start("e2ee-device").await;

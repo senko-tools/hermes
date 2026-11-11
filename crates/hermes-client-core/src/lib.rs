@@ -16,6 +16,7 @@ pub mod gateway;
 pub mod known_hosts;
 pub mod logs;
 pub mod notify;
+pub mod remote_file;
 pub mod rest;
 pub mod search_index;
 pub mod secure;

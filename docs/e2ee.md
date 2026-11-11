@@ -36,6 +36,14 @@ own, kept inside the message; on the server they are `encrypted.bin` of type `ap
 Before encrypting, the sender shrinks what compresses well (`compress.rs`: zstd, and PNGs that hold only pixels are
 re-encoded), keeping the result only if it saves at least 5 %. The server can see the smaller size.
 
+A file that was not compressed (media nearly always) is sealed in pieces since 2026-11-11 (`chunk_size`, 64 KiB,
+inside the message, so the server cannot change it): each piece is XChaCha20-Poly1305 under the file's key with the
+nonce `prefix (15 random bytes) | index (8 bytes) | last (1 byte)` and the AAD `hermes-e2ee/v1/file-chunk` (the
+STREAM construction), so a piece cannot be moved, repeated, changed or the file cut short. Piece `i` is at
+`i * (64 KiB + 16)` on the server, so a client fetches only the pieces it needs with HTTP ranges and opens each
+alone (`remote_file.rs`): media plays while it downloads. Clients from before this cannot open such files; files
+sealed as one block (and compressed ones) are still opened whole.
+
 The server refuses plain DMs (`privacy.require_dm_encryption`, on by default). Clients refuse to send in clear,
 and mark a DM message that is not encrypted with an open lock: an old one, or one the server made up.
 

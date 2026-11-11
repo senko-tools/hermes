@@ -226,6 +226,10 @@ pub struct SealedFile {
     /// A small preview of a picture, encrypted and stored beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumb: Option<SealedThumb>,
+    /// Sealed in pieces of this many bytes, each on its own, so a part of the file can be read
+    /// without the rest (media starts while it downloads). `None`: sealed as one block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<u32>,
 }
 
 /// Where a picture's encrypted preview is, and its key.

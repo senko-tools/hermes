@@ -108,8 +108,13 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Media (2026-11-08):** sound files get a waveform card and videos (mp4, mkv, mov, webm and more)
   an inline player with full view; nothing loads before play is clicked, and videos keep playing
   while the window is unfocused. `src/media/` runs `ffmpeg`/`ffprobe` as child processes (beside
-  `hermes.exe` first, then the PATH) and hands them the file from memory over a loopback-only HTTP
-  address with range requests, so decrypted DM media never touches disk. The sender's client
+  `hermes.exe` first, then the PATH) and hands them the file over a loopback-only HTTP
+  address with range requests, so decrypted DM media never touches disk. Since 2026-11-11 a file that
+  can be read in parts (plain, or sealed in pieces, see `docs/e2ee.md`) streams: each request FFmpeg
+  makes is read from the server as it goes (`serve::Source::Remote`, parts of 256 KiB doubling to
+  4 MiB, the next fetched while the last is written; up to 64 MB of parts kept per file). Others are
+  still fetched whole first. The log says how long opening, the first sound and the first picture
+  took. The sender's client
   measures a sound's waveform and a file's length (`Attachment.waveform`, `duration_ms`); without
   them the waveform grows in while the file plays. The release bundles BtbN's LGPL FFmpeg build;
   on Linux FFmpeg must be installed (`apt install ffmpeg`). Installers built by hand need it in

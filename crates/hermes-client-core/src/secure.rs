@@ -518,14 +518,20 @@ impl Core {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
-        let (sealed, key, nonce, plain_size, compression, preview) =
+        let (sealed, key, nonce, plain_size, compression, preview, chunk_size) =
             tokio::task::spawn_blocking(move || {
                 let preview = match crate::compress::preview(&bytes) {
                     Some(preview) => Some(e2ee::seal_file(&preview)?),
                     None => None,
                 };
                 let shrunk = crate::compress::shrink(bytes);
-                let (sealed, key, nonce) = e2ee::seal_file(&shrunk.bytes)?;
+                // What is not compressed (media nearly always) is sealed in pieces, so it can be
+                // played while it downloads.
+                let chunk_size = shrunk.compression.is_none().then_some(e2ee::FILE_CHUNK);
+                let (sealed, key, nonce) = match chunk_size {
+                    Some(chunk) => e2ee::seal_file_chunked(&shrunk.bytes, chunk)?,
+                    None => e2ee::seal_file(&shrunk.bytes)?,
+                };
                 Ok::<_, E2eeError>((
                     sealed,
                     key,
@@ -533,6 +539,7 @@ impl Core {
                     shrunk.plain_size,
                     shrunk.compression,
                     preview,
+                    chunk_size,
                 ))
             })
             .await
@@ -578,6 +585,7 @@ impl Core {
                 stored_name: stored.filename,
                 compression,
                 thumb,
+                chunk_size,
             }),
         })
     }
@@ -596,6 +604,19 @@ impl Core {
             .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
     }
 
+    /// An attachment that can be read in parts while it downloads (media plays from it). `None`
+    /// when it can only be opened whole: sealed as one block, or compressed.
+    pub fn remote_file(
+        &self,
+        inst: &str,
+        attachment: &Attachment,
+    ) -> Result<Option<crate::remote_file::RemoteFile>> {
+        Ok(crate::remote_file::RemoteFile::new(
+            self.rest(inst)?,
+            attachment,
+        ))
+    }
+
     /// Downloads an attachment, decrypting it if it is encrypted.
     pub async fn download(&self, inst: &str, attachment: &Attachment) -> Result<Vec<u8>> {
         let rest = self.rest(inst)?;
@@ -605,8 +626,13 @@ impl Core {
         let bytes = rest.download(attachment.id, &sealed.stored_name).await?;
         let (key, nonce) = (sealed.key.clone(), sealed.nonce.clone());
         let (compression, plain_size) = (sealed.compression, attachment.size);
+        let chunk_size = sealed.chunk_size;
         tokio::task::spawn_blocking(move || {
-            let opened = e2ee::open_file(&bytes, &key, &nonce).map_err(|e| e.to_string())?;
+            let opened = match chunk_size {
+                Some(chunk) => e2ee::open_file_chunked(&bytes, &key, &nonce, chunk, plain_size),
+                None => e2ee::open_file(&bytes, &key, &nonce),
+            }
+            .map_err(|e| e.to_string())?;
             crate::compress::restore(opened, compression, plain_size)
         })
         .await
@@ -766,6 +792,7 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         nonce: sealed.nonce.clone(),
         compression: sealed.compression,
         thumb: sealed.thumb.clone(),
+        chunk_size: sealed.chunk_size,
     })
 }
 
@@ -819,6 +846,7 @@ fn apply_inner(message: &mut Message, inner: Inner) {
                 stored_name: on_server.filename.clone(),
                 compression: attachment.compression,
                 thumb: attachment.thumb,
+                chunk_size: attachment.chunk_size,
             }),
         });
     }
