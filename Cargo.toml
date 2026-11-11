@@ -119,6 +119,12 @@ unsafe_code = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
+# Debug builds keep only line tables: backtraces and crash logs still show files and lines, and
+# a debug build with its tests is about half the size (13 GB instead of 27) and builds faster.
+# For a debugger that shows variables, build with CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
 # The audio path is real-time: unoptimized DSP in debug builds falls behind when two voice
 # clients and a server share one slow CI runner. Optimize just these crates in dev/test builds.
 [profile.dev.package]
