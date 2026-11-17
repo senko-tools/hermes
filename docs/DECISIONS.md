@@ -1901,3 +1901,20 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   parser quadratic: about a second per parse in a debug build, and every client parses every message it shows. The
   other quadratic cases found at the same time (long `*`/`_` runs, `[` and `<` without a closing `]`/`>`, many code
   fences) were fixed without changing any output.
+## 2026-11-18: Database indexes and fewer queries per request
+
+- **`0009_indexes.sql`** adds indexes that section 7.3 does not list, for lookups and foreign keys
+  that no primary key, UNIQUE constraint or index served (each was a full table scan):
+  `attachments(message_id, created_at)` (a message's attachments, the SET NULL when messages go,
+  the sweep of expired unattached uploads), `sessions(user_id)`,
+  `message_mentions(kind, target_id, message_id)` (mentions inbox), `channels(space_id)`,
+  `channels(parent_id)`, `roles(space_id)`, `read_states(channel_id)`, `member_roles(role_id)`,
+  `channel_overrides(role_id)`, `users(avatar_id)` and `spaces(icon_id)`. Columns that only point
+  at `users(id)` stay unindexed, since users are disabled and never deleted.
+- **Mentions inbox:** `GET /users/@me/mentions` now starts from the matching `message_mentions`
+  rows instead of checking every message of every readable channel; results, order and paging
+  are unchanged (`tests/mentions_inbox.rs` compares it with the old query).
+- **One statement instead of one per user:** mention counts of a new message, the devices in
+  `POST /users/devices`, and revoking the devices of several signed-out sessions.
+- **Why:** these grew with the database; deleting a channel, role or space, and the inbox, got
+  slower with every message.

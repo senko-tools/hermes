@@ -88,8 +88,11 @@ pub async fn search(
     }
     .limit();
     let db = &state.db.read;
-    let rows = db::messages::search(db, &fts, &channels, q.author_id, q.before, limit).await?;
-    let total = db::messages::search_count(db, &fts, &channels, q.author_id).await?;
+    // The page and the total are independent reads; run them on two pooled connections at once.
+    let (rows, total) = tokio::try_join!(
+        db::messages::search(db, &fts, &channels, q.author_id, q.before, limit),
+        db::messages::search_count(db, &fts, &channels, q.author_id),
+    )?;
     Ok(Json(SearchResponse {
         messages: messages::to_wire(&state, rows, auth.user_id).await?,
         total: u64::try_from(total).unwrap_or(0),

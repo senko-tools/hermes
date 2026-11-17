@@ -1,8 +1,12 @@
 //! The `devices` table: public keys of users' devices (docs/e2ee.md).
 
+use std::collections::HashMap;
+
 use hermes_proto::e2ee::{DeviceKeys, RegisterDeviceRequest};
 use hermes_proto::id::Id;
 use sqlx::{SqliteConnection, SqlitePool};
+
+use super::id_list;
 
 /// Every device of `user_id`, revoked ones included, oldest first.
 pub async fn of_user(pool: &SqlitePool, user_id: Id) -> Result<Vec<DeviceKeys>, sqlx::Error> {
@@ -24,6 +28,35 @@ pub async fn of_user(pool: &SqlitePool, user_id: Id) -> Result<Vec<DeviceKeys>, 
             revoked: r.revoked_at.is_some(),
         })
         .collect())
+}
+
+/// [`of_user`] for several users in one query. Users without devices have no entry.
+pub async fn of_users(
+    pool: &SqlitePool,
+    user_ids: &[Id],
+) -> Result<HashMap<Id, Vec<DeviceKeys>>, sqlx::Error> {
+    let ids = id_list(user_ids);
+    let rows = sqlx::query!(
+        "SELECT user_id, device_id, sign_key, dh_key, signature, revoked_at FROM devices
+         WHERE user_id IN (SELECT value FROM json_each(?))
+         ORDER BY user_id, created_at, device_id",
+        ids
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut out: HashMap<Id, Vec<DeviceKeys>> = HashMap::new();
+    for r in rows {
+        out.entry(Id::from_i64(r.user_id))
+            .or_default()
+            .push(DeviceKeys {
+                device_id: r.device_id,
+                sign_key: r.sign_key,
+                dh_key: r.dh_key,
+                signature: r.signature,
+                revoked: r.revoked_at.is_some(),
+            });
+    }
+    Ok(out)
 }
 
 /// How many devices of `user_id` are in use, not counting `except`.
@@ -97,23 +130,18 @@ pub async fn revoke_sessions(
     session_ids: &[Id],
     now: i64,
 ) -> Result<Vec<Id>, sqlx::Error> {
-    let mut users = Vec::new();
-    for session in session_ids {
-        let session = session.to_i64();
-        let rows = sqlx::query_scalar!(
-            "UPDATE devices SET revoked_at = ?
-             WHERE session_id = ? AND revoked_at IS NULL RETURNING user_id",
-            now,
-            session
-        )
-        .fetch_all(&mut *conn)
-        .await?;
-        for user in rows {
-            let user = Id::from_i64(user);
-            if !users.contains(&user) {
-                users.push(user);
-            }
-        }
-    }
+    let sessions = id_list(session_ids);
+    let rows = sqlx::query_scalar!(
+        "UPDATE devices SET revoked_at = ?
+         WHERE session_id IN (SELECT value FROM json_each(?)) AND revoked_at IS NULL
+         RETURNING user_id",
+        now,
+        sessions
+    )
+    .fetch_all(conn)
+    .await?;
+    let mut users: Vec<Id> = rows.into_iter().map(Id::from_i64).collect();
+    users.sort_unstable();
+    users.dedup();
     Ok(users)
 }

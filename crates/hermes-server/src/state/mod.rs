@@ -686,11 +686,36 @@ impl Cache {
         }
     }
 
+    /// The [`Member`] that [`permissions::compute`] needs: like [`Cache::member`] (`None` under
+    /// the same conditions), but only the user ID and roles are filled in. Permission checks run
+    /// for every member on every broadcast, so they skip cloning names and avatars.
+    fn permission_member(&self, space: &SpaceState, user_id: Id) -> Option<Member> {
+        let member = space.members.get(&user_id)?;
+        if !self.users.contains_key(&user_id) {
+            return None;
+        }
+        Some(Member {
+            space_id: space.space.id,
+            user: User {
+                id: user_id,
+                username: String::new(),
+                discriminator: None,
+                display_name: None,
+                avatar: None,
+                status_text: None,
+            },
+            nickname: None,
+            role_ids: member.role_ids.clone(),
+            joined_at: member.joined_at,
+        })
+    }
+
     /// A user's space-level permissions; empty if they are not a member.
     pub fn space_permissions(&self, space_id: Id, user_id: Id) -> Permissions {
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
+            return Permissions::empty();
+        };
+        let Some(member) = self.permission_member(space, user_id) else {
             return Permissions::empty();
         };
         permissions::compute(&space.space, &space.roles, &member, None)
@@ -708,9 +733,10 @@ impl Cache {
                 Permissions::empty()
             };
         };
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
+            return Permissions::empty();
+        };
+        let Some(member) = self.permission_member(space, user_id) else {
             return Permissions::empty();
         };
         permissions::compute(&space.space, &space.roles, &member, Some(&state.channel))
@@ -886,6 +912,34 @@ mod tests {
         );
         assert!(cache.channel_permissions(DM, OWNER).is_empty());
         assert!(cache.channel_permissions(Id(999), ALICE).is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_checks_match_compute_on_full_members() {
+        let dir = TempDir::new("cache-perm-member");
+        let db = Db::open(dir.path()).await.unwrap();
+        fixture(&db).await;
+        let cache = load_from_db(&db).await.unwrap();
+        db.close().await;
+
+        let space = &cache.spaces[&SPACE];
+        for user_id in [OWNER, ALICE, BOB, Id(999)] {
+            let full = cache.member(SPACE, user_id);
+            let expected = |channel: Option<&Channel>| {
+                full.as_ref().map_or(Permissions::empty(), |m| {
+                    permissions::compute(&space.space, &space.roles, m, channel)
+                })
+            };
+            assert_eq!(cache.space_permissions(SPACE, user_id), expected(None));
+            for channel_id in [GENERAL, SECRET, VOICE] {
+                let channel = &cache.channels[&channel_id].channel;
+                assert_eq!(
+                    cache.channel_permissions(channel_id, user_id),
+                    expected(Some(channel)),
+                    "user {user_id} in channel {channel_id}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

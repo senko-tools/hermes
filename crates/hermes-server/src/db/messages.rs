@@ -7,7 +7,7 @@ use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, Mentions, MessageKind};
 use sqlx::{SqliteConnection, SqliteExecutor};
 
-use super::int;
+use super::{id_list, int};
 
 /// A `messages` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,12 +71,6 @@ fn message_kind_name(kind: MessageKind) -> &'static str {
         MessageKind::Default => "default",
         MessageKind::System => "system",
     }
-}
-
-/// The IDs as a JSON array for `json_each`.
-fn id_list(ids: &[Id]) -> String {
-    serde_json::to_string(&ids.iter().map(|id| id.to_i64()).collect::<Vec<_>>())
-        .unwrap_or_else(|_| "[]".into())
 }
 
 fn rows(raw: Vec<Raw>) -> Result<Vec<MessageRow>, sqlx::Error> {
@@ -537,28 +531,31 @@ pub async fn remove_reaction(
 }
 
 /// Adds one mention to each user's read state of the channel, unless they already read past
-/// `message_id`.
+/// `message_id`. One statement for all users (an `@everyone` may notify a whole space).
 pub async fn add_mention_counts(
     conn: &mut SqliteConnection,
     channel_id: Id,
     user_ids: &[Id],
     message_id: Id,
 ) -> Result<(), sqlx::Error> {
-    let (channel_id, message_id) = (channel_id.to_i64(), message_id.to_i64());
-    for user_id in user_ids {
-        let user_id = user_id.to_i64();
-        sqlx::query!(
-            "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)
-             VALUES (?, ?, 0, 1)
-             ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = mention_count + 1
-             WHERE last_read_id < ?",
-            user_id,
-            channel_id,
-            message_id
-        )
-        .execute(&mut *conn)
-        .await?;
+    if user_ids.is_empty() {
+        return Ok(());
     }
+    let (channel_id, message_id) = (channel_id.to_i64(), message_id.to_i64());
+    let user_ids = id_list(user_ids);
+    // An upsert from a SELECT needs a WHERE clause, or SQLite parses `ON CONFLICT` as a join's
+    // `ON`.
+    sqlx::query!(
+        "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)
+         SELECT value, ?, 0, 1 FROM json_each(?) WHERE true
+         ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = mention_count + 1
+         WHERE last_read_id < ?",
+        channel_id,
+        user_ids,
+        message_id
+    )
+    .execute(conn)
+    .await?;
     Ok(())
 }
 
@@ -644,6 +641,12 @@ pub async fn search_count(
 
 /// Messages in `channels` that mention `user` (directly, through one of `roles`, or with
 /// `@everyone` / `@here`), newest first; the user's own messages are left out.
+///
+/// Driven by `message_mentions` (index `idx_message_mentions_target`): it reads the matching
+/// mentions older than `before` instead of every message of every readable channel. SQLite walks
+/// the `IN` set in ID order, so the `ORDER BY` needs no sort and the message lookups stop at
+/// `limit` (checked with `EXPLAIN QUERY PLAN`). `@everyone` / `@here` rows always have a NULL
+/// `target_id` ([`set_mentions`]); saying so lets that branch seek on `message_id` as well.
 pub async fn mentioning(
     e: impl SqliteExecutor<'_>,
     user: Id,
@@ -661,13 +664,18 @@ pub async fn mentioning(
             r#"SELECT m.id, m.channel_id, m.author_id, m.content, m.reply_to_id, m.edited_at,
                       m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
                FROM messages m
-               WHERE m.deleted = 0 AND m.author_id != ?1 AND m.id < ?4
+               WHERE m.id IN (
+                   SELECT message_id FROM message_mentions
+                   WHERE kind = 'user' AND target_id = ?1 AND message_id < ?4
+                   UNION ALL
+                   SELECT message_id FROM message_mentions
+                   WHERE kind = 'role' AND target_id IN (SELECT value FROM json_each(?2))
+                     AND message_id < ?4
+                   UNION ALL
+                   SELECT message_id FROM message_mentions
+                   WHERE kind IN ('everyone', 'here') AND target_id IS NULL AND message_id < ?4)
+                 AND m.deleted = 0 AND m.author_id != ?1
                  AND m.channel_id IN (SELECT value FROM json_each(?3))
-                 AND EXISTS (
-                   SELECT 1 FROM message_mentions mm WHERE mm.message_id = m.id AND (
-                     (mm.kind = 'user' AND mm.target_id = ?1)
-                     OR (mm.kind = 'role' AND mm.target_id IN (SELECT value FROM json_each(?2)))
-                     OR mm.kind IN ('everyone', 'here')))
                ORDER BY m.id DESC LIMIT ?5"#,
             user,
             roles,

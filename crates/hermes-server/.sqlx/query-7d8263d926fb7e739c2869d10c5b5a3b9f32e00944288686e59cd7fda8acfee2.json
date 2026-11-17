@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE messages SET content = '', deleted = 1, pinned = 0\n         WHERE author_id = ? AND id >= ? AND deleted = 0\n           AND channel_id IN (SELECT id FROM channels WHERE space_id = ?)\n         RETURNING id, channel_id",
+  "query": "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0\n         WHERE author_id = ? AND id >= ? AND deleted = 0\n           AND channel_id IN (SELECT id FROM channels WHERE space_id = ?)\n         RETURNING id, channel_id",
   "describe": {
     "columns": [
       {
@@ -34,5 +34,5 @@
       false
     ]
   },
-  "hash": "28ea233373567c1c400c51cb8d25dbc74565758f3176836ab8ed7e32f5eda066"
+  "hash": "7d8263d926fb7e739c2869d10c5b5a3b9f32e00944288686e59cd7fda8acfee2"
 }

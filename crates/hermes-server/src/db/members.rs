@@ -140,8 +140,9 @@ pub async fn delete_ban(
 }
 
 /// Soft-deletes `author_id`'s messages in the space's channels with an ID of at least `min_id`
-/// (content cleared, unpinned, reactions and mentions removed, attachments unlinked). Returns
-/// `(message_id, channel_id)` of the messages deleted now.
+/// (content and any encrypted form cleared, unpinned, reactions and mentions removed, attachments
+/// unlinked), like [`super::messages::soft_delete`]. Returns `(message_id, channel_id)` of the
+/// messages deleted now.
 pub async fn soft_delete_messages_since(
     conn: &mut SqliteConnection,
     space_id: Id,
@@ -150,7 +151,7 @@ pub async fn soft_delete_messages_since(
 ) -> Result<Vec<(Id, Id)>, sqlx::Error> {
     let (space_id, author_id, min_id) = (space_id.to_i64(), author_id.to_i64(), min_id.to_i64());
     let rows = sqlx::query!(
-        "UPDATE messages SET content = '', deleted = 1, pinned = 0
+        "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0
          WHERE author_id = ? AND id >= ? AND deleted = 0
            AND channel_id IN (SELECT id FROM channels WHERE space_id = ?)
          RETURNING id, channel_id",
