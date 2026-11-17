@@ -1845,3 +1845,22 @@ Linux-only release on the Forgejo instance (git.8w.fi).
 - **Note:** once `.forgejo/workflows/` exists, Forgejo no longer reads `.github/workflows/`, so
   the Forgejo instance runs only the workflows in `.forgejo/workflows/`.
 - **Why:** the developer wants releases on the self-hosted Forgejo instance as well.
+## 2026-11-18: Dependency refresh
+
+- **What (PLAN.md section 6 pins):** patch bumps `arc-swap` 1.9.3 → 1.9.5, `bytes` 1.12.1 → 1.12.2,
+  `rand` 0.10.3 → 0.10.4, `zeroize` 1.9.1 → 1.9.2, `clap` 4.6.7 → 4.6.8, `xcap` 0.9.8 → 0.9.10,
+  `openh264` 0.9.9 → 0.9.10, `notify` 8.2.1 → 8.2.2; minor bump `rubato` 5.0.1 → 5.1.0; small breaking
+  bumps `rfd` 0.17.2 → 0.18.0 and `global-hotkey` 0.9.0 → 0.10.0 (neither needed a code change: rfd's
+  Windows dialog only gained an opt-in "show hidden files", global-hotkey's Windows backend did not
+  change and only error variants Hermes never matches were removed; built and tested on Linux, the
+  Windows side is left to Windows CI and the developer's PC). `fuzz/` now pins
+  `libfuzzer-sys =0.4.13` instead of `0.4`, like everything else. `cargo update` refreshed the
+  transitive dependencies within their semver ranges.
+- **Lockfile note:** xcap 0.9.10's Linux backend moved to `ashpd` 0.14 / zbus 6, so those appear in
+  `Cargo.lock`. They are never built: Hermes uses xcap on Windows only. If screen capture ever comes
+  to Linux, that brings a second zbus stack next to gpui's zbus 5.
+- **Not taken:** `notify-rust` 4.19.0 (its only change outside macOS moves it to zbus 6, while gpui,
+  keyring and accesskit stay on zbus 5, so Linux builds would compile two zbus stacks for nothing);
+  `toml` / `toml_edit` (figment 0.10.19 still needs toml 0.8).
+- **Why:** the developer asked for the recommended updates, allowing patch and semver-compatible
+  minor bumps and a breaking bump only where it is small and contained.
