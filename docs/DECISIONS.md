@@ -1873,3 +1873,11 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   its DirectWrite text and DirectX renderer.
 - **Why:** part of the 2026-11-18 dependency refresh. It is a separate change so it can be reverted
   on its own if the new kit misbehaves on Windows.
+## 2026-11-18: Zoom in with the + key
+
+- **What:** `zoom_in` also answers to `Ctrl++` and `Ctrl+Shift+=` while `[keys]` leaves it at its default `Ctrl+=`
+  (setting `zoom_in` replaces all three). The Keybinds tab still shows `Ctrl+=`.
+- **Why:** keybinds match the key gpui reports, what the key types on the layout without Shift. On Finnish, Swedish,
+  German and similar layouts `=` needs Shift and `+` is a key of its own, so `Ctrl+=` could not be pressed and zooming
+  in only worked from the settings. `Ctrl+Shift+=` is what a US keyboard reports for "Ctrl and +". (The US-position
+  matching of 2026-10-31 belonged to the iced client; the gpui keystroke has no physical key to match on.)
