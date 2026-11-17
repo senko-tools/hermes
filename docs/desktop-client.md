@@ -4,7 +4,7 @@ Start here in a new session. Reasons and history are in `docs/DECISIONS.md` (202
 `docs/e2ee.md`.
 
 ## The crate
-`crates/hermes-gui`, binary `hermes`, on gpui through `gpui-kit =0.9.0`. It replaced the iced client in 1.2.0.
+`crates/hermes-gui`, binary `hermes`, on gpui through `gpui-kit =0.10.0`. It replaced the iced client in 1.2.0.
 
 Testing on the developer's PC needs a scratch server and its own config dir; see "How the window was tested".
 

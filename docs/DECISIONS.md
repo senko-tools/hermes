@@ -1864,3 +1864,12 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   `toml` / `toml_edit` (figment 0.10.19 still needs toml 0.8).
 - **Why:** the developer asked for the recommended updates, allowing patch and semver-compatible
   minor bumps and a breaking bump only where it is small and contained.
+
+## 2026-11-18: gpui-kit 0.10
+
+- **What:** `gpui-kit` 0.9.0 → 0.10.0. The kit pins GPUI as `gpui-pre =0.3.12` (was 0.3.11), so
+  `hermes-gui`'s `gpui-pre` test dev-dependency moves to exactly `=0.3.12` too (not the newer 0.3.13,
+  which the kit does not use). No code change was needed. gpui-pre's Windows changes are internal to
+  its DirectWrite text and DirectX renderer.
+- **Why:** part of the 2026-11-18 dependency refresh. It is a separate change so it can be reverted
+  on its own if the new kit misbehaves on Windows.
