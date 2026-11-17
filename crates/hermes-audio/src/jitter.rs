@@ -18,6 +18,11 @@ pub const MAX_CONCEALED: u32 = 5;
 const MAX_EXCESS_FRAMES: u64 = 4;
 /// How fast the target follows the jitter estimate, per packet.
 const TARGET_SMOOTHING: f32 = 0.05;
+/// Two consecutive packets this many frames (1 s) behind what was already played are not late:
+/// the sender started a new stream (a microphone reopened by an older client restarts its
+/// sequence numbers), so the buffer starts over. Real network reordering is a few frames at most,
+/// and the target delay is at most 10; a single stray packet that far back is just late.
+const RESTART_FRAMES: u64 = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pop {
@@ -36,6 +41,15 @@ struct Packet {
     voice_active: bool,
 }
 
+/// A packet far behind the stream, kept until the next one shows whether a new stream began.
+#[derive(Debug, Clone)]
+struct RestartCandidate {
+    seq: u16,
+    timestamp: u32,
+    packet: Packet,
+    now_ms: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct JitterBuffer {
     packets: BTreeMap<u64, Packet>,
@@ -50,6 +64,7 @@ pub struct JitterBuffer {
     target_ms: f32,
     concealed: u32,
     last_voice_active: bool,
+    restart: Option<RestartCandidate>,
     /// Packets dropped because they came too late (for statistics).
     pub late: u64,
     /// Frames that were missing at playout time.
@@ -68,6 +83,7 @@ impl Default for JitterBuffer {
             target_ms: START_DELAY_MS,
             concealed: 0,
             last_voice_active: true,
+            restart: None,
             late: 0,
             lost: 0,
         }
@@ -113,7 +129,45 @@ impl JitterBuffer {
         now_ms: f64,
     ) -> bool {
         let ext = self.extend(seq);
-        if ext < self.floor || self.next.is_some_and(|next| ext < next) {
+        let played = self.floor.max(self.next.unwrap_or(0));
+        if ext < played && played - ext >= RESTART_FRAMES {
+            let candidate = RestartCandidate {
+                seq,
+                timestamp,
+                packet: Packet {
+                    payload,
+                    voice_active,
+                },
+                now_ms,
+            };
+            let Some(first) = self
+                .restart
+                .replace(candidate)
+                .filter(|first| first.seq.wrapping_add(1) == seq)
+            else {
+                self.late += 1;
+                return false;
+            };
+            // Two in a row: a new stream. It starts with the packet held back.
+            let current = self.restart.take().expect("just stored");
+            self.restart();
+            self.push(
+                first.seq,
+                first.timestamp,
+                first.packet.voice_active,
+                first.packet.payload,
+                first.now_ms,
+            );
+            // The held packet was counted as late; it was not.
+            self.late = self.late.saturating_sub(1);
+            return self.push(
+                current.seq,
+                current.timestamp,
+                current.packet.voice_active,
+                current.packet.payload,
+                current.now_ms,
+            );
+        } else if ext < played {
             self.late += 1;
             return false;
         }
@@ -198,6 +252,19 @@ impl JitterBuffer {
     fn advance(&mut self, played: u64) {
         self.next = Some(played + 1);
         self.floor = played + 1;
+    }
+
+    /// Forgets the old stream; the network estimate (jitter, target delay) and the statistics
+    /// are kept.
+    fn restart(&mut self) {
+        self.restart = None;
+        self.packets.clear();
+        self.highest = None;
+        self.next = None;
+        self.floor = 0;
+        self.last_arrival = None;
+        self.concealed = 0;
+        self.last_voice_active = true;
     }
 
     fn pause(&mut self) {
@@ -329,6 +396,28 @@ mod tests {
         }
         let order: Vec<_> = (0..4).filter_map(|_| played(jb.pop())).collect();
         assert_eq!(order, vec![65534, 65535, 0, 1]);
+    }
+
+    #[test]
+    fn a_restarted_stream_plays_again() {
+        let mut jb = JitterBuffer::default();
+        // A long talk: sequences 0..200 are played.
+        feed(&mut jb, 0..200, 0.0);
+        while played(jb.pop()).is_some() {}
+        // One stray packet from long ago is late, and changes nothing.
+        assert!(!jb.push(20, 20 * 960, true, packet(20), 9_000.0));
+        assert_eq!(jb.late, 1);
+        // The sender opens a new microphone: its sequence numbers start at 0 again. The first
+        // packet is held back until the second shows it is a new stream; none is lost.
+        assert!(!jb.push(0, 0, true, packet(0), 10_000.0));
+        assert!(jb.push(1, 960, true, packet(1), 10_020.0));
+        assert!(jb.push(2, 1920, true, packet(2), 10_040.0));
+        assert_eq!(played(jb.pop()), Some(0));
+        assert_eq!(played(jb.pop()), Some(1));
+        assert_eq!(jb.late, 1);
+        // A packet a few frames late is still just late.
+        assert!(!jb.push(0, 0, true, packet(0), 10_060.0));
+        assert_eq!(jb.late, 2);
     }
 
     #[test]
