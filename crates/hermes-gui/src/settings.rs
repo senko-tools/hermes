@@ -172,6 +172,8 @@ pub struct SettingsPage {
     pub tab: Tab,
     pub account_inst: Option<InstanceId>,
     pub sessions: Remote<Vec<SessionInfo>>,
+    /// Counts the session list loads; only the newest one's answer is shown.
+    sessions_load: u64,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
     pub mic_test: bool,
@@ -374,6 +376,7 @@ impl Shell {
             tab: self.settings_tab,
             account_inst: None,
             sessions: Remote::Idle,
+            sessions_load: 0,
             device_selects: None,
             mic_test: false,
             font: font_input,
@@ -427,9 +430,12 @@ impl Shell {
         let Some(inst) = self.account_instance() else {
             return;
         };
-        if let Some(page) = &mut self.settings {
-            page.sessions = Remote::Loading;
-        }
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        page.sessions = Remote::Loading;
+        page.sessions_load += 1;
+        let load = page.sessions_load;
         let core = self.core.clone();
         self.run(
             cx,
@@ -440,8 +446,12 @@ impl Shell {
                     .await
                     .map_err(|e| e.to_string())
             },
-            |this, result, _, _| {
-                if let Some(page) = &mut this.settings {
+            move |this, result, _, _| {
+                // An older load (another instance picked since, or a reload after signing a
+                // device out) is of no use any more.
+                if let Some(page) = &mut this.settings
+                    && page.sessions_load == load
+                {
                     page.sessions = match result {
                         Ok(list) => Remote::Ready(list),
                         Err(err) => Remote::Failed(err),
@@ -650,7 +660,9 @@ impl Shell {
         let Some(dir) = self.core.paths().map(|p| p.dir.join(theme::THEMES_DIR)) else {
             return;
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // One slot: a reload already waiting covers every change after it, so a burst of file
+        // events (an editor saving, a folder copied in) cannot pile up.
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let watcher = std::fs::create_dir_all(&dir)
             .map_err(notify::Error::io)
             .and_then(|()| {
@@ -658,7 +670,7 @@ impl Shell {
                 let mut watcher =
                     notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                         if res.is_ok_and(|e| !e.kind.is_access()) {
-                            let _ = tx.send(());
+                            let _ = tx.try_send(());
                         }
                     })?;
                 watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;

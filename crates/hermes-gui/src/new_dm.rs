@@ -136,40 +136,47 @@ impl Shell {
 }
 
 /// Turns "alice, Bob" into user IDs, by username or display name (case-insensitive), among the
-/// users the store knows. I am left out.
+/// users the store knows. I am left out. A display name several people share is not guessed.
 pub fn resolve(store: &InstanceStore, input: &str) -> Result<Vec<Id>, String> {
     let me = store.me_id();
     let mut ids = Vec::new();
     let mut unknown = Vec::new();
+    let mut ambiguous = Vec::new();
+    let others = || store.users.values().filter(move |u| Some(u.id) != me);
     for name in input.split(',').map(str::trim).filter(|n| !n.is_empty()) {
         let name = name.trim_start_matches('@');
-        let mut matches = store.users.values().filter(|u| {
-            Some(u.id) != me
-                && (u.username.eq_ignore_ascii_case(name)
-                    || u.display_name
-                        .as_deref()
-                        .is_some_and(|d| d.eq_ignore_ascii_case(name)))
+        // Display names are any text, so they are compared in full Unicode lowercase.
+        let lower = name.to_lowercase();
+        let mut by_display = others().filter(|u| {
+            u.display_name
+                .as_deref()
+                .is_some_and(|d| d.to_lowercase() == lower)
         });
         // A whole `name#1234` wins, then a username, then a display name.
-        let found = store
-            .users
-            .values()
-            .find(|u| Some(u.id) != me && u.handle().eq_ignore_ascii_case(name))
-            .or_else(|| {
-                store
-                    .users
-                    .values()
-                    .find(|u| Some(u.id) != me && u.username.eq_ignore_ascii_case(name))
-            })
-            .or_else(|| matches.next());
+        let found = others()
+            .find(|u| u.handle().eq_ignore_ascii_case(name))
+            .or_else(|| others().find(|u| u.username.eq_ignore_ascii_case(name)))
+            .map(Ok)
+            .or_else(|| match (by_display.next(), by_display.next()) {
+                (Some(user), None) => Some(Ok(user)),
+                (Some(_), Some(_)) => Some(Err(())),
+                _ => None,
+            });
         match found {
-            Some(user) if !ids.contains(&user.id) => ids.push(user.id),
-            Some(_) => {}
+            Some(Ok(user)) if !ids.contains(&user.id) => ids.push(user.id),
+            Some(Ok(_)) => {}
+            Some(Err(())) => ambiguous.push(name.to_owned()),
             None => unknown.push(name.to_owned()),
         }
     }
     if !unknown.is_empty() {
         return Err(format!("Not found: {}", unknown.join(", ")));
+    }
+    if !ambiguous.is_empty() {
+        return Err(format!(
+            "More than one person is called {}: use their username.",
+            ambiguous.join(", ")
+        ));
     }
     if ids.is_empty() {
         return Err("Enter at least one username.".into());
@@ -197,5 +204,26 @@ mod tests {
             "I am not a recipient"
         );
         assert!(resolve(&store, " , ").is_err());
+    }
+
+    #[test]
+    fn display_names_compare_in_unicode_and_are_not_guessed() {
+        let mut store = fixtures::store();
+        store
+            .users
+            .insert(Id(5), fixtures::user(5, "asa", Some("Åsa")));
+        assert_eq!(resolve(&store, "åsa"), Ok(vec![Id(5)]), "Unicode case");
+        store
+            .users
+            .insert(Id(6), fixtures::user(6, "asa2", Some("ÅSA")));
+        assert!(
+            resolve(&store, "åsa").is_err_and(|e| e.contains("More than one")),
+            "two people share the name"
+        );
+        assert_eq!(
+            resolve(&store, "asa2"),
+            Ok(vec![Id(6)]),
+            "the username decides"
+        );
     }
 }
