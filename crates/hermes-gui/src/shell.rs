@@ -288,6 +288,8 @@ pub struct Shell {
     title: String,
     /// The colour last given to the title bar.
     title_bar: Option<gpui_kit::Rgba>,
+    /// The unread count shown on the taskbar button.
+    taskbar_count: Option<u32>,
     /// Give the keyboard to the open chat's message box at the next draw.
     pub focus_composer: bool,
     /// The window has the keyboard focus.
@@ -424,6 +426,7 @@ impl Shell {
             restore: None,
             title: String::new(),
             title_bar: None,
+            taskbar_count: None,
             focus_composer: false,
             focused: true,
             _subscriptions: subscriptions,
@@ -1532,6 +1535,11 @@ impl Render for Shell {
         if self.title_bar != Some(bar) {
             crate::desktop::window::set_title_bar(window, bar);
             self.title_bar = Some(bar);
+        }
+        let count = crate::desktop::badge_count(&self.core.store(), &self.core.instance_ids());
+        if self.taskbar_count != Some(count) {
+            crate::desktop::taskbar::set_count(window, count);
+            self.taskbar_count = Some(count);
         }
         self.advance_media(window);
         self.advance_selection(window);

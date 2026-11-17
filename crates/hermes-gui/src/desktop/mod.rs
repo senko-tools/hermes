@@ -1,6 +1,7 @@
 //! Desktop integration (PLAN.md section 15.7): notifications, the tray icon, taskbar flashing and
 //! closing to the tray.
 
+pub mod taskbar;
 pub mod tray;
 pub mod window;
 
@@ -105,6 +106,30 @@ pub fn has_badge(store: &Store, instances: &[InstanceId]) -> bool {
                 .values()
                 .any(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm) && s.unread(c.id))
     })
+}
+
+/// The number on the taskbar button: mentions everywhere, plus DMs with unread messages that
+/// have no mention count of their own.
+pub fn badge_count(store: &Store, instances: &[InstanceId]) -> u32 {
+    instances
+        .iter()
+        .filter_map(|i| store.instance(i))
+        .map(|s| {
+            let mentions: u32 = s.read_states.values().map(|r| r.mention_count).sum();
+            let dms = s
+                .dms
+                .values()
+                .filter(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm))
+                .filter(|c| s.unread(c.id))
+                .filter(|c| {
+                    s.read_states
+                        .get(&c.id)
+                        .is_none_or(|r| r.mention_count == 0)
+                })
+                .count() as u32;
+            mentions + dms
+        })
+        .sum()
 }
 
 /// Shows a toast and waits (on a blocking thread) for it to be clicked; `Some` when clicked.
