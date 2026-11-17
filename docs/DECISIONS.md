@@ -1881,3 +1881,12 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   German and similar layouts `=` needs Shift and `+` is a key of its own, so `Ctrl+=` could not be pressed and zooming
   in only worked from the settings. `Ctrl+Shift+=` is what a US keyboard reports for "Ctrl and +". (The US-position
   matching of 2026-10-31 belonged to the iced client; the gpui keystroke has no physical key to match on.)
+## 2026-11-18: Bounded voice control queue
+
+- **What:** the server keeps at most 1024 control messages (`CONTROL_QUEUE`) waiting for one voice
+  connection. When a client lets the queue fill (it stopped reading its control stream), the server closes that
+  QUIC connection with the reason `control queue full`, the way a gateway connection with a full queue is closed with
+  4009. The client reconnects as after any connection loss (PLAN.md 12.2) and gets a fresh `ready`.
+- **Why:** the queue was unbounded, and other members can make the server send messages to a connection at any rate
+  (share start/stop, voice key relays), so a client that never reads could make the server's memory grow without
+  limit. Dropping single messages instead would leave the client with a wrong picture of the room.

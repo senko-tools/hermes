@@ -14,7 +14,7 @@ use quinn::crypto::rustls::QuicServerConfig;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use super::{ConnId, JoinError, Link, ShareError};
+use super::{CONTROL_QUEUE, ConnId, JoinError, Link, ShareError};
 use crate::config::Config;
 use crate::state::AppState;
 use crate::tls::{self, CERTS_DIR, TlsError};
@@ -106,7 +106,7 @@ pub async fn serve(state: Arc<AppState>, endpoint: quinn::Endpoint) {
 }
 
 async fn connection(state: Arc<AppState>, conn: quinn::Connection) {
-    let (control, mut outbox) = mpsc::unbounded_channel();
+    let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let (video, video_out) = mpsc::channel(VIDEO_QUEUE);
     let conn_id = state.voice.register(Link {
         control,
@@ -131,7 +131,7 @@ async fn run(
     state: &AppState,
     conn_id: ConnId,
     conn: &quinn::Connection,
-    outbox: &mut mpsc::UnboundedReceiver<ServerControl>,
+    outbox: &mut mpsc::Receiver<ServerControl>,
 ) -> String {
     let (mut send, recv) = match tokio::time::timeout(AUTH_TIMEOUT, conn.accept_bi()).await {
         Ok(Ok(streams)) => streams,
@@ -142,6 +142,8 @@ async fn run(
     let (inbox_tx, mut inbox) = mpsc::channel(16);
     let reader = tokio::spawn(read_frames(recv, inbox_tx));
     let auth_deadline = tokio::time::sleep(AUTH_TIMEOUT);
+    // Reused for the recipients of every audio datagram, so forwarding does not allocate.
+    let mut peers = Vec::new();
     tokio::pin!(auth_deadline);
     let mut authed = false;
 
@@ -174,7 +176,7 @@ async fn run(
                 }
             }
             datagram = conn.read_datagram() => match datagram {
-                Ok(data) => state.voice.forward(state, conn_id, data),
+                Ok(data) => state.voice.forward(state, conn_id, data, &mut peers),
                 Err(err) => break err.to_string(),
             },
             () = &mut auth_deadline, if !authed => break "no auth in time".into(),
