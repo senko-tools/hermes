@@ -41,6 +41,11 @@ pub fn error_line(text: impl Into<SharedString>) -> Div {
 /// How long a dialog or popup takes to come in, and to go.
 pub const POP: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// [`POP`] at the current motion speed.
+pub fn pop() -> std::time::Duration {
+    POP.mul_f32(crate::theme::motion())
+}
+
 thread_local! {
     /// Dialogs, popups and menus playing their way out (`Shell::close_later`), by id.
     static CLOSING: std::cell::RefCell<std::collections::HashSet<&'static str>> =
@@ -81,7 +86,7 @@ impl Shell {
         self.closing_serials.insert(id, serial);
         cx.notify();
         cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(POP).await;
+            cx.background_executor().timer(pop()).await;
             let _ = this.update(cx, |this, cx| {
                 if this.closing_serials.get(id) == Some(&serial) {
                     this.closing_serials.remove(id);
@@ -139,7 +144,7 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
                     .child(card)
                     .with_animation(
                         animation_key(id, "card"),
-                        gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
+                        gpui_kit::Animation::new(pop()).with_easing(gpui_kit::ease_out_quint()),
                         move |d, t| {
                             let t = shown(id, t);
                             d.opacity(t).top(px(8. * (1. - t)))
@@ -148,7 +153,7 @@ pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElemen
             )
             .with_animation(
                 animation_key(id, "scrim"),
-                gpui_kit::Animation::new(POP).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(pop()).with_easing(gpui_kit::ease_out_quint()),
                 move |d, t| d.bg(theme::alpha(scrim, shown(id, t))),
             ),
     )
@@ -294,7 +299,7 @@ pub fn popup(
             .snap_to_window_with_margin(px(HUG_MARGIN))
             .child(div().relative().child(card).with_animation(
                 animation_key(id, "popup"),
-                Animation::new(POP).with_easing(ease_out_quint()),
+                Animation::new(pop()).with_easing(ease_out_quint()),
                 move |d, t| {
                     let t = shown(id, t);
                     let back = 6. * (1. - t);

@@ -186,7 +186,9 @@ fn voice_chip(id: SharedString, here: view::VoiceHere, selected: bool) -> impl I
                 .child(icon(assets::VOLUME, 11., fg))
                 .with_spring(
                     id,
-                    SpringAnimation::new(CHIP_SPRING).to(true).from(false),
+                    SpringAnimation::new(crate::theme::paced(CHIP_SPRING))
+                        .to(true)
+                        .from(false),
                     |d, phase| {
                         let size = VOICE_CHIP * (0.6 + 0.4 * phase.0.max(0.));
                         d.size(px(size))
@@ -245,7 +247,9 @@ impl Shell {
                 .h(px(18.))
                 .with_spring(
                     SharedString::from(key),
-                    SpringAnimation::new(CHIP_SPRING).to(true).from(false),
+                    SpringAnimation::new(crate::theme::paced(CHIP_SPRING))
+                        .to(true)
+                        .from(false),
                     move |d, phase| {
                         let pop = 0.5 + 0.5 * phase.0.max(0.);
                         let badge = match mentions {
@@ -353,12 +357,12 @@ fn state_bar(row: &str, state: RowState, from: RowState) -> impl IntoElement {
         .w(theme::indicator_width())
         .child(div().size_full().with_animation(
             tint_key(row, "bar-tint", from, state),
-            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            Animation::new(theme::fade() * 2).with_easing(ease_out_quint()),
             move |d, t| d.bg(theme::mix(from.bar, state.bar, t)),
         ))
         .with_animation(
             SharedString::from(format!("{row}-bar")),
-            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            Animation::new(theme::fade() * 2).with_easing(ease_out_quint()),
             |d, t| {
                 let inset = relative(0.5 * (1. - t));
                 d.top(inset).bottom(inset)
@@ -380,13 +384,13 @@ fn state_fill(row: &str, state: RowState, from: RowState, hover: bool) -> impl I
                 .when(hover, |d| d.hover(move |d| d.bg(state.hover)))
                 .with_animation(
                     tint_key(row, "fill-tint", from, state),
-                    Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+                    Animation::new(theme::fade() * 2).with_easing(ease_out_quint()),
                     move |d, t| d.bg(theme::mix(from.background, state.background, t)),
                 ),
         )
         .with_animation(
             SharedString::from(format!("{row}-fill")),
-            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            Animation::new(theme::fade() * 2).with_easing(ease_out_quint()),
             |d, t| d.opacity(t),
         )
 }
@@ -421,7 +425,7 @@ const STAGGER: std::time::Duration = std::time::Duration::from_millis(18);
 fn stagger_in(element: AnyElement, key: &str, n: u32) -> AnyElement {
     use gpui_kit::{Animation, AnimationExt as _};
     let delay = STAGGER * n;
-    let total = theme::FADE * 2 + delay;
+    let total = theme::fade() * 2 + delay;
     let ease = gpui_kit::ease_out_quint();
     div()
         .relative()
@@ -434,7 +438,7 @@ fn stagger_in(element: AnyElement, key: &str, n: u32) -> AnyElement {
             Animation::new(total),
             move |d, t| {
                 let elapsed = total.as_secs_f32() * t - delay.as_secs_f32();
-                let local = ease((elapsed / (theme::FADE * 2).as_secs_f32()).clamp(0., 1.));
+                let local = ease((elapsed / (theme::fade() * 2).as_secs_f32()).clamp(0., 1.));
                 d.opacity(local).top(px(-4. * (1. - local)))
             },
         )
@@ -470,7 +474,8 @@ fn rail_morph(
     element
         .with_spring(
             SharedString::from(format!("{id}-shape")),
-            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected || hovered),
+            SpringAnimation::new(crate::theme::paced(SpringConfig::new(380., 30., 1.)))
+                .to(selected || hovered),
             move |d, phase| {
                 let shape = phase.0.clamp(0., 1.2);
                 let radius = px(theme::RAIL_ICON / 2. + (14. - theme::RAIL_ICON / 2.) * shape);
@@ -490,7 +495,8 @@ fn rail_morph(
         // Under a picture the background would show at the rounded edge.
         .with_spring(
             SharedString::from(format!("{id}-fade")),
-            SpringAnimation::new(SpringConfig::new(380., 30., 1.)).to(selected),
+            SpringAnimation::new(crate::theme::paced(SpringConfig::new(380., 30., 1.)))
+                .to(selected),
             move |d, phase| {
                 let fade = phase.0.clamp(0., 1.);
                 d.map_element(|e| {
@@ -528,7 +534,7 @@ fn rail_mark(id: &str, height: f32) -> impl IntoElement {
         .bg(theme::text())
         .with_spring(
             SharedString::from(format!("{id}-mark")),
-            SpringAnimation::new(SpringConfig::new(420., 30., 1.)).to(height),
+            SpringAnimation::new(crate::theme::paced(SpringConfig::new(420., 30., 1.))).to(height),
             |d, h| {
                 let h = h.max(0.);
                 d.h(px(h))
@@ -573,7 +579,8 @@ fn rail_pill(slot: Option<f32>, last: f32, scroll: f32) -> AnyElement {
         .bg(theme::accent())
         .with_spring(
             "rail-pill",
-            SpringAnimation::new(SpringConfig::new(300., 28., 1.)).to(slot.unwrap_or(last)),
+            SpringAnimation::new(crate::theme::paced(SpringConfig::new(300., 28., 1.)))
+                .to(slot.unwrap_or(last)),
             move |d, at| {
                 let top = rail_slot_top(at, scroll) + 8.;
                 // Hidden while nothing is selected, or while its server is scrolled out of view.
@@ -912,7 +919,7 @@ impl Shell {
                 // Another server's name fades in with its channels.
                 self.with_menu(element, target, cx).with_animation(
                     key,
-                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.opacity(t),
                 )
             }))
@@ -943,7 +950,7 @@ impl Shell {
                     .relative()
                     .with_animation(
                         SharedString::from(format!("sidebar-{:?}", self.selected)),
-                        gpui_kit::Animation::new(theme::FADE)
+                        gpui_kit::Animation::new(theme::fade())
                             .with_easing(gpui_kit::ease_out_quint()),
                         |d, t| d.opacity(t),
                     ),
@@ -965,7 +972,7 @@ impl Shell {
                     .border_color(theme::border())
                     .with_animation(
                         "voice-panel-out",
-                        gpui_kit::Animation::new(crate::modal::POP)
+                        gpui_kit::Animation::new(crate::modal::pop())
                             .with_easing(gpui_kit::ease_out_quint()),
                         move |d, t| d.h(gpui_kit::px(height * (1. - t))),
                     )
@@ -1256,8 +1263,8 @@ impl Shell {
                             .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent()))
                             .with_spring(
                                 SharedString::from(format!("category-chevron-{id}")),
-                                gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(
-                                    420., 32., 1.,
+                                gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                    gpui_kit::SpringConfig::new(420., 32., 1.),
                                 ))
                                 .to(collapsed),
                                 |d, phase| {

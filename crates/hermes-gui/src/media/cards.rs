@@ -221,8 +221,10 @@ fn play_button(
             .size(px(side))
             .with_spring(
                 SharedString::from(format!("{id}-glyph")),
-                gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(520., 32., 1.))
-                    .to(playing),
+                gpui_kit::SpringAnimation::new(crate::theme::paced(gpui_kit::SpringConfig::new(
+                    520., 32., 1.,
+                )))
+                .to(playing),
                 move |d, phase| {
                     let t = phase.0.clamp(0., 1.);
                     let layer = |glyph: &'static str, weight: f32| {
@@ -920,7 +922,8 @@ impl Shell {
             .bg(track_empty)
             .with_spring(
                 id("volume-fill"),
-                gpui_kit::SpringAnimation::new(FILL_SPRING).to(gain.clamp(0., 1.)),
+                gpui_kit::SpringAnimation::new(crate::theme::paced(FILL_SPRING))
+                    .to(gain.clamp(0., 1.)),
                 move |d, gain| {
                     let gain = gain.clamp(0., 1.);
                     d.child(
@@ -952,8 +955,10 @@ impl Shell {
                                     .shadow_sm()
                                     .with_spring(
                                         knob_key,
-                                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                                            .to(big),
+                                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                            crate::hover::HOVER_SPRING,
+                                        ))
+                                        .to(big),
                                         |d, phase| {
                                             let size =
                                                 KNOB + (KNOB_HELD - KNOB) * phase.0.clamp(0., 1.2);
@@ -1017,7 +1022,7 @@ impl Shell {
             .child(track)
             .with_spring(
                 id("volume-open"),
-                gpui_kit::SpringAnimation::new(OPEN_SPRING).to(open),
+                gpui_kit::SpringAnimation::new(crate::theme::paced(OPEN_SPRING)).to(open),
                 |d, phase| {
                     let t = phase.0.clamp(0., 1.);
                     d.w(px((SLIDER_TRACK_W + SLIDER_TEXT_W) * t)).opacity(t)
@@ -1038,7 +1043,7 @@ impl Shell {
             .rounded(px(height / 2.))
             .with_spring(
                 id("volume-pill"),
-                gpui_kit::SpringAnimation::new(OPEN_SPRING).to(open),
+                gpui_kit::SpringAnimation::new(crate::theme::paced(OPEN_SPRING)).to(open),
                 move |d, phase| {
                     let t = phase.0.clamp(0., 1.);
                     d.bg(gpui_kit::Hsla {
@@ -1394,7 +1399,10 @@ impl Shell {
                     // It thickens on a spring under the pointer.
                     .with_spring(
                         seek_hover,
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(seek_hovered),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(seek_hovered),
                         |d, phase| d.h(px(3. + 2. * phase.0.clamp(0., 1.2))),
                     )
                     .child(

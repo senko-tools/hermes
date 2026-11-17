@@ -145,6 +145,48 @@ fn tick(state: Rc<RefCell<State>>, window: &mut Window, cx: &mut App) {
     }
 }
 
+/// How quickly a glide to the end plays out: after this many seconds about 63 % of the way.
+const GLIDE_TAU: f32 = 0.07;
+
+/// Glides `list` down to its end instead of jumping there (sending, "Jump to present"). A long
+/// way first jumps to a screen and a half above the end, so the glide stays short.
+pub fn glide_to_end(list: gpui_kit::ListState, window: &mut Window, cx: &App) {
+    let left = remaining(&list);
+    let screen = list.viewport_bounds().size.height.as_f32();
+    if cx.reduce_motion() || left <= DONE {
+        list.scroll_to_end();
+        return;
+    }
+    if screen > 0. && left > screen * 3. {
+        list.scroll_by(px(left - screen * 1.5));
+    }
+    let last = Instant::now();
+    window.on_next_frame(move |window, cx| glide(list, last, window, cx));
+}
+
+/// The pixels between where `list` is and its end.
+fn remaining(list: &gpui_kit::ListState) -> f32 {
+    let max = list.max_offset_for_scrollbar().y.as_f32();
+    let at = -list.scroll_px_offset_for_scrollbar().y.as_f32();
+    (max - at).max(0.)
+}
+
+fn glide(list: gpui_kit::ListState, last: Instant, window: &mut Window, cx: &mut App) {
+    let now = Instant::now();
+    let dt = now.duration_since(last).as_secs_f32().clamp(0.001, 0.05);
+    let left = remaining(&list);
+    if left <= DONE {
+        list.scroll_to_end();
+        window.refresh();
+        return;
+    }
+    let moved = (left * (1. - (-dt / GLIDE_TAU).exp())).max(1.).min(left);
+    list.scroll_by(px(moved));
+    window.refresh();
+    let _ = cx;
+    window.on_next_frame(move |window, cx| glide(list, now, window, cx));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

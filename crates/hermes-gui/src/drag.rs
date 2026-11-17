@@ -65,7 +65,7 @@ impl gpui_kit::Render for Ghost {
             .child(self.0.clone())
             .with_animation(
                 "ghost-lift",
-                gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(0.6 + 0.32 * t),
             )
     }

@@ -351,7 +351,7 @@ impl Shell {
                     .child(
                         div().relative().child(menu.view.clone()).with_animation(
                             key,
-                            gpui_kit::Animation::new(crate::theme::FADE)
+                            gpui_kit::Animation::new(crate::theme::fade())
                                 .with_easing(gpui_kit::ease_out_quint()),
                             move |d, t| {
                                 let t = if leaving { 1. - t } else { t };

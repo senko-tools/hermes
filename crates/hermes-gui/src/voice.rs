@@ -402,7 +402,7 @@ impl Shell {
                 )
                 .with_animation(
                     "call-banner-in",
-                    gpui_kit::Animation::new(theme::FADE * 2)
+                    gpui_kit::Animation::new(theme::fade() * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.relative().top(px(-8. * (1. - t))).opacity(t),
                 )
@@ -472,9 +472,11 @@ impl Shell {
                         icon(assets::WAVEFORM, 14., state_color)
                             .with_spring(
                                 "voice-state-icon",
-                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                                    .to(true)
-                                    .from(false),
+                                gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                    crate::hover::HOVER_SPRING,
+                                ))
+                                .to(true)
+                                .from(false),
                                 |d, phase| {
                                     d.text_color(theme::mix(
                                         theme::accent(),
@@ -511,8 +513,10 @@ impl Shell {
                             })
                             .with_spring(
                                 "voice-state-text",
-                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                                    .to(connected),
+                                gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                    crate::hover::HOVER_SPRING,
+                                ))
+                                .to(connected),
                                 move |d, phase| {
                                     let from = if connected {
                                         theme::accent()
@@ -621,7 +625,7 @@ impl Shell {
                 // Joining: the panel opens upwards out of the user panel as it fades in.
                 .with_animation(
                     "voice-panel-in",
-                    gpui_kit::Animation::new(theme::FADE * 2)
+                    gpui_kit::Animation::new(theme::fade() * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.max_h(px(VOICE_PANEL_MAX * t)).opacity(t),
                 )
@@ -781,7 +785,10 @@ impl Shell {
                     // Choosing a measure: its colour flows into the tile, out of the last one.
                     .with_spring(
                         ("net-tile-chosen", n),
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(selected),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(selected),
                         {
                             let color = graph.color;
                             move |d, phase| {
@@ -1005,7 +1012,7 @@ impl Shell {
             // It floats up into place when the room opens.
             .with_animation(
                 "call-bar-in",
-                gpui_kit::Animation::new(theme::FADE * 2).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade() * 2).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.bottom(px(12. + 8. * t)).opacity(t),
             )
             .into_any_element()
@@ -1078,7 +1085,8 @@ impl Shell {
                     .child(avatar)
                     .with_spring(
                         SharedString::from(format!("voice-ring-{channel}-{user}")),
-                        gpui_kit::SpringAnimation::new(RING_SPRING).to(speaking),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING))
+                            .to(speaking),
                         |d, phase| {
                             d.border_color(theme::alpha(theme::speaking(), phase.0.clamp(0., 1.)))
                         },
@@ -1288,7 +1296,7 @@ impl Shell {
                             )
                             .with_animation(
                                 SharedString::from(format!("share-in-{}", p.user)),
-                                gpui_kit::Animation::new(theme::FADE * 2)
+                                gpui_kit::Animation::new(theme::fade() * 2)
                                     .with_easing(gpui_kit::ease_out_quint()),
                                 |d, t| d.opacity(t),
                             ),
@@ -1306,8 +1314,10 @@ impl Shell {
                             // Like the stop button, only while the pointer is over the share.
                             .with_spring(
                                 SharedString::from(format!("share-name-show-{}", p.user)),
-                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                                    .to(tile_hovered),
+                                gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                    crate::hover::HOVER_SPRING,
+                                ))
+                                .to(tile_hovered),
                                 |d, phase| d.opacity(phase.0.clamp(0., 1.)),
                             ),
                     )
@@ -1335,8 +1345,10 @@ impl Shell {
                             )
                             .with_spring(
                                 SharedString::from(format!("stop-watching-show-{}", p.user)),
-                                gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                                    .to(tile_hovered),
+                                gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                    crate::hover::HOVER_SPRING,
+                                ))
+                                .to(tile_hovered),
                                 |d, phase| d.opacity(phase.0.clamp(0., 1.)),
                             ),
                     )
@@ -1409,7 +1421,7 @@ impl Shell {
         // nothing inside moves.
         let ring = div().absolute().inset_0().rounded(radius).with_spring(
             SharedString::from(format!("tile-ring-{user}")),
-            gpui_kit::SpringAnimation::new(RING_SPRING).to(p.speaking),
+            gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING)).to(p.speaking),
             |d, phase| {
                 let t = phase.0.clamp(0., 1.);
                 theme::border_width(d, px(1. + t)).border_color(theme::mix(
@@ -1434,7 +1446,7 @@ impl Shell {
             // Someone who joins (or a share that is enlarged or put back) fades in.
             .child(div().size_full().child(content).with_animation(
                 SharedString::from(format!("tile-in-{user}-{enlarged}")),
-                gpui_kit::Animation::new(theme::FADE * 2).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade() * 2).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(t),
             ))
             .child(ring)
@@ -1452,7 +1464,7 @@ impl Shell {
         // A soft green glow behind the tile while they speak, outside its edge.
         let glow = div().absolute().inset_0().rounded(radius).with_spring(
             SharedString::from(format!("tile-glow-{user}")),
-            gpui_kit::SpringAnimation::new(RING_SPRING).to(speaking),
+            gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING)).to(speaking),
             move |d, phase| {
                 let t = phase.0.clamp(0., 1.);
                 d.shadow(vec![gpui_kit::BoxShadow {
@@ -1479,7 +1491,7 @@ impl Shell {
                     .child(self.with_menu(tile, target, cx))
                     .with_animation(
                         SharedString::from(format!("tile-grow-{user}-{enlarged}")),
-                        gpui_kit::Animation::new(theme::FADE * 2)
+                        gpui_kit::Animation::new(theme::fade() * 2)
                             .with_easing(gpui_kit::ease_out_quint()),
                         move |d, t| {
                             let scale = 0.96 + 0.04 * t;
@@ -1932,7 +1944,8 @@ pub fn chip(
         .child(label.into())
         .with_spring(
             key,
-            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(chosen),
+            gpui_kit::SpringAnimation::new(crate::theme::paced(crate::hover::HOVER_SPRING))
+                .to(chosen),
             |d, phase| {
                 let t = phase.0.clamp(0., 1.);
                 d.bg(theme::mix(theme::selected(), theme::accent(), t))
@@ -2070,7 +2083,7 @@ impl Shell {
             })
             .with_spring(
                 id,
-                SpringAnimation::new(TOGGLE_SPRING).to(on),
+                SpringAnimation::new(crate::theme::paced(TOGGLE_SPRING)).to(on),
                 move |d, phase| {
                     let t = phase.0.clamp(0., 1.);
                     d.child(
@@ -2083,7 +2096,10 @@ impl Shell {
                             .rounded(theme::row_radius())
                             .with_spring(
                                 SharedString::from(format!("{id}-hover")),
-                                SpringAnimation::new(crate::hover::HOVER_SPRING).to(hovered),
+                                SpringAnimation::new(crate::theme::paced(
+                                    crate::hover::HOVER_SPRING,
+                                ))
+                                .to(hovered),
                                 move |d, phase| {
                                     let h = phase.0.clamp(0., 1.);
                                     paint_voice_button(d, glyphs, look, hover, t, h)

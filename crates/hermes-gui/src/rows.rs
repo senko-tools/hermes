@@ -1,6 +1,7 @@
 //! The rows of a channel's message list (PLAN.md section 15.2), built from the store without any
 //! widgets: day separators, the "New messages" divider, grouped messages with reply previews,
-//! and pending messages at the end. Deleted messages are left out.
+//! and pending messages at the end. Deleted messages are left out, except a just-deleted one
+//! closing its gap (`Options::gone`).
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{Message, MessageKind};
@@ -17,6 +18,7 @@ pub enum RowKey {
     NewMessages,
     Message(Id),
     Pending(LocalId),
+    Gone(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,8 @@ pub enum Row {
     NewMessages,
     Message(MessageRow),
     Pending(PendingRow),
+    /// A message just deleted: its gap closes instead of the rows below jumping up.
+    Gone(Id),
 }
 
 impl Row {
@@ -40,6 +44,7 @@ impl Row {
             Row::NewMessages => RowKey::NewMessages,
             Row::Message(m) => RowKey::Message(m.id),
             Row::Pending(p) => RowKey::Pending(p.local_id),
+            Row::Gone(id) => RowKey::Gone(*id),
         }
     }
 }
@@ -81,6 +86,8 @@ pub struct Options {
     /// My read marker when the channel was opened: the divider goes before the first newer
     /// message by someone else. `None`: no divider.
     pub read_marker: Option<Id>,
+    /// Deleted messages whose gap is still closing.
+    pub gone: std::collections::HashSet<Id>,
 }
 
 pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -> Vec<Row> {
@@ -96,7 +103,16 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
     let mut divider_done = options.read_marker.is_none();
     let mut prev: Option<&Message> = None;
     let mut last_day: Option<i64> = None;
-    for m in window.messages.iter().filter(|m| !m.deleted) {
+    for m in window
+        .messages
+        .iter()
+        .filter(|m| !m.deleted || options.gone.contains(&m.id))
+    {
+        if m.deleted {
+            // Neither a group nor a day of its own: only its closing gap.
+            rows.push(Row::Gone(m.id));
+            continue;
+        }
         let created = m.created_at() as i64;
         let day = time::day(created, options.utc_offset);
         let new_day = last_day != Some(day);
@@ -347,6 +363,7 @@ mod tests {
                 Row::Older => "older".into(),
                 Row::Day { label, .. } => format!("day {label}"),
                 Row::NewMessages => "new".into(),
+                Row::Gone(id) => format!("gone {}", id.0 & 0xff),
                 Row::Message(m) => format!(
                     "{}{}{}{}",
                     if m.grouped { "  " } else { "" },
@@ -425,6 +442,7 @@ mod tests {
             &Options {
                 group_minutes: 7,
                 utc_offset: 0,
+                gone: Default::default(),
                 read_marker: Some(id_at(t + 10 * 60_000, 5)),
             },
         );
@@ -451,6 +469,21 @@ mod tests {
                 .all(|r| r.key() != RowKey::Message(id_at(t + 9 * 60_000 + 1, 4)))
         );
 
+        // Just deleted: its gap is a row of its own, and the rows around it are as before.
+        let closing = build(
+            &store,
+            &window,
+            &Options {
+                group_minutes: 7,
+                utc_offset: 0,
+                gone: [id_at(t + 9 * 60_000 + 1, 4)].into_iter().collect(),
+                read_marker: Some(id_at(t + 10 * 60_000, 5)),
+            },
+        );
+        let mut expected = keys(&rows);
+        expected.insert(5, "gone 4".into());
+        assert_eq!(keys(&closing), expected);
+
         // My own newer messages never get the divider; without a marker there is none.
         let rows = build(
             &store,
@@ -459,6 +492,7 @@ mod tests {
                 group_minutes: 7,
                 utc_offset: 0,
                 read_marker: None,
+                gone: Default::default(),
             },
         );
         assert!(!rows.contains(&Row::NewMessages));
@@ -487,6 +521,7 @@ mod tests {
                     group_minutes: 7,
                     utc_offset: offset,
                     read_marker: None,
+                    gone: Default::default(),
                 },
             )
             .iter()

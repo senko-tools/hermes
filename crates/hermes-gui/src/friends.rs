@@ -315,7 +315,7 @@ impl Shell {
             // Another tab's list fades in where the last one was.
             .child(div().flex().flex_col().children(content).with_animation(
                 SharedString::from(format!("friends-tab-{}", tab.label())),
-                gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(t),
             ))
     }

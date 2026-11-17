@@ -2,7 +2,7 @@
 //! bottom, with grouping, day separators, the "New messages" divider, reply previews, pending
 //! messages, attachments, reactions and the typing line.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
@@ -190,6 +190,8 @@ pub struct ChatView {
     pub uploads: Vec<Upload>,
     pub suggestions: Vec<Suggestion>,
     pub suggestion: usize,
+    /// Messages just deleted: the height their row had, and when its gap started to close.
+    gone: HashMap<Id, (gpui_kit::Pixels, std::time::Instant)>,
     _input_events: Subscription,
 }
 
@@ -286,7 +288,10 @@ pub fn human_size(bytes: u64) -> String {
 fn reaction_count(key: &str, count: u32) -> impl IntoElement {
     div().relative().child(count.to_string()).with_spring(
         SharedString::from(format!("react-count-{key}")),
-        gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(420., 30., 1.)).to(count as f32),
+        gpui_kit::SpringAnimation::new(crate::theme::paced(gpui_kit::SpringConfig::new(
+            420., 30., 1.,
+        )))
+        .to(count as f32),
         move |d, shown| {
             let behind = (count as f32 - shown).abs().min(1.);
             d.top(px(-5. * behind)).opacity(1. - 0.6 * behind)
@@ -427,6 +432,65 @@ fn common_ends(old: &[RowKey], new: &[RowKey]) -> (usize, usize) {
     (front, back)
 }
 
+/// How tall rows growing into the chat turned out, by animation key.
+pub type GrowHeights = std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui_kit::Pixels>>>;
+
+/// Grows `element` from nothing to its own height, so the rows around it glide aside instead of
+/// jumping: a message that just arrived. Its height is measured on the first frame, while it is
+/// still closed; once open, it is left to size itself again (reactions, pictures loading).
+fn grow_in(heights: &GrowHeights, key: SharedString, element: AnyElement) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _};
+    let height = heights.borrow().get(&key).copied();
+    let record = heights.clone();
+    let record_key = key.clone();
+    div()
+        .w_full()
+        .overflow_hidden()
+        .child(div().w_full().flex_shrink_0().child(element))
+        .on_children_prepainted(move |bounds, _, _| {
+            if let Some(b) = bounds.first() {
+                let mut heights = record.borrow_mut();
+                if heights.len() > 256 {
+                    heights.clear();
+                }
+                heights.insert(record_key.clone(), b.size.height);
+            }
+        })
+        .with_animation(
+            key,
+            Animation::new(theme::fade() * 2).with_easing(gpui_kit::ease_out_quint()),
+            move |d, t| {
+                if t >= 1. {
+                    d
+                } else {
+                    d.max_h(height.map_or(gpui_kit::px(0.), |h| h * t))
+                }
+            },
+        )
+        .into_any_element()
+}
+
+/// A just-deleted message's row: an empty gap closing from `height`, with a faint wash that
+/// fades as it goes.
+fn closing_gap(id: Id, height: gpui_kit::Pixels) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _};
+    div()
+        .w_full()
+        .px(px(8.))
+        .child(
+            div()
+                .size_full()
+                .rounded(theme::row_radius())
+                .bg(theme::alpha(theme::danger(), 0.08)),
+        )
+        .with_animation(
+            SharedString::from(format!("gone-{id}")),
+            Animation::new(theme::fade() * 2).with_easing(gpui_kit::ease_in_out),
+            move |d, t| d.h(height * (1. - t)).opacity(1. - t),
+        )
+        .into_any_element()
+}
+
 /// What a row's height depends on, besides the width.
 fn signature(row: &Row, s: &InstanceStore, channel: Id) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -545,6 +609,7 @@ impl Shell {
                 uploads: Vec::new(),
                 suggestions: Vec::new(),
                 suggestion: 0,
+                gone: HashMap::new(),
                 _input_events: events,
             },
         );
@@ -755,7 +820,7 @@ impl Shell {
                 .relative()
                 .with_animation(
                     "connection-banner-in",
-                    gpui_kit::Animation::new(theme::FADE * 2)
+                    gpui_kit::Animation::new(theme::fade() * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.opacity(t).top(px(6. * (1. - t))),
                 )
@@ -781,7 +846,21 @@ impl Shell {
         let Some(s) = store.instance(&key.0) else {
             return;
         };
-        let new = match s.window(key.1) {
+        // A message deleted since: its gap closes from the height it had. Gaps closed by now go.
+        let window = s.window(key.1);
+        let closing = theme::fade() * 2 + std::time::Duration::from_millis(40);
+        view.gone.retain(|_, (_, since)| since.elapsed() < closing);
+        for (ix, row) in view.rows.iter().enumerate() {
+            if let Row::Message(m) = row
+                && window.and_then(|w| w.get(m.id)).is_some_and(|m| m.deleted)
+                && let Some(bounds) = view.list.bounds_for_item(ix)
+                && bounds.size.height > px(0.)
+            {
+                view.gone
+                    .insert(m.id, (bounds.size.height, std::time::Instant::now()));
+            }
+        }
+        let new = match window {
             Some(window) => rows::build(
                 s,
                 window,
@@ -789,6 +868,7 @@ impl Shell {
                     group_minutes: self.config.buffer.group_minutes,
                     utc_offset: self.utc_offset,
                     read_marker: view.read_marker,
+                    gone: view.gone.keys().copied().collect(),
                 },
             ),
             None => Vec::new(),
@@ -1032,19 +1112,22 @@ impl Shell {
     }
 
     /// Back to the newest messages.
-    fn jump_to_present(&mut self, key: &ChannelKey, cx: &mut Context<Self>) {
+    fn jump_to_present(&mut self, key: &ChannelKey, window: &mut Window, cx: &mut Context<Self>) {
         let live = self
             .core
             .store()
             .instance(&key.0)
             .and_then(|s| s.window(key.1).map(|w| w.reached_end))
             .unwrap_or(false);
-        if let Some(view) = self.chats.get(key) {
-            view.list.scroll_to_end();
-        }
         if live {
+            if let Some(view) = self.chats.get(key) {
+                crate::smooth_scroll::glide_to_end(view.list.clone(), window, cx);
+            }
             cx.notify();
             return;
+        }
+        if let Some(view) = self.chats.get(key) {
+            view.list.scroll_to_end();
         }
         let core = self.core.clone();
         let (inst, channel) = key.clone();
@@ -1340,9 +1423,9 @@ impl Shell {
                 self.error(err.to_string(), cx);
             }
             self.sync_rows(&key);
-            // Sending scrolls to the newest message.
+            // Sending glides to the newest message.
             if let Some(view) = self.chats.get(&key) {
-                view.list.scroll_to_end();
+                crate::smooth_scroll::glide_to_end(view.list.clone(), window, cx);
             }
             return;
         }
@@ -2044,7 +2127,7 @@ impl Shell {
                         // It drops in from the top edge.
                         .with_animation(
                             "jump-unread-in",
-                            gpui_kit::Animation::new(theme::FADE * 2)
+                            gpui_kit::Animation::new(theme::fade() * 2)
                                 .with_easing(gpui_kit::ease_out_quint()),
                             |d, t| d.opacity(t).top(px(8. * t)),
                         )
@@ -2060,14 +2143,14 @@ impl Shell {
                                     .cursor_pointer()
                                     .primary()
                                     .label(jump_label)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.jump_to_present(&jump_key, cx);
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.jump_to_present(&jump_key, window, cx);
                                     })),
                             )
                             // It rises from the bottom edge.
                             .with_animation(
                                 "jump-present-in",
-                                gpui_kit::Animation::new(theme::FADE * 2)
+                                gpui_kit::Animation::new(theme::fade() * 2)
                                     .with_easing(gpui_kit::ease_out_quint()),
                                 |d, t| d.opacity(t).bottom(px(12. * t)),
                             ),
@@ -2092,7 +2175,7 @@ impl Shell {
                         // It fades in when someone starts.
                         .with_animation(
                             "typing-in",
-                            gpui_kit::Animation::new(theme::FADE)
+                            gpui_kit::Animation::new(theme::fade())
                                 .with_easing(gpui_kit::ease_out_quint()),
                             |d, t| d.opacity(t),
                         )
@@ -2251,8 +2334,10 @@ impl Shell {
                     // The highlight flows from row to row as the arrows move it.
                     .with_spring(
                         ("suggestion-chosen", n),
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                            .to(n == view.suggestion),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(n == view.suggestion),
                         |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
                     )
             });
@@ -2272,7 +2357,7 @@ impl Shell {
                 // It rises out of the message box as it fades in.
                 .with_animation(
                     "suggestions-in",
-                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.opacity(t).mb(px(6. - 4. * (1. - t))),
                 )
         });
@@ -2308,7 +2393,7 @@ impl Shell {
                 .overflow_hidden()
                 .with_animation(
                     SharedString::from(format!("composer-mode-{glyph}")),
-                    gpui_kit::Animation::new(theme::FADE * 2)
+                    gpui_kit::Animation::new(theme::fade() * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.max_h(px(44. * t)).opacity(t),
                 )
@@ -2472,7 +2557,25 @@ impl Shell {
         let Some(s) = store.instance(inst) else {
             return div().into_any_element();
         };
-        match &row {
+        // Rows that just came grow in, so the list glides instead of jumping: someone else's
+        // fresh message, and mine while it sends (it then stays as it is).
+        let grow = (!cx.reduce_motion())
+            .then(|| match &row {
+                Row::Message(m) => s.window(channel).and_then(|w| w.get(m.id)).and_then(|msg| {
+                    let age = now_ms() - msg.created_at() as i64;
+                    ((-500..1500).contains(&age) && s.me_id() != Some(msg.author.id))
+                        .then(|| SharedString::from(format!("grow-{}", m.id)))
+                }),
+                Row::Pending(p) => s
+                    .window(channel)
+                    .and_then(|w| w.pending(p.local_id))
+                    .filter(|p| matches!(p.state, PendingState::Sending | PendingState::Queued))
+                    .filter(|p| now_ms() - p.created_at < 1500)
+                    .map(|_| SharedString::from(format!("grow-pending-{:?}", p.local_id))),
+                _ => None,
+            })
+            .flatten();
+        let element = match &row {
             Row::Older => div()
                 .flex()
                 .justify_center()
@@ -2495,6 +2598,18 @@ impl Shell {
                 None => div().into_any_element(),
             },
             Row::Pending(p) => self.render_pending(s, inst, channel, p, cx),
+            Row::Gone(id) => {
+                let height = self
+                    .chats
+                    .get(&key)
+                    .and_then(|v| v.gone.get(id))
+                    .map_or(px(0.), |(h, _)| *h);
+                closing_gap(*id, height)
+            }
+        };
+        match grow {
+            Some(grow_key) => grow_in(&self.grow_heights, grow_key, element),
+            None => element,
         }
     }
 
@@ -2746,7 +2861,10 @@ impl Shell {
                     // Reacting or taking it back: the accent flows in or out.
                     .with_spring(
                         SharedString::from(format!("react-mine-{id}-{}", r.emoji)),
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(mine),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(mine),
                         |d, phase| {
                             let t = phase.0.clamp(0., 1.);
                             d.bg(theme::mix(theme::sidebar(), theme::accent_soft(), t))
@@ -2760,8 +2878,8 @@ impl Shell {
                         .child(chip)
                         .with_spring(
                             SharedString::from(format!("react-new-{id}-{}", r.emoji)),
-                            gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(
-                                520., 22., 1.,
+                            gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                gpui_kit::SpringConfig::new(520., 22., 1.),
                             ))
                             .to(true)
                             .from(false),
@@ -2881,10 +2999,27 @@ impl Shell {
                     .border_l_2()
                     .border_color(theme::accent())
             })
-            .when(
-                !selected && !jumped && !highlight && self.hovered_file != Some(id),
-                |d| d.hover(|d| d.bg(theme::hover_soft())),
-            )
+            // Under the pointer its background eases in and out instead of switching.
+            .when(!selected && !jumped && !highlight, |d| {
+                let key = format!("message-hover-{id}");
+                let hovered = self.is_hovered(&key) && self.hovered_file != Some(id);
+                d.on_hover(self.track_hover(key.clone(), cx)).child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::radius_small())
+                        .with_spring(
+                            SharedString::from(key),
+                            gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                crate::hover::HOVER_SPRING,
+                            ))
+                            .to(hovered),
+                            |d, phase| {
+                                d.bg(theme::alpha(theme::hover_soft(), phase.0.clamp(0., 1.)))
+                            },
+                        ),
+                )
+            })
             // Text can be selected from anywhere in the row; names, links and files keep their own.
             .cursor_text()
             .on_mouse_down(
@@ -2937,16 +3072,16 @@ impl Shell {
             row.relative()
                 .with_animation(
                     SharedString::from(format!("arrived-{id}")),
-                    gpui_kit::Animation::new(theme::FADE * 2)
+                    gpui_kit::Animation::new(theme::fade() * 2)
                         .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.opacity(t).top(px(6. * (1. - t))),
+                    |d, t| d.opacity(t).top(px(10. * (1. - t))),
                 )
                 .into_any_element()
         } else if fresh {
             // Mine, just confirmed: it brightens from the dimmed row it was while sending.
             row.with_animation(
                 SharedString::from(format!("confirmed-{id}")),
-                gpui_kit::Animation::new(theme::FADE * 2).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade() * 2).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(0.6 + 0.4 * t),
             )
             .into_any_element()
@@ -3083,7 +3218,7 @@ impl Shell {
             // It pops up over the message's corner as it fades in.
             .with_animation(
                 SharedString::from(format!("palette-in-{message}")),
-                gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(t).top(px(-16. + 6. * (1. - t))),
             )
             .into_any_element()
@@ -3311,7 +3446,7 @@ impl Shell {
                                 .child(picture)
                                 .with_animation(
                                     SharedString::from(format!("image-in-{}", a.id)),
-                                    gpui_kit::Animation::new(theme::FADE * 2)
+                                    gpui_kit::Animation::new(theme::fade() * 2)
                                         .with_easing(gpui_kit::ease_out_quint()),
                                     |d, t| d.opacity(t),
                                 )

@@ -572,7 +572,7 @@ impl Shell {
                 .children(body)
                 .with_animation(
                     SharedString::from(format!("add-instance-{step}")),
-                    gpui_kit::Animation::new(theme::FADE).with_easing(gpui_kit::ease_out_quint()),
+                    gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                     |d, t| d.opacity(t),
                 ),
         ))

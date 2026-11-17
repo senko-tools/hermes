@@ -494,7 +494,7 @@ impl Shell {
                     .justify_center()
                     .with_spring(
                         SharedString::from(format!("presence-{inst}-{who}-{status:?}")),
-                        SpringAnimation::new(SpringConfig::new(520., 22., 1.))
+                        SpringAnimation::new(crate::theme::paced(SpringConfig::new(520., 22., 1.)))
                             .to(true)
                             .from(false),
                         move |d, phase| {

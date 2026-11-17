@@ -211,6 +211,9 @@ pub struct Shell {
     pub rail_pill_slot: std::cell::Cell<f32>,
     /// Per highlighted sidebar row: the state it changed from and the one it shows, so a change
     /// between two highlighted states crossfades instead of growing the bar again.
+    /// How tall each row growing into the chat turned out, by its animation key (see
+    /// `channel::grow_in`).
+    pub grow_heights: crate::channel::GrowHeights,
     pub row_tints: std::cell::RefCell<
         std::collections::HashMap<String, (crate::sidebar::RowState, crate::sidebar::RowState)>,
     >,
@@ -382,6 +385,7 @@ impl Shell {
             rail_scroll: gpui_kit::ScrollHandle::new(),
             rail_pill_slot: std::cell::Cell::new(0.),
             row_tints: Default::default(),
+            grow_heights: Default::default(),
             markup_cache: Default::default(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
@@ -818,6 +822,7 @@ impl Shell {
 
     fn apply_motion(&self, cx: &mut Context<Self>) {
         let general = &self.config.general;
+        theme::set_motion_speed(&general.motion_speed);
         cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
         INFO_SECONDS.store(
             u64::from(general.status_seconds.max(1)),
@@ -1108,8 +1113,10 @@ impl Shell {
                     // Pressed in while the list shows; the press flows in and out.
                     .with_spring(
                         "header-members-on",
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                            .to(self.show_members),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(self.show_members),
                         |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
                     )
                     .into_any_element(),
@@ -1198,9 +1205,9 @@ impl Shell {
                         if leaving { "out" } else { "in" }
                     )),
                     gpui_kit::Animation::new(if leaving {
-                        crate::modal::POP
+                        crate::modal::pop()
                     } else {
-                        theme::FADE * 2
+                        theme::fade() * 2
                     })
                     .with_easing(gpui_kit::ease_out_quint()),
                     move |d, t| d.opacity(if leaving { 1. - t } else { t }),
@@ -1468,7 +1475,7 @@ impl Shell {
     }
 
     /// When the page changed since the last frame, the old one fades out under the new one
-    /// fading in, for `theme::FADE`. A voice page is never drawn twice (it holds share video), and
+    /// fading in, for `theme::fade()`. A voice page is never drawn twice (it holds share video), and
     /// result pages share one search field, so those only fade in.
     fn note_page_change(&mut self, cx: &mut Context<Self>) {
         if self.shown_page.as_ref() == Some(&self.page) {
@@ -1492,7 +1499,7 @@ impl Shell {
         // Gone once faded, so nothing invisible is left under the mouse.
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(theme::FADE + std::time::Duration::from_millis(20))
+                .timer(theme::fade() + std::time::Duration::from_millis(20))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.leaving.as_ref().is_some_and(|(_, s)| *s == serial) {
@@ -1552,7 +1559,7 @@ impl Render for Shell {
                     gpui_kit::SharedString::from(format!("page-leave-{serial}")),
                     // It holds on while the new page comes in over it, and goes at the end,
                     // so the two never both show faint.
-                    gpui_kit::Animation::new(theme::FADE),
+                    gpui_kit::Animation::new(theme::fade()),
                     |d, t| d.opacity(1. - t * t * t),
                 )
         });
@@ -1599,10 +1606,15 @@ impl Render for Shell {
                             .min_w_0()
                             .h_full()
                             .children(leaving)
-                            .child(theme::enter(
-                                gpui_kit::SharedString::from(format!("page-{:?}", self.page)),
-                                main,
-                            )),
+                            .child({
+                                let id =
+                                    gpui_kit::SharedString::from(format!("page-{:?}", self.page));
+                                if matches!(self.page, Page::Chat(..)) {
+                                    theme::enter_rising(id, main)
+                                } else {
+                                    theme::enter(id, main)
+                                }
+                            }),
                     )
                     .children(members),
             );

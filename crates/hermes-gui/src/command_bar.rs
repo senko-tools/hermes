@@ -192,8 +192,10 @@ impl Shell {
                     // The highlight flows from the row left to the one chosen.
                     .with_spring(
                         ("command-chosen", n),
-                        gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING)
-                            .to(n == bar.selected),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(n == bar.selected),
                         |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
                     )
                     .into_any_element()
@@ -263,7 +265,7 @@ impl Shell {
                                 } else {
                                     "command-bar-in"
                                 },
-                                gpui_kit::Animation::new(crate::modal::POP)
+                                gpui_kit::Animation::new(crate::modal::pop())
                                     .with_easing(gpui_kit::ease_out_quint()),
                                 move |d, t| {
                                     let t = if leaving { 1. - t } else { t };
@@ -277,7 +279,7 @@ impl Shell {
                         } else {
                             "command-bar-scrim"
                         },
-                        gpui_kit::Animation::new(crate::modal::POP)
+                        gpui_kit::Animation::new(crate::modal::pop())
                             .with_easing(gpui_kit::ease_out_quint()),
                         move |d, t| {
                             let t = if leaving { 1. - t } else { t };

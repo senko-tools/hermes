@@ -1529,6 +1529,28 @@ impl Shell {
                     "general.reduce_motion",
                     cx,
                 ),
+                setting(
+                    "Motion speed",
+                    "How long things take to slide and fade.",
+                    wrap().children(theme::MOTION_SPEEDS.into_iter().enumerate().map(
+                        |(n, (value, label, _))| {
+                            crate::voice::chip(
+                                ("settings-motion", n),
+                                label,
+                                g.motion_speed.eq_ignore_ascii_case(value),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.persist(
+                                        "general.motion_speed",
+                                        &toml_string(value.to_owned()),
+                                        cx,
+                                    );
+                                },
+                            ))
+                        },
+                    )),
+                ),
                 self.flag(
                     "Smooth scrolling",
                     "The mouse wheel glides instead of jumping.",
@@ -2136,8 +2158,10 @@ impl Shell {
                     // Green while the voice would go through, blending so it does not flicker.
                     .with_spring(
                         "meter-open",
-                        gpui_kit::SpringAnimation::new(gpui_kit::SpringConfig::new(260., 34., 1.))
-                            .to(open),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            gpui_kit::SpringConfig::new(260., 34., 1.),
+                        ))
+                        .to(open),
                         |d, phase| {
                             d.bg(theme::mix(
                                 theme::text_tertiary(),
@@ -2789,7 +2813,8 @@ pub fn nav_item(
         .rounded(theme::row_radius())
         .with_spring(
             SharedString::from(format!("{id}-pill")),
-            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(selected),
+            gpui_kit::SpringAnimation::new(crate::theme::paced(crate::hover::HOVER_SPRING))
+                .to(selected),
             |d, phase| {
                 let t = phase.0.clamp(0., 1.);
                 // It grows from the left edge as it fills in.
@@ -3158,7 +3183,10 @@ fn theme_card(
                         })
                         .with_spring(
                             ("theme-card-ring", n),
-                            gpui_kit::SpringAnimation::new(crate::hover::HOVER_SPRING).to(chosen),
+                            gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                crate::hover::HOVER_SPRING,
+                            ))
+                            .to(chosen),
                             |d, phase| {
                                 let t = phase.0.clamp(0., 1.);
                                 theme::border_width(d, px(1. + t)).border_color(theme::mix(

@@ -226,6 +226,7 @@ async fn rows_follow_history_sends_and_deletes() {
         group_minutes: 7,
         utc_offset: 0,
         read_marker: None,
+        gone: Default::default(),
     };
     let messages = |core: &Core| -> Vec<Row> {
         let store = core.store();

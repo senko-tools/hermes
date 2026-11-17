@@ -134,6 +134,8 @@ pub struct General {
     pub presence: String,
     /// No sliding or fading, whatever the system says.
     pub reduce_motion: bool,
+    /// How long things take to slide and fade: `snappy`, `normal` or `calm`.
+    pub motion_speed: String,
     /// The mouse wheel glides instead of jumping.
     pub smooth_scroll: bool,
     /// How far a wheel notch goes, as a multiple of the plain distance.
@@ -158,6 +160,7 @@ impl Default for General {
             auto_idle_minutes: 10,
             presence: "online".into(),
             reduce_motion: false,
+            motion_speed: "normal".into(),
             smooth_scroll: true,
             scroll_speed: 1.25,
             animate_pictures: true,

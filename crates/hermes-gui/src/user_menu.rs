@@ -343,9 +343,9 @@ impl Shell {
                                 crate::assets::icon(crate::assets::VOLUME, 14., theme::speaking())
                                     .with_spring(
                                         "profile-speaking",
-                                        gpui_kit::SpringAnimation::new(
+                                        gpui_kit::SpringAnimation::new(crate::theme::paced(
                                             gpui_kit::SpringConfig::new(420., 24., 1.),
-                                        )
+                                        ))
                                         .to(speaking),
                                         |d, phase| {
                                             let pop = 1. + 0.2 * phase.0.clamp(0., 1.2);

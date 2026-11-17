@@ -532,8 +532,44 @@ const BLACK: Rgba = Rgba {
     a: 1.0,
 };
 
-/// How long a page, tab or list takes to fade in, or out under the next one.
+/// How long a page, tab or list takes to fade in, or out under the next one, at the snappy
+/// speed. Use [`fade`], which follows the motion speed setting.
 pub const FADE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// The motion speed setting as a time scale (the bits of an `f32`).
+static MOTION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3FB3_3333);
+
+/// The motion speed settings, their names and how much longer than snappy each one takes.
+pub const MOTION_SPEEDS: [(&str, &str, f32); 3] = [
+    ("snappy", "Snappy", 1.0),
+    ("normal", "Normal", 1.4),
+    ("calm", "Calm", 2.0),
+];
+
+/// Follows `general.motion_speed`.
+pub fn set_motion_speed(name: &str) {
+    let scale = MOTION_SPEEDS
+        .iter()
+        .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+        .map_or(1.4, |(.., scale)| *scale);
+    MOTION.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How much longer than snappy things take now.
+pub fn motion() -> f32 {
+    f32::from_bits(MOTION.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// [`FADE`] at the current motion speed.
+pub fn fade() -> std::time::Duration {
+    FADE.mul_f32(motion())
+}
+
+/// `spring` at the current motion speed: as bouncy, but slower or faster.
+pub fn paced(spring: gpui_kit::SpringConfig) -> gpui_kit::SpringConfig {
+    let m = motion();
+    gpui_kit::SpringConfig::new(spring.stiffness / (m * m), spring.damping / m, spring.mass)
+}
 
 /// Fades `element` in where it is, once each time `id` first shows: a page or tab that just
 /// opened. Nothing moves, so the eye stays on the content. It fills its parent.
@@ -549,8 +585,28 @@ pub fn enter(
         .child(element)
         .with_animation(
             id,
-            Animation::new(FADE).with_easing(ease_out_quint()),
+            Animation::new(fade()).with_easing(ease_out_quint()),
             |d, t| d.opacity(t),
+        )
+        .into_any_element()
+}
+
+/// Like [`enter`], but it also rises a little into place: a chat that was switched to, so the
+/// switch reads as a move rather than a swap.
+pub fn enter_rising(
+    id: impl Into<gpui_kit::ElementId>,
+    element: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .relative()
+        .size_full()
+        .child(element)
+        .with_animation(
+            id,
+            Animation::new(fade() * 2).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t).top(px(10. * (1. - t))),
         )
         .into_any_element()
 }
@@ -601,7 +657,7 @@ pub fn empty_state(
         .relative()
         .with_animation(
             SharedString::from(format!("empty-{}", id.into())),
-            Animation::new(FADE * 2).with_easing(ease_out_quint()),
+            Animation::new(fade() * 2).with_easing(ease_out_quint()),
             |d, t| d.opacity(t).top(px(6. * (1. - t))),
         )
         .into_any_element()
