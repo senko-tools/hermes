@@ -98,6 +98,9 @@ jobs:
       # No VC++ redistributable needed on the user's machine.
       RUSTFLAGS: -C target-feature=+crt-static
       VERSION: ${{ needs.version.outputs.version }}
+      # The key updates are checked with, built into the app (public; a repository variable).
+      # Without it the app only says that a new version exists.
+      HERMES_UPDATE_PUBLIC_KEY: ${{ vars.HERMES_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -158,6 +161,30 @@ jobs:
           (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)
           (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
           ls -l dist
+      - name: Update files
+        # What the app's updater downloads (crates/hermes-client-core/src/updater.rs): every file
+        # of the portable folder compressed, patches from the last three releases' files, and
+        # the manifest signed with UPDATE_SIGNING_KEY (a secret; `make-update keygen` makes it).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::notice::UPDATE_SIGNING_KEY is not set: no update files, the app will only link to the release"
+            exit 0
+          fi
+          cargo build --release --locked -p hermes-client-core --bin make-update
+          previous=()
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --exclude-drafts               --json tagName -q '.[].tagName' | grep -v "^v$VERSION$" | head -3); do
+            mkdir -p "prev/$tag"
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY"                 --pattern 'Hermes-*-portable.zip' --dir "prev/$tag"; then
+              7z x -bso0 "prev/$tag"/*.zip -o"prev/$tag/files"
+              previous+=(--previous "prev/$tag/files")
+            fi
+          done
+          target/release/make-update.exe build --dir stage/portable --version "$VERSION"             --out update "${previous[@]}"
+          cp update/* dist/
+          ls -l update
       - uses: actions/upload-artifact@v7
         with:
           name: windows
