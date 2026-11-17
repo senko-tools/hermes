@@ -20,6 +20,7 @@ mod gpu_convert;
 mod mf_decode;
 #[cfg(windows)]
 mod mf_encode;
+pub mod popout;
 mod scale;
 pub mod sound;
 
@@ -326,19 +327,34 @@ impl Shell {
         // A share that ended (or a call I left) is no longer chosen.
         let sharers = self.core.screen_sharers();
         self.watching_shares.retain(|share| sharers.contains(share));
-        let watched: Vec<Id> = match self.core.voice_channel() {
+        // A share in its own window stays watched whatever this window shows.
+        if self
+            .popped_out
+            .as_ref()
+            .is_some_and(|(key, _)| !sharers.contains(key))
+        {
+            self.popped_out = None;
+        }
+        let popped = self.popped_out.as_ref().map(|(key, _)| key.clone());
+        let mut watched: Vec<Id> = match self.core.voice_channel() {
             Some((inst, channel))
                 if self.window_visible
                     && self.page == crate::shell::Page::Voice(inst.clone(), channel) =>
             {
                 sharers
-                    .into_iter()
+                    .iter()
                     .filter(|share| share.0 == inst && self.watching_shares.contains(share))
-                    .map(|(_, user)| user)
+                    .map(|(_, user)| *user)
                     .collect()
             }
             _ => Vec::new(),
         };
+        if let (Some((inst, user)), Some((call, _))) = (&popped, self.core.voice_channel())
+            && *inst == call
+            && !watched.contains(user)
+        {
+            watched.push(*user);
+        }
         if watched != self.watched_now {
             self.core.watch_screens(&watched);
             self.watched_now.clone_from(&watched);

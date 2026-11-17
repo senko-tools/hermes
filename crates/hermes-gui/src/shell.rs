@@ -281,6 +281,8 @@ pub struct Shell {
     /// What the core was last told to receive.
     pub watched_now: Vec<Id>,
     pub screen_latest: Option<Arc<Latest>>,
+    /// A share shown in a window of its own.
+    pub popped_out: crate::screen::popout::PoppedOut,
     pub tray: Option<Tray>,
     pub global_keys: Option<GlobalKeys>,
     /// The window is shown (not hidden in the tray).
@@ -427,6 +429,7 @@ impl Shell {
             watching_shares: HashSet::new(),
             watched_now: Vec::new(),
             screen_latest: None,
+            popped_out: None,
             tray,
             global_keys,
             window_visible: !start_hidden,

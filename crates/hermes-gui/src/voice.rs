@@ -1177,7 +1177,12 @@ impl Shell {
         } else {
             layout(shown.len(), area, TILE_GAP)
         };
-        if let Some(latest) = &self.screen_latest {
+        // A popped-out share's window says how large it shows instead.
+        if let Some(latest) = self
+            .screen_latest
+            .as_ref()
+            .filter(|_| self.popped_out.is_none())
+        {
             // Enlarged, or the tile of a share: the decoder needs no more pixels than this.
             latest.set_shown_size(
                 (tile_size.0 * self.scale) as u32,
@@ -1328,6 +1333,24 @@ impl Shell {
                             .absolute()
                             .top(px(8.))
                             .right(px(8.))
+                            .flex()
+                            .gap(px(4.))
+                            .child({
+                                let key = share_key.clone();
+                                let title = format!("{}'s screen", p.name);
+                                crate::channel::tip_button(
+                                    SharedString::from(format!("pop-out-{}", p.user)),
+                                    assets::media_icons::FULLSCREEN,
+                                    "Open in its own window",
+                                )
+                                .bg(theme::scrim())
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.pop_out_share(key.clone(), title.clone(), cx);
+                                    },
+                                ))
+                            })
                             .child(
                                 crate::channel::tip_button(
                                     SharedString::from(format!("stop-watching-{}", p.user)),

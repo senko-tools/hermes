@@ -180,7 +180,6 @@ fn main() -> ExitCode {
             let theme = Theme::global_mut(cx);
             theme.font_family = theme::FONT.into();
             theme.font_size = theme::body_size();
-            cx.on_window_closed(|cx, _| cx.quit()).detach();
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -224,10 +223,18 @@ fn main() -> ExitCode {
                 link,
                 warning,
             };
-            gpui_kit::open_window(options, cx, move |window, cx| {
+            let (main, _) = gpui_kit::open_window(options, cx, move |window, cx| {
                 cx.new(|cx| Shell::new(boot, window, cx))
             })
             .expect("failed to open the window");
+            // Only the main window ends the app: a popped-out share's window just closes.
+            let main = main.window_id();
+            cx.on_window_closed(move |cx, closed| {
+                if closed == main {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
     ExitCode::SUCCESS
