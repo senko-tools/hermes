@@ -9,7 +9,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
-use hermes_client_core::proto::api::SearchQuery;
+use hermes_client_core::proto::api::{SearchHas, SearchQuery};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Message as ChatMessage;
 use hermes_client_core::{InstanceId, time, view};
@@ -94,15 +94,83 @@ pub struct ResultsPage {
 /// Loaded results and, for a search, the total number of matches.
 type ResultPage = (Vec<(InstanceId, ChatMessage)>, Option<u64>);
 
-/// Takes `from:name` and `in:channel` out of a search. What matches nobody stays in the words.
+/// What a search's words ask for besides words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Filters {
+    words: String,
+    author: Option<Id>,
+    channel: Option<Id>,
+    /// Only messages older than this.
+    before: Option<Id>,
+    /// Only messages newer than this.
+    after: Option<Id>,
+    has: Option<SearchHas>,
+}
+
+impl Filters {
+    fn any(&self) -> bool {
+        self.author.is_some()
+            || self.channel.is_some()
+            || self.before.is_some()
+            || self.after.is_some()
+            || self.has.is_some()
+    }
+}
+
+/// Whether an opened message passes the filters the server may not know (an older one ignores
+/// `after` and `has`, and encrypted messages are only known once opened).
+fn passes(m: &ChatMessage, f: &Filters) -> bool {
+    let has = match f.has {
+        None => true,
+        Some(SearchHas::File) => !m.attachments.is_empty(),
+        Some(SearchHas::Image) => m
+            .attachments
+            .iter()
+            .any(|a| a.content_type.starts_with("image/")),
+        Some(SearchHas::Link) => m.content.contains("http://") || m.content.contains("https://"),
+    };
+    has && f.after.is_none_or(|after| m.id > after) && f.before.is_none_or(|before| m.id < before)
+}
+
+/// Takes `from:name`, `in:channel`, `has:file|image|link` and `before:`, `after:` or
+/// `during:YYYY-MM-DD` out of a search. What matches nothing stays in the words.
 fn filters(
     s: &hermes_client_core::store::InstanceStore,
     query: &str,
     space: Option<Id>,
-) -> (String, Option<Id>, Option<Id>) {
+    utc_offset: i64,
+) -> Filters {
+    let mut f = Filters::default();
     let (mut author, mut channel) = (None, None);
     let mut rest = Vec::new();
+    let id_at = |ms: i64| Id::min_at_unix_ms(u64::try_from(ms).unwrap_or(0));
     for word in query.split_whitespace() {
+        if let Some(kind) = word.strip_prefix("has:")
+            && let Some(has) = SearchHas::from_name(kind)
+        {
+            f.has = Some(has);
+            continue;
+        }
+        if let Some((name, date)) = word.split_once(':')
+            && let Some((start, end)) = time::parse_day(date, utc_offset)
+        {
+            match name {
+                "before" => {
+                    f.before = Some(id_at(start));
+                    continue;
+                }
+                "after" => {
+                    f.after = Some(Id(id_at(end).0.saturating_sub(1)));
+                    continue;
+                }
+                "during" | "on" => {
+                    f.after = Some(Id(id_at(start).0.saturating_sub(1)));
+                    f.before = Some(id_at(end));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         if let Some(name) = word.strip_prefix("from:") {
             let name = name.trim_start_matches('@').to_lowercase();
             let found = s
@@ -128,7 +196,10 @@ fn filters(
         }
         rest.push(word);
     }
-    (rest.join(" "), author, channel)
+    f.words = rest.join(" ");
+    f.author = author;
+    f.channel = channel;
+    f
 }
 
 impl Shell {
@@ -221,16 +292,31 @@ impl Shell {
                 } else {
                     None
                 };
-                let (query, author_id, channel_id) = self.core.store().instance(&inst).map_or_else(
-                    || (query.clone(), None, None),
-                    |s| filters(s, &query, space),
+                let f = self.core.store().instance(&inst).map_or_else(
+                    || Filters {
+                        words: query.clone(),
+                        ..Filters::default()
+                    },
+                    |s| filters(s, &query, space, self.utc_offset),
                 );
+                if f.words.is_empty() && !f.any() {
+                    state.items = Remote::Idle;
+                    cx.notify();
+                    return;
+                }
+                // A later page goes on from the last one shown, never past the date asked for.
+                let before = match (before, f.before) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
                 let request = SearchQuery {
-                    q: query,
+                    q: f.words.clone(),
                     space_id: space,
-                    channel_id,
-                    author_id,
+                    channel_id: f.channel,
+                    author_id: f.author,
                     before,
+                    after: f.after,
+                    has: f.has,
                     limit: Some(PAGE),
                 };
                 let core = self.core.clone();
@@ -244,6 +330,7 @@ impl Shell {
                             .await
                             .map_err(|e| e.to_string())?;
                         core.open_messages(&inst, &mut res.messages).await;
+                        res.messages.retain(|m| passes(m, &f));
                         Ok::<ResultPage, String>((
                             res.messages
                                 .into_iter()
@@ -624,6 +711,33 @@ pub type ResultsPages = HashMap<Key, ResultsPage>;
 mod tests {
     use super::*;
     use hermes_client_core::proto::models::{MessageKind, User};
+
+    #[test]
+    fn search_words_give_filters() {
+        let s = hermes_client_core::store::InstanceStore::default();
+        let f = filters(&s, "pizza has:image during:2026-10-31 HAS:nope", None, 0);
+        assert_eq!(f.words, "pizza HAS:nope");
+        assert_eq!(f.has, Some(SearchHas::Image));
+        let (start, end) = time::parse_day("2026-10-31", 0).unwrap();
+        assert_eq!(f.before, Some(Id::min_at_unix_ms(end as u64)));
+        assert!(f.after.unwrap() < Id::min_at_unix_ms(start as u64));
+        let f = filters(&s, "before:2026-13-01", None, 0);
+        assert_eq!(f.words, "before:2026-13-01", "not a date: kept as words");
+        assert!(!f.any());
+
+        let mut m = msg(1);
+        m.content = "see https://example.org".into();
+        let link = Filters {
+            has: Some(SearchHas::Link),
+            ..Filters::default()
+        };
+        assert!(passes(&m, &link));
+        let file = Filters {
+            has: Some(SearchHas::File),
+            ..Filters::default()
+        };
+        assert!(!passes(&m, &file));
+    }
 
     fn msg(id: u64) -> ChatMessage {
         ChatMessage {

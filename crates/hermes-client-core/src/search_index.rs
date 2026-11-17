@@ -305,7 +305,14 @@ impl Core {
         let limit = query.limit.unwrap_or(25).max(1) as usize;
         // The server can only search what it can read; where that is nothing, it need not
         // learn what is being looked for.
+        // An older server needs words: filters alone are searched here only.
+        let wordless_unsupported = query.q.trim().is_empty()
+            && !self
+                .store()
+                .instance(inst)
+                .is_some_and(|s| s.has_feature(hermes_proto::compat::features::SEARCH_FILTERS));
         let sealed = self.config().privacy.local_search_only
+            || wordless_unsupported
             || self
                 .store()
                 .instance(inst)
@@ -327,7 +334,14 @@ impl Core {
         // Whole pages around the hits: fewer requests, and the server cannot tell which of the
         // messages on a page was the match.
         let mut by_channel: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
-        for (channel, id) in hits.into_iter().take(limit) {
+        // What a message has is only known once it is opened: look at more, the caller sorts
+        // out the rest.
+        let local_limit = if query.has.is_some() {
+            limit * 4
+        } else {
+            limit
+        };
+        for (channel, id) in hits.into_iter().take(local_limit) {
             by_channel.entry(channel).or_default().insert(id);
         }
         for (channel, mut wanted) in by_channel {
@@ -365,10 +379,18 @@ impl Core {
             tokio::task::spawn_blocking(move || {
                 let mut index = keys.index.lock().expect("index");
                 let data = index.load();
-                let hits: Vec<(Id, Id, Id)> = data
-                    .find(&q.q)
+                // No words, only filters: every message noted here, newest first.
+                let ids = if q.q.trim().is_empty() {
+                    let mut all: Vec<Id> = data.messages.keys().copied().collect();
+                    all.sort_unstable_by(|a, b| b.cmp(a));
+                    all
+                } else {
+                    data.find(&q.q)
+                };
+                let hits: Vec<(Id, Id, Id)> = ids
                     .into_iter()
                     .filter(|id| q.before.is_none_or(|before| *id < before))
+                    .filter(|id| q.after.is_none_or(|after| *id > after))
                     .filter_map(|id| data.messages.get(&id).map(|(c, a)| (id, *c, *a)))
                     .collect();
                 index.save();

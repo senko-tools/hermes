@@ -71,6 +71,34 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 /// Local calendar day of a Unix-ms timestamp, for day separators.
+/// Days since 1970-01-01 of a calendar date (the inverse of `civil`).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let m = i64::from(m);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The local start of a `YYYY-MM-DD` day, and of the day after it, in Unix ms.
+pub fn parse_day(text: &str, offset_secs: i64) -> Option<(i64, i64)> {
+    let mut parts = text.trim().split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    if civil(days) != (y, m, d) {
+        return None;
+    }
+    let start = (days * 86_400 - offset_secs) * 1000;
+    Some((start, start + 86_400_000))
+}
+
 pub fn day(unix_ms: i64, offset_secs: i64) -> i64 {
     (unix_ms / 1000 + offset_secs).div_euclid(86_400)
 }
@@ -148,6 +176,20 @@ pub fn long(unix_ms: i64, offset_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn days_parse() {
+        let (start, end) = parse_day("2026-10-31", 0).unwrap();
+        assert_eq!(format(start, "%Y-%m-%d %H:%M", 0), "2026-10-31 00:00");
+        assert_eq!(end - start, 86_400_000);
+        let (start, _) = parse_day("2026-10-31", 2 * 3600).unwrap();
+        assert_eq!(
+            format(start, "%Y-%m-%d %H:%M", 2 * 3600),
+            "2026-10-31 00:00"
+        );
+        assert_eq!(parse_day("2026-02-30", 0), None);
+        assert_eq!(parse_day("yesterday", 0), None);
+    }
 
     #[test]
     fn long_dates() {

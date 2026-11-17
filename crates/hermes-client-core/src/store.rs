@@ -1143,6 +1143,7 @@ pub(crate) mod tests {
             author_id: None,
             before: None,
             limit: None,
+            ..SearchQuery::default()
         };
         assert!(!s.search_only_sealed(&query));
         s.instance.as_mut().unwrap().limits.channels_encrypted = true;

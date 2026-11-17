@@ -441,10 +441,14 @@ impl Rest {
             ("channel_id", query.channel_id),
             ("author_id", query.author_id),
             ("before", query.before),
+            ("after", query.after),
         ] {
             if let Some(id) = value {
                 params.push(format!("{name}={id}"));
             }
+        }
+        if let Some(has) = query.has {
+            params.push(format!("has={}", has.as_str()));
         }
         if let Some(limit) = query.limit {
             params.push(format!("limit={limit}"));
