@@ -265,9 +265,9 @@ impl Shell {
 }
 
 /// How a sidebar row looks in a state: the bar on its left edge and its backgrounds.
-#[derive(Clone, Copy)]
-struct RowState {
-    /// Which state: the bar grows in again when it changes.
+#[derive(Clone, Copy, Debug)]
+pub struct RowState {
+    /// Which state: the colours crossfade when it changes.
     name: &'static str,
     bar: gpui_kit::Rgba,
     background: gpui_kit::Rgba,
@@ -311,17 +311,53 @@ impl RowState {
     }
 }
 
-/// The bar on a highlighted row's left edge. It grows out from its middle each time the row
-/// takes a new state.
-fn state_bar(row: &str, state: RowState) -> impl IntoElement {
+impl Shell {
+    /// The state a highlighted row's colours crossfade from (itself when nothing changed), and
+    /// notes the one it shows now. A row that isn't highlighted forgets it.
+    fn tint_from(&self, row: &str, state: Option<RowState>) -> Option<RowState> {
+        let mut tints = self.row_tints.borrow_mut();
+        let Some(state) = state else {
+            tints.remove(row);
+            return None;
+        };
+        let entry = tints.entry(row.to_owned()).or_insert((state, state));
+        if entry.1.name != state.name {
+            *entry = (entry.1, state);
+        }
+        Some(entry.0)
+    }
+
+    /// How far highlighted rows reach left past the list's padding: to the rail's border line
+    /// when the rail is on their left.
+    fn row_reach(&self) -> f32 {
+        if self.config.sidebar.position.eq_ignore_ascii_case("right") {
+            0.
+        } else {
+            LIST_PAD
+        }
+    }
+}
+
+/// Key of the crossfade from `from` to `to`: a new one each time the state changes.
+fn tint_key(row: &str, part: &str, from: RowState, to: RowState) -> SharedString {
+    SharedString::from(format!("{row}-{part}-{}-{}", from.name, to.name))
+}
+
+/// The bar on a highlighted row's left edge. It grows out from its middle when the row lights
+/// up; going from one highlighted state to another only crossfades its colour from `from`.
+fn state_bar(row: &str, state: RowState, from: RowState) -> impl IntoElement {
     use gpui_kit::{Animation, AnimationExt as _, ease_out_quint, relative};
     div()
         .absolute()
         .left_0()
         .w(theme::indicator_width())
-        .bg(state.bar)
+        .child(div().size_full().with_animation(
+            tint_key(row, "bar-tint", from, state),
+            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            move |d, t| d.bg(theme::mix(from.bar, state.bar, t)),
+        ))
         .with_animation(
-            SharedString::from(format!("{row}-bar-{}", state.name)),
+            SharedString::from(format!("{row}-bar")),
             Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
             |d, t| {
                 let inset = relative(0.5 * (1. - t));
@@ -330,19 +366,51 @@ fn state_bar(row: &str, state: RowState) -> impl IntoElement {
         )
 }
 
-/// A highlighted row's background, under its content. It fades in each time the row takes a
-/// new state; `hover`: it shows the state's hover colour under the pointer.
-fn state_fill(row: &str, state: RowState, hover: bool) -> impl IntoElement {
+/// A highlighted row's background, under its content. It fades in when the row lights up and
+/// crossfades from `from` when the state changes; `hover`: it shows the state's hover colour
+/// under the pointer.
+fn state_fill(row: &str, state: RowState, from: RowState, hover: bool) -> impl IntoElement {
     use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
     div()
         .absolute()
         .inset_0()
-        .when(hover, |d| d.hover(move |d| d.bg(state.hover)))
-        .with_animation(
-            SharedString::from(format!("{row}-fill-{}", state.name)),
-            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
-            move |d, t| d.bg(theme::alpha(state.background, t)),
+        .child(
+            div()
+                .size_full()
+                .when(hover, |d| d.hover(move |d| d.bg(state.hover)))
+                .with_animation(
+                    tint_key(row, "fill-tint", from, state),
+                    Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+                    move |d, t| d.bg(theme::mix(from.background, state.background, t)),
+                ),
         )
+        .with_animation(
+            SharedString::from(format!("{row}-fill")),
+            Animation::new(theme::FADE * 2).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t),
+        )
+}
+
+/// How far a highlighted row reaches left, into the list's padding, so its bar sits on the
+/// rail's border line. `0` with the sidebar on the right, where the rail is on the other side.
+const LIST_PAD: f32 = 8.;
+
+/// A highlighted row or block reaching `reach` left past the list's padding: its left corners
+/// go square against the border, and `indent` plus `reach` move into its padding so its content
+/// stays where it was.
+fn reach_left<E: Styled>(element: E, reach: f32, indent: f32, pad: f32) -> E {
+    if reach <= 0. {
+        return if indent > 0. {
+            element.ml(px(indent))
+        } else {
+            element
+        };
+    }
+    element
+        .ml(px(-reach))
+        .pl(px(pad + reach + indent))
+        .rounded_tl(px(0.))
+        .rounded_bl(px(0.))
 }
 
 /// Between two rows of a category that was just opened.
@@ -1083,6 +1151,9 @@ impl Shell {
                 continue;
             };
             // Highlighted: the channel's highlight goes around the people in it too.
+            let block_key = format!("voice-block-{id}");
+            let from = self.tint_from(&block_key, Some(state)).unwrap_or(state);
+            let reach = self.row_reach();
             let head = self.render_channel_row(tree_row, true, cx);
             let mut people = Vec::new();
             while let Some(Row::VoiceUser {
@@ -1110,13 +1181,13 @@ impl Shell {
                     .flex_col()
                     .flex_shrink_0()
                     .pb(px(if people.is_empty() { 0. } else { 4. }))
-                    .when(nested, |d| d.ml(px(10.)))
                     .rounded(theme::row_radius())
+                    .map(|d| reach_left(d, reach, if nested { 10. } else { 0. }, 0.))
                     .overflow_hidden()
-                    .child(state_fill(&format!("voice-block-{id}"), state, false))
+                    .child(state_fill(&block_key, state, from, false))
                     // The block itself stays still: its rows light up one at a time, clear of
                     // the bar on the left.
-                    .child(state_bar(&format!("voice-block-{id}"), state))
+                    .child(state_bar(&block_key, state, from))
                     .child(head)
                     .children(people)
                     .into_any_element(),
@@ -1352,16 +1423,24 @@ impl Shell {
         let target = Target::Channel(inst.clone(), id);
         let strong = selected || connected || badge.unread || badge.mentions > 0;
         let state = RowState::of(selected, connected, badge).filter(|_| !in_block);
+        let row_key = format!("channel-{id}");
+        let from = self.tint_from(&row_key, state);
+        let reach = self.row_reach();
         let timer = connected.then(|| self.time_in_voice(&inst)).flatten();
-        let element = bare_row(format!("channel-{id}"), selected, theme::ROW_HEIGHT)
+        let indent = if nested && !in_block { 10. } else { 0. };
+        let element = bare_row(row_key.clone(), selected, theme::ROW_HEIGHT)
             .relative()
             .overflow_hidden()
             .text_color(theme::channel_text())
-            .when(nested && !in_block, |d| d.ml(px(10.)))
+            .map(|d| match state {
+                // Lit: it reaches the rail's border line.
+                Some(_) => reach_left(d, reach, indent, 8.),
+                None => d.when(indent > 0., |d| d.ml(px(indent))),
+            })
             .group(CHANNEL_ROW)
-            .when_some(state, |d, state| {
-                d.child(state_fill(&format!("channel-{id}"), state, true))
-                    .child(state_bar(&format!("channel-{id}"), state))
+            .when_some(state.zip(from), |d, (state, from)| {
+                d.child(state_fill(&row_key, state, from, true))
+                    .child(state_bar(&row_key, state, from))
             })
             .when(muted, |d| d.text_color(theme::text_tertiary()))
             .when(strong && !muted, |d| {

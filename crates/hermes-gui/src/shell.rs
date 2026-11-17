@@ -209,6 +209,11 @@ pub struct Shell {
     pub rail_scroll: gpui_kit::ScrollHandle,
     /// The rail slot last selected: the pill springs on from there.
     pub rail_pill_slot: std::cell::Cell<f32>,
+    /// Per highlighted sidebar row: the state it changed from and the one it shows, so a change
+    /// between two highlighted states crossfades instead of growing the bar again.
+    pub row_tints: std::cell::RefCell<
+        std::collections::HashMap<String, (crate::sidebar::RowState, crate::sidebar::RowState)>,
+    >,
     /// Message text parsed already, by what it depends on. Parsing and resolving mentions per
     /// visible row per frame was the biggest cost of drawing a chat.
     pub markup_cache: std::cell::RefCell<HashMap<u64, std::rc::Rc<Vec<crate::markup::Block>>>>,
@@ -376,6 +381,7 @@ impl Shell {
             keys_dialog: None,
             rail_scroll: gpui_kit::ScrollHandle::new(),
             rail_pill_slot: std::cell::Cell::new(0.),
+            row_tints: Default::default(),
             markup_cache: Default::default(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
