@@ -46,15 +46,40 @@ pub fn path(dir: &Path) -> std::io::Result<()> {
 }
 
 /// `ShellExecuteW(open)`: the default browser for a URL, the file manager for a folder.
+///
+/// It runs on a thread of its own. Called on the UI thread from a click, ShellExecute pumps
+/// window messages while it talks to Explorer (always for a folder), gpui re-enters its own
+/// event handling while the click still holds the app, and the app panicked ("RefCell already
+/// borrowed", 2026-11-18, Open themes folder). Its own thread also gets COM set up the way
+/// ShellExecute asks for. A failure is logged, since the click has returned by then.
+#[cfg(windows)]
+fn launch(target: &OsStr) -> std::io::Result<()> {
+    let wide: Vec<u16> = {
+        use std::os::windows::ffi::OsStrExt;
+        target.encode_wide().chain([0]).collect()
+    };
+    std::thread::Builder::new()
+        .name("shell-open".into())
+        .spawn(move || {
+            if let Err(err) = shell_execute(&wide) {
+                tracing::warn!("{err}");
+            }
+        })
+        .map(|_| ())
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn launch(target: &OsStr) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+fn shell_execute(wide: &[u16]) -> std::io::Result<()> {
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     use windows::core::{PCWSTR, w};
 
-    let wide: Vec<u16> = target.encode_wide().chain([0]).collect();
+    // SAFETY: called once on this fresh thread, balanced by CoUninitialize below when it worked.
+    let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     // SAFETY: `wide` is a NUL-terminated UTF-16 string that outlives the call; the other
     // pointers are static strings or null.
     let result = unsafe {
@@ -67,6 +92,10 @@ fn launch(target: &OsStr) -> std::io::Result<()> {
             SW_SHOWNORMAL,
         )
     };
+    if com.is_ok() {
+        // SAFETY: pairs the successful CoInitializeEx on this thread.
+        unsafe { CoUninitialize() };
+    }
     // Values above 32 mean success.
     if result.0 as usize > 32 {
         Ok(())
