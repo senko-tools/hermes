@@ -247,6 +247,9 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         },
         ptt_release_delay: Duration::from_millis(u64::from(v.ptt_release_delay_ms)),
         vad_sensitivity_db: v.vad_sensitivity as f32,
+        vad_hold: Duration::from_millis(u64::from(v.vad_hold_ms.clamp(50, 2000))),
+        vad_level_only: v.vad_level_only,
+        agc_target_db: v.agc_target_db.clamp(-40, -3) as f32,
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
         close_mic_when_muted: v.close_mic_when_muted,
@@ -270,6 +273,9 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     .into();
     v.ptt_release_delay_ms = u32::try_from(s.ptt_release_delay.as_millis()).unwrap_or(u32::MAX);
     v.vad_sensitivity = s.vad_sensitivity_db.round() as i32;
+    v.vad_hold_ms = u32::try_from(s.vad_hold.as_millis()).unwrap_or(u32::MAX);
+    v.vad_level_only = s.vad_level_only;
+    v.agc_target_db = s.agc_target_db.round() as i32;
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
     v.close_mic_when_muted = s.close_mic_when_muted;

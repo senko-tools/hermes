@@ -94,6 +94,8 @@ enum SliderKind {
     InputVolume,
     OutputVolume,
     Vad,
+    VadHold,
+    AgcTarget,
     ReleaseDelay,
     SoundsVolume,
     MediaVolume,
@@ -376,6 +378,20 @@ impl Shell {
                 voice.ptt_release_delay_ms as f32,
             ),
             (
+                SliderKind::VadHold,
+                100.,
+                1000.,
+                10.,
+                (voice.vad_hold_ms as f32).clamp(100., 1000.),
+            ),
+            (
+                SliderKind::AgcTarget,
+                -30.,
+                -6.,
+                1.,
+                (voice.agc_target_db as f32).clamp(-30., -6.),
+            ),
+            (
                 SliderKind::SoundsVolume,
                 0.,
                 1.,
@@ -595,6 +611,8 @@ impl Shell {
             SliderKind::OutputVolume => voice.output_volume = rounded(value) as _,
             SliderKind::Vad => voice.vad_sensitivity = value as i32,
             SliderKind::ReleaseDelay => voice.ptt_release_delay_ms = value as u32,
+            SliderKind::VadHold => voice.vad_hold_ms = value as u32,
+            SliderKind::AgcTarget => voice.agc_target_db = value as i32,
             SliderKind::SoundsVolume => voice.sounds_volume = rounded(value) as _,
             SliderKind::MediaVolume => voice.media_volume = rounded(value) as _,
             SliderKind::ScrollSpeed => self.config.general.scroll_speed = rounded(value) as _,
@@ -2199,6 +2217,24 @@ impl Shell {
                 .child(meter)
                 .child(self.slider(page, SliderKind::Vad)),
         ));
+        if !ptt_mode {
+            input_rows.push(setting(
+                "Stay open after speaking",
+                &format!("{} ms, so the ends of words are not cut off", v.vad_hold_ms),
+                self.slider(page, SliderKind::VadHold),
+            ));
+            input_rows.push(setting(
+                "Only loudness opens the microphone",
+                "Noise suppression's voice detection can't open it below the line.",
+                Switch::new("vad-level-only")
+                    .cursor_pointer()
+                    .checked(v.vad_level_only)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        let on = *on;
+                        this.change_voice(cx, move |voice| voice.vad_level_only = on);
+                    })),
+            ));
+        }
         let mic_test = page.mic_test;
         input_rows.push(setting(
             "Mic test",
@@ -2270,6 +2306,11 @@ impl Shell {
                     "Automatic gain",
                     "Evens out how loud you are.",
                     voice_switch("gain", v.auto_gain, |v, on| v.auto_gain = on, cx),
+                ),
+                setting(
+                    "Automatic gain level",
+                    &format!("Aims for {} dBFS. Higher is louder.", v.agc_target_db),
+                    self.slider(page, SliderKind::AgcTarget),
                 ),
             ],
         );

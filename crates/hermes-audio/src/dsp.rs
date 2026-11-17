@@ -223,11 +223,16 @@ impl Denoiser {
 #[derive(Debug, Clone)]
 pub struct Agc {
     gain: f32,
+    /// What it aims for, dBFS.
+    pub target_db: f32,
 }
 
 impl Default for Agc {
     fn default() -> Self {
-        Agc { gain: 1.0 }
+        Agc {
+            gain: 1.0,
+            target_db: Self::TARGET_DB,
+        }
     }
 }
 
@@ -249,7 +254,7 @@ impl Agc {
     pub fn process(&mut self, frame: &mut [f32]) {
         let level_db = to_db(rms(frame));
         if level_db > Self::VOICE_FLOOR_DB {
-            let wanted = from_db(Self::TARGET_DB - level_db).clamp(Self::MIN_GAIN, Self::MAX_GAIN);
+            let wanted = from_db(self.target_db - level_db).clamp(Self::MIN_GAIN, Self::MAX_GAIN);
             let rate = if wanted < self.gain {
                 Self::ATTACK
             } else {
@@ -278,6 +283,10 @@ pub struct Gate {
     /// RMS threshold of voice activity, dBFS.
     pub sensitivity_db: f32,
     pub ptt_release_delay: Duration,
+    /// Voice activity stays open this long after the last voiced frame.
+    pub hold: Duration,
+    /// Only the level opens voice activity, not noise suppression's voice detection.
+    pub level_only: bool,
     pub muted: bool,
     ptt_pressed: bool,
     /// Frames the gate stays open after the last voiced (or held) frame.
@@ -290,6 +299,8 @@ impl Default for Gate {
             mode: InputMode::VoiceActivity,
             sensitivity_db: -50.0,
             ptt_release_delay: Duration::from_millis(150),
+            hold: Self::HANGOVER,
+            level_only: false,
             muted: false,
             ptt_pressed: false,
             hold_frames: 0,
@@ -300,7 +311,7 @@ impl Default for Gate {
 impl Gate {
     /// RNNoise voice probability that opens the gate on its own.
     pub const VOICE_PROBABILITY: f32 = 0.9;
-    /// Voice activity stays open this long after the last voiced frame.
+    /// Voice activity stays open this long after the last voiced frame, unless set otherwise.
     pub const HANGOVER: Duration = Duration::from_millis(300);
 
     pub fn set_ptt(&mut self, pressed: bool) {
@@ -321,9 +332,10 @@ impl Gate {
             InputMode::PushToTalk => self.ptt_pressed,
             InputMode::VoiceActivity => {
                 let voiced = level_db > self.sensitivity_db
-                    || voice_probability.is_some_and(|p| p > Self::VOICE_PROBABILITY);
+                    || (!self.level_only
+                        && voice_probability.is_some_and(|p| p > Self::VOICE_PROBABILITY));
                 if voiced {
-                    self.hold_frames = frames(Self::HANGOVER);
+                    self.hold_frames = frames(self.hold);
                 }
                 voiced
             }
@@ -472,6 +484,38 @@ mod tests {
         assert!(gate.update(-70.0, Some(0.1)));
         gate.muted = true;
         assert!(!gate.update(-10.0, Some(1.0)));
+    }
+
+    #[test]
+    fn the_hold_time_and_level_only_can_be_set() {
+        let mut gate = Gate {
+            hold: Duration::from_millis(100),
+            level_only: true,
+            ..Gate::default()
+        };
+        assert!(gate.update(-30.0, None));
+        // 100 ms = 5 frames.
+        for _ in 0..5 {
+            assert!(gate.update(-70.0, None));
+        }
+        assert!(!gate.update(-70.0, None));
+        assert!(
+            !gate.update(-70.0, Some(0.99)),
+            "noise suppression alone does not open it"
+        );
+    }
+
+    #[test]
+    fn agc_aims_for_its_target() {
+        let mut agc = Agc {
+            target_db: -12.0,
+            ..Agc::default()
+        };
+        for _ in 0..500 {
+            let mut frame = vec![from_db(-30.0); FRAME];
+            agc.process(&mut frame);
+        }
+        assert!((agc.gain() - from_db(18.0)).abs() < 0.3, "{}", agc.gain());
     }
 
     #[test]

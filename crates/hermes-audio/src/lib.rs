@@ -127,6 +127,13 @@ pub struct AudioSettings {
     pub ptt_release_delay: Duration,
     /// Voice activity threshold, dBFS.
     pub vad_sensitivity_db: f32,
+    /// How long voice activity stays open after the last voiced frame.
+    pub vad_hold: Duration,
+    /// Only the level opens voice activity: noise suppression's voice detection can't open it
+    /// below the threshold.
+    pub vad_level_only: bool,
+    /// What automatic gain aims for, dBFS.
+    pub agc_target_db: f32,
     pub noise_suppression: bool,
     /// Closes the microphone while muted, at the price of a moment's delay on unmuting.
     pub close_mic_when_muted: bool,
@@ -149,6 +156,9 @@ impl Default for AudioSettings {
             mode: InputMode::VoiceActivity,
             ptt_release_delay: Duration::from_millis(150),
             vad_sensitivity_db: -50.0,
+            vad_hold: dsp::Gate::HANGOVER,
+            vad_level_only: false,
+            agc_target_db: dsp::Agc::TARGET_DB,
             noise_suppression: true,
             close_mic_when_muted: false,
             opus_fec: true,

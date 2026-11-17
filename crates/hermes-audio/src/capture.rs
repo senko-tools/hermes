@@ -67,11 +67,16 @@ impl Capture {
         self.gate.mode = settings.mode;
         self.gate.sensitivity_db = settings.vad_sensitivity_db;
         self.gate.ptt_release_delay = settings.ptt_release_delay;
+        self.gate.hold = settings.vad_hold;
+        self.gate.level_only = settings.vad_level_only;
         if settings.noise_suppression != self.denoiser.is_some() {
             self.denoiser = settings.noise_suppression.then(Denoiser::default);
         }
         if settings.auto_gain != self.agc.is_some() {
             self.agc = settings.auto_gain.then(Agc::default);
+        }
+        if let Some(agc) = &mut self.agc {
+            agc.target_db = settings.agc_target_db;
         }
     }
 

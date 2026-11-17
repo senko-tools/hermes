@@ -278,8 +278,14 @@ pub struct Voice {
     pub ptt_key: String,
     pub ptt_release_delay_ms: u32,
     pub vad_sensitivity: i32,
+    /// How long voice activity stays open after you stop, in ms.
+    pub vad_hold_ms: u32,
+    /// Only loudness opens voice activity (noise suppression's voice detection can't).
+    pub vad_level_only: bool,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+    /// How loud automatic gain makes you, dBFS.
+    pub agc_target_db: i32,
     /// While muted the microphone is really closed, so the system shows it as unused.
     pub close_mic_when_muted: bool,
     /// Sends extra data so that lost packets can be rebuilt.
@@ -315,8 +321,11 @@ impl Default for Voice {
             ptt_key: String::new(),
             ptt_release_delay_ms: 150,
             vad_sensitivity: -50,
+            vad_hold_ms: 300,
+            vad_level_only: false,
             noise_suppression: true,
             auto_gain: false,
+            agc_target_db: -18,
             close_mic_when_muted: false,
             opus_fec: true,
             opus_dtx: true,
