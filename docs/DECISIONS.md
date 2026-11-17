@@ -1805,3 +1805,17 @@ Asked for by the developer.
 - **hermes-gpui replaced hermes-gui,** taking its crate name and the `hermes` binary, as the developer asked. The iced
   client, `spikes/` (throwaway Phase 0 experiments nothing used), its workflow, the `iced` and `pulldown-cmark` workspace
   dependencies and a `data/` folder that was committed by mistake (a test database and a throwaway TLS key) are gone.
+
+## 2026-11-18: Linux CI on Forgejo Actions
+
+- **What:** `.forgejo/workflows/ci.yml` runs the same checks as `.github/workflows/ci.yml` (`cargo fmt --check`,
+  clippy with `-D warnings`, `cargo test --workspace`) on Forgejo Actions (`runs-on: ubuntu-latest`), for pushes to
+  `main` and `dev`, pull requests and manual runs. PLAN.md section 19 names GitHub Actions only; the GitHub workflows
+  stay as they are for the Windows build and releases.
+- **Caching:** `Swatinem/rust-cache` with one fixed key, saved only by pushes to `main` and `dev` (pull requests
+  restore it but never write it); clippy and test share one job and one cache. Formatting is a separate job with no
+  cache. Apt downloads are not cached: the runner image is unknown and may not let a non-root step restore into
+  `/var/cache/apt`.
+- **Why:** the developer asked for CI on the Forgejo instance with proper build caching. The runner image behind
+  `ubuntu-latest` is not known (often Debian with only node.js), so the jobs install their own compilers and
+  libraries, and actions are named by full URL.

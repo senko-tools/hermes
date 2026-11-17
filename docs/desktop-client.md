@@ -58,7 +58,8 @@ Full workspace builds can run Windows out of memory (os error 1455): use `-j 4`.
 ## Not yet checked by ear or by a person
 Real mic and speaker quality in a call, push-to-talk and the global mute key, the tray's menu, toasts and the taskbar
 flash, real keyboard modifiers (Ctrl+K, Shift+Enter; the test helper can only send plain keys), file dialogs,
-drag and drop, and how the sizes compare to Discord. Linux CI packages in `.github/workflows/ci.yml` are untested.
+drag and drop, and how the sizes compare to Discord. Linux CI packages in `.github/workflows/ci.yml` and
+`.forgejo/workflows/ci.yml` are untested.
 
 ## How the window was tested
 Run a scratch `hermes-server` copied elsewhere (port 7799, `registration.mode = "open"`), seed it over REST, start the
