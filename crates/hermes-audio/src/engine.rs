@@ -731,6 +731,7 @@ fn speaking(playback: &Playback, now: f64) -> Vec<(u16, bool)> {
 fn configure_playback(playback: &mut Playback, settings: &AudioSettings, deaf: bool) {
     playback.output_volume = crate::volume_gain(settings.output_volume);
     playback.sounds_enabled = settings.sounds;
+    playback.set_ducking(settings.ducking_db);
     playback.sounds_volume = settings.sounds_volume;
     playback.deafened = deaf;
 }

@@ -159,7 +159,8 @@ fn feed(shared: Arc<Shared>, device: Option<&str>, opened: &mpsc::Sender<Result<
     while !shared.stop.load(Ordering::Relaxed) {
         let in_ring = output.ring.occupied_len();
         if !shared.paused.load(Ordering::Relaxed) && in_ring < ahead {
-            let gain = f32::from_bits(shared.gain.load(Ordering::Relaxed));
+            // Lowered while someone in the call speaks, when that is switched on.
+            let gain = f32::from_bits(shared.gain.load(Ordering::Relaxed)) * crate::mixer::ducked();
             let mut queue = shared.queue.lock().unwrap_or_else(|e| e.into_inner());
             // Whole stereo frames only.
             let wanted = (ahead - in_ring).min(queue.len()) & !1;

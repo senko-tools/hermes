@@ -96,6 +96,7 @@ enum SliderKind {
     Vad,
     VadHold,
     AgcTarget,
+    Ducking,
     ReleaseDelay,
     SoundsVolume,
     MediaVolume,
@@ -385,6 +386,13 @@ impl Shell {
                 (voice.vad_hold_ms as f32).clamp(100., 1000.),
             ),
             (
+                SliderKind::Ducking,
+                3.,
+                30.,
+                1.,
+                (voice.ducking_db as f32).clamp(3., 30.),
+            ),
+            (
                 SliderKind::AgcTarget,
                 -30.,
                 -6.,
@@ -613,6 +621,7 @@ impl Shell {
             SliderKind::ReleaseDelay => voice.ptt_release_delay_ms = value as u32,
             SliderKind::VadHold => voice.vad_hold_ms = value as u32,
             SliderKind::AgcTarget => voice.agc_target_db = value as i32,
+            SliderKind::Ducking => voice.ducking_db = value as u32,
             SliderKind::SoundsVolume => voice.sounds_volume = rounded(value) as _,
             SliderKind::MediaVolume => voice.media_volume = rounded(value) as _,
             SliderKind::ScrollSpeed => self.config.general.scroll_speed = rounded(value) as _,
@@ -2306,6 +2315,16 @@ impl Shell {
                     "Automatic gain",
                     "Evens out how loud you are.",
                     voice_switch("gain", v.auto_gain, |v, on| v.auto_gain = on, cx),
+                ),
+                setting(
+                    "Lower other sound while someone speaks",
+                    "Screen share sound, videos and audio files step back for voices.",
+                    voice_switch("ducking", v.ducking, |v, on| v.ducking = on, cx),
+                ),
+                setting(
+                    "Lowered by",
+                    &format!("{} dB", v.ducking_db),
+                    self.slider(page, SliderKind::Ducking),
                 ),
                 setting(
                     "Automatic gain level",

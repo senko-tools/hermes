@@ -243,6 +243,11 @@ impl Playback {
         }
     }
 
+    /// Lowers share and media sound by this many dB while someone speaks; `None`: never.
+    pub fn set_ducking(&mut self, db: Option<f32>) {
+        self.mixer.duck_db = db;
+    }
+
     /// Mixes the next 20 ms at 48 kHz, stereo interleaved.
     pub fn render_48k_stereo(&mut self) -> &[f32; STEREO_FRAME] {
         self.mixer.clear();

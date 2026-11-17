@@ -140,6 +140,8 @@ pub struct AudioSettings {
     pub opus_fec: bool,
     pub opus_dtx: bool,
     pub auto_gain: bool,
+    /// Screen share and media sound go this many dB down while someone speaks; `None`: off.
+    pub ducking_db: Option<f32>,
     /// Join/leave/mute sounds.
     pub sounds: bool,
     /// 0–1.
@@ -164,6 +166,7 @@ impl Default for AudioSettings {
             opus_fec: true,
             opus_dtx: true,
             auto_gain: false,
+            ducking_db: None,
             sounds: true,
             sounds_volume: 0.6,
         }

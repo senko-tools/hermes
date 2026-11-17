@@ -286,6 +286,9 @@ pub struct Voice {
     pub auto_gain: bool,
     /// How loud automatic gain makes you, dBFS.
     pub agc_target_db: i32,
+    /// While someone speaks, screen share and media sound go down by `ducking_db`.
+    pub ducking: bool,
+    pub ducking_db: u32,
     /// While muted the microphone is really closed, so the system shows it as unused.
     pub close_mic_when_muted: bool,
     /// Sends extra data so that lost packets can be rebuilt.
@@ -326,6 +329,8 @@ impl Default for Voice {
             noise_suppression: true,
             auto_gain: false,
             agc_target_db: -18,
+            ducking: false,
+            ducking_db: 12,
             close_mic_when_muted: false,
             opus_fec: true,
             opus_dtx: true,
