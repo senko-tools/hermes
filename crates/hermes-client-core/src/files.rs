@@ -11,6 +11,34 @@ fn is_hidden_format(c: char) -> bool {
     )
 }
 
+/// The longest name [`safe_filename`] gives, in bytes. File systems take 255, and Windows wants
+/// the whole path under 260 characters; an encrypted file's name is not limited by the server.
+const MAX_NAME_BYTES: usize = 150;
+/// The longest extension kept whole when a name is shortened.
+const MAX_EXTENSION_BYTES: usize = 16;
+
+/// `name` cut to [`MAX_NAME_BYTES`], keeping its extension.
+fn shorten(name: &str) -> String {
+    if name.len() <= MAX_NAME_BYTES {
+        return name.to_owned();
+    }
+    let cut = |text: &str, room: usize| {
+        let mut end = room.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text[..end].trim_end_matches([' ', '.']).to_owned()
+    };
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && ext.len() <= MAX_EXTENSION_BYTES => {
+            format!("{}.{ext}", cut(stem, MAX_NAME_BYTES - ext.len() - 1))
+        }
+        // No extension worth keeping. The `_` keeps the cut from ending in one it never had
+        // (`a.exeeee…` must not become `a.exe`).
+        _ => format!("{}_", cut(name, MAX_NAME_BYTES - 1)),
+    }
+}
+
 /// A filename that is safe to create on any platform: no directory parts, no characters Windows
 /// forbids, no characters that disguise the name, not a reserved device name, not empty.
 pub fn safe_filename(name: &str) -> String {
@@ -28,7 +56,7 @@ pub fn safe_filename(name: &str) -> String {
             }
         })
         .collect();
-    out = out.trim_matches(|c: char| c == ' ' || c == '.').to_owned();
+    out = shorten(out.trim_matches(|c: char| c == ' ' || c == '.'));
     if out.is_empty() {
         out = "download".into();
     }
@@ -122,6 +150,28 @@ mod tests {
         );
         assert_eq!(safe_filename("a\u{200B}.png"), "a_.png");
         assert_eq!(safe_filename("tab\tname.txt"), "tab_name.txt");
+    }
+
+    #[test]
+    fn long_names_are_cut_keeping_the_extension() {
+        let long = format!("{}.png", "ü".repeat(200));
+        let safe = safe_filename(&long);
+        assert!(safe.len() <= MAX_NAME_BYTES, "{}", safe.len());
+        assert!(safe.ends_with("ü.png"));
+        assert!(opens_in_viewer(&long));
+
+        // An extension too long to keep is not turned into a shorter one.
+        let tricky = format!("{}.exe{}", "a".repeat(140), "e".repeat(100));
+        let safe = safe_filename(&tricky);
+        assert!(safe.len() <= MAX_NAME_BYTES);
+        assert!(!safe.ends_with(".exe"), "{safe}");
+        assert!(!opens_in_viewer(&tricky));
+        let tricky = format!("{}.png{}", "a".repeat(146), "x".repeat(100));
+        assert!(!opens_in_viewer(&tricky), "not a picture");
+
+        // Nothing changes for names that fit.
+        let fits = format!("{}.txt", "a".repeat(MAX_NAME_BYTES - 4));
+        assert_eq!(safe_filename(&fits), fits);
     }
 
     #[test]
