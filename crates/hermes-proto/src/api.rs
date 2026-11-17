@@ -235,6 +235,13 @@ pub struct UpdateMeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub banner_id: Patch<Id>,
+    /// "About me" (the `bio` feature); a few lines.
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bio: Patch<String>,
 }
 
 /// The largest file an avatar, a profile banner or a server icon may be.
@@ -243,6 +250,8 @@ pub const PICTURE_MAX_BYTES: u64 = 10 * 1024 * 1024;
 impl UpdateMeRequest {
     pub const DISPLAY_NAME_CHARS: (usize, usize) = (1, 32);
     pub const STATUS_TEXT_CHARS: usize = 128;
+    pub const BIO_CHARS: usize = 190;
+    pub const BIO_LINES: usize = 6;
 }
 
 /// `GET /users/{id}`: the user and the spaces we share.
@@ -255,6 +264,9 @@ pub struct UserProfile {
     /// except for writing in a server or going into a server's voice channel.
     #[serde(default)]
     pub last_online_at: Option<i64>,
+    /// Their "About me". Older servers send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
 }
 
 /// `PUT /users/@me/notification-settings/{target_id}`.

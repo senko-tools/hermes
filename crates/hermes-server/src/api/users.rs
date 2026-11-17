@@ -174,6 +174,17 @@ pub async fn update_me(
             user.status_text = status;
         }
     }
+    let bio = req.bio.as_ref().and_then(|bio| {
+        let checked = match bio {
+            Some(b) if b.lines().count() > UpdateMeRequest::BIO_LINES => Err(format!(
+                "must be at most {} lines",
+                UpdateMeRequest::BIO_LINES
+            )),
+            Some(b) => validate::optional_text(b, UpdateMeRequest::BIO_CHARS),
+            None => Ok(None),
+        };
+        fields.check("bio", checked)
+    });
     fields.finish()?;
     match req.avatar_id {
         None => {}
@@ -190,6 +201,12 @@ pub async fn update_me(
         Some(Some(id)) => {
             user.banner = Some(own_picture(&state, id, auth.user_id, "banner_id").await?);
         }
+    }
+    // Only shown on the profile, which is asked for when opened: nobody needs telling.
+    if let Some(bio) = bio {
+        let mut tx = state.db.write.begin().await?;
+        db::users::set_bio(&mut tx, auth.user_id, bio.as_deref()).await?;
+        tx.commit().await?;
     }
     if user != old.user {
         let mut tx = state.db.write.begin().await?;
@@ -252,6 +269,7 @@ pub async fn get(
         user,
         mutual_space_ids,
         last_online_at,
+        bio: db::users::bio(&state.db.read, user_id).await?,
     }))
 }
 

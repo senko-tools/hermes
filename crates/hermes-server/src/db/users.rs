@@ -48,6 +48,27 @@ pub async fn last_online(pool: &SqlitePool, user: Id) -> Result<Option<i64>, sql
         .map(Option::flatten)
 }
 
+/// Their "About me", if any.
+pub async fn bio(pool: &SqlitePool, user: Id) -> Result<Option<String>, sqlx::Error> {
+    let id = user.to_i64();
+    let bio = sqlx::query_scalar!("SELECT bio FROM users WHERE id = ?", id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(bio.filter(|b| !b.is_empty()))
+}
+
+pub async fn set_bio(
+    conn: &mut SqliteConnection,
+    user: Id,
+    bio: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let (id, bio) = (user.to_i64(), bio.unwrap_or_default());
+    sqlx::query!("UPDATE users SET bio = ? WHERE id = ?", bio, id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
 /// Stores `users.username`, the whole handle.
 pub async fn set_handle(
     conn: &mut SqliteConnection,

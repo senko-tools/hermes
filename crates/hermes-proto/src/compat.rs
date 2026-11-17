@@ -22,8 +22,11 @@ pub mod features {
     /// `GET /search` takes `after` and `has`, and filters without words.
     pub const SEARCH_FILTERS: &str = "search_filters";
 
+    /// Profiles have an "About me" (`UserProfile::bio`, `UpdateMeRequest::bio`).
+    pub const BIO: &str = "bio";
+
     /// Everything this build's server can do that older servers can't.
-    pub const ALL: &[&str] = &[SEARCH_FILTERS];
+    pub const ALL: &[&str] = &[SEARCH_FILTERS, BIO];
 }
 
 /// Whether a server's `features` list has `name`.

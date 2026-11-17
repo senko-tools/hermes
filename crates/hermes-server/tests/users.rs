@@ -275,6 +275,67 @@ async fn search_finds_only_what_i_may_read() {
 }
 
 #[tokio::test]
+async fn about_me_shows_on_the_profile() {
+    let server = start("users-bio", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(profile.get("bio"), None, "none yet");
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "  Fox fan.
+Writes Rust.  " }),
+        )
+        .await
+        .ok();
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(
+        profile["bio"],
+        "Fox fan.
+Writes Rust."
+    );
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "x".repeat(191) }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "a
+b
+c
+d
+e
+f
+g" }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+    server
+        .patch("/users/@me", Some(&owner), json!({ "bio": null }))
+        .await
+        .ok();
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(profile.get("bio"), None, "cleared");
+}
+
+#[tokio::test]
 async fn search_filters_without_words() {
     let server = start("users-search-filters", RegistrationMode::Open).await;
     let (owner, owner_id, space_id) = server.owner().await;
