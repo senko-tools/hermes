@@ -13,6 +13,7 @@ use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
 use hermes_proto::permissions::Permissions;
+use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query};
@@ -113,7 +114,7 @@ pub async fn change_username(
     user.username = name;
     user.discriminator = tag;
     let mut tx = state.db.write.begin().await?;
-    db::users::set_handle(&mut tx, auth.user_id, &user.handle()).await?;
+    set_handle(&mut tx, auth.user_id, &user.handle()).await?;
     tx.commit().await?;
     let audience = {
         let mut cache = state.cache_mut();
@@ -130,6 +131,22 @@ pub async fn change_username(
         user,
         instance_admin,
     }))
+}
+
+/// Stores a new handle. The cache was checked first, but registering does not hold the writes
+/// lock and the user commands write the database directly, so the database can still have it:
+/// that is a `CONFLICT`, not an internal error.
+pub(super) async fn set_handle(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    handle: &str,
+) -> ApiResult<()> {
+    match db::users::set_handle(conn, user_id, handle).await {
+        Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+            Err(Error::new(ErrorCode::Conflict, "This username is taken"))
+        }
+        result => Ok(result?),
+    }
 }
 
 /// Updates my display name, avatar or status text; everyone who can see me gets `user_update`.
