@@ -186,6 +186,30 @@ Testing locally (debug builds only): `make-update build --dir <new folder> --ver
 the debug client from the old folder with `HERMES_UPDATE_URL=<url of the served folder>` and
 `HERMES_UPDATE_KEY=<the test key's public half>`.
 
+## Updates
+
+The app updates itself (`hermes-client-core/src/updater.rs`, `hermes-gui/src/updater_window.rs`).
+Each release carries `update-manifest.json`, signed with Ed25519, listing every file of the app
+(path, size, SHA-256). Next to it are each file compressed (`<name>.zst`) and patches from the
+last three releases' files (`<name>.from-<hash>.patch`, zstd with the old file as the
+reference). The app hashes its own files and downloads nothing for unchanged ones (FFmpeg, usually
+the TUI), a patch where it has a file a patch starts from, and the whole file otherwise. Everything
+is checked against the signed hashes before use. Installing renames files in use to `*.old`.
+A watcher (the old program, `--update-watch`) starts the new version (`--after-update`) and moves
+the old files back if it does not come up within a minute.
+
+One-time setup:
+1. `cargo run -p hermes-client-core --bin make-update -- keygen` prints a key pair.
+2. On GitHub, set the repository secret `UPDATE_SIGNING_KEY` to the first value and the repository
+   variable `HERMES_UPDATE_PUBLIC_KEY` to the second. Keep the secret nowhere else.
+3. The next tagged release builds the key into the app and publishes the update files. Builds
+   without the variable only link to the release page, as before.
+
+Testing locally (debug builds only): `make-update build --dir <new folder> --version 9.9.9
+--out <served folder> --previous <old folder>` with a test key in `UPDATE_SIGNING_KEY`. Then run
+the debug client from the old folder with `HERMES_UPDATE_URL=<url of the served folder>` and
+`HERMES_UPDATE_KEY=<the test key's public half>`.
+
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.
 
