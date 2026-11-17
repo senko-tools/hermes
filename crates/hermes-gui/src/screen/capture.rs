@@ -378,7 +378,7 @@ pub fn windows() -> Vec<(String, String)> {
                 })
             })
             .collect();
-        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.sort_by_key(|w| std::cmp::Reverse(w.0));
         found
             .into_iter()
             .map(|(_, value, label)| (value, label))
