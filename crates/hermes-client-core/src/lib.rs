@@ -25,6 +25,7 @@ pub mod time;
 pub mod tls;
 pub mod tokens;
 pub mod update;
+pub mod updater;
 pub mod view;
 pub mod voice;
 pub mod volumes;
