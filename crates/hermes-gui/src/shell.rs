@@ -265,6 +265,8 @@ pub struct Shell {
     pub share_menu: Option<crate::modal::PopupFrom>,
     /// The screens that can be shared, primary first.
     pub screen_names: Vec<String>,
+    /// The windows that can be shared: (`voice.share_screen` value, label).
+    pub share_windows: Vec<(String, String)>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
     /// My share's sound, while it is sent.
@@ -417,6 +419,7 @@ impl Shell {
             room_area: crate::voice::no_area(),
             share_menu: None,
             screen_names: Vec::new(),
+            share_windows: Vec::new(),
             capture: None,
             share_sound: None,
             screens: HashMap::new(),

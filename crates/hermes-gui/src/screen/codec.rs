@@ -41,6 +41,11 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// The picture size it encodes.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
     pub fn new(width: u32, height: u32, fps: f32) -> Result<Encoder, String> {
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)

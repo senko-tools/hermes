@@ -344,6 +344,50 @@ pub fn fit(width: u32, height: u32, quality: Quality) -> (u32, u32) {
     )
 }
 
+/// What `voice.share_screen` names when it is one window: `window:<id>`.
+pub const WINDOW_PREFIX: &str = "window:";
+
+/// The windows that can be shared, as (`voice.share_screen` value, "App: title"), largest first.
+/// Hermes' own windows and minimized or untitled ones are left out.
+pub fn windows() -> Vec<(String, String)> {
+    #[cfg(windows)]
+    {
+        let Ok(all) = xcap::Window::all() else {
+            return Vec::new();
+        };
+        let me = std::process::id();
+        let mut found: Vec<(u64, String, String)> = all
+            .iter()
+            .filter(|w| !w.is_minimized().unwrap_or(true))
+            .filter(|w| w.pid().is_ok_and(|pid| pid != me))
+            .filter_map(|w| {
+                let title = w.title().ok().filter(|t| !t.trim().is_empty())?;
+                let app = w.app_name().unwrap_or_default();
+                let area = u64::from(w.width().ok()?) * u64::from(w.height().ok()?);
+                (area >= 64 * 64).then(|| {
+                    let label = if app.is_empty() || title.contains(&app) {
+                        title
+                    } else {
+                        format!("{app}: {title}")
+                    };
+                    (
+                        area,
+                        format!("{WINDOW_PREFIX}{}", w.id().unwrap_or(0)),
+                        label,
+                    )
+                })
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found
+            .into_iter()
+            .map(|(_, value, label)| (value, label))
+            .collect()
+    }
+    #[cfg(not(windows))]
+    Vec::new()
+}
+
 /// The names of the screens, the primary one first (empty where capture is unavailable).
 pub fn screens() -> Vec<String> {
     #[cfg(windows)]
@@ -383,6 +427,10 @@ fn start_thread(
     keyframe: Arc<AtomicBool>,
     tuning: Arc<Tuning>,
 ) -> Result<(), String> {
+    if let Some(id) = screen.strip_prefix(WINDOW_PREFIX) {
+        let id: u32 = id.parse().map_err(|_| "no such window".to_owned())?;
+        return start_window_thread(core, id, quality, stop, keyframe);
+    }
     // A monitor cannot move between threads: the capture thread finds it and reports back.
     let screen = screen.to_owned();
     let (found, result) = std::sync::mpsc::channel();
@@ -401,6 +449,127 @@ fn start_thread(
     result
         .recv()
         .map_err(|_| "the capture thread stopped".to_owned())?
+}
+
+/// Shares one window: captured on its own (covered parts too, where the app allows it), on the
+/// CPU path. A resized window restarts the encoder at its new size.
+#[cfg(windows)]
+fn start_window_thread(
+    core: Core,
+    id: u32,
+    quality: Quality,
+    stop: Arc<AtomicBool>,
+    keyframe: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let (found, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("hermes-window-capture".into())
+        .spawn(move || {
+            let window = xcap::Window::all()
+                .ok()
+                .and_then(|all| all.into_iter().find(|w| w.id().ok() == Some(id)));
+            match window {
+                Some(window) => {
+                    let _ = found.send(Ok(()));
+                    run_window(&core, &window, quality, &stop, &keyframe);
+                }
+                None => {
+                    let _ = found.send(Err("that window is gone".to_owned()));
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    result
+        .recv()
+        .map_err(|_| "the capture thread stopped".to_owned())?
+}
+
+#[cfg(windows)]
+fn run_window(
+    core: &Core,
+    window: &xcap::Window,
+    quality: Quality,
+    stop: &AtomicBool,
+    keyframe: &Arc<AtomicBool>,
+) {
+    let stats = Arc::new(Stats::default());
+    let (frames, encoder_frames) = std::sync::mpsc::sync_channel::<Arc<Frame>>(1);
+    let spawned = {
+        let core = core.clone();
+        let keyframe = keyframe.clone();
+        let stats = stats.clone();
+        std::thread::Builder::new()
+            .name("hermes-screen-encode".into())
+            .spawn(move || encode_loop(&core, quality, &encoder_frames, &keyframe, &stats))
+    };
+    if let Err(err) = spawned {
+        tracing::warn!("window share encoder thread: {err}");
+        core.stop_screen_share();
+        return;
+    }
+    let interval = Duration::from_millis(1000 / u64::from(quality.fps));
+    let mut stats_since = Instant::now();
+    while !stop.load(Ordering::Relaxed) && core.sharing_screen() {
+        if core.share_watchers() == Some(0) {
+            std::thread::sleep(IDLE_POLL);
+            keyframe.store(true, Ordering::Relaxed);
+            continue;
+        }
+        let begin = Instant::now();
+        // Minimized, it has nothing to show: the last picture stays on the watchers' screens.
+        if window.is_minimized().unwrap_or(false) {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        match window.capture_image() {
+            Ok(image) => {
+                let frame = scale(
+                    Frame {
+                        width: image.width(),
+                        height: image.height(),
+                        bgra: false,
+                        pixels: image.into_raw(),
+                    },
+                    quality,
+                );
+                let size = (frame.width, frame.height);
+                if stats_since.elapsed() >= STATS_EVERY {
+                    let over = stats_since.elapsed();
+                    log_stats(&stats, over, size, quality.fps, "window, OpenH264");
+                    stats_since = Instant::now();
+                }
+                stats.captured.fetch_add(1, Ordering::Relaxed);
+                stats
+                    .capture_us
+                    .fetch_add(micros(begin.elapsed()), Ordering::Relaxed);
+                match frames.try_send(Arc::new(frame)) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return,
+                }
+            }
+            // Closed: the share ends.
+            Err(err) => {
+                tracing::info!("window share: the window is gone ({err})");
+                core.stop_screen_share();
+                return;
+            }
+        }
+        std::thread::sleep(interval.saturating_sub(begin.elapsed()));
+    }
+}
+
+#[cfg(not(windows))]
+fn start_window_thread(
+    _core: Core,
+    _id: u32,
+    _quality: Quality,
+    _stop: Arc<AtomicBool>,
+    _keyframe: Arc<AtomicBool>,
+) -> Result<(), String> {
+    Err("window sharing is only available on Windows for now".into())
 }
 
 /// The screen named `screen`, else the primary one, else the first.
@@ -922,6 +1091,14 @@ fn encode_loop(
             stats.dropped.fetch_add(1, Ordering::Relaxed);
             continue;
         }
+        // A shared window changed size: a new encoder at the new size, from a keyframe.
+        let resized = encoder
+            .as_ref()
+            .is_some_and(|e| e.size() != (frame.width, frame.height));
+        if resized {
+            encoder = None;
+        }
+        let key = key || resized;
         if encoder.is_none() {
             match super::codec::Encoder::new(frame.width, frame.height, quality.fps as f32) {
                 Ok(e) => encoder = Some(e),
@@ -991,6 +1168,25 @@ fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), fps: u32, what: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs a desktop: `cargo test -p hermes-gui windows_are_listed -- --ignored`.
+    #[test]
+    #[ignore = "needs a desktop"]
+    #[cfg(windows)]
+    fn windows_are_listed_and_captured() {
+        let list = windows();
+        assert!(!list.is_empty(), "no windows");
+        let (value, label) = &list[0];
+        let id: u32 = value.strip_prefix(WINDOW_PREFIX).unwrap().parse().unwrap();
+        let window = xcap::Window::all()
+            .unwrap()
+            .into_iter()
+            .find(|w| w.id().ok() == Some(id))
+            .unwrap();
+        let image = window.capture_image().unwrap();
+        eprintln!("{label}: {}x{}", image.width(), image.height());
+        assert!(image.width() > 0);
+    }
 
     #[test]
     fn shares_fit_their_resolution_and_stay_even() {

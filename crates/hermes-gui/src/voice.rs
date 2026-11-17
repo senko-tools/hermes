@@ -1676,11 +1676,20 @@ impl Shell {
         self.run(
             cx,
             async {
-                tokio::task::spawn_blocking(crate::screen::capture::screens)
-                    .await
-                    .unwrap_or_default()
+                tokio::task::spawn_blocking(|| {
+                    (
+                        crate::screen::capture::screens(),
+                        crate::screen::capture::windows(),
+                    )
+                })
+                .await
+                .unwrap_or_default()
             },
-            |this, screens, _, _| this.screen_names = screens,
+            |this, (screens, windows), _, cx| {
+                this.screen_names = screens;
+                this.share_windows = windows;
+                cx.notify();
+            },
         );
     }
 
@@ -1744,6 +1753,27 @@ impl Shell {
                 chip(("share-screen", n), label, screen == voice.share_screen)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let value = format!("{screen:?}");
+                        this.set_share_setting("voice.share_screen", &value, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        // Or one window: its picture alone, covered or not.
+        let window_chips: Vec<AnyElement> = self
+            .share_windows
+            .iter()
+            .take(12)
+            .enumerate()
+            .map(|(n, (value, label))| {
+                let short: String = if label.chars().count() > 36 {
+                    label.chars().take(35).chain(['…']).collect()
+                } else {
+                    label.clone()
+                };
+                let value = value.clone();
+                chip(("share-window", n), short, value == voice.share_screen)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let value = format!("{value:?}");
                         this.set_share_setting("voice.share_screen", &value, cx);
                     }))
                     .into_any_element()
@@ -1833,6 +1863,9 @@ impl Shell {
                         .px(px(16.))
                         .py(px(14.))
                         .child(section("Screen", screen_chips))
+                        .when(!window_chips.is_empty(), |d| {
+                            d.child(section("Or a window", window_chips))
+                        })
                         .child(section("Resolution", resolutions))
                         .child(section("Frame rate", rates))
                         .child(
