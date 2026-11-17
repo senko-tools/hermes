@@ -2110,6 +2110,11 @@ impl Shell {
                         "privacy.local_search_only",
                         cx,
                     ),
+                    setting(
+                        "Warn about unencrypted chats",
+                        "A popup when opening a chat the server can read. The note above                          the message box is always there.",
+                        self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
+                    ),
                 ],
             )],
         )

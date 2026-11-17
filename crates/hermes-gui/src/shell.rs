@@ -208,6 +208,8 @@ pub struct Shell {
     pub viewer: Option<Viewer>,
     /// The safety number of a conversation.
     pub keys_dialog: Option<crate::encryption::KeysDialog>,
+    /// The popup over an unencrypted chat that was just opened.
+    pub unencrypted_popup: Option<(InstanceId, Id)>,
     /// How far the rail's servers are scrolled.
     pub rail_scroll: gpui_kit::ScrollHandle,
     /// The rail slot last selected: the pill springs on from there.
@@ -397,6 +399,7 @@ impl Shell {
             new_dm: None,
             viewer: None,
             keys_dialog: None,
+            unencrypted_popup: None,
             rail_scroll: gpui_kit::ScrollHandle::new(),
             rail_pill_slot: std::cell::Cell::new(0.),
             row_tints: Default::default(),

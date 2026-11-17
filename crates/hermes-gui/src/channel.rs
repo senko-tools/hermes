@@ -739,6 +739,7 @@ impl Shell {
             }
         }
         self.page = Page::Chat(inst.clone(), channel);
+        self.on_chat_opened(&inst, channel, cx);
         self.update_visible_channels();
         self.sync_rows(&key);
         self.focus_composer = true;
@@ -2500,6 +2501,7 @@ impl Shell {
             .child(content)
             .children(self.render_connection_banner(&key.0, cx))
             .children(self.render_new_devices(&key.0, key.1, cx))
+            .children(self.render_unencrypted_bar(&key.0, key.1))
             .child(bottom)
             .into_any_element()
     }

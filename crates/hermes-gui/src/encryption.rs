@@ -25,7 +25,8 @@ pub struct KeysDialog {
 /// The small mark next to a message's time, in a conversation that is encrypted.
 pub fn lock_mark(lock: MessageLock, private: bool) -> Option<Div> {
     let (name, color) = match lock {
-        MessageLock::Sealed => (assets::LOCK, theme::text_tertiary()),
+        // Encrypted is the normal case: no mark. Unencrypted chats say so above the composer.
+        MessageLock::Sealed => return None,
         MessageLock::NotForThisDevice | MessageLock::Tampered => (assets::LOCK, theme::warning()),
         MessageLock::Unsealed => (assets::LOCK_OPEN, theme::danger()),
         // A message in a DM that is not encrypted: from before encryption, or a server's forgery.

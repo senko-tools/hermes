@@ -406,6 +406,11 @@ pub struct Privacy {
     pub send_read_marks: bool,
     /// Searches never leave this device, so older unencrypted messages are not found.
     pub local_search_only: bool,
+    /// When opening a chat that is not end-to-end encrypted shows a warning: `"every"` time,
+    /// the `"first"` time for each chat, or `"never"`. Kept on this device only.
+    pub warn_unencrypted: String,
+    /// The chats that warning was shown for (`instance/channel`), for `"first"`.
+    pub warned_unencrypted: Vec<String>,
 }
 
 impl Default for Privacy {
@@ -414,6 +419,8 @@ impl Default for Privacy {
             send_typing: true,
             send_read_marks: true,
             local_search_only: false,
+            warn_unencrypted: "first".into(),
+            warned_unencrypted: Vec::new(),
         }
     }
 }

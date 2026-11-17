@@ -157,6 +157,11 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
   while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
+- **Unencrypted chats (2026-11-18):** encrypted is the normal case and shows no mark (messages lost
+  their grey lock). A chat the server can read has an amber note above its composer, always, and
+  opening one shows a popup (`unencrypted.rs`) as `privacy.warn_unencrypted` says: `every`, `first`
+  (default; the chats seen are in `privacy.warned_unencrypted`) or `never`. The popup's "Show this:"
+  choices and the Privacy setting write the same value in `config.toml`; it never goes to the server.
 - **Soft sounds (2026-11-09):** every sound stays at or under 660 Hz with a slow attack; a test holds them to it. Toasts
   are silent and the app plays its own ping.
 - **Sizes:** `assets::icon` and the shell go through `theme::px`, so icons follow the UI scale.
