@@ -905,7 +905,7 @@ impl Shell {
                     look: Look::plain(theme::danger()),
                     on: muted,
                     tips: ("Mute", "Unmute"),
-                    hover: OnHover::Preview,
+                    hover: OnHover::Deepen,
                 },
                 cx.listener(|this, _, _, cx| {
                     this.toggle_mute(cx);
@@ -920,7 +920,7 @@ impl Shell {
                     look: Look::plain(theme::danger()),
                     on: deafened,
                     tips: ("Deafen", "Undeafen"),
-                    hover: OnHover::Preview,
+                    hover: OnHover::Deepen,
                 },
                 cx.listener(|this, _, _, cx| {
                     this.toggle_deafen(cx);
@@ -1486,22 +1486,6 @@ impl Shell {
                 }
                 cx.notify();
             }));
-        let speaking = p.speaking;
-        // A soft green glow behind the tile while they speak, outside its edge.
-        let glow = div().absolute().inset_0().rounded(radius).with_spring(
-            SharedString::from(format!("tile-glow-{user}")),
-            gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING)).to(speaking),
-            move |d, phase| {
-                let t = phase.0.clamp(0., 1.);
-                d.shadow(vec![gpui_kit::BoxShadow {
-                    color: theme::alpha(theme::speaking(), 0.45 * t).into(),
-                    offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
-                    blur_radius: px(14. * t),
-                    spread_radius: px(1. * t),
-                    inset: false,
-                }])
-            },
-        );
         // The tile's place stays put while the tile grows into it from a little smaller.
         div()
             .flex()
@@ -1513,7 +1497,6 @@ impl Shell {
             .child(
                 div()
                     .relative()
-                    .child(glow)
                     .child(self.with_menu(tile, target, cx))
                     .with_animation(
                         SharedString::from(format!("tile-grow-{user}-{enlarged}")),
@@ -2062,8 +2045,9 @@ const VOICE_PANEL_MAX: f32 = 200.;
 /// How much wider Leave grows under the pointer, for its name.
 const LEAVE_LABEL: f32 = 48.;
 
-/// Soft, without overshoot: a speaking ring follows the voice without flickering.
-const RING_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(260., 34., 1.);
+/// Quick, without overshoot: a speaking ring lights up and fades fast, yet does not flicker
+/// between words. Critically damped is 2 * sqrt(480) = 44.
+const RING_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(480., 44., 1.);
 
 /// What the pointer does to a voice button, on top of its `Look`'s hover colour.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2072,8 +2056,10 @@ pub enum OnHover {
     Plain,
     /// While on, it becomes what a click does: this glyph in red ("stop" while sharing).
     Stop(&'static str),
-    /// While on, it previews how it looks off, which a click gives (muted shows the open mic).
-    Preview,
+    /// While on, it keeps its on look and the pointer only deepens its background (mute and
+    /// deafen stay red and crossed out; the tooltip says what a click does). Previewing the off
+    /// look read as a change that had not happened.
+    Deepen,
     /// It fills with its colour and the icon tips over (leave).
     Fill,
 }
@@ -2202,11 +2188,8 @@ fn paint_voice_button(
             color = theme::mix(color, theme::danger(), s);
             bg = theme::mix(bg, soft(theme::danger(), 1.), s);
         }
-        OnHover::Preview => {
-            let p = h * t;
-            layers = vec![(off_glyph, 1. - t + p * t), (on_glyph, t * (1. - p))];
-            color = theme::mix(color, look.hover, p);
-            bg = soft(look.on, t * (1. - p));
+        OnHover::Deepen => {
+            bg = theme::alpha(look.on, 0.16 * t + 0.12 * h * t);
         }
         OnHover::Fill => {
             color = theme::mix(color, theme::on_accent(), h);

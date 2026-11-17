@@ -77,7 +77,7 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   close them with `Shell::close_later(id, clear, cx)` (`modal.rs`), never by setting the field to `None`,
   and call `cancel_closing(id)` where they open. Durations: `theme::FADE` (120 ms) for fades,
   `modal::POP` (150 ms) for dialogs and popups. Voice buttons (`Shell::voice_button`, `OnHover`):
-  sharing turns into a red stop button under the pointer, muted and deafened preview being turned off,
+  sharing turns into a red stop button under the pointer, muted and deafened stay red and crossed out (the pointer only deepens the red; changed 2026-11-18),
   Leave grows into a red "Leave" pill. Divs cannot be scaled in gpui: grow their size instead (tiles, the
   rail's pills, badges), and draw rings as an overlay (`theme::border_width`) so the content never moves.
   Hard-coded corner radii are only for circles and pills; cards and popups use the theme's shape.
