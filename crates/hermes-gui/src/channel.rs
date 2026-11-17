@@ -141,6 +141,70 @@ pub struct Viewer {
     pub inst: InstanceId,
     pub attachment: Attachment,
     pub image: Img,
+    /// How much larger than fitted it is shown: 1 = fitted.
+    pub zoom: f32,
+    /// How far its middle is from the area's middle, in pixels.
+    pub pan: (f32, f32),
+    /// While dragging: where the pointer and the pan were when it started.
+    pub drag: Option<((f32, f32), (f32, f32))>,
+    /// The picture's fitted size and the area's bounds, as last laid out.
+    pub laid_out: std::rc::Rc<std::cell::Cell<ViewerLayout>>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ViewerLayout {
+    /// The picture's size when fitted (zoom 1).
+    pub fitted: (f32, f32),
+    /// The area's middle and size, in window pixels.
+    pub middle: (f32, f32),
+    pub area: (f32, f32),
+}
+
+/// The furthest the viewer zooms in.
+const MAX_ZOOM: f32 = 8.;
+
+impl Viewer {
+    /// Zooms to `zoom`, keeping the picture's point under `at` (window pixels) where it is.
+    fn zoom_to(&mut self, zoom: f32, at: (f32, f32)) {
+        let zoom = zoom.clamp(1., MAX_ZOOM);
+        let layout = self.laid_out.get();
+        let p = (at.0 - layout.middle.0, at.1 - layout.middle.1);
+        let k = zoom / self.zoom;
+        self.pan = (p.0 - (p.0 - self.pan.0) * k, p.1 - (p.1 - self.pan.1) * k);
+        self.zoom = zoom;
+        self.clamp_pan();
+    }
+
+    /// Keeps the picture over the area: it can't be pushed further than its edges.
+    fn clamp_pan(&mut self) {
+        let layout = self.laid_out.get();
+        let limit = |fitted: f32, area: f32| ((fitted * self.zoom - area) / 2.).max(0.);
+        let (lx, ly) = (
+            limit(layout.fitted.0, layout.area.0),
+            limit(layout.fitted.1, layout.area.1),
+        );
+        self.pan = (self.pan.0.clamp(-lx, lx), self.pan.1.clamp(-ly, ly));
+        if self.zoom <= 1. {
+            self.pan = (0., 0.);
+        }
+    }
+
+    /// Double-click: from fitted to the picture's own size (or twice fitted, when it fits
+    /// already), and back.
+    fn toggle_zoom(&mut self, at: (f32, f32), natural_width: f32) {
+        if self.zoom > 1. {
+            self.zoom = 1.;
+            self.pan = (0., 0.);
+            return;
+        }
+        let fitted = self.laid_out.get().fitted.0;
+        let full = if fitted > 0. && natural_width > fitted * 1.05 {
+            natural_width / fitted
+        } else {
+            2.
+        };
+        self.zoom_to(full, at);
+    }
 }
 
 const BULK_DELETE_AT_ONCE: usize = 100;
@@ -1719,6 +1783,10 @@ impl Shell {
             inst: inst.clone(),
             attachment: attachment.clone(),
             image: Img::Loading,
+            zoom: 1.,
+            pan: (0., 0.),
+            drag: None,
+            laid_out: Default::default(),
         });
         let core = self.core.clone();
         let id = attachment.id;
@@ -1752,13 +1820,70 @@ impl Shell {
 
     pub fn render_viewer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let viewer = self.viewer.as_ref()?;
+        let layout = viewer.laid_out.clone();
+        let zoom = viewer.zoom;
+        let zoomed = zoom > 1. && layout.get().fitted.0 > 0.;
         let content = match &viewer.image {
-            Img::Ready(picture) => img(picture.shown(self.animating()))
-                .max_w_full()
-                .max_h_full()
-                .object_fit(gpui_kit::ObjectFit::Contain)
-                .id("viewer-picture")
-                .into_any_element(),
+            Img::Ready(picture) => {
+                let shown = picture.shown(self.animating());
+                // Its own width in window pixels, for the double-click's full size.
+                let natural = shown.size(0).width.0 as f32 / self.scale.max(0.5);
+                let fitted = layout.get().fitted;
+                let picture = img(shown).object_fit(gpui_kit::ObjectFit::Contain);
+                let picture = if zoomed {
+                    picture
+                        .flex_shrink_0()
+                        .w(px(fitted.0 * zoom))
+                        .h(px(fitted.1 * zoom))
+                } else {
+                    picture.max_w_full().max_h_full()
+                };
+                let record = layout.clone();
+                div()
+                    .id("viewer-picture")
+                    .relative()
+                    .flex()
+                    .flex_shrink_0()
+                    .left(px(viewer.pan.0))
+                    .top(px(viewer.pan.1))
+                    .when(zoomed, |d| d.cursor_grab())
+                    .when(!zoomed, |d| d.max_w_full().max_h_full())
+                    .child(picture)
+                    // Fitted, it notes the size it fits at: zooming starts from there.
+                    .when(!zoomed, |d| {
+                        gpui_kit::base::ElementExt::on_prepaint(d, move |b, _, _| {
+                            let mut l = record.get();
+                            l.fitted = (b.size.width.as_f32(), b.size.height.as_f32());
+                            record.set(l);
+                        })
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            if let Some(v) = &mut this.viewer
+                                && v.zoom > 1.
+                            {
+                                let at = event.position;
+                                v.drag = Some(((at.x.as_f32(), at.y.as_f32()), v.pan));
+                            }
+                        }),
+                    )
+                    // A click on the picture leaves the viewer open; a double-click zooms.
+                    .on_click(
+                        cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            if event.click_count() >= 2
+                                && let Some(v) = &mut this.viewer
+                            {
+                                let at = event.position();
+                                v.toggle_zoom((at.x.as_f32(), at.y.as_f32()), natural);
+                                cx.notify();
+                            }
+                        }),
+                    )
+                    .into_any_element()
+            }
             Img::Failed => "Image not available".into_any_element(),
             Img::Loading => "Loading…".into_any_element(),
         };
@@ -1814,16 +1939,78 @@ impl Shell {
                                 }),
                             )),
                     )
-                    .child(
+                    .child({
+                        let record = layout.clone();
                         div()
+                            .id("viewer-area")
+                            .relative()
                             .flex()
                             .flex_1()
                             .min_h_0()
                             .items_center()
                             .justify_center()
+                            .overflow_hidden()
                             .p(px(16.))
-                            .child(content),
-                    ),
+                            .child(
+                                gpui_kit::canvas(
+                                    move |bounds, _, _| {
+                                        let mut l = record.get();
+                                        let c = bounds.center();
+                                        l.middle = (c.x.as_f32(), c.y.as_f32());
+                                        l.area = (
+                                            bounds.size.width.as_f32() - 32.,
+                                            bounds.size.height.as_f32() - 32.,
+                                        );
+                                        record.set(l);
+                                    },
+                                    |_, (), _, _| {},
+                                )
+                                .absolute()
+                                .size_full(),
+                            )
+                            .child(content)
+                            // The wheel zooms toward the pointer.
+                            .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
+                                let Some(v) = &mut this.viewer else { return };
+                                if !matches!(v.image, Img::Ready(_)) {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                let dy = event.delta.pixel_delta(px(20.)).y.as_f32();
+                                let at = event.position;
+                                v.zoom_to(
+                                    v.zoom * (dy * 0.004).exp(),
+                                    (at.x.as_f32(), at.y.as_f32()),
+                                );
+                                cx.notify();
+                            }))
+                            // Dragging moves a zoomed picture.
+                            .on_mouse_move(cx.listener(
+                                |this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                                    let Some(v) = &mut this.viewer else { return };
+                                    let Some((start, pan)) = v.drag else { return };
+                                    if event.pressed_button != Some(MouseButton::Left) {
+                                        v.drag = None;
+                                        return;
+                                    }
+                                    let at = event.position;
+                                    v.pan = (
+                                        pan.0 + at.x.as_f32() - start.0,
+                                        pan.1 + at.y.as_f32() - start.1,
+                                    );
+                                    v.clamp_pan();
+                                    cx.notify();
+                                },
+                            ))
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, _| {
+                                    if let Some(v) = &mut this.viewer {
+                                        v.drag = None;
+                                    }
+                                }),
+                            )
+                    }),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
             .into_any_element(),
