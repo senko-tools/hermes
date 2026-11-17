@@ -50,6 +50,12 @@ impl UserVolumes {
 
     /// Sets (1.0 removes the entry) and saves.
     pub fn set(&mut self, inst: &str, user: Id, volume: f32) -> Result<(), ConfigError> {
+        self.set_unsaved(inst, user, volume);
+        self.save()
+    }
+
+    /// Sets (1.0 removes the entry) without saving; returns the volume as stored (clamped).
+    pub(crate) fn set_unsaved(&mut self, inst: &str, user: Id, volume: f32) -> f32 {
         self.set_in(inst.to_owned(), user, volume)
     }
 
@@ -60,6 +66,12 @@ impl UserVolumes {
 
     /// Sets the volume of `user`'s screen share sound (1.0 removes the entry) and saves.
     pub fn set_share(&mut self, inst: &str, user: Id, volume: f32) -> Result<(), ConfigError> {
+        self.set_share_unsaved(inst, user, volume);
+        self.save()
+    }
+
+    /// [`set_share`](Self::set_share) without saving; returns the volume as stored (clamped).
+    pub(crate) fn set_share_unsaved(&mut self, inst: &str, user: Id, volume: f32) -> f32 {
         self.set_in(share_key(inst), user, volume)
     }
 
@@ -71,7 +83,7 @@ impl UserVolumes {
             .unwrap_or(1.0)
     }
 
-    fn set_in(&mut self, table: String, user: Id, volume: f32) -> Result<(), ConfigError> {
+    fn set_in(&mut self, table: String, user: Id, volume: f32) -> f32 {
         let volume = volume.clamp(0.0, hermes_audio::MAX_VOLUME);
         let users = self.volumes.entry(table).or_default();
         if (volume - 1.0).abs() < f32::EPSILON {
@@ -80,10 +92,10 @@ impl UserVolumes {
             users.insert(user.to_string(), volume);
         }
         self.volumes.retain(|_, users| !users.is_empty());
-        self.save()
+        volume
     }
 
-    fn save(&self) -> Result<(), ConfigError> {
+    pub(crate) fn save(&self) -> Result<(), ConfigError> {
         let Some(path) = &self.path else {
             return Ok(());
         };
@@ -127,6 +139,26 @@ mod tests {
         volumes.set("a", Id(1), 1.0).unwrap();
         volumes.set("a", Id(2), 1.0).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().lines().count() <= 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsaved_changes_are_clamped_and_wait_for_save() {
+        let dir =
+            std::env::temp_dir().join(format!("hermes-volumes-unsaved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(USER_VOLUMES_FILE);
+        let mut volumes = UserVolumes::load(&path);
+        assert_eq!(volumes.set_unsaved("a", Id(1), -1.0), 0.0);
+        assert_eq!(
+            volumes.set_unsaved("a", Id(2), 9.0),
+            hermes_audio::MAX_VOLUME
+        );
+        assert_eq!(volumes.set_share_unsaved("a", Id(1), 0.5), 0.5);
+        assert_eq!(volumes.get("a", Id(1)), 0.0);
+        assert!(!path.exists());
+        volumes.save().unwrap();
+        assert_eq!(UserVolumes::load(&path), volumes);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
