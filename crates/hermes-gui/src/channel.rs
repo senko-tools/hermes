@@ -2,7 +2,7 @@
 //! bottom, with grouping, day separators, the "New messages" divider, reply previews, pending
 //! messages, attachments, reactions and the typing line.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 
@@ -74,6 +74,9 @@ pub struct ChatView {
     pub rows: Vec<Row>,
     /// What each row showed when last measured: a change means measuring it again.
     signatures: Vec<u64>,
+    /// Shown messages' markup, parsed once rather than at every frame: the content it is for,
+    /// and its blocks. Only messages in `rows` are kept.
+    markup: HashMap<Id, (String, Vec<Block>)>,
     /// My read marker when the channel was opened (the divider position).
     pub read_marker: Option<Id>,
     pub loading_older: bool,
@@ -292,18 +295,19 @@ fn signature(row: &Row, s: &InstanceStore, channel: Id) -> u64 {
     let window = s.window(channel);
     match row {
         Row::Message(m) => {
-            m.grouped.hash(&mut hash);
+            // The padding above and below a message depends on its group.
+            (m.grouped, m.ends_group).hash(&mut hash);
             if let Some(message) = window.and_then(|w| w.get(m.id)) {
                 message.content.hash(&mut hash);
                 message.edited_at.hash(&mut hash);
                 message.attachments.len().hash(&mut hash);
                 for r in &message.reactions {
-                    r.emoji.hash(&mut hash);
+                    (&r.emoji, r.count).hash(&mut hash);
                 }
             }
         }
         Row::Pending(p) => {
-            p.grouped.hash(&mut hash);
+            (p.grouped, p.ends_group).hash(&mut hash);
             if let Some(pending) = window.and_then(|w| w.pending(p.local_id)) {
                 pending.content.hash(&mut hash);
                 matches!(pending.state, PendingState::Failed(_)).hash(&mut hash);
@@ -380,6 +384,7 @@ impl Shell {
                 list,
                 rows: Vec::new(),
                 signatures: Vec::new(),
+                markup: HashMap::new(),
                 read_marker: marker,
                 loading_older: false,
                 loading_newer: false,
@@ -488,6 +493,16 @@ impl Shell {
         }
         view.rows = new;
         view.signatures = signatures;
+        if !view.markup.is_empty() {
+            let shown: HashSet<Id> = new_keys
+                .iter()
+                .filter_map(|k| match k {
+                    RowKey::Message(id) => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            view.markup.retain(|id, _| shown.contains(id));
+        }
         if let Some(target) = view.jump
             && let Some(ix) = view
                 .rows
@@ -1854,6 +1869,57 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Before a message row is drawn: starts loading its pictures, and parses its markup if it
+    /// is new or changed.
+    fn prepare_message(&mut self, key: &ChannelKey, id: Id, cx: &mut Context<Self>) {
+        let (pictures, parsed) = {
+            let store = self.core.store();
+            let Some(s) = store.instance(&key.0) else {
+                return;
+            };
+            let Some(message) = s.window(key.1).and_then(|w| w.get(id)) else {
+                return;
+            };
+            let pictures: Vec<Attachment> = if self.config.buffer.image_previews {
+                message
+                    .attachments
+                    .iter()
+                    .filter(|a| is_image(a) && !self.images.thumbs.contains(&key.0, a.id))
+                    .cloned()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let stale = self.chats.get(key).is_some_and(|v| {
+                v.markup
+                    .get(&id)
+                    .is_none_or(|(content, _)| *content != message.content)
+            });
+            let parsed = stale.then(|| {
+                let blocks = markup::blocks(&message.content, s, s.space_of(key.1));
+                (message.content.clone(), blocks)
+            });
+            (pictures, parsed)
+        };
+        if let Some(parsed) = parsed
+            && let Some(view) = self.chats.get_mut(key)
+        {
+            view.markup.insert(id, parsed);
+        }
+        for attachment in &pictures {
+            self.load_thumbnail(&key.0, attachment, cx);
+        }
+    }
+
+    /// Names, roles or channels on `inst` may have changed: mentions are resolved again.
+    pub fn forget_markup(&mut self, inst: &str) {
+        for ((i, _), view) in &mut self.chats {
+            if i == inst {
+                view.markup.clear();
+            }
+        }
+    }
+
     fn render_row(
         &mut self,
         inst: &InstanceId,
@@ -1862,35 +1928,22 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = (inst.clone(), channel);
-        let Some(row) = self.chats.get(&key).and_then(|v| v.rows.get(ix)).cloned() else {
-            return div().into_any_element();
+        let message = match self.chats.get(&key).and_then(|v| v.rows.get(ix)) {
+            Some(Row::Message(m)) => Some(m.id),
+            Some(_) => None,
+            None => return div().into_any_element(),
         };
-        if let Row::Message(m) = &row
-            && self.config.buffer.image_previews
-        {
-            let wanted: Vec<Attachment> = {
-                let store = self.core.store();
-                store
-                    .instance(inst)
-                    .and_then(|s| s.window(channel)?.get(m.id).cloned())
-                    .map(|msg| {
-                        msg.attachments
-                            .iter()
-                            .filter(|a| is_image(a))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            for attachment in &wanted {
-                self.load_thumbnail(inst, attachment, cx);
-            }
+        if let Some(id) = message {
+            self.prepare_message(&key, id, cx);
         }
         let store = self.core.store();
         let Some(s) = store.instance(inst) else {
             return div().into_any_element();
         };
-        match &row {
+        let Some(row) = self.chats.get(&key).and_then(|v| v.rows.get(ix)) else {
+            return div().into_any_element();
+        };
+        match row {
             Row::Older => div()
                 .flex()
                 .justify_center()
@@ -2005,10 +2058,20 @@ impl Shell {
             );
         }
         let revealed = view.is_some_and(|v| v.revealed.contains(&id));
-        let blocks = markup::blocks(&msg.content, s, space);
+        let parsed;
+        let blocks = match view
+            .and_then(|v| v.markup.get(&id))
+            .filter(|(content, _)| *content == msg.content)
+        {
+            Some((_, blocks)) => blocks,
+            None => {
+                parsed = markup::blocks(&msg.content, s, space);
+                &parsed
+            }
+        };
         let last = blocks.len().saturating_sub(1);
         let system = m.system;
-        for (i, block) in blocks.into_iter().enumerate() {
+        for (i, block) in blocks.iter().enumerate() {
             let edited = i == last && msg.edited_at.is_some();
             body.push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
         }
@@ -2269,7 +2332,7 @@ impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn render_block(
         &self,
-        block: Block,
+        block: &Block,
         inst: &InstanceId,
         channel: Id,
         message: Id,
@@ -2287,14 +2350,12 @@ impl Shell {
         };
         match block {
             Block::Text(pieces) => {
-                let mut pieces = pieces;
-                if edited {
-                    pieces.push(Piece {
-                        text: " (edited)".into(),
-                        italic: true,
-                        ..Piece::default()
-                    });
-                }
+                let edited = edited.then(|| Piece {
+                    text: " (edited)".into(),
+                    italic: true,
+                    ..Piece::default()
+                });
+                let pieces = pieces.iter().chain(&edited);
                 self.render_pieces(pieces, inst, channel, message, index, system, revealed, cx)
             }
             Block::Code { code, .. } => div()
@@ -2309,7 +2370,7 @@ impl Shell {
                         .border_color(theme::border())
                         .text_size(theme::secondary_size())
                         .whitespace_normal()
-                        .child(code),
+                        .child(code.clone()),
                 )
                 .when(edited, |d| d.child(edited_mark()))
                 .into_any_element(),
@@ -2323,18 +2384,25 @@ impl Shell {
                         .rounded(px(1.))
                         .bg(theme::text_tertiary()),
                 )
-                .child(div().flex_1().min_w_0().child(
-                    self.render_pieces(pieces, inst, channel, message, index, system, revealed, cx),
-                ))
+                .child(div().flex_1().min_w_0().child(self.render_pieces(
+                    pieces.iter(),
+                    inst,
+                    channel,
+                    message,
+                    index,
+                    system,
+                    revealed,
+                    cx,
+                )))
                 .into_any_element(),
         }
     }
 
     /// Styled, clickable text. Links and spoilers act on release, as everything does.
     #[allow(clippy::too_many_arguments)]
-    fn render_pieces(
+    fn render_pieces<'p>(
         &self,
-        pieces: Vec<Piece>,
+        pieces: impl Iterator<Item = &'p Piece>,
         inst: &InstanceId,
         channel: Id,
         message: Id,
@@ -2353,11 +2421,11 @@ impl Shell {
             if range.is_empty() {
                 continue;
             }
-            highlights.push((range.clone(), piece_style(&piece, system, revealed)));
+            highlights.push((range.clone(), piece_style(piece, system, revealed)));
             let hidden = piece.spoiler && !revealed;
-            match piece.link {
+            match &piece.link {
                 Some(Link::Spoiler) if !hidden => {}
-                Some(link) => links.push((range, link)),
+                Some(link) => links.push((range, link.clone())),
                 None => {}
             }
         }
@@ -2425,7 +2493,7 @@ impl Shell {
     ) -> AnyElement {
         if is_image(a) && self.config.buffer.image_previews {
             let (w, h) = display_size(a);
-            let picture = self.images.thumbs.get(&(inst.clone(), a.id));
+            let picture = self.images.thumbs.get(inst, a.id);
             if let Some(Img::Ready(image)) = picture {
                 let (open_inst, attachment) = (inst.clone(), a.clone());
                 return div()

@@ -504,6 +504,18 @@ impl Shell {
                 return;
             }
             CoreEvent::StoreChanged { inst, what } => {
+                // Messages show names, role colours and channel names, which these never change
+                // (any other change may, messages too: they bring the users they mention).
+                if !matches!(
+                    what,
+                    Changed::Presence(_)
+                        | Changed::ReadState(_)
+                        | Changed::Typing(_)
+                        | Changed::VoiceStates
+                        | Changed::NotificationSettings
+                ) {
+                    self.forget_markup(&inst);
+                }
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
                     Changed::All => {
@@ -1115,6 +1127,8 @@ impl Render for Shell {
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
+        self.images
+            .new_frame(self.viewer.as_ref().map(|v| &v.image), window);
 
         let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
