@@ -1819,3 +1819,29 @@ Asked for by the developer.
 - **Why:** the developer asked for CI on the Forgejo instance with proper build caching. The runner image behind
   `ubuntu-latest` is not known (often Debian with only node.js), so the jobs install their own compilers and
   libraries, and actions are named by full URL.
+## 2026-11-18: Forgejo release workflow for the Linux artifacts
+
+Requested by the developer (Forgejo Actions on `ubuntu-latest` with build caching). PLAN.md
+section 18.1 names `.github/workflows/release.yml` and the GitHub release; this adds a second,
+Linux-only release on the Forgejo instance (git.8w.fi).
+
+- **What:** `.forgejo/workflows/release.yml` builds the same Linux artifacts as the GitHub
+  workflow (server for x86_64 and aarch64 musl, the Linux TUI, install files, SHA256SUMS) and,
+  on a `v*` tag, publishes a Forgejo release (pre-release for tags with a `-`) and the image
+  `git.8w.fi/yesbad/hermes-server` (amd64 + arm64, from Dockerfile.release). Dry runs on `dev`
+  and by hand, as on GitHub. Each Rust job has its own rust-cache key.
+- **Not here:** Windows builds stay on GitHub, which remains the clients' update source; the
+  Forgejo SHA256SUMS only covers the Linux files.
+- **Runner:** the Linux TUI builds in `catthehacker/ubuntu:act-22.04-<date>` (glibc 2.35 like
+  GitHub's `ubuntu-22.04`, with node for the JS actions). The image job drives docker buildx
+  itself (installing the CLI and buildx if missing) and needs a Docker daemon in the job.
+- **Tokens:** the automatic token is scoped to the repository, so pushing the image needs the
+  repository secret `REGISTRY_TOKEN` (`write:package`); releases use the automatic token, or
+  `RELEASE_TOKEN` if set.
+- **Artifacts:** Forgejo's patched `forgejo/upload-artifact@v5` and `forgejo/download-artifact@v7`,
+  because the upstream v4+ actions refuse to run outside github.com.
+- **Images:** both Dockerfiles use `gcr.io/distroless/static-debian13` (was `-debian12`); the
+  source Dockerfile pins `rust:1.100-alpine3.24` and `alpine:3.24` and caches `cargo/git` too.
+- **Note:** once `.forgejo/workflows/` exists, Forgejo no longer reads `.github/workflows/`, so
+  the Forgejo instance runs only the workflows in `.forgejo/workflows/`.
+- **Why:** the developer wants releases on the self-hosted Forgejo instance as well.
