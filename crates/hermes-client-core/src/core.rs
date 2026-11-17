@@ -3,12 +3,12 @@
 //! event stream.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -307,17 +307,48 @@ impl CoreOptions {
     }
 }
 
+/// `StoreChanged` events in the stream that the UI has not received yet, per instance.
+type Unseen = Arc<Mutex<HashMap<InstanceId, HashSet<Changed>>>>;
+
 /// The event stream of a [`Core`].
+///
+/// A `StoreChanged` is not queued again while the same one (same instance and [`Changed`]) is
+/// still waiting in the stream and no other event (but `InputLevel`) was queued since: the UI
+/// reads the store when it handles the waiting one, after the later change was made, so it sees
+/// both, and the order relative to other events stays as emitted. This keeps bursts from
+/// piling up while the UI is busy (a burst of messages in one channel is one redraw, not
+/// hundreds).
 #[derive(Debug)]
-pub struct CoreEvents(mpsc::UnboundedReceiver<CoreEvent>);
+pub struct CoreEvents {
+    rx: mpsc::UnboundedReceiver<CoreEvent>,
+    unseen: Unseen,
+}
 
 impl CoreEvents {
     pub async fn recv(&mut self) -> Option<CoreEvent> {
-        self.0.recv().await
+        let event = self.rx.recv().await;
+        self.received(event)
     }
 
     pub fn try_recv(&mut self) -> Option<CoreEvent> {
-        self.0.try_recv().ok()
+        let event = self.rx.try_recv().ok();
+        self.received(event)
+    }
+
+    /// Lets the next identical `StoreChanged` through again. Runs before the UI sees the
+    /// event, so whatever it then reads from the store is at least as new as every change
+    /// whose event was folded into this one.
+    fn received(&self, event: Option<CoreEvent>) -> Option<CoreEvent> {
+        if let Some(CoreEvent::StoreChanged { inst, what }) = &event
+            && let Some(waiting) = self
+                .unseen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(inst.as_str())
+        {
+            waiting.remove(what);
+        }
+        event
     }
 }
 
@@ -325,7 +356,8 @@ impl futures_util::Stream for CoreEvents {
     type Item = CoreEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<CoreEvent>> {
-        self.0.poll_recv(cx)
+        let event = std::task::ready!(self.rx.poll_recv(cx));
+        Poll::Ready(self.received(event))
     }
 }
 
@@ -354,6 +386,10 @@ struct Focus {
     visible: HashSet<(InstanceId, Id)>,
 }
 
+/// This file takes every lock with `unwrap_or_else(PoisonError::into_inner)`, like the server:
+/// tokio keeps running after a task panics, and a lock that task held must not make every later
+/// call (and the UI reading the store) panic too. The state stays usable; at worst one update is
+/// half applied.
 pub(crate) struct Inner {
     client_name: String,
     paths: Option<ConfigPaths>,
@@ -363,6 +399,8 @@ pub(crate) struct Inner {
     store: RwLock<Store>,
     instances: Mutex<HashMap<InstanceId, Arc<InstanceHandle>>>,
     events: mpsc::UnboundedSender<CoreEvent>,
+    /// Shared with [`CoreEvents`].
+    unseen: Unseen,
     next_local: AtomicU64,
     focus: Mutex<Focus>,
     presence: Mutex<PresenceStatus>,
@@ -395,7 +433,10 @@ pub fn uuid_v4() -> String {
     let mut b: [u8; 16] = rand::random();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    let hex: String = b.iter().fold(String::with_capacity(32), |mut hex, x| {
+        let _ = write!(hex, "{x:02x}");
+        hex
+    });
     format!(
         "{}-{}-{}-{}-{}",
         &hex[0..8],
@@ -411,6 +452,7 @@ impl Core {
         // rustls needs a process-wide provider for reqwest's internals.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let unseen = Unseen::default();
         let (audio_tx, audio_rx) = mpsc::unbounded_channel();
         let voice = Voice::new(
             options.audio,
@@ -428,6 +470,7 @@ impl Core {
                 store: RwLock::new(Store::default()),
                 instances: Mutex::new(HashMap::new()),
                 events: tx,
+                unseen: unseen.clone(),
                 next_local: AtomicU64::new(1),
                 focus: Mutex::new(Focus {
                     app_focused: true,
@@ -441,7 +484,7 @@ impl Core {
         };
         core.spawn_ticker();
         core.spawn_audio_events(audio_rx);
-        (core, CoreEvents(rx))
+        (core, CoreEvents { rx, unseen })
     }
 
     /// Engine events (speaking, levels, devices) into core events. Holds the core weakly.
@@ -458,20 +501,63 @@ impl Core {
     }
 
     pub(crate) fn emit(&self, event: CoreEvent) {
-        let _ = self.inner.events.send(event);
+        match event {
+            CoreEvent::StoreChanged { inst, what } => self.changed(&inst, [what]),
+            // A meter reading says nothing about the store, so changes fold across it.
+            event @ CoreEvent::InputLevel(_) => {
+                let _ = self.inner.events.send(event);
+            }
+            event => {
+                // Changes after this event are reported after it, never folded into one
+                // before it (`Changed::All` after `LoggedOut` must come after it).
+                let mut unseen = self
+                    .inner
+                    .unseen
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                unseen.clear();
+                let _ = self.inner.events.send(event);
+            }
+        }
     }
 
     pub(crate) fn tokens(&self) -> &TokenStore {
         &self.inner.tokens
     }
 
+    /// Emits `StoreChanged` for each `what`, unless the same one is still waiting in the
+    /// stream (see [`CoreEvents`]). Call it after changing the store.
     pub(crate) fn changed(&self, inst: &str, what: impl IntoIterator<Item = Changed>) {
+        let mut unseen = self
+            .inner
+            .unseen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for what in what {
-            self.emit(CoreEvent::StoreChanged {
-                inst: inst.to_owned(),
-                what,
-            });
+            let fresh = match unseen.get_mut(inst) {
+                Some(waiting) => waiting.insert(what),
+                None => {
+                    unseen.insert(inst.to_owned(), HashSet::from([what]));
+                    true
+                }
+            };
+            if fresh {
+                let _ = self.inner.events.send(CoreEvent::StoreChanged {
+                    inst: inst.to_owned(),
+                    what,
+                });
+            }
         }
+    }
+
+    /// Whether notifications are on, without cloning the whole config (once per message).
+    fn notifications_enabled(&self) -> bool {
+        self.inner
+            .config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .notifications
+            .enabled
     }
 
     /// Read access to every instance's state. Do not hold it across an `.await`, and do not
@@ -480,17 +566,30 @@ impl Core {
     /// waits for the first read, and the thread hangs. Debug builds panic on that instead.
     pub fn store(&self) -> StoreRef<'_> {
         StoreRef::enter();
-        StoreRef(self.inner.store.read().expect("store lock"))
+        StoreRef(
+            self.inner
+                .store
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     fn with_store<T>(&self, inst: &str, f: impl FnOnce(&mut InstanceStore) -> T) -> Option<T> {
         StoreRef::check_unlocked();
-        let mut store = self.inner.store.write().expect("store lock");
+        let mut store = self
+            .inner
+            .store
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         store.instances.get_mut(inst).map(f)
     }
 
     pub fn config(&self) -> ClientConfig {
-        self.inner.config.read().expect("config lock").clone()
+        self.inner
+            .config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn paths(&self) -> Option<&ConfigPaths> {
@@ -508,7 +607,11 @@ impl Core {
     /// Changes one setting (`:set buffer.group_minutes 10`) and writes `config.toml`.
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let new = config::set_value(&self.config(), key, value)?;
-        *self.inner.config.write().expect("config lock") = new;
+        *self
+            .inner
+            .config
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = new;
         self.save_config()
     }
 
@@ -520,13 +623,21 @@ impl Core {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let watcher =
             config::watch(paths.config(), tx).map_err(|e| CoreError::Io(e.to_string()))?;
-        *self.inner.watcher.lock().expect("watcher lock") = Some(watcher);
+        *self
+            .inner
+            .watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(watcher);
         let core = self.clone();
         tokio::spawn(async move {
             while let Some(result) = rx.recv().await {
                 match result {
                     Ok(loaded) => {
-                        *core.inner.config.write().expect("config lock") = loaded.config;
+                        *core
+                            .inner
+                            .config
+                            .write()
+                            .unwrap_or_else(PoisonError::into_inner) = loaded.config;
                         core.apply_audio_settings();
                         core.emit(CoreEvent::ConfigReloaded {
                             warnings: loaded.warnings,
@@ -547,7 +658,10 @@ impl Core {
 
     pub fn status(&self, inst: &str) -> ConnStatus {
         self.handle(inst).map_or(ConnStatus::LoggedOut, |h| {
-            h.status.lock().expect("status").clone()
+            h.status
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
         })
     }
 
@@ -555,7 +669,7 @@ impl Core {
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(inst)
             .cloned()
     }
@@ -575,7 +689,7 @@ impl Core {
             .inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host)
         {
             Some(fp) => Trust::Pinned(fp),
@@ -619,7 +733,7 @@ impl Core {
             .inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host);
         let cert = match pinned {
             Some(p) if p == seen.fingerprint => CertStatus::Pinned,
@@ -646,7 +760,7 @@ impl Core {
         self.inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .trust(host, fingerprint)?;
         Ok(())
     }
@@ -666,7 +780,11 @@ impl Core {
             .instances
             .iter()
             .any(|i| i.url.authority() == host.authority());
-        let mut known = self.inner.known_hosts.lock().expect("known hosts");
+        let mut known = self
+            .inner
+            .known_hosts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if added || known.get(host).is_some() {
             return Ok(false);
         }
@@ -750,7 +868,11 @@ impl Core {
             autoconnect: true,
         };
         {
-            let mut config = self.inner.config.write().expect("config lock");
+            let mut config = self
+                .inner
+                .config
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
             config.instances.retain(|i| i.id != id);
             config.instances.push(entry.clone());
         }
@@ -771,7 +893,11 @@ impl Core {
             gateway::client_info(&self.inner.client_name),
             tx,
         );
-        let presence = *self.inner.presence.lock().expect("presence");
+        let presence = *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if presence != PresenceStatus::Online {
             gateway.send(Command::Presence(presence));
         }
@@ -789,12 +915,12 @@ impl Core {
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(entry.id.clone(), handle.clone());
         self.inner
             .store
             .write()
-            .expect("store lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .instances
             .entry(entry.id.clone())
             .or_default();
@@ -818,12 +944,12 @@ impl Core {
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(inst);
         self.inner
             .store
             .write()
-            .expect("store lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .instances
             .remove(inst);
         self.emit(CoreEvent::InstanceStatus {
@@ -841,7 +967,7 @@ impl Core {
         self.inner
             .config
             .write()
-            .expect("config lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .instances
             .retain(|i| i.id != inst);
         self.save_config()
@@ -860,14 +986,28 @@ impl Core {
 
     /// Changes my presence on every instance.
     pub fn set_presence(&self, status: PresenceStatus) {
-        *self.inner.presence.lock().expect("presence") = status;
-        for handle in self.inner.instances.lock().expect("instances").values() {
+        *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = status;
+        for handle in self
+            .inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
             handle.gateway.send(Command::Presence(status));
         }
     }
 
     pub fn presence(&self) -> PresenceStatus {
-        *self.inner.presence.lock().expect("presence")
+        *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The web invite link for `code`, with `#fp=` when the instance's certificate is pinned.
@@ -878,7 +1018,7 @@ impl Core {
             .inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host)
             .map_or_else(String::new, |fp| format!("#fp={fp}"));
         Some(format!("{}/invite/{code}{fragment}", host.url()))
@@ -918,7 +1058,7 @@ impl Core {
             }
             match event {
                 GatewayEvent::Status(status) => {
-                    *handle.status.lock().expect("status") = status.clone();
+                    *handle.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
                     let _ = handle.connected.send(status == ConnStatus::Connected);
                     if status == ConnStatus::Connected {
                         handle.outbox.wake.notify_one();
@@ -994,16 +1134,21 @@ impl Core {
             }
             _ => {}
         }
+        // The store takes the event: keep what the notification checks need, only when they run.
+        let notify = self.notifications_enabled();
         let message = match &event {
-            ServerEvent::MessageCreate(m) => Some(m.clone()),
+            ServerEvent::MessageCreate(m) if notify => Some(m.clone()),
             _ => None,
         };
         // A message request notifies once, when it first arrives.
         let request = match &event {
-            ServerEvent::DmCreate(dm) if dm.request => self
-                .with_store(inst, |s| !s.dms.get(&dm.id).is_some_and(|d| d.request))
-                .unwrap_or(false)
-                .then(|| dm.clone()),
+            ServerEvent::DmCreate(dm) if dm.request && notify => {
+                let first = self
+                    .store()
+                    .instance(inst)
+                    .is_some_and(|s| !s.dms.get(&dm.id).is_some_and(|d| d.request));
+                first.then(|| dm.clone())
+            }
             _ => None,
         };
         let Some(changed) = self.with_store(inst, |s| s.apply(event, now)) else {
@@ -1013,9 +1158,7 @@ impl Core {
         if let Some(message) = message {
             self.maybe_notify(inst, &message, now);
         }
-        if let Some(dm) = request
-            && self.config().notifications.enabled
-        {
+        if let Some(dm) = request {
             let notification = {
                 let store = self.store();
                 store
@@ -1031,16 +1174,19 @@ impl Core {
         }
     }
 
+    /// Only called while notifications are on.
     fn maybe_notify(&self, inst: &str, message: &Message, now: i64) {
-        if !self.config().notifications.enabled {
-            return;
-        }
         let focused = {
-            let focus = self.inner.focus.lock().expect("focus");
+            let focus = self
+                .inner
+                .focus
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             focus.app_focused
                 && focus
                     .visible
-                    .contains(&(inst.to_owned(), message.channel_id))
+                    .iter()
+                    .any(|(i, c)| i == inst && *c == message.channel_id)
         };
         let presence = self.presence();
         let store = self.store();
@@ -1081,25 +1227,37 @@ impl Core {
         let now = now_ms();
         let visible: HashSet<_> = channels.into_iter().collect();
         {
-            let mut store = self.inner.store.write().expect("store lock");
+            let mut store = self
+                .inner
+                .store
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
             for (inst, channel) in &visible {
                 if let Some(s) = store.instances.get_mut(inst) {
                     s.window_mut(*channel).last_viewed = now;
                 }
             }
         }
-        self.inner.focus.lock().expect("focus").visible = visible;
+        self.inner
+            .focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .visible = visible;
     }
 
     pub fn set_app_focused(&self, focused: bool) {
-        self.inner.focus.lock().expect("focus").app_focused = focused;
+        self.inner
+            .focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .app_focused = focused;
     }
 
     fn visible_channels(&self, inst: &str) -> Vec<Id> {
         self.inner
             .focus
             .lock()
-            .expect("focus")
+            .unwrap_or_else(PoisonError::into_inner)
             .visible
             .iter()
             .filter(|(i, _)| i == inst)
@@ -1149,7 +1307,12 @@ impl Core {
     pub fn send_message(&self, inst: &str, channel: Id, draft: Draft) -> Result<LocalId> {
         let handle = self.handle_or_err(inst)?;
         let local_id = self.inner.next_local.fetch_add(1, Ordering::Relaxed);
-        let queued = handle.outbox.queue.lock().expect("outbox").len();
+        let queued = handle
+            .outbox
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         let state = if queued >= MAX_QUEUED {
             PendingState::Failed("Too many unsent messages".into())
         } else if *handle.connected.borrow() {
@@ -1175,7 +1338,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .push_back((channel, local_id));
             handle.outbox.wake.notify_one();
         }
@@ -1195,7 +1358,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .push_back((channel, local_id));
             handle.outbox.wake.notify_one();
             self.changed(inst, [Changed::Messages(channel)]);
@@ -1210,7 +1373,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .retain(|&(_, id)| id != local_id);
         }
         self.with_store(inst, |s| s.remove_pending(channel, local_id));
@@ -1241,7 +1404,12 @@ impl Core {
                 }
                 continue;
             }
-            let next = handle.outbox.queue.lock().expect("outbox").pop_front();
+            let next = handle
+                .outbox
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front();
             let Some((channel, local_id)) = next else {
                 tokio::select! {
                     () = handle.outbox.wake.notified() => {}
@@ -1289,7 +1457,7 @@ impl Core {
                             .outbox
                             .queue
                             .lock()
-                            .expect("outbox")
+                            .unwrap_or_else(PoisonError::into_inner)
                             .push_front((channel, local_id));
                         self.set_pending_state(&inst, channel, local_id, PendingState::Queued);
                         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1322,7 +1490,7 @@ impl Core {
                         .outbox
                         .queue
                         .lock()
-                        .expect("outbox")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .push_front((channel, local_id));
                     let wait = err.retry_after_ms.unwrap_or(1000).clamp(100, 60_000);
                     tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -1332,7 +1500,7 @@ impl Core {
                         .outbox
                         .queue
                         .lock()
-                        .expect("outbox")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .push_front((channel, local_id));
                     self.set_pending_state(&inst, channel, local_id, PendingState::Queued);
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1446,7 +1614,7 @@ impl Core {
         let first = handle
             .read_marks
             .lock()
-            .expect("read marks")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(channel, message)
             .is_none();
         if first {
@@ -1455,7 +1623,7 @@ impl Core {
                 let mark = handle
                     .read_marks
                     .lock()
-                    .expect("read marks")
+                    .unwrap_or_else(PoisonError::into_inner)
                     .remove(&channel);
                 if let Some(message) = mark
                     && let Err(err) = handle.rest.ack(channel, message).await
@@ -1472,7 +1640,10 @@ impl Core {
             return;
         };
         {
-            let mut sent = handle.typing_sent.lock().expect("typing");
+            let mut sent = handle
+                .typing_sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();
             if sent
                 .get(&channel)
@@ -1522,12 +1693,16 @@ impl Core {
                         .inner
                         .focus
                         .lock()
-                        .expect("focus")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .visible
                         .iter()
                         .cloned()
                         .collect();
-                    let mut store = core.inner.store.write().expect("store lock");
+                    let mut store = core
+                        .inner
+                        .store
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
                     for (inst, s) in &mut store.instances {
                         for channel in s.expire_typing(now) {
                             changes.push((inst.clone(), Changed::Typing(channel)));
@@ -1593,5 +1768,53 @@ mod tests {
     fn content_types() {
         assert_eq!(content_type("Cat.PNG"), "image/png");
         assert_eq!(content_type("notes"), "application/octet-stream");
+    }
+
+    #[tokio::test]
+    async fn waiting_store_changes_are_not_queued_twice() {
+        use futures_util::StreamExt;
+
+        let changed = |inst: &str, what| CoreEvent::StoreChanged {
+            inst: inst.into(),
+            what,
+        };
+        let (core, mut events) = Core::new(ClientConfig::default(), CoreOptions::in_memory("t"));
+        let m1 = Changed::Messages(Id(1));
+        core.changed("a", [m1, m1, Changed::Dms]);
+        core.changed("a", [m1]);
+        core.emit(changed("a", Changed::Dms));
+        core.changed("b", [m1]);
+        // A meter reading does not stop the folding.
+        core.emit(CoreEvent::InputLevel(-20.0));
+        core.changed("b", [m1]);
+        // Other events are never folded, and changes after one come after it.
+        core.emit(CoreEvent::Error("x".into()));
+        core.emit(CoreEvent::Error("x".into()));
+        core.changed("a", [m1]);
+        let mut got = Vec::new();
+        while let Some(event) = events.try_recv() {
+            got.push(event);
+        }
+        assert_eq!(
+            got,
+            [
+                changed("a", m1),
+                changed("a", Changed::Dms),
+                changed("b", m1),
+                CoreEvent::InputLevel(-20.0),
+                CoreEvent::Error("x".into()),
+                CoreEvent::Error("x".into()),
+                changed("a", m1),
+            ]
+        );
+
+        // Once received (through any of the three ways), the same change is reported again.
+        core.changed("a", [m1]);
+        assert_eq!(events.recv().await, Some(changed("a", m1)));
+        core.changed("a", [m1]);
+        assert_eq!(events.next().await, Some(changed("a", m1)));
+        core.changed("a", [m1]);
+        assert_eq!(events.try_recv(), Some(changed("a", m1)));
+        assert_eq!(events.try_recv(), None);
     }
 }
