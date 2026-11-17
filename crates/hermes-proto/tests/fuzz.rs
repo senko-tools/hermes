@@ -4,7 +4,7 @@
 
 use hermes_proto::gateway::ClientMessage;
 use hermes_proto::markup;
-use hermes_proto::voice::{AudioHeader, frame_len};
+use hermes_proto::voice::{AudioHeader, AudioKind, MAX_VIDEO_DIMENSION, VideoHeader, frame_len};
 
 /// xorshift64*: deterministic, so a failure can be reproduced from the seed.
 struct Rng(u64);
@@ -55,23 +55,48 @@ const ROUNDS: usize = 20_000;
 #[test]
 fn datagrams_never_panic() {
     let mut rng = Rng(0x5eed_0001);
-    let valid = AudioHeader {
+    let audio = AudioHeader {
         voice_active: true,
         sender_id: 7,
         timestamp: 960,
         sequence: 3,
         audio_level: 40,
-    }
-    .encode(&[1, 2, 3, 4]);
+    };
+    let video = VideoHeader {
+        keyframe: true,
+        sender_id: 7,
+        width: 1280,
+        height: 720,
+        timestamp: 33,
+    };
+    let seeds = [
+        audio.encode(&[1, 2, 3, 4]),
+        audio.encode_as(AudioKind::Share, &[5, 6]),
+        video.encode().to_vec(),
+    ];
     for _ in 0..ROUNDS {
         let input = if rng.below(2) == 0 {
             rng.bytes(1400)
         } else {
-            rng.mutate(&valid)
+            let seed = rng.below(seeds.len());
+            rng.mutate(&seeds[seed])
         };
         if let Ok((header, payload)) = AudioHeader::decode(&input) {
             assert!(header.audio_level <= 127);
             assert!(payload.len() < input.len());
+        }
+        if let Ok((kind, header, payload)) = AudioHeader::decode_any(&input) {
+            assert!(header.audio_level <= 127);
+            // Re-encoding gives a datagram of the same kind and size that decodes the same.
+            let again = header.encode_as(kind, payload);
+            assert_eq!(again.len(), input.len());
+            assert_eq!(AudioHeader::decode_any(&again), Ok((kind, header, payload)));
+        }
+        if let Ok(header) = VideoHeader::decode(&input) {
+            for side in [header.width, header.height] {
+                assert!((2..=MAX_VIDEO_DIMENSION).contains(&side) && side.is_multiple_of(2));
+            }
+            assert_eq!(VideoHeader::decode(&header.encode()), Ok(header));
         }
         let mut prefix = [0u8; 4];
         for (p, b) in prefix.iter_mut().zip(&input) {

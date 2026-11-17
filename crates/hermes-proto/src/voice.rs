@@ -307,12 +307,14 @@ pub fn audio_level(rms: f32) -> u8 {
 
 /// Formats a SHA-256 digest as `"3F:A9:…"` (the form in `ready.voice` and `/voice/join`).
 pub fn colon_hex(digest: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(digest.len() * 3);
-    for (i, byte) in digest.iter().enumerate() {
+    for (i, &byte) in digest.iter().enumerate() {
         if i > 0 {
             out.push(':');
         }
-        out.push_str(&format!("{byte:02X}"));
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     out
 }
