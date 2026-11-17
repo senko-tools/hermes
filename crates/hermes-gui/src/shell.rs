@@ -199,6 +199,8 @@ pub struct Shell {
     pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
     pub update: Option<hermes_client_core::update::Update>,
+    /// The updater's window, while it is open.
+    pub updater: Option<crate::updater_window::Updater>,
     /// "Not now" on the newer-server banner, for this run.
     pub newer_server_dismissed: bool,
     pub new_dm: Option<NewDm>,
@@ -391,6 +393,7 @@ impl Shell {
             system_reduce_motion: false,
             update: None,
             newer_server_dismissed: false,
+            updater: None,
             new_dm: None,
             viewer: None,
             keys_dialog: None,
@@ -1312,8 +1315,17 @@ impl Shell {
         self.run(
             cx,
             hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
-            |this, result, _, _| match result {
-                Ok(update) => this.update = update,
+            |this, result, _, cx| match result {
+                Ok(update) => {
+                    // Installed right away when that is wanted and this build can.
+                    if let Some(found) = &update
+                        && this.config.general.auto_update
+                        && hermes_client_core::updater::available()
+                    {
+                        this.start_update(found.version.clone(), found.url.clone(), cx);
+                    }
+                    this.update = update;
+                }
                 Err(err) => tracing::info!("update check failed: {err}"),
             },
         );
@@ -1322,6 +1334,9 @@ impl Shell {
     fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let update = self.update.as_ref()?;
         let url = update.url.clone();
+        let version = update.version.clone();
+        // This build updates itself: the banner starts it, else it opens the release page.
+        let self_update = hermes_client_core::updater::available();
         Some(
             div()
                 .id("update-banner")
@@ -1341,11 +1356,16 @@ impl Shell {
                 )
                 .cursor_pointer()
                 .text_size(crate::theme::secondary_size())
-                .child(div().flex_1().child(format!(
-                    "Hermes {} is available: click to open it",
-                    update.version
-                )))
+                .child(div().flex_1().child(if self_update {
+                    format!("Hermes {} is available: click to update", update.version)
+                } else {
+                    format!("Hermes {} is available: click to open it", update.version)
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    if self_update {
+                        this.start_update(version.clone(), url.clone(), cx);
+                        return;
+                    }
                     if let Err(err) = crate::open::url(&url) {
                         this.error(format!("could not open the browser: {err}"), cx);
                     }

@@ -52,6 +52,7 @@ mod syntax;
 mod tests;
 mod theme;
 mod tree;
+mod updater_window;
 mod user_menu;
 mod voice;
 mod watchdog;
@@ -79,6 +80,9 @@ struct Cli {
     /// An invite link or address to add (also `hermes://` links). If Hermes is already running,
     /// the link is handed to it.
     link: Option<String>,
+    /// Started by the updater: the old version may still be closing.
+    #[arg(long, hide = true)]
+    after_update: bool,
 }
 
 impl Cli {
@@ -99,6 +103,7 @@ impl Cli {
             Some(link) => Cli {
                 config_dir: None,
                 link: Some(link.into_owned()),
+                after_update: false,
             },
             None => Cli::parse_from(args),
         }
@@ -106,6 +111,15 @@ impl Cli {
 }
 
 fn main() -> ExitCode {
+    // The old version, renamed, watching the new one come up after an update.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|a| a == hermes_client_core::updater::WATCH_FLAG)
+    {
+        hermes_client_core::updater::watch(&args[1..]);
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::from_args();
     let paths = match cli.config_dir {
         Some(dir) => ConfigPaths::in_dir(dir),
@@ -116,7 +130,18 @@ fn main() -> ExitCode {
     };
     // Single instance (section 15.7): hand the link to a running client and exit.
     let endpoint = Endpoint::for_config_dir(&paths.dir);
-    if forward_to_running(&endpoint, cli.link.as_deref()) {
+    // Just updated: the old version is closing, and must not be handed this start.
+    if cli.after_update {
+        for _ in 0..80 {
+            match single_instance::lock(&paths.dir) {
+                Ok(Some(lock)) => {
+                    drop(lock);
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(250)),
+            }
+        }
+    } else if forward_to_running(&endpoint, cli.link.as_deref()) {
         return ExitCode::SUCCESS;
     }
     // Nobody answered, but one may be starting: the lock tells. It is held until `main` returns.
@@ -228,6 +253,8 @@ fn main() -> ExitCode {
                 cx.new(|cx| Shell::new(boot, window, cx))
             })
             .expect("failed to open the window");
+            // Up and running: an update that started this one is done.
+            hermes_client_core::updater::finish_started();
             // Only the main window ends the app: a popped-out share's window just closes.
             let main = main.window_id();
             cx.on_window_closed(move |cx, closed| {

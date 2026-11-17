@@ -124,6 +124,8 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// A newer version found on start is installed right away (the app restarts).
+    pub auto_update: bool,
     /// Hermes starts when I sign in to the computer.
     pub start_on_login: bool,
     /// How long a line in the status bar stays, in seconds.
@@ -155,6 +157,7 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            auto_update: false,
             start_on_login: false,
             status_seconds: 5,
             auto_idle_minutes: 10,

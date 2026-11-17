@@ -2643,6 +2643,14 @@ impl Shell {
                             "general.check_for_updates",
                             cx,
                         ),
+                        self.flag(
+                            "Install updates by themselves",
+                            "A newer version found on start is downloaded (only what changed) \
+                             and Hermes restarts into it.",
+                            g.auto_update,
+                            "general.auto_update",
+                            cx,
+                        ),
                         setting(
                             "Check for updates now",
                             "",

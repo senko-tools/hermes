@@ -526,6 +526,70 @@ pub fn roll_back() {
     let _ = std::fs::remove_file(dir.join(STARTED_MARKER));
 }
 
+/// Run by the old program (as `hermes.exe.old --update-watch`): starts the new version and
+/// waits for it to say it is up. If it ends or hangs before that, the old files go back and the
+/// old version starts again.
+pub const WATCH_FLAG: &str = "--update-watch";
+/// Given to the new version by the watcher: the old one may still be closing.
+pub const AFTER_FLAG: &str = "--after-update";
+
+/// How long a new version gets to come up.
+const START_WITHIN: Duration = Duration::from_secs(60);
+
+pub fn watch(args: &[std::ffi::OsString]) {
+    let Some(dir) = install_dir() else { return };
+    let Ok(me) = std::env::current_exe() else {
+        return;
+    };
+    // `hermes.exe.old` starts `hermes.exe`.
+    let new_exe = me.with_extension("");
+    let new_exe = if new_exe.extension().is_some() {
+        new_exe
+    } else {
+        dir.join(me.file_stem().unwrap_or_default())
+    };
+    let Ok(mut child) = std::process::Command::new(&new_exe)
+        .arg(AFTER_FLAG)
+        .args(args)
+        .spawn()
+    else {
+        roll_back();
+        let _ = std::process::Command::new(&new_exe).args(args).spawn();
+        return;
+    };
+    let started = std::time::Instant::now();
+    loop {
+        std::thread::sleep(Duration::from_millis(500));
+        if new_version_started() {
+            return;
+        }
+        let ended = matches!(child.try_wait(), Ok(Some(_)));
+        if ended || started.elapsed() >= START_WITHIN {
+            let _ = child.kill();
+            let _ = child.wait();
+            roll_back();
+            let _ = std::process::Command::new(&new_exe).args(args).spawn();
+            return;
+        }
+    }
+}
+
+/// After [`install`]: starts the watcher, which starts the new version. The caller quits next.
+pub fn restart(args: &[std::ffi::OsString]) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let watcher = old_name(&me);
+    // The program itself did not change: a copy of it watches (and is cleared up the same way).
+    if !watcher.exists() {
+        std::fs::copy(&me, &watcher).map_err(|e| format!("could not restart: {e}"))?;
+    }
+    std::process::Command::new(watcher)
+        .arg(WATCH_FLAG)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not restart: {e}"))
+}
+
 /// `340 KB / 2.1 MB` as `0.3 / 2.1 MB`: both numbers in the total's unit, so they read
 /// together.
 pub fn human_progress(done: u64, total: u64) -> String {
