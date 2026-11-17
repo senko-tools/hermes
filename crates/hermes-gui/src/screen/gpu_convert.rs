@@ -62,6 +62,8 @@ impl GpuConvert {
         output: (u32, u32),
         fps: u32,
     ) -> Result<GpuConvert, String> {
+        // SAFETY: COM calls on the live device and the video objects made from it, with
+        // descriptions and out-pointers that live through each call.
         unsafe {
             let video_device: ID3D11VideoDevice =
                 device.cast().map_err(failed("no video device"))?;
@@ -181,6 +183,9 @@ impl GpuConvert {
     /// Queues the conversion of `input` (of the input size) into the next pooled NV12 picture.
     /// The GPU runs it in order with the encoder's work, so nothing waits here.
     pub fn convert(&mut self, input: &ID3D11Texture2D) -> Result<Nv12, String> {
+        // SAFETY: COM calls on this converter's own objects. The stream's `pInputSurface` holds one
+        // reference of its own (a clone of the view), released after the call by dropping its
+        // `ManuallyDrop`.
         unsafe {
             let cached = self
                 .input
