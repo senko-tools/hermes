@@ -736,10 +736,45 @@ pub fn search_emoji(query: &str, max: usize) -> Vec<(String, String)> {
     out.into_iter().take(max).map(|(_, e, c)| (e, c)).collect()
 }
 
+/// The emoji picker's tabs, in Unicode's order: a name and every emoji of the group.
+pub fn emoji_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+    use emojis::Group;
+    Group::iter()
+        .map(|group| {
+            let name = match group {
+                Group::SmileysAndEmotion => "Smileys",
+                Group::PeopleAndBody => "People",
+                Group::AnimalsAndNature => "Nature",
+                Group::FoodAndDrink => "Food",
+                Group::TravelAndPlaces => "Travel",
+                Group::Activities => "Activities",
+                Group::Objects => "Objects",
+                Group::Symbols => "Symbols",
+                Group::Flags => "Flags",
+            };
+            (name, group.emojis().map(emojis::Emoji::as_str).collect())
+        })
+        .collect()
+}
+
+/// An emoji's first shortcode, for the picker's hint (`thumbsup`).
+pub fn emoji_name(emoji: &str) -> Option<&'static str> {
+    emojis::get(emoji).and_then(emojis::Emoji::shortcode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::tests::{channel, message, ready, user};
+
+    #[test]
+    fn emoji_groups_cover_the_lot() {
+        let groups = emoji_groups();
+        assert_eq!(groups.len(), 9);
+        assert_eq!(groups[0].0, "Smileys");
+        assert!(groups[0].1.contains(&"😀"));
+        assert_eq!(emoji_name("👍"), Some("+1"));
+    }
     use hermes_proto::gateway::ServerEvent;
     use hermes_proto::models::{Member, Presence, Role};
 

@@ -244,6 +244,8 @@ pub struct Buffer {
     pub media_scale: u32,
     /// The reactions offered first, separated by spaces.
     pub quick_reactions: String,
+    /// The emoji picked last, newest first, separated by spaces.
+    pub recent_emoji: String,
 }
 
 impl Default for Buffer {
@@ -259,6 +261,7 @@ impl Default for Buffer {
             compact: false,
             media_scale: 100,
             quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
+            recent_emoji: String::new(),
         }
     }
 }

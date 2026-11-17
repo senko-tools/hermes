@@ -182,6 +182,7 @@ pub struct Shell {
     /// What a results page goes back to.
     pub previous_page: Option<Page>,
     pub command_bar: Option<CommandBar>,
+    pub emoji_picker: Option<crate::emoji_picker::EmojiPicker>,
     pub keybinds: Keybinds,
     /// What the Friends page lists.
     pub friends_tab: crate::friends::FriendsTab,
@@ -371,6 +372,7 @@ impl Shell {
             results: HashMap::new(),
             previous_page: None,
             command_bar: None,
+            emoji_picker: None,
             keybinds,
             friends_tab: crate::friends::FriendsTab::default(),
             show_members: true,

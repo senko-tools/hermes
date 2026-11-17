@@ -2781,7 +2781,7 @@ impl Shell {
 
 // ---- parts, also used by the space settings ---------------------------------------------------
 
-fn toml_string(value: String) -> String {
+pub(crate) fn toml_string(value: String) -> String {
     toml::Value::String(value).to_string()
 }
 

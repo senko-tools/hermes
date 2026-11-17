@@ -2657,6 +2657,7 @@ impl Shell {
                 .children(chips)
         });
         let pick_key = key.clone();
+        let emoji_key = key.clone();
         let paste_key = key.clone();
         let max_mb = self
             .core
@@ -2711,7 +2712,25 @@ impl Shell {
                                         this.pick_files(pick_key.clone(), cx);
                                     })),
                             )
-                            .child(div().flex_1().min_w_0().child(input)),
+                            .child(div().flex_1().min_w_0().child(input))
+                            .child({
+                                let key = emoji_key.clone();
+                                icon_button("composer-emoji", assets::EMOJI)
+                                    .tooltip(|window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new("Emoji")
+                                            .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                            this.open_emoji_picker(
+                                                crate::emoji_picker::PickFor::Compose(key.clone()),
+                                                event.position(),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                            }),
                     ),
             )
             .into_any_element()
@@ -3361,10 +3380,17 @@ impl Shell {
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .child("…")
-            .on_click(cx.listener(move |this, _, window, cx| {
-                cx.stop_propagation();
-                this.open_form_react(more_inst.clone(), channel, message, window, cx);
-            }));
+            .on_click(
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_emoji_picker(
+                        crate::emoji_picker::PickFor::React(more_inst.clone(), channel, message),
+                        event.position(),
+                        window,
+                        cx,
+                    );
+                }),
+            );
         let buttons = quick.into_iter().enumerate().map(|(n, emoji)| {
             let inst = inst.clone();
             div()

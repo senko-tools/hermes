@@ -53,6 +53,7 @@ pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";
 pub const SHIELD: &str = "shield-account";
 pub const COPY: &str = "content-copy";
+pub const EMOJI: &str = "emoticon-happy-outline";
 /// The media cards' icons.
 pub mod media_icons {
     pub const PLAY: &str = "play";

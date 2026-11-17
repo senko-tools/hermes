@@ -17,6 +17,7 @@ mod crop;
 mod desktop;
 mod desktop_shell;
 mod drag;
+mod emoji_picker;
 mod encryption;
 #[cfg(test)]
 mod fixtures;

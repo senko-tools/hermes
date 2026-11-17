@@ -113,11 +113,6 @@ pub enum Purpose {
     QuickReactions,
     QuietHours,
     Keywords,
-    React {
-        inst: InstanceId,
-        channel: Id,
-        message: Id,
-    },
     Note {
         inst: InstanceId,
         user: Id,
@@ -702,28 +697,6 @@ impl Shell {
         self.finish(fields);
     }
 
-    pub fn open_form_react(
-        &mut self,
-        inst: InstanceId,
-        channel: Id,
-        message: Id,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let form = Form::new(
-            Purpose::React {
-                inst,
-                channel,
-                message,
-            },
-            "React with an emoji",
-            "React",
-        )
-        .text("Type an emoji, or its name such as thumbsup.");
-        let fields = Self::fields(form, window, cx).text("Emoji", "", "");
-        self.finish(fields);
-    }
-
     pub fn open_form_note(
         &mut self,
         inst: InstanceId,
@@ -1166,19 +1139,6 @@ impl Shell {
                     &toml::Value::String(value).to_string(),
                     cx,
                 );
-                self.form_call(cx, async { Ok("Saved".to_owned()) });
-            }
-            Purpose::React {
-                inst,
-                channel,
-                message,
-            } => {
-                let typed = form.required(0, "an emoji", cx)?;
-                let emoji = hermes_client_core::view::search_emoji(&typed, 1)
-                    .into_iter()
-                    .next()
-                    .map_or(typed, |(emoji, _)| emoji);
-                self.react(inst, channel, message, emoji, true, cx);
                 self.form_call(cx, async { Ok("Saved".to_owned()) });
             }
             Purpose::Note { inst, user } => {
