@@ -80,17 +80,17 @@ pub async fn upload(
     let (sha256, size) = match result {
         Ok(Some(received)) => received,
         Ok(None) => {
-            remove(&part);
+            remove(&part).await;
             return Err(too_large());
         }
         Err(err) => {
-            remove(&part);
+            remove(&part).await;
             return Err(err);
         }
     };
     let quota = u64::from(storage.max_total_storage_gb) * GIB;
     if !state.files.reserve(size, quota) {
-        remove(&part);
+        remove(&part).await;
         return Err(Error::new(
             ErrorCode::StorageFull,
             "The server's storage for uploads is full",
@@ -109,8 +109,8 @@ pub async fn upload(
         size,
     )
     .await;
-    remove(&part);
-    remove(&thumb_part);
+    remove(&part).await;
+    remove(&thumb_part).await;
     match stored {
         Ok(row) => Ok((StatusCode::CREATED, Json(row.to_wire()))),
         Err(err) => {
@@ -210,8 +210,9 @@ async fn store(
     Ok(row)
 }
 
-fn remove(path: &FsPath) {
-    let _ = std::fs::remove_file(path);
+/// Deletes a temporary file if it exists, without blocking the runtime.
+async fn remove(path: &FsPath) {
+    let _ = tokio::fs::remove_file(path).await;
 }
 
 /// The file. Images are shown inline, everything else is forced to download.

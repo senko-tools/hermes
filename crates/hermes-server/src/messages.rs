@@ -6,7 +6,9 @@ use std::sync::Mutex;
 
 use hermes_proto::id::Id;
 use hermes_proto::markup;
-use hermes_proto::models::{Mentions, Message, MessageRef, ReactionSummary, Status, User};
+use hermes_proto::models::{
+    Attachment, Mentions, Message, MessageRef, ReactionSummary, Status, User,
+};
 use hermes_proto::permissions::Permissions;
 
 use crate::db;
@@ -37,9 +39,30 @@ pub async fn to_wire(
     } else {
         db::messages::reply_refs(db, &reply_ids).await?
     };
-    let attachments = db::messages::attachments(db, &ids).await?;
-    let reactions = db::messages::reaction_counts(db, &ids, viewer).await?;
-    let mentions = db::messages::mentions(db, &ids).await?;
+    // Grouped by message ID, so each row takes its own parts without scanning or cloning.
+    let replies: HashMap<Id, (Id, String, bool)> = replies
+        .into_iter()
+        .map(|(id, author_id, content, deleted)| (id, (author_id, content, deleted)))
+        .collect();
+    let mut attachments: HashMap<Id, Vec<Attachment>> = HashMap::new();
+    for (message_id, attachment) in db::messages::attachments(db, &ids).await? {
+        attachments.entry(message_id).or_default().push(attachment);
+    }
+    let mut reactions: HashMap<Id, Vec<ReactionSummary>> = HashMap::new();
+    for c in db::messages::reaction_counts(db, &ids, viewer).await? {
+        reactions
+            .entry(c.message_id)
+            .or_default()
+            .push(ReactionSummary {
+                emoji: c.emoji,
+                count: c.count,
+                me: c.me,
+            });
+    }
+    let mut mentions: HashMap<Id, Mentions> = db::messages::mentions(db, &ids)
+        .await?
+        .into_iter()
+        .collect();
 
     let cache = state.cache();
     Ok(rows
@@ -50,10 +73,9 @@ pub async fn to_wire(
             author: author(&cache, r.author_id),
             content: r.content,
             reply_to: r.reply_to_id.and_then(|reply_id| {
-                let (id, author_id, content, deleted) =
-                    replies.iter().find(|(id, ..)| *id == reply_id)?;
+                let (author_id, content, deleted) = replies.get(&reply_id)?;
                 Some(MessageRef {
-                    id: *id,
+                    id: reply_id,
                     author_id: *author_id,
                     excerpt: if *deleted {
                         String::new()
@@ -66,25 +88,9 @@ pub async fn to_wire(
             deleted: r.deleted,
             pinned: r.pinned,
             kind: r.kind,
-            attachments: attachments
-                .iter()
-                .filter(|(message_id, _)| *message_id == r.id)
-                .map(|(_, a)| a.clone())
-                .collect(),
-            reactions: reactions
-                .iter()
-                .filter(|c| c.message_id == r.id)
-                .map(|c| ReactionSummary {
-                    emoji: c.emoji.clone(),
-                    count: c.count,
-                    me: c.me,
-                })
-                .collect(),
-            mentions: mentions
-                .iter()
-                .find(|(message_id, _)| *message_id == r.id)
-                .map(|(_, m)| m.clone())
-                .unwrap_or_default(),
+            attachments: attachments.remove(&r.id).unwrap_or_default(),
+            reactions: reactions.remove(&r.id).unwrap_or_default(),
+            mentions: mentions.remove(&r.id).unwrap_or_default(),
             nonce: None,
             e2ee: e2ee_of(r.e2ee.as_deref()),
             lock: MessageLock::Plain,

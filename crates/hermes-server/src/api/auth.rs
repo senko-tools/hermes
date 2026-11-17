@@ -261,13 +261,14 @@ pub async fn login(
         None => None,
     };
     let hash = credentials.as_ref().map(|c| c.password_hash.clone());
-    if !auth::verify_password(req.password, hash).await? {
+    // Unknown users are checked against a dummy hash, so they take as long and never verify.
+    let verified = auth::verify_password(req.password, hash).await?;
+    let Some(credentials) = credentials.filter(|_| verified) else {
         return Err(Error::new(
             ErrorCode::InvalidCredentials,
             "Wrong username or password",
         ));
-    }
-    let credentials = credentials.expect("verify_password is false for unknown users");
+    };
     if credentials.disabled {
         return Err(Error::new(
             ErrorCode::AccountDisabled,
