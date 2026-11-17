@@ -12,6 +12,7 @@ use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadS
 use hermes_proto::permissions::Permissions;
 use hermes_proto::{ApiError, ErrorCode};
 use serde_json::json;
+use sqlx::{Sqlite, SqliteExecutor, Transaction};
 
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query, audit, perms};
@@ -61,12 +62,27 @@ fn target(cache: &Cache, channel_id: Id, user_id: Id, perm: Permissions) -> ApiR
     })
 }
 
-/// A message of the channel that is not deleted; `NOT_FOUND` otherwise.
-async fn live_message(state: &AppState, channel_id: Id, message_id: Id) -> ApiResult<MessageRow> {
-    db::messages::get(&state.db.read, channel_id, message_id)
+/// A message of the channel that is not deleted; `NOT_FOUND` otherwise. Handlers that change the
+/// message check it with their write transaction, so a concurrent delete cannot slip in between
+/// (the write pool has a single connection): otherwise an edit could restore a deleted message's
+/// content, or a pin or reaction land on its tombstone.
+async fn live_message(
+    e: impl SqliteExecutor<'_>,
+    channel_id: Id,
+    message_id: Id,
+) -> ApiResult<MessageRow> {
+    db::messages::get(e, channel_id, message_id)
         .await?
         .filter(|m| !m.deleted)
         .ok_or_else(|| Error::not_found("message"))
+}
+
+/// A write transaction for a handler that reads the message before it writes. It takes the
+/// database's write lock at once (`BEGIN IMMEDIATE`): a deferred one would fail with
+/// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry, if another process (the
+/// `hermes-server user` commands) wrote between the read and the write.
+async fn checking_tx(state: &AppState) -> ApiResult<Transaction<'static, Sqlite>> {
+    Ok(state.db.write.begin_with("BEGIN IMMEDIATE").await?)
 }
 
 async fn one_to_wire(state: &AppState, row: MessageRow, viewer: Id) -> ApiResult<Message> {
@@ -319,7 +335,8 @@ pub async fn edit(
         Permissions::VIEW_CHANNEL,
     )?;
     check_encryption(&state, t.kind, e2ee.as_ref())?;
-    let mut row = live_message(&state, channel_id, message_id).await?;
+    let mut tx = checking_tx(&state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
         return Err(Error::new(
             ErrorCode::MissingPermission,
@@ -328,7 +345,7 @@ pub async fn edit(
     }
     if req.content.trim().is_empty()
         && e2ee.is_none()
-        && db::messages::count_attachments(&state.db.read, message_id).await? == 0
+        && db::messages::count_attachments(&mut *tx, message_id).await? == 0
     {
         return Err(validate::field_error("content", "must not be empty"));
     }
@@ -341,7 +358,6 @@ pub async fn edit(
     );
 
     let now = now_ms();
-    let mut tx = state.db.write.begin().await?;
     db::messages::edit_content(&mut tx, message_id, &req.content, e2ee.as_deref(), now).await?;
     db::messages::set_mentions(&mut tx, message_id, &resolved.mentions).await?;
     tx.commit().await?;
@@ -368,12 +384,12 @@ pub async fn delete(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    let row = live_message(&state, channel_id, message_id).await?;
+    let mut tx = checking_tx(&state).await?;
+    let row = live_message(&mut *tx, channel_id, message_id).await?;
     let own = row.author_id == auth.user_id;
     if !own {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
-    let mut tx = state.db.write.begin().await?;
     db::messages::soft_delete(&mut tx, message_id).await?;
     if let Some(space_id) = t.space_id.filter(|_| !own) {
         audit::record(
@@ -431,11 +447,13 @@ async fn set_pinned(
     if !t.kind.is_private() {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
-    let mut row = live_message(state, channel_id, message_id).await?;
+    let mut tx = checking_tx(state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.pinned == pinned {
         return Ok(StatusCode::NO_CONTENT);
     }
-    db::messages::set_pinned(&state.db.write, message_id, pinned).await?;
+    db::messages::set_pinned(&mut *tx, message_id, pinned).await?;
+    tx.commit().await?;
     row.pinned = pinned;
     let message = one_to_wire(state, row, auth.user_id).await?;
     state.publish(
@@ -477,10 +495,11 @@ pub async fn add_reaction(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    live_message(&state, channel_id, message_id).await?;
-    // Serializes the "at most 20 emoji" check with the insert.
-    let _writes = state.writes.lock().await;
-    let existing = db::messages::reaction_emoji(&state.db.read, message_id).await?;
+    // The write transaction serializes the checks (message not deleted, at most 20 emoji) with
+    // the insert.
+    let mut tx = checking_tx(&state).await?;
+    live_message(&mut *tx, channel_id, message_id).await?;
+    let existing = db::messages::reaction_emoji(&mut *tx, message_id).await?;
     if !existing.contains(&emoji) {
         t.require(Permissions::ADD_REACTIONS)?;
         if existing.len() >= MAX_REACTION_EMOJI {
@@ -491,9 +510,8 @@ pub async fn add_reaction(
         }
     }
     let added =
-        db::messages::add_reaction(&state.db.write, message_id, &emoji, auth.user_id, now_ms())
-            .await?;
-    drop(_writes);
+        db::messages::add_reaction(&mut *tx, message_id, &emoji, auth.user_id, now_ms()).await?;
+    tx.commit().await?;
     if added {
         publish_reaction(&state, true, channel_id, message_id, emoji, auth.user_id);
     }
@@ -512,7 +530,7 @@ pub async fn remove_own_reaction(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    live_message(&state, channel_id, message_id).await?;
+    live_message(&state.db.read, channel_id, message_id).await?;
     if db::messages::remove_reaction(&state.db.write, message_id, &emoji, auth.user_id).await? {
         publish_reaction(&state, false, channel_id, message_id, emoji, auth.user_id);
     }
@@ -531,7 +549,7 @@ pub async fn remove_reaction(
         auth.user_id,
         Permissions::MANAGE_MESSAGES,
     )?;
-    live_message(&state, channel_id, message_id).await?;
+    live_message(&state.db.read, channel_id, message_id).await?;
     if db::messages::remove_reaction(&state.db.write, message_id, &emoji, user_id).await? {
         publish_reaction(&state, false, channel_id, message_id, emoji, user_id);
     }
