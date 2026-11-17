@@ -65,7 +65,9 @@ pub fn poll(
         .spawn(move || {
             let mut was_down = false;
             loop {
-                let held = keys.lock().expect("ptt keys").clone();
+                // Read in place (no copy 100 times a second); the lock is held only for the
+                // few key state reads, not through the sleep.
+                let held = keys.lock().expect("ptt keys");
                 let down = !held.is_empty()
                     && held.iter().all(|vk| {
                         // SAFETY: GetAsyncKeyState has no preconditions; it only reads key state.
@@ -73,6 +75,7 @@ pub fn poll(
                         let state = unsafe { GetAsyncKeyState(i32::from(*vk)) };
                         (state as u16 & 0x8000) != 0
                     });
+                drop(held);
                 if down != was_down {
                     was_down = down;
                     if changes.send(down).is_err() {

@@ -42,6 +42,12 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(width: u32, height: u32, fps: f32) -> Result<Encoder, String> {
+        // H.264 4:2:0 needs even sizes (the YUV buffer would panic on odd ones).
+        if width < 2 || height < 2 || width % 2 + height % 2 != 0 {
+            return Err(format!(
+                "cannot encode {width}x{height}: sizes must be even"
+            ));
+        }
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
@@ -287,6 +293,10 @@ mod tests {
         assert_eq!(bitrate(1280, 720, 10.0), 1_500_000);
         assert_eq!(bitrate(1920, 1080, 15.0), 3_110_400);
         assert_eq!(bitrate(3840, 2160, 30.0), 8_000_000);
+
+        // Odd sizes are refused instead of panicking.
+        assert!(Encoder::new(63, 32, 10.0).is_err());
+        assert!(Encoder::new(0, 0, 10.0).is_err());
 
         // Garbage never panics.
         for decoder in [Decoder::software(), Decoder::new()] {

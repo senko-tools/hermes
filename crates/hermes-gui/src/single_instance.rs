@@ -45,8 +45,20 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 pub async fn forward(endpoint: &Endpoint, link: Option<&str>) -> io::Result<()> {
     let line = format!("{}\n", link.unwrap_or("").replace(['\r', '\n'], ""));
     tokio::time::timeout(Duration::from_secs(2), async {
+        // Busy: the running client just took another launch's connection and has not created
+        // the next pipe instance yet. Retrying (within the timeout) keeps two quick launches
+        // from both deciding that none runs.
         #[cfg(windows)]
-        let mut stream = tokio::net::windows::named_pipe::ClientOptions::new().open(&endpoint.0)?;
+        let mut stream = loop {
+            use windows::Win32::Foundation::ERROR_PIPE_BUSY;
+            match tokio::net::windows::named_pipe::ClientOptions::new().open(&endpoint.0) {
+                Ok(stream) => break stream,
+                Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        };
         #[cfg(not(windows))]
         let mut stream = tokio::net::UnixStream::connect(&endpoint.0).await?;
         stream.write_all(line.as_bytes()).await?;
