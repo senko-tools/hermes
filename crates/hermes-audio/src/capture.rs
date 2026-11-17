@@ -77,9 +77,21 @@ impl Capture {
         self.was_open
     }
 
+    /// The sequence number of the next datagram.
+    pub fn sequence(&self) -> u16 {
+        self.sequence
+    }
+
+    /// Continues the sequence numbers of an earlier capture (a new device in the same voice
+    /// session), so listeners' jitter buffers do not take the new packets for late ones. The
+    /// timestamp starts at a new random value; receivers ignore such a jump as jitter.
+    pub fn set_sequence(&mut self, sequence: u16) {
+        self.sequence = sequence;
+    }
+
     /// Processes interleaved device samples; `send` gets each datagram to send (sender ID 0,
     /// the server sets it).
-    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(&[u8])) {
+    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(Vec<u8>)) {
         self.downmix.process(
             interleaved,
             self.channels,
@@ -92,7 +104,7 @@ impl Capture {
             self.frame.copy_from_slice(&self.at48[used..used + FRAME]);
             used += FRAME;
             if let Some(datagram) = self.process_frame() {
-                send(&datagram);
+                send(datagram);
             }
         }
         self.at48.drain(..used);
@@ -108,7 +120,7 @@ impl Capture {
         self.level_db = dsp::to_db(level);
         let open = self.gate.update(self.level_db, probability);
         // Encode every frame so the encoder state stays continuous.
-        let opus = self.encoder.encode(&self.frame).map(<[u8]>::to_vec);
+        let opus = self.encoder.encode(&self.frame);
         let timestamp = self.timestamp;
         self.timestamp = self.timestamp.wrapping_add(voice::FRAME_SAMPLES);
         let was_open = std::mem::replace(&mut self.was_open, open);
@@ -125,7 +137,7 @@ impl Capture {
             audio_level: voice::audio_level(level),
         };
         self.sequence = self.sequence.wrapping_add(1);
-        Some(header.encode(&opus))
+        Some(header.encode(opus))
     }
 }
 
@@ -169,7 +181,7 @@ mod tests {
         let mut out = Vec::new();
         // 10 ms chunks, like a device callback.
         for chunk in samples.chunks(882) {
-            capture.push(chunk, |d| out.push(d.to_vec()));
+            capture.push(chunk, |d| out.push(d));
         }
         out
     }
@@ -221,6 +233,18 @@ mod tests {
         capture.gate.muted = true;
         // The final frame after closing, then nothing.
         assert_eq!(run(&mut capture, &tone(48_000, 0.2, 0.3)).len(), 1);
+    }
+
+    #[test]
+    fn a_new_capture_can_continue_the_sequence() {
+        let mut first = Capture::new(48_000, 2, &settings(), 64_000);
+        let sent = run(&mut first, &tone(48_000, 0.2, 0.3)).len();
+        // A new microphone in the same session.
+        let mut second = Capture::new(44_100, 2, &settings(), 64_000);
+        second.set_sequence(first.sequence());
+        let packets = run(&mut second, &tone(44_100, 0.2, 0.3));
+        let header = AudioHeader::decode(&packets[0]).unwrap().0;
+        assert_eq!(usize::from(header.sequence), sent);
     }
 
     #[test]

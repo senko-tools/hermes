@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use hermes_proto::voice::{AudioHeader, AudioKind};
+use hermes_proto::voice::{AudioHeader, AudioKind, HEADER_LEN};
 
 use crate::codec::{Decoder, StereoDecoder};
 use crate::dsp::Resampler;
@@ -126,10 +126,19 @@ impl Playback {
     }
 
     /// Adds a received datagram from `participant` (created on first use at `default_volume`).
-    pub fn push(&mut self, participant: u16, datagram: &[u8], now_ms: f64, default_volume: f32) {
-        let Ok((header, opus)) = AudioHeader::decode(datagram) else {
+    /// The datagram's buffer becomes the queued Opus frame (the frame moves down over the header
+    /// in place), so nothing is allocated.
+    pub fn push(
+        &mut self,
+        participant: u16,
+        mut datagram: Vec<u8>,
+        now_ms: f64,
+        default_volume: f32,
+    ) {
+        let Ok((header, _)) = AudioHeader::decode(&datagram) else {
             return;
         };
+        datagram.drain(..HEADER_LEN);
         let remote = self
             .remotes
             .entry(participant)
@@ -141,23 +150,24 @@ impl Playback {
             header.sequence,
             header.timestamp,
             header.voice_active,
-            opus.to_vec(),
+            datagram,
             now_ms,
         );
     }
 
     /// Adds a received share audio datagram from `participant`'s screen share (created on
-    /// first use at `default_volume`).
+    /// first use at `default_volume`). Like [`push`](Self::push), nothing is allocated.
     pub fn push_share(
         &mut self,
         participant: u16,
-        datagram: &[u8],
+        mut datagram: Vec<u8>,
         now_ms: f64,
         default_volume: f32,
     ) {
-        let Ok((AudioKind::Share, header, opus)) = AudioHeader::decode_any(datagram) else {
+        let Ok((AudioKind::Share, header, _)) = AudioHeader::decode_any(&datagram) else {
             return;
         };
+        datagram.drain(..HEADER_LEN);
         self.shares
             .entry(participant)
             .or_insert_with(|| ShareRemote::new(default_volume))
@@ -166,7 +176,7 @@ impl Playback {
                 header.sequence,
                 header.timestamp,
                 header.voice_active,
-                opus.to_vec(),
+                datagram,
                 now_ms,
             );
     }
@@ -298,7 +308,7 @@ mod tests {
             .map(|i| 0.3 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin())
             .collect();
         let mut out = Vec::new();
-        capture.push(&samples, |d| out.push(d.to_vec()));
+        capture.push(&samples, |d| out.push(d));
         out
     }
 
@@ -312,7 +322,7 @@ mod tests {
             // Swap every pair, and lose every tenth packet.
             for (j, p) in chunk.iter().enumerate().rev() {
                 if (i * 2 + j) % 10 != 9 {
-                    playback.push(7, p, now, 1.0);
+                    playback.push(7, p.clone(), now, 1.0);
                 }
             }
             rendered.extend_from_slice(playback.render_48k());
@@ -338,7 +348,7 @@ mod tests {
             configure(&mut playback);
             let mut out = Vec::new();
             for (i, p) in packets.iter().enumerate() {
-                playback.push(1, p, i as f64 * 20.0, 1.0);
+                playback.push(1, p.clone(), i as f64 * 20.0, 1.0);
                 out.extend_from_slice(playback.render_48k());
             }
             dsp::rms(&out[FRAME * 8..])
@@ -384,9 +394,9 @@ mod tests {
             configure(&mut playback);
             let mut out = Vec::new();
             for (i, p) in packets.iter().enumerate() {
-                playback.push_share(5, p, i as f64 * 20.0, 1.0);
+                playback.push_share(5, p.clone(), i as f64 * 20.0, 1.0);
                 // A voice datagram is not share audio, and the other way round.
-                playback.push(5, p, i as f64 * 20.0, 1.0);
+                playback.push(5, p.clone(), i as f64 * 20.0, 1.0);
                 out.extend_from_slice(playback.render_48k_stereo());
             }
             let left: Vec<f32> = out[STEREO_FRAME * 10..]
@@ -405,13 +415,13 @@ mod tests {
         let (l, r) = render(&|_| {});
         assert!(l > 0.2 && r < 0.08 && r > 0.01, "{l} {r}");
         let (half, _) = render(&|p| {
-            p.push_share(5, &packets[0], 0.0, 1.0);
+            p.push_share(5, packets[0].clone(), 0.0, 1.0);
             p.set_share_volume(5, 0.5);
         });
         assert!((half / l - 0.5).abs() < 0.1, "{l} {half}");
         assert_eq!(render(&|p| p.deafened = true), (0.0, 0.0));
         let (mut playback, packet) = (Playback::new(48_000), &packets[0]);
-        playback.push_share(5, packet, 0.0, 1.0);
+        playback.push_share(5, packet.clone(), 0.0, 1.0);
         assert!(playback.is_active());
         playback.remove_share(5);
         assert!(!playback.is_active());

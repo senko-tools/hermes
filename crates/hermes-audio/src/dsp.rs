@@ -101,6 +101,10 @@ impl Resampler {
 pub struct Downmix {
     /// Each channel's recent power, smoothed so a pause on one side does not change the level.
     power: Vec<f32>,
+    /// Scratch space for one call, kept so a call does not allocate: each channel's power in
+    /// this block, and which channels are counted.
+    block: Vec<f32>,
+    counted: Vec<bool>,
 }
 
 impl Downmix {
@@ -112,27 +116,31 @@ impl Downmix {
     pub fn process(&mut self, data: &[f32], channels: usize, gain: f32, out: &mut Vec<f32>) {
         let channels = channels.max(1);
         let frames = (data.len() / channels).max(1);
-        let mut block = vec![0.0_f32; channels];
+        self.block.clear();
+        self.block.resize(channels, 0.0);
         for frame in data.chunks_exact(channels) {
-            for (power, sample) in block.iter_mut().zip(frame) {
+            for (power, sample) in self.block.iter_mut().zip(frame) {
                 *power += sample * sample;
             }
         }
         if self.power.len() != channels {
-            self.power = block.iter().map(|p| p / frames as f32).collect();
+            self.power.clear();
+            self.power
+                .extend(self.block.iter().map(|p| p / frames as f32));
         } else {
-            for (smooth, power) in self.power.iter_mut().zip(&block) {
+            for (smooth, power) in self.power.iter_mut().zip(&self.block) {
                 *smooth += (power / frames as f32 - *smooth) * Self::SMOOTHING;
             }
         }
         let loudest = self.power.iter().copied().fold(0.0, f32::max);
         let floor = loudest * Self::QUIET;
-        let counted: Vec<bool> = self.power.iter().map(|p| *p >= floor).collect();
-        let count = counted.iter().filter(|c| **c).count().max(1) as f32;
+        self.counted.clear();
+        self.counted.extend(self.power.iter().map(|p| *p >= floor));
+        let count = self.counted.iter().filter(|c| **c).count().max(1) as f32;
         for frame in data.chunks_exact(channels) {
             let sum: f32 = frame
                 .iter()
-                .zip(&counted)
+                .zip(&self.counted)
                 .filter(|(_, counted)| **counted)
                 .map(|(sample, _)| sample)
                 .sum();
