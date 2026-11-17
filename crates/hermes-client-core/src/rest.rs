@@ -87,15 +87,40 @@ fn network(err: reqwest::Error) -> Error {
 
 /// Percent-encodes one path segment or header value (everything but unreserved characters).
 pub fn encode(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             out.push(b as char);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            out.push('%');
+            out.push(HEX[usize::from(b >> 4)] as char);
+            out.push(HEX[usize::from(b & 0xf)] as char);
         }
     }
     out
+}
+
+/// At most this much of a body that is not an error JSON goes into [`Error::Decode`] (a proxy's
+/// error page can be a whole HTML document, and the message is shown to the user).
+const MAX_ERROR_TEXT: usize = 300;
+
+/// `HTTP <status>: <start of the body>` for an answer that is not an error JSON.
+fn unexpected(status: StatusCode, body: &[u8]) -> Error {
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    let mut out = format!("HTTP {status}");
+    if !text.is_empty() {
+        out.push_str(": ");
+        match text.char_indices().nth(MAX_ERROR_TEXT) {
+            Some((cut, _)) => {
+                out.push_str(&text[..cut]);
+                out.push('…');
+            }
+            None => out.push_str(text),
+        }
+    }
+    Error::Decode(out)
 }
 
 /// A REST client for one instance, optionally signed in.
@@ -158,10 +183,7 @@ impl Rest {
         let bytes = res.bytes().await.map_err(network)?;
         match serde_json::from_slice::<ErrorBody>(&bytes) {
             Ok(body) => Err(Error::Api(body.error)),
-            Err(_) => Err(Error::Decode(format!(
-                "HTTP {status}: {}",
-                String::from_utf8_lossy(&bytes)
-            ))),
+            Err(_) => Err(unexpected(status, &bytes)),
         }
     }
 
@@ -835,5 +857,29 @@ mod tests {
         assert_eq!(encode("😀"), "%F0%9F%98%80");
         assert_eq!(encode("a b/c.png"), "a%20b%2Fc.png");
         assert_eq!(encode("Ab-9_~."), "Ab-9_~.");
+        assert_eq!(encode("\n\u{ff}"), "%0A%C3%BF");
+    }
+
+    #[test]
+    fn unexpected_answers_are_cut_short() {
+        let text = |e: Error| match e {
+            Error::Decode(t) => t,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            text(unexpected(StatusCode::BAD_GATEWAY, b"")),
+            "HTTP 502 Bad Gateway"
+        );
+        assert_eq!(
+            text(unexpected(StatusCode::BAD_GATEWAY, b" upstream down\n")),
+            "HTTP 502 Bad Gateway: upstream down"
+        );
+        let page = "é".repeat(5000);
+        let cut = text(unexpected(StatusCode::BAD_GATEWAY, page.as_bytes()));
+        assert_eq!(
+            cut.chars().count(),
+            "HTTP 502 Bad Gateway: ".len() + MAX_ERROR_TEXT + 1
+        );
+        assert!(cut.ends_with("é…"));
     }
 }

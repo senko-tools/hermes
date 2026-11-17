@@ -344,8 +344,9 @@ pub fn member_groups(store: &InstanceStore, space: Id) -> Vec<MemberGroup> {
         members: offline,
     });
     for g in &mut groups {
+        // Cached: the key allocates, and big spaces have thousands of members.
         g.members
-            .sort_by_key(|m| (m.name.to_lowercase(), m.user_id));
+            .sort_by_cached_key(|m| (m.name.to_lowercase(), m.user_id));
     }
     groups.retain(|g| !g.members.is_empty());
     groups
@@ -571,8 +572,14 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
         _ => {}
     }
     out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.label.len().cmp(&b.1.label.len())));
-    out.dedup_by(|a, b| a.1.insert == b.1.insert);
-    out.into_iter().take(max).map(|(_, s)| s).collect()
+    // One entry per insert (an emoji with two matching names), the best-ranked one; the
+    // duplicates are not always next to each other after sorting.
+    let mut seen = std::collections::HashSet::new();
+    out.into_iter()
+        .map(|(_, s)| s)
+        .filter(|s| seen.insert(s.insert.clone()))
+        .take(max)
+        .collect()
 }
 
 /// Emoji matching a search (for the reaction picker): `(emoji, shortcode)`.
@@ -851,5 +858,21 @@ mod tests {
         );
         assert_eq!(complete(&s, Id(11), "/shr", 5)[0].insert, "/shrug ");
         assert_eq!(search_emoji("thumbsup", 1)[0].0, "👍");
+    }
+
+    #[test]
+    fn completion_lists_each_emoji_once() {
+        let s = store();
+        // 🚗 is both `car` (a prefix match) and `red_car` (a match inside).
+        for token in [":ca", ":car", ":smi", ":po", ":+1"] {
+            let all = complete(&s, Id(11), token, usize::MAX);
+            let mut inserts: Vec<&str> = all.iter().map(|s| s.insert.as_str()).collect();
+            let before = inserts.len();
+            inserts.sort_unstable();
+            inserts.dedup();
+            assert_eq!(inserts.len(), before, "{token}: {all:?}");
+        }
+        let car = complete(&s, Id(11), ":car", 1);
+        assert_eq!(car[0].label, "🚗 :car:", "the best-ranked name is kept");
     }
 }
