@@ -460,6 +460,8 @@ pub fn entries_with(
                 return out;
             };
             match c.kind {
+                // From a newer server: nothing here can act on it.
+                ChannelKind::Unknown => {}
                 ChannelKind::Category => {
                     let manage = c
                         .space_id

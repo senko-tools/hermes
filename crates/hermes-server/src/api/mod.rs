@@ -12,7 +12,7 @@ pub mod conn_limit;
 pub mod devices;
 mod dms;
 mod friends;
-mod instance;
+pub(crate) mod instance;
 mod invites;
 mod members;
 mod messages;

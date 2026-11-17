@@ -1,0 +1,29 @@
+{
+  "d": {
+    "attachments": [],
+    "author": {
+      "avatar": null,
+      "display_name": null,
+      "id": "1",
+      "status_text": null,
+      "username": "me"
+    },
+    "channel_id": "11",
+    "content": "hello **world**",
+    "deleted": false,
+    "edited_at": null,
+    "id": "100",
+    "kind": "default",
+    "mentions": {
+      "everyone": false,
+      "here": false,
+      "roles": [],
+      "users": []
+    },
+    "pinned": false,
+    "reactions": [],
+    "reply_to": null
+  },
+  "op": "message_create",
+  "s": 5
+}

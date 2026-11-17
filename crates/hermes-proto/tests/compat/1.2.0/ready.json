@@ -1,0 +1,87 @@
+{
+  "d": {
+    "dm_voice_states": [],
+    "dms": [],
+    "instance": {
+      "limits": {
+        "channels_encrypted": false,
+        "max_message_length": 4000,
+        "max_upload_mb": 25
+      },
+      "name": "Test"
+    },
+    "notification_settings": [],
+    "presences": [
+      {
+        "status": "online",
+        "user_id": "2"
+      }
+    ],
+    "privacy": {
+      "dm_from": "everyone",
+      "message_requests": true,
+      "show_last_online": true
+    },
+    "read_states": [],
+    "relationships": [],
+    "session_id": "s",
+    "spaces": [
+      {
+        "channels": [
+          {
+            "bitrate": null,
+            "id": "11",
+            "kind": "text",
+            "last_message_id": null,
+            "name": "general",
+            "overrides": [],
+            "owner_id": null,
+            "parent_id": null,
+            "position": 0,
+            "recipients": [],
+            "slowmode_secs": 0,
+            "space_id": "10",
+            "topic": null,
+            "user_limit": null
+          }
+        ],
+        "members": [],
+        "roles": [
+          {
+            "color": null,
+            "hoist": false,
+            "id": "10",
+            "mentionable": false,
+            "name": "@everyone",
+            "permissions": "304944709952",
+            "position": 0,
+            "space_id": "10"
+          }
+        ],
+        "space": {
+          "description": null,
+          "icon": null,
+          "id": "10",
+          "name": "Friends",
+          "owner_id": "2"
+        },
+        "voice_states": []
+      }
+    ],
+    "user": {
+      "avatar": null,
+      "display_name": null,
+      "id": "1",
+      "instance_admin": false,
+      "status_text": null,
+      "username": "me"
+    },
+    "voice": {
+      "cert_sha256": null,
+      "enabled": true,
+      "quic_port": 7700
+    }
+  },
+  "op": "ready",
+  "s": null
+}

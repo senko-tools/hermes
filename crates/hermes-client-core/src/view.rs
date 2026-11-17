@@ -41,6 +41,8 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
         .channels
         .values()
         .filter(|c| c.parent_id.is_none_or(|p| !state.channels.contains_key(&p)))
+        // Kinds from a newer server: nothing here could open them.
+        .filter(|c| c.kind != ChannelKind::Unknown)
         .collect();
     top.sort_by(|a, b| order(a, b));
     let entry = |c: &Channel, depth| {
@@ -62,7 +64,7 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
             let mut children: Vec<&Channel> = state
                 .channels
                 .values()
-                .filter(|child| child.parent_id == Some(c.id))
+                .filter(|child| child.parent_id == Some(c.id) && child.kind != ChannelKind::Unknown)
                 .collect();
             children.sort_by(|a, b| order(a, b));
             out.extend(children.into_iter().map(|child| entry(child, 1)));

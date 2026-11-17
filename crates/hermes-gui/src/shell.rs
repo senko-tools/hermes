@@ -198,6 +198,8 @@ pub struct Shell {
     pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
     pub update: Option<hermes_client_core::update::Update>,
+    /// "Not now" on the newer-server banner, for this run.
+    pub newer_server_dismissed: bool,
     pub new_dm: Option<NewDm>,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
@@ -368,6 +370,7 @@ impl Shell {
             auto_idle: false,
             system_reduce_motion: false,
             update: None,
+            newer_server_dismissed: false,
             new_dm: None,
             viewer: None,
             keys_dialog: None,
@@ -1321,6 +1324,46 @@ impl Shell {
         )
     }
 
+    /// A server can do things this build doesn't know: some of it doesn't show until Hermes is
+    /// updated.
+    fn render_newer_server_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.newer_server_dismissed {
+            return None;
+        }
+        let newer = {
+            let store = self.core.store();
+            store.instances.values().any(|s| s.server_is_newer())
+        };
+        if !newer {
+            return None;
+        }
+        Some(
+            div()
+                .id("newer-server-banner")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(6.))
+                .bg(theme::accent_soft())
+                .child(
+                    crate::channel::tip_button("newer-server-dismiss", assets::CLOSE, "Not now")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.newer_server_dismissed = true;
+                            cx.notify();
+                        })),
+                )
+                .cursor_pointer()
+                .text_size(crate::theme::secondary_size())
+                .child(div().flex_1().child(
+                    "A server you use is newer than this Hermes: some things won't show until                      you update. Click to check for an update",
+                ))
+                .on_click(cx.listener(|this, _, _, cx| this.check_for_update_now(cx)))
+                .into_any_element(),
+        )
+    }
+
     /// The sidebar's edge: dragging starts on press, a double-click goes back to the default.
     fn render_resize_handle(&self, on_right: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1533,7 +1576,10 @@ impl Render for Shell {
             .h_full()
             .child(header)
             .children(self.render_call_banner(cx))
-            .children(self.render_update_banner(cx))
+            .children(
+                self.render_update_banner(cx)
+                    .or_else(|| self.render_newer_server_banner(cx)),
+            )
             .children(self.render_status(cx))
             .child(
                 div()

@@ -139,12 +139,13 @@ pub enum ServerControl {
 pub enum KickReason {
     /// The same user joined voice from another connection.
     JoinedElsewhere,
-    /// A moderator disconnected you.
-    Disconnected,
     /// The channel was deleted.
     ChannelDeleted,
     /// You can no longer see or connect to the channel (left or removed from the space).
     Removed,
+    /// A moderator disconnected you. Also any reason from a newer server.
+    #[serde(other)]
+    Disconnected,
 }
 
 /// `u32` big-endian length prefix + JSON body.

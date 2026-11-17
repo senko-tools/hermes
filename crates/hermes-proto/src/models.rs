@@ -137,12 +137,16 @@ pub enum ChannelKind {
     Category,
     Dm,
     GroupDm,
+    /// A kind from a newer server. Clients show it as a channel they can't open; servers never
+    /// make one and refuse it in requests.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ChannelKind {
     /// Whether the channel holds messages (voice channels have a text chat too).
     pub const fn has_messages(self) -> bool {
-        !matches!(self, ChannelKind::Category)
+        !matches!(self, ChannelKind::Category | ChannelKind::Unknown)
     }
 
     /// Whether the channel has a voice room.
@@ -198,9 +202,11 @@ pub struct Channel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
-    Default,
     /// Join, call started, pin, …
     System,
+    /// Also any kind from a newer server: its content is shown as written.
+    #[serde(other)]
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +331,8 @@ pub enum Status {
     Online,
     Idle,
     Dnd,
+    /// Also any status from a newer server.
+    #[serde(other)]
     Offline,
 }
 
@@ -434,6 +442,9 @@ pub enum AuditAction {
     KeyPolicyUpdate,
     /// Several messages deleted at once (`details.count`).
     MessageDeleteBulk,
+    /// An action from a newer server. Never written by a server; not in [`AuditAction::ALL`].
+    #[serde(other)]
+    Unknown,
 }
 
 impl AuditAction {
@@ -497,6 +508,7 @@ impl AuditAction {
             AuditAction::MemberVoiceUpdate => "member_voice_update",
             AuditAction::MemberMove => "member_move",
             AuditAction::MemberDisconnect => "member_disconnect",
+            AuditAction::Unknown => "unknown",
         }
     }
 

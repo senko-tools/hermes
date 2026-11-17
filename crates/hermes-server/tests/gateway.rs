@@ -93,14 +93,24 @@ async fn close_codes() {
     ws.send_identify("hms_nope").await;
     assert_eq!(ws.closed().await, 4004);
 
-    // An unsupported protocol version.
+    // A protocol older than the server still serves.
     let mut ws = server.connect().await;
     ws.send(json!({ "op": "identify", "d": {
-        "token": owner, "protocol_version": 99,
+        "token": owner, "protocol_version": hermes_proto::MIN_CLIENT_PROTOCOL - 1,
         "client": { "name": "t", "version": "0", "os": "t" },
     }}))
     .await;
     assert_eq!(ws.closed().await, 4010);
+
+    // A newer client is welcome: it hides what this server's `features` lack.
+    let mut ws = server.connect().await;
+    ws.send(json!({ "op": "identify", "d": {
+        "token": owner, "protocol_version": 99,
+        "client": { "name": "t", "version": "9", "os": "t" },
+    }}))
+    .await;
+    let ready = ws.recv_op("ready").await;
+    assert!(ready["d"]["instance"]["features"].is_array(), "{ready}");
 
     // Identifying twice.
     let (mut ws, _) = server.identify(&owner).await;

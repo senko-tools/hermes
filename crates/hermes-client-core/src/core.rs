@@ -17,7 +17,7 @@ use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::markup;
 use hermes_proto::models::{Attachment, Invite, Message, PresenceStatus};
-use hermes_proto::{ErrorCode, PROTOCOL_VERSION};
+use hermes_proto::{ErrorCode, MIN_SERVER_PROTOCOL};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
@@ -124,13 +124,8 @@ impl fmt::Display for CoreError {
             CoreError::UnknownInstance(id) => write!(f, "no instance {id}"),
             CoreError::UnsupportedProtocol { server } => write!(
                 f,
-                "this server uses protocol version {server}, this client supports {PROTOCOL_VERSION}; \
-                 update the {} side",
-                if *server > PROTOCOL_VERSION {
-                    "client"
-                } else {
-                    "server"
-                }
+                "this server uses protocol version {server}, older than this client can talk to \
+                 ({MIN_SERVER_PROTOCOL}); the server needs an update"
             ),
             CoreError::UntrustedCertificate(fp) => write!(
                 f,
@@ -663,7 +658,8 @@ impl Core {
             None if seen.ca_valid => CertStatus::Trusted,
             None => CertStatus::Unknown,
         };
-        if info.protocol_version != PROTOCOL_VERSION {
+        // A newer server is fine: what it adds is announced in `features` and skipped here.
+        if info.protocol_version < MIN_SERVER_PROTOCOL {
             return Err(CoreError::UnsupportedProtocol {
                 server: info.protocol_version,
             });

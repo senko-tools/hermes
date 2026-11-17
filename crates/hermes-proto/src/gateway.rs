@@ -115,11 +115,15 @@ impl ClientMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceSnapshot {
     pub space: Space,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub roles: Vec<Role>,
     /// Only channels the user can `VIEW_CHANNEL`.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub channels: Vec<Channel>,
     /// Capped at 1000; larger spaces lazy-load the rest via REST.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub members: Vec<Member>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub voice_states: Vec<VoiceState>,
 }
 
@@ -145,6 +149,9 @@ pub struct InstanceLimits {
 pub struct InstanceInfo {
     pub name: String,
     pub limits: InstanceLimits,
+    /// What this server can do beyond protocol 2 ([`crate::compat::features`]).
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// The full snapshot sent after `identify` (PLAN.md section 11.3).
@@ -152,21 +159,27 @@ pub struct InstanceInfo {
 pub struct Ready {
     pub session_id: String,
     pub user: CurrentUser,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub spaces: Vec<SpaceSnapshot>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub dms: Vec<Channel>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub read_states: Vec<ReadState>,
     /// Users sharing a space or DM with you.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub presences: Vec<Presence>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub notification_settings: Vec<NotificationSetting>,
     /// Voice states of DM and group DM calls you are a recipient of (space voice states are in
     /// `spaces[].voice_states`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::compat::lenient_vec")]
     pub dm_voice_states: Vec<VoiceState>,
     /// Your privacy settings.
-    #[serde(default)]
+    /// A choice from a newer server reads as the defaults.
+    #[serde(default, deserialize_with = "crate::compat::or_default")]
     pub privacy: PrivacySettings,
     /// Your friends and friend requests.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::compat::lenient_vec")]
     pub relationships: Vec<Relationship>,
     pub voice: VoiceInfo,
     pub instance: InstanceInfo,
@@ -664,6 +677,7 @@ mod tests {
                     max_message_length: 4000,
                     channels_encrypted: false,
                 },
+                features: Vec::new(),
             },
         };
         let value = round_trip(&ServerMessage::control(ServerEvent::Ready(Box::new(ready))));

@@ -26,5 +26,14 @@ pub async fn get(State(state): State<Arc<AppState>>) -> Json<InstanceResponse> {
         voice: InstanceVoice {
             enabled: config.voice.enabled,
         },
+        features: features(),
     })
+}
+
+/// What this server can do beyond protocol 2, for `GET /instance` and `ready`.
+pub fn features() -> Vec<String> {
+    hermes_proto::compat::features::ALL
+        .iter()
+        .map(|f| (*f).to_owned())
+        .collect()
 }

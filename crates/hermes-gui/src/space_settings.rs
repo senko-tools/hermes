@@ -303,6 +303,7 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
         A::InviteRevoke => "revoked an invite".to_owned(),
         A::KeyPolicyUpdate => "changed the encryption rules".to_owned(),
         A::MessageDeleteBulk => "deleted several messages".to_owned(),
+        A::Unknown => format!("did something this version of Hermes doesn't know ({t})"),
     };
     let details = match entry.details.as_object() {
         Some(map) if !map.is_empty() => {

@@ -15,6 +15,7 @@ use hermes_proto::api::{
     UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
     VoiceStatePatchRequest,
 };
+use hermes_proto::compat::Lenient;
 use hermes_proto::e2ee::{
     ChannelKeysResponse, DeliverKeysRequest, DeviceQuery, KeyMembers, KeyPolicy, KeyPolicyOverride,
     KeyRequest, RegisterDeviceRequest, RequestKeysRequest, SealedChannelKey, StartEpochRequest,
@@ -405,8 +406,9 @@ impl Rest {
     /// Messages mentioning me, newest first.
     pub async fn mentions(&self, before: Option<Id>, limit: u32) -> Result<Vec<Message>> {
         let before = before.map_or_else(String::new, |id| format!("&before={id}"));
-        self.get(&format!("/users/@me/mentions?limit={limit}{before}"))
+        self.get::<Lenient<Message>>(&format!("/users/@me/mentions?limit={limit}{before}"))
             .await
+            .map(|l| l.0)
     }
 
     pub async fn set_notification_setting(
@@ -496,8 +498,9 @@ impl Rest {
     /// One page of members, ordered by user ID.
     pub async fn members(&self, space: Id, after: Option<Id>, limit: u32) -> Result<Vec<Member>> {
         let after = after.map_or_else(String::new, |id| format!("&after={id}"));
-        self.get(&format!("/spaces/{space}/members?limit={limit}{after}"))
+        self.get::<Lenient<Member>>(&format!("/spaces/{space}/members?limit={limit}{after}"))
             .await
+            .map(|l| l.0)
     }
 
     /// All members, page by page.
@@ -713,8 +716,9 @@ impl Rest {
         limit: u32,
     ) -> Result<Vec<AuditEntry>> {
         let before = before.map_or_else(String::new, |id| format!("&before={id}"));
-        self.get(&format!("/spaces/{space}/audit-log?limit={limit}{before}"))
+        self.get::<Lenient<AuditEntry>>(&format!("/spaces/{space}/audit-log?limit={limit}{before}"))
             .await
+            .map(|l| l.0)
     }
 
     // ---- roles ----------------------------------------------------------------------------
@@ -818,11 +822,12 @@ impl Rest {
                 params.push(format!("{name}={id}"));
             }
         }
-        self.get(&format!(
+        self.get::<Lenient<Message>>(&format!(
             "/channels/{channel}/messages?{}",
             params.join("&")
         ))
         .await
+        .map(|l| l.0)
     }
 
     pub async fn message(&self, channel: Id, message: Id) -> Result<Message> {
@@ -881,7 +886,9 @@ impl Rest {
     }
 
     pub async fn pins(&self, channel: Id) -> Result<Vec<Message>> {
-        self.get(&format!("/channels/{channel}/pins")).await
+        self.get::<Lenient<Message>>(&format!("/channels/{channel}/pins"))
+            .await
+            .map(|l| l.0)
     }
 
     pub async fn react(&self, channel: Id, message: Id, emoji: &str) -> Result<()> {
@@ -1012,7 +1019,7 @@ impl Rest {
     // ---- DMs ------------------------------------------------------------------------------
 
     pub async fn dms(&self) -> Result<Vec<Channel>> {
-        self.get("/dms").await
+        self.get::<Lenient<Channel>>("/dms").await.map(|l| l.0)
     }
 
     /// One recipient reuses the 1:1 DM; more create a group DM.

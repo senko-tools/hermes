@@ -27,6 +27,30 @@ crate; this file is kept in sync with it. Protocol version: **1**.
 - JSON field names are `snake_case`; enum values are `snake_case` strings.
 - Default port **7700**: TCP for HTTPS/WSS, UDP for QUIC voice.
 
+### Versions and compatibility
+
+A server update must not break the clients people already have, and a new client must still
+work on a server that hasn't been updated yet (`hermes_proto::compat`).
+
+- `protocol_version` (now 2) changes only for a change that breaks older peers. A server accepts
+  any client `>= MIN_CLIENT_PROTOCOL`, and a client accepts any server `>= MIN_SERVER_PROTOCOL`.
+  Close code 4010 means the client is older than that floor.
+- Everything else is additive: new fields (always optional, with a default), new ops (peers that
+  don't know them skip the frame), and new enum values. Enums only a server sends fall back to a
+  known value: an unknown status reads as `offline`, a message kind as `default` (its content is
+  shown), an error code as `BAD_REQUEST` (its `message` still explains), a voice kick reason as
+  `disconnected`. Channel kinds and audit actions get `unknown`, and clients hide unknown
+  channels. Enums a client sends too stay strict, so a server refuses what it doesn't know. Where
+  a client reads one, the field falls back instead: `ready.privacy` to the defaults and
+  `registration_mode` to `invite_only`.
+- Lists in `ready` and in REST answers are read item by item: an item a client can't read is
+  dropped, and the rest of the list is kept.
+- `GET /instance` and `ready.instance` carry `features: [string]`, what the server can do beyond
+  protocol 2. A client only offers what the server lists. A server from before the list sends
+  none, so a client treats it as having none of them.
+- `crates/hermes-proto/tests/compat/<version>/` holds what each release's server sent, and the
+  tests read every folder with the current types. Each release adds its own folder.
+
 ## REST
 
 Base path `/api/v1`, JSON bodies, `Authorization: Bearer hms_…`. The endpoint list is PLAN.md
@@ -104,7 +128,7 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 ### Lifecycle
 
 1. Server: `hello {heartbeat_interval_ms: 30000}`.
-2. Client: `identify {token, protocol_version: 1, client: {name, version, os}}` or
+2. Client: `identify {token, protocol_version: 2, client: {name, version, os}}` or
    `resume {token, session_id, last_seq}`.
 3. Server: `ready {…}` after identify; after resume, every missed event and then `resumed {}`, or
    `invalid_session {resumable: false}` (identify again and replace your state).

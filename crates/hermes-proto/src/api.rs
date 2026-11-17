@@ -58,9 +58,15 @@ pub struct InstanceResponse {
     /// Server version (`CARGO_PKG_VERSION`).
     pub version: String,
     pub protocol_version: u32,
+    /// A mode from a newer server reads as `invite_only`.
+    #[serde(deserialize_with = "crate::compat::or_default")]
     pub registration_mode: RegistrationMode,
     pub limits: InstanceLimits,
     pub voice: InstanceVoice,
+    /// What this server can do beyond protocol 2 ([`crate::compat::features`]). Older servers
+    /// send none.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -105,6 +105,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
                 max_message_length: config.limits.max_message_length,
                 channels_encrypted: config.privacy.require_channel_encryption,
             },
+            features: crate::api::instance::features(),
         },
     })
 }

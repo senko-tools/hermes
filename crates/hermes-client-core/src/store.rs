@@ -247,6 +247,23 @@ impl InstanceStore {
         }
     }
 
+    /// Whether this server can do `feature` ([`hermes_proto::compat::features`]). Servers from
+    /// before the list can do none of them.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(|i| hermes_proto::compat::has_feature(&i.features, feature))
+    }
+
+    /// Whether this server can do things this build doesn't know about: it is newer.
+    pub fn server_is_newer(&self) -> bool {
+        self.instance.as_ref().is_some_and(|i| {
+            i.features
+                .iter()
+                .any(|f| !hermes_proto::compat::features::ALL.contains(&f.as_str()))
+        })
+    }
+
     pub fn max_upload_mb(&self) -> Option<u32> {
         self.instance.as_ref().map(|i| i.limits.max_upload_mb)
     }
@@ -1101,6 +1118,7 @@ pub(crate) mod tests {
                     max_message_length: 4000,
                     channels_encrypted: false,
                 },
+                features: Vec::new(),
             },
         }
     }

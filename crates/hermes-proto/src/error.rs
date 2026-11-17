@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
-    BadRequest,
     /// Comes with a `fields` map (field name → problem).
     ValidationFailed,
     Unauthorized,
@@ -34,6 +33,9 @@ pub enum ErrorCode {
     VoiceFull,
     VoiceDisabled,
     Internal,
+    /// Also any code from a newer server (its message still says what went wrong).
+    #[serde(other)]
+    BadRequest,
 }
 
 impl ErrorCode {

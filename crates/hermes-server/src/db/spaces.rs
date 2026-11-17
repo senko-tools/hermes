@@ -110,6 +110,8 @@ fn channel_kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Category => "category",
         ChannelKind::Dm => "dm",
         ChannelKind::GroupDm => "group_dm",
+        // Refused in every request before it gets here.
+        ChannelKind::Unknown => "unknown",
     }
 }
 

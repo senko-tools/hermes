@@ -160,6 +160,7 @@ pub fn store() -> InstanceStore {
                 max_message_length: 4000,
                 channels_encrypted: false,
             },
+            features: Vec::new(),
         },
     };
     let mut store = InstanceStore::default();

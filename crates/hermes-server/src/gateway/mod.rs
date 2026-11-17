@@ -12,7 +12,6 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
-use hermes_proto::PROTOCOL_VERSION;
 use hermes_proto::gateway::{
     ClientMessage, CloseCode, Identify, Resume, ServerEvent, ServerMessage,
 };
@@ -226,7 +225,8 @@ impl Connection {
         if self.attached.is_some() {
             return Err(End::Close(CloseCode::AlreadyAuthenticated));
         }
-        if identify.protocol_version != PROTOCOL_VERSION {
+        // Newer clients are welcome: they hide what this server's `features` lack.
+        if identify.protocol_version < hermes_proto::MIN_CLIENT_PROTOCOL {
             return Err(End::Close(CloseCode::UnsupportedProtocolVersion));
         }
         let (user_id, auth_session_id) = check_token(&self.state, &identify.token).await?;
