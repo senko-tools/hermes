@@ -87,15 +87,41 @@ fn status_text(status: Status) -> &'static str {
     }
 }
 
+/// Whether `tab` lists lines of `kind` (Online also leaves out who is offline).
+fn tab_lists(tab: FriendsTab, kind: LineKind) -> bool {
+    match tab {
+        FriendsTab::Online | FriendsTab::All => kind == LineKind::Friend,
+        FriendsTab::Pending => matches!(
+            kind,
+            LineKind::Incoming | LineKind::Outgoing | LineKind::MessageRequest(_)
+        ),
+        FriendsTab::People => kind == LineKind::Person,
+    }
+}
+
 impl Shell {
-    fn friends_lines(&self) -> Vec<Line> {
+    /// The lines `tab` lists, and how many requests wait (for the Pending tab's label). This runs
+    /// on every frame, so only the open tab's lines are built: People can be everyone in every
+    /// space.
+    fn friends_lines(&self, tab: FriendsTab) -> (Vec<Line>, usize) {
         let store = self.core.store();
         let mut lines = Vec::new();
+        let mut waiting = 0;
         for inst in self.core.instance_ids() {
             let Some(s) = store.instance(&inst) else {
                 continue;
             };
-            for request in view::dm_requests(s) {
+            waiting += s.dms.values().filter(|c| c.request).count()
+                + s.relationships
+                    .values()
+                    .filter(|r| r.kind != RelationshipKind::Friend)
+                    .count();
+            let requests = if tab == FriendsTab::Pending {
+                view::dm_requests(s)
+            } else {
+                Vec::new()
+            };
+            for request in requests {
                 let peer = s
                     .dms
                     .get(&request.id)
@@ -119,6 +145,9 @@ impl Shell {
                     }
                     RelationshipKind::Outgoing => (LineKind::Outgoing, Some("Request sent")),
                 };
+                if !tab_lists(tab, kind) {
+                    continue;
+                }
                 let status = s.status(r.user.id);
                 let detail = pending.map_or_else(
                     || {
@@ -138,6 +167,9 @@ impl Shell {
                     detail,
                     status,
                 });
+            }
+            if tab != FriendsTab::People {
+                continue;
             }
             let me = s.me_id();
             let known: std::collections::BTreeSet<Id> = s
@@ -168,22 +200,13 @@ impl Shell {
                 });
             }
         }
-        lines.sort_by_key(|l| (l.status == Status::Offline, l.name.to_lowercase()));
-        lines
+        lines.sort_by_cached_key(|l| (l.status == Status::Offline, l.name.to_lowercase()));
+        (lines, waiting)
     }
 
     pub fn render_friends(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let lines = self.friends_lines();
-        let pending_count = lines
-            .iter()
-            .filter(|l| {
-                matches!(
-                    l.kind,
-                    LineKind::Incoming | LineKind::Outgoing | LineKind::MessageRequest(_)
-                )
-            })
-            .count();
         let tab = self.friends_tab;
+        let (lines, pending_count) = self.friends_lines(tab);
         let tabs: Vec<_> = FriendsTab::ALL
             .into_iter()
             .enumerate()
@@ -203,14 +226,8 @@ impl Shell {
             .collect();
         let shown: Vec<Line> = lines
             .into_iter()
-            .filter(|l| match tab {
-                FriendsTab::Online => l.kind == LineKind::Friend && l.status != Status::Offline,
-                FriendsTab::All => l.kind == LineKind::Friend,
-                FriendsTab::Pending => matches!(
-                    l.kind,
-                    LineKind::Incoming | LineKind::Outgoing | LineKind::MessageRequest(_)
-                ),
-                FriendsTab::People => l.kind == LineKind::Person,
+            .filter(|l| {
+                tab_lists(tab, l.kind) && (tab != FriendsTab::Online || l.status != Status::Offline)
             })
             .collect();
         let mut content: Vec<AnyElement> = Vec::new();
