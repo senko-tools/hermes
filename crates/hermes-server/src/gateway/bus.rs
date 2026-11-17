@@ -5,8 +5,12 @@
 //! `{"s":N,` followed by the shared body, stored as an `Arc<str>` in the resume buffer and pushed
 //! into the session's bounded queue. A full queue closes the connection with 4009; the client
 //! then resumes from the buffer.
+//!
+//! Sessions are indexed by ID (for `resume`) and by user (for delivering events). Lock order:
+//! the session map, then a session's own lock.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -92,9 +96,70 @@ impl Default for Timings {
 #[derive(Debug, Default)]
 pub struct Gateway {
     pub timings: Timings,
-    sessions: Mutex<HashMap<String, Arc<Session>>>,
+    sessions: Mutex<Sessions>,
     /// Set once on shutdown; every connection then closes with 4100.
     shutdown: watch::Sender<bool>,
+}
+
+/// The sessions by ID and by user; the two always hold the same sessions.
+#[derive(Debug, Default)]
+struct Sessions {
+    by_id: HashMap<String, Arc<Session>>,
+    by_user: HashMap<Id, Vec<Arc<Session>>>,
+}
+
+impl Sessions {
+    fn insert(&mut self, session: Arc<Session>) {
+        self.by_user
+            .entry(session.user_id)
+            .or_default()
+            .push(session.clone());
+        self.by_id.insert(session.id.clone(), session);
+    }
+
+    fn remove(&mut self, session_id: &str) -> Option<Arc<Session>> {
+        let session = self.by_id.remove(session_id)?;
+        if let Some(of_user) = self.by_user.get_mut(&session.user_id) {
+            of_user.retain(|s| !Arc::ptr_eq(s, &session));
+            if of_user.is_empty() {
+                self.by_user.remove(&session.user_id);
+            }
+        }
+        Some(session)
+    }
+
+    /// Removes every session for which `drop` is true.
+    fn remove_where(&mut self, mut drop: impl FnMut(&Session) -> bool) -> Vec<Arc<Session>> {
+        let ids: Vec<String> = self
+            .by_id
+            .values()
+            .filter(|s| drop(s))
+            .map(|s| s.id.clone())
+            .collect();
+        ids.iter().filter_map(|id| self.remove(id)).collect()
+    }
+
+    /// The sessions of `users`, except those of `except`. Walks whichever side is smaller: the
+    /// audience or the users that have sessions.
+    fn of_users(&self, users: &HashSet<Id>, except: Option<Id>) -> Vec<Arc<Session>> {
+        let wanted = |user_id: &Id| Some(*user_id) != except;
+        if users.len() <= self.by_user.len() {
+            users
+                .iter()
+                .filter(|u| wanted(u))
+                .filter_map(|u| self.by_user.get(u))
+                .flatten()
+                .cloned()
+                .collect()
+        } else {
+            self.by_user
+                .iter()
+                .filter(|(u, _)| wanted(u) && users.contains(u))
+                .flat_map(|(_, of_user)| of_user)
+                .cloned()
+                .collect()
+        }
+    }
 }
 
 /// One gateway session: created by `identify`, survives disconnects for
@@ -162,7 +227,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn new_session_id() -> String {
     let mut bytes = [0u8; 16];
     rand::fill(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut id = String::with_capacity(2 * bytes.len());
+    for b in bytes {
+        let _ = write!(id, "{b:02x}");
+    }
+    id
 }
 
 /// The part of a serialized event after its opening `{`, ready to be prefixed with `{"s":N,`.
@@ -213,8 +282,8 @@ impl Gateway {
         let attached = session.attach(self.timings.queue_capacity);
         let mut sessions = lock(&self.sessions);
         let window = self.timings.resume_window;
-        sessions.retain(|_, s| !s.expired(now, window));
-        sessions.insert(session.id.clone(), session);
+        sessions.remove_where(|s| s.expired(now, window));
+        sessions.insert(session);
         attached
     }
 
@@ -230,7 +299,7 @@ impl Gateway {
         let window = self.timings.resume_window;
         let session = {
             let mut sessions = lock(&self.sessions);
-            let session = sessions.get(session_id).cloned();
+            let session = sessions.by_id.get(session_id).cloned();
             match session {
                 Some(s) if s.expired(now, window) => {
                     sessions.remove(session_id);
@@ -281,13 +350,15 @@ impl Gateway {
     /// Whether `user_id` has at least one connected session.
     pub fn is_connected(&self, user_id: Id) -> bool {
         lock(&self.sessions)
-            .values()
-            .any(|s| s.user_id == user_id && lock(&s.inner).conn.is_some())
+            .by_user
+            .get(&user_id)
+            .is_some_and(|of_user| of_user.iter().any(|s| lock(&s.inner).conn.is_some()))
     }
 
     /// The REST sessions that have a gateway session.
     pub fn auth_session_ids(&self) -> HashSet<Id> {
         lock(&self.sessions)
+            .by_id
             .values()
             .map(|s| s.auth_session_id)
             .collect()
@@ -295,15 +366,8 @@ impl Gateway {
 
     /// Closes (4011) and forgets every session opened with one of these REST sessions.
     pub fn revoke(&self, auth_session_ids: &[Id]) {
-        let revoked: Vec<Arc<Session>> = {
-            let mut sessions = lock(&self.sessions);
-            let ids: Vec<String> = sessions
-                .values()
-                .filter(|s| auth_session_ids.contains(&s.auth_session_id))
-                .map(|s| s.id.clone())
-                .collect();
-            ids.iter().filter_map(|id| sessions.remove(id)).collect()
-        };
+        let revoked =
+            lock(&self.sessions).remove_where(|s| auth_session_ids.contains(&s.auth_session_id));
         for session in revoked {
             if let Some(conn) = lock(&session.inner).conn.take() {
                 conn.close.send_replace(Some(CloseCode::SessionRevoked));
@@ -311,27 +375,38 @@ impl Gateway {
         }
     }
 
-    /// Sends a dispatch event to every session of `users`, except those of `except`.
+    /// Sends a dispatch event to every session of `users`, except those of `except`. Sessions
+    /// whose resume window has passed get nothing and are dropped.
     pub fn send(&self, users: &HashSet<Id>, except: Option<Id>, event: &ServerEvent) {
         debug_assert!(event.is_dispatch(), "control op published on the bus");
-        let targets: Vec<Arc<Session>> = lock(&self.sessions)
-            .values()
-            .filter(|s| users.contains(&s.user_id) && Some(s.user_id) != except)
-            .cloned()
-            .collect();
+        let targets = lock(&self.sessions).of_users(users, except);
         if targets.is_empty() {
             return;
         }
         let body = event_body(event);
         let now = Instant::now();
-        for session in targets {
-            session.push(&body, now, &self.timings);
+        let expired: Vec<&Arc<Session>> = targets
+            .iter()
+            .filter(|session| !session.push(&body, now, &self.timings))
+            .collect();
+        if !expired.is_empty() {
+            let mut sessions = lock(&self.sessions);
+            for session in expired {
+                // An expired session never comes back (`resume` refuses it), so it can go.
+                if sessions
+                    .by_id
+                    .get(&session.id)
+                    .is_some_and(|s| Arc::ptr_eq(s, session))
+                {
+                    sessions.remove(&session.id);
+                }
+            }
         }
     }
 
     /// Number of known sessions (connected or resumable).
     pub fn session_count(&self) -> usize {
-        lock(&self.sessions).len()
+        lock(&self.sessions).by_id.len()
     }
 }
 
@@ -341,13 +416,16 @@ impl Session {
     }
 
     fn expired(&self, now: Instant, window: Duration) -> bool {
-        lock(&self.inner)
-            .disconnected_at
-            .is_some_and(|at| now.duration_since(at) >= window)
+        lock(&self.inner).expired(now, window)
     }
 
-    fn push(&self, body: &str, now: Instant, timings: &Timings) {
+    /// Numbers, buffers and queues one event. Returns `false` (and does nothing) if the
+    /// session's resume window has passed.
+    fn push(&self, body: &str, now: Instant, timings: &Timings) -> bool {
         let mut inner = lock(&self.inner);
+        if inner.expired(now, timings.resume_window) {
+            return false;
+        }
         inner.seq += 1;
         let frame: Arc<str> = format!("{{\"s\":{},{body}", inner.seq).into();
         let seq = inner.seq;
@@ -365,10 +443,17 @@ impl Session {
             conn.close.send_replace(Some(CloseCode::SessionTimedOut));
             inner.disconnected_at = Some(now);
         }
+        true
     }
 }
 
 impl SessionInner {
+    /// Disconnected for at least `window`: it can no longer be resumed.
+    fn expired(&self, now: Instant, window: Duration) -> bool {
+        self.disconnected_at
+            .is_some_and(|at| now.duration_since(at) >= window)
+    }
+
     fn attach(&mut self, session: &Arc<Session>, capacity: usize) -> Attached {
         let (frames_tx, frames_rx) = mpsc::channel(capacity);
         let (close_tx, close_rx) = watch::channel(None);
@@ -514,6 +599,61 @@ mod tests {
             ResumeError::Invalid
         );
         assert_eq!(gw.session_count(), 1);
+    }
+
+    #[test]
+    fn events_reach_the_sessions_of_small_and_large_audiences() {
+        let gw = Gateway::default();
+        let mut a1 = gw.create(ALICE, Id(10));
+        let mut a2 = gw.create(ALICE, Id(11));
+        let mut b = gw.create(BOB, Id(12));
+        // Fewer users than have sessions, then many users who mostly have none.
+        gw.send(&HashSet::from([ALICE]), None, &event(1));
+        let crowd: HashSet<Id> = (1..=100).map(Id).collect();
+        gw.send(&crowd, Some(BOB), &event(2));
+        gw.send(&crowd, None, &event(3));
+        for a in [&mut a1, &mut a2] {
+            let seqs: Vec<u64> = std::iter::from_fn(|| a.frames.try_recv().ok())
+                .map(|f| seq_of(&f))
+                .collect();
+            assert_eq!(seqs, [1, 2, 3]);
+        }
+        let seqs: Vec<u64> = std::iter::from_fn(|| b.frames.try_recv().ok())
+            .map(|f| seq_of(&f))
+            .collect();
+        assert_eq!(seqs, [1], "only event 3, as bob's first");
+        assert!(gw.is_connected(ALICE));
+        gw.revoke(&[Id(10), Id(11)]);
+        assert!(!gw.is_connected(ALICE));
+        assert!(gw.is_connected(BOB));
+        assert_eq!(gw.session_count(), 1);
+    }
+
+    #[test]
+    fn sending_drops_expired_sessions() {
+        let gw = Gateway::new(Timings {
+            resume_window: Duration::ZERO,
+            ..Timings::default()
+        });
+        let a = gw.create(ALICE, Id(10));
+        let _b = gw.create(BOB, Id(11));
+        gw.detach(&a);
+        assert_eq!(gw.session_count(), 2);
+        gw.send(&HashSet::from([ALICE, BOB]), None, &event(1));
+        assert_eq!(gw.session_count(), 1, "alice's expired session is gone");
+        assert!(gw.is_connected(BOB));
+        assert!(!gw.is_connected(ALICE));
+    }
+
+    #[test]
+    fn session_ids_are_32_hex_digits() {
+        let id = new_session_id();
+        assert_eq!(id.len(), 32);
+        assert!(
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_ne!(id, new_session_id());
     }
 
     #[test]
