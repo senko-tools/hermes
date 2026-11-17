@@ -102,7 +102,11 @@ pub enum Purpose {
         inst: InstanceId,
         space: Id,
     },
-    EditProfile(InstanceId),
+    /// `bio`: the form has an "About me" field (the server has the `bio` feature).
+    EditProfile {
+        inst: InstanceId,
+        bio: bool,
+    },
     ChangePassword(InstanceId),
     LoginCode {
         host: hermes_client_core::address::HostPort,
@@ -596,20 +600,64 @@ impl Shell {
             store.instance(&inst).and_then(|s| s.me.clone())
         };
         let Some(me) = me else { return };
-        let form = Form::new(Purpose::EditProfile(inst), "Edit profile", "Save")
-            .text(format!("Signed in as @{}.", me.user.username));
-        let fields = Self::fields(form, window, cx)
+        let with_bio = self
+            .core
+            .store()
+            .instance(&inst)
+            .is_some_and(|s| s.has_feature(hermes_client_core::proto::compat::features::BIO));
+        if !with_bio {
+            self.show_profile_form(inst, me.user, None, window, cx);
+            return;
+        }
+        // The "About me" is only on the full profile: fetched first.
+        let Ok(rest) = self.core.rest(&inst) else {
+            return;
+        };
+        let id = me.user.id;
+        self.run(
+            cx,
+            async move { rest.user(id).await },
+            move |this, result, window, cx| {
+                let bio = result.ok().and_then(|p| p.bio).unwrap_or_default();
+                this.show_profile_form(inst.clone(), me.user.clone(), Some(bio), window, cx);
+            },
+        );
+    }
+
+    fn show_profile_form(
+        &mut self,
+        inst: InstanceId,
+        user: hermes_client_core::proto::models::User,
+        bio: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let purpose = Purpose::EditProfile {
+            inst,
+            bio: bio.is_some(),
+        };
+        let form = Form::new(purpose, "Edit profile", "Save")
+            .text(format!("Signed in as @{}.", user.username));
+        let mut fields = Self::fields(form, window, cx)
             .text_hint(
                 "Display name",
                 "Leave empty to use your username.",
                 "Shown instead of your username",
-                me.user.display_name.clone().unwrap_or_default(),
+                user.display_name.clone().unwrap_or_default(),
             )
             .text(
                 "Status",
                 "e.g. Working on a project",
-                me.user.status_text.clone().unwrap_or_default(),
+                user.status_text.clone().unwrap_or_default(),
             );
+        if let Some(bio) = bio {
+            fields = fields.text_hint(
+                "About me",
+                "Shown on your profile, up to 190 characters.",
+                "A few words about you",
+                bio,
+            );
+        }
         self.finish(fields);
     }
 
@@ -1275,8 +1323,12 @@ impl Shell {
                     })
                 });
             }
-            Purpose::EditProfile(inst) => {
+            Purpose::EditProfile { inst, bio } => {
                 let (display, status) = (form.value(0, cx), form.value(1, cx));
+                let about = bio.then(|| form.value(2, cx));
+                if about.as_ref().is_some_and(|b| b.chars().count() > 190) {
+                    return Err("About me can be at most 190 characters".into());
+                }
                 if display.chars().count() > 32 {
                     return Err("the display name can be at most 32 characters".into());
                 }
@@ -1286,6 +1338,7 @@ impl Shell {
                 let req = hermes_client_core::proto::api::UpdateMeRequest {
                     display_name: Some((!display.is_empty()).then_some(display)),
                     status_text: Some((!status.is_empty()).then_some(status)),
+                    bio: about.map(|b| (!b.is_empty()).then_some(b)),
                     ..Default::default()
                 };
                 self.form_call(cx, async move {

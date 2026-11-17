@@ -23,6 +23,8 @@ pub struct ProfileCard {
     pub at: crate::modal::PopupFrom,
     /// When they were last online, once the server has said.
     pub last_online: Option<i64>,
+    /// Their "About me", once the profile is fetched.
+    pub bio: Option<String>,
 }
 
 impl Shell {
@@ -56,6 +58,7 @@ impl Shell {
             user,
             at,
             last_online: None,
+            bio: None,
         });
         self.fetch_last_online(cx);
         cx.notify();
@@ -196,6 +199,7 @@ impl Shell {
                 Ok(profile) => {
                     if let Some(card) = this.profile.as_mut().filter(|c| c.user == user) {
                         card.last_online = profile.last_online_at;
+                        card.bio = profile.bio;
                         cx.notify();
                     }
                 }
@@ -292,6 +296,17 @@ impl Shell {
                 }))
         });
         let mut details: Vec<AnyElement> = Vec::new();
+        if let Some(bio) = card.bio.clone() {
+            details.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(section("About me"))
+                    .child(div().whitespace_normal().child(bio))
+                    .into_any_element(),
+            );
+        }
         if let Some(joined) = joined {
             details.push(
                 div()
