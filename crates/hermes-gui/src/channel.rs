@@ -1788,6 +1788,25 @@ impl Shell {
         });
     }
 
+    /// A file card's download button.
+    pub fn download_button(
+        &self,
+        inst: &InstanceId,
+        a: &Attachment,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        let (inst, attachment) = (inst.clone(), a.clone());
+        tip_button(
+            SharedString::from(format!("file-download-{}", a.id)),
+            assets::DOWNLOAD,
+            "Download",
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.download(inst.clone(), attachment.clone(), cx);
+        }))
+    }
+
     pub(crate) fn open_image(
         &mut self,
         inst: InstanceId,
@@ -3856,7 +3875,8 @@ impl Shell {
                             .text_color(theme::text_tertiary())
                             .child(human_size(a.size)),
                     ),
-            );
+            )
+            .child(self.download_button(inst, a, cx));
         self.with_file_menu(card, inst, place, a.id, cx)
             .into_any_element()
     }

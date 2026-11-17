@@ -1280,7 +1280,14 @@ impl Shell {
                             .text_color(theme::danger())
                             .child(err)
                             .into_any_element(),
-                        None => wave.mr(px(4.)).into_any_element(),
+                        // The waveform leaves room for the download button beside it.
+                        None => div()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(wave.flex_1().min_w_0())
+                            .child(self.download_button(inst, a, cx))
+                            .into_any_element(),
                     }),
             );
         let card = self.with_volume_wheel(card, &key, cx);
