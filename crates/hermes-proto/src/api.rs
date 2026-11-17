@@ -266,9 +266,42 @@ pub struct NotificationSettingRequest {
     pub muted_until: Option<i64>,
 }
 
-/// `GET /search`.
+/// What a found message must have (`GET /search?has=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchHas {
+    /// Any attachment.
+    File,
+    /// An attached picture.
+    Image,
+    /// A web link in its text.
+    Link,
+}
+
+impl SearchHas {
+    pub const ALL: [SearchHas; 3] = [SearchHas::File, SearchHas::Image, SearchHas::Link];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SearchHas::File => "file",
+            SearchHas::Image => "image",
+            SearchHas::Link => "link",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim().to_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|h| h.as_str() == name || (name == "files" && *h == SearchHas::File))
+    }
+}
+
+/// `GET /search`. With the `search_filters` feature the words may be left out when a filter is
+/// given (`author_id`, `before`, `after` or `has`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchQuery {
+    #[serde(default)]
     pub q: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<Id>,
@@ -278,8 +311,24 @@ pub struct SearchQuery {
     pub author_id: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Id>,
+    /// Only messages newer than this (`search_filters`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// Only messages with this (`search_filters`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has: Option<SearchHas>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+}
+
+impl SearchQuery {
+    /// Whether anything besides the words narrows the search.
+    pub fn has_filters(&self) -> bool {
+        self.author_id.is_some()
+            || self.before.is_some()
+            || self.after.is_some()
+            || self.has.is_some()
+    }
 }
 
 /// The answer of `GET /search`: newest first.

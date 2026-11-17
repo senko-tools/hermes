@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COUNT(*) AS \"n!: i64\"\n           FROM messages_fts f JOIN messages m ON m.id = f.rowid\n           WHERE messages_fts MATCH ?1 AND m.deleted = 0\n             AND m.channel_id IN (SELECT value FROM json_each(?2))\n             AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5\n                 AND (?6 IS NULL\n                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))\n                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a\n                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))\n                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a84668fa9c011928d3165aa55f825b00839033142e117727013667d53b217323"
+}

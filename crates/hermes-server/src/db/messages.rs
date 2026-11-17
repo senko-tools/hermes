@@ -3,6 +3,7 @@
 //! Batch loads take the message IDs as a JSON array (`json_each`), because SQLite has no array
 //! parameters.
 
+use hermes_proto::api::SearchHas;
 use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, Mentions, MessageKind};
 use sqlx::{SqliteConnection, SqliteExecutor};
@@ -708,61 +709,152 @@ pub async fn set_read(
     Ok(())
 }
 
-/// Full-text matches of `fts` (an FTS5 query) in `channels`, newest first, not deleted.
+/// What narrows a search besides its words.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SearchFilter {
+    pub author: Option<Id>,
+    /// Only messages older than this.
+    pub before: Option<Id>,
+    /// Only messages newer than this.
+    pub after: Option<Id>,
+    pub has: Option<SearchHas>,
+}
+
+impl SearchFilter {
+    fn binds(&self) -> (Option<i64>, i64, i64, Option<&'static str>) {
+        (
+            self.author.map(Id::to_i64),
+            self.before.map_or(i64::MAX, Id::to_i64),
+            self.after.map_or(0, Id::to_i64),
+            self.has.map(SearchHas::as_str),
+        )
+    }
+}
+
+/// Matches in `channels`, newest first, not deleted: of `fts` (an FTS5 query), or with no
+/// words every message that passes `filter`.
 pub async fn search(
     e: impl SqliteExecutor<'_>,
-    fts: &str,
+    fts: Option<&str>,
     channels: &[Id],
-    author: Option<Id>,
-    before: Option<Id>,
+    filter: SearchFilter,
     limit: u32,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let channels = id_list(channels);
-    let author = author.map(Id::to_i64);
-    let before = before.map_or(i64::MAX, Id::to_i64);
+    let (author, before, after, has) = filter.binds();
     let limit = i64::from(limit);
-    rows(
-        sqlx::query_as!(
-            Raw,
-            r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
+    let raw = match fts {
+        Some(fts) => {
+            sqlx::query_as!(
+                Raw,
+                r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
                       m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
                FROM messages_fts f JOIN messages m ON m.id = f.rowid
                WHERE messages_fts MATCH ?1 AND m.deleted = 0
                  AND m.channel_id IN (SELECT value FROM json_each(?2))
-                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4
-               ORDER BY m.id DESC LIMIT ?5"#,
-            fts,
-            channels,
-            author,
-            before,
-            limit
-        )
-        .fetch_all(e)
-        .await?,
-    )
+                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))
+               ORDER BY m.id DESC LIMIT ?7"#,
+                fts,
+                channels,
+                author,
+                before,
+                after,
+                has,
+                limit
+            )
+            .fetch_all(e)
+            .await?
+        }
+        None => {
+            sqlx::query_as!(
+                Raw,
+                r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
+                      m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
+               FROM messages m
+               WHERE ?1 IS NULL AND m.deleted = 0
+                 AND m.channel_id IN (SELECT value FROM json_each(?2))
+                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))
+               ORDER BY m.id DESC LIMIT ?7"#,
+                Option::<String>::None,
+                channels,
+                author,
+                before,
+                after,
+                has,
+                limit
+            )
+            .fetch_all(e)
+            .await?
+        }
+    };
+    rows(raw)
 }
 
 /// How many messages [`search`] could return without the page limit.
 pub async fn search_count(
     e: impl SqliteExecutor<'_>,
-    fts: &str,
+    fts: Option<&str>,
     channels: &[Id],
-    author: Option<Id>,
+    filter: SearchFilter,
 ) -> Result<i64, sqlx::Error> {
     let channels = id_list(channels);
-    let author = author.map(Id::to_i64);
-    sqlx::query_scalar!(
-        r#"SELECT COUNT(*) AS "n!: i64"
+    let (author, before, after, has) = filter.binds();
+    match fts {
+        Some(fts) => {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "n!: i64"
            FROM messages_fts f JOIN messages m ON m.id = f.rowid
            WHERE messages_fts MATCH ?1 AND m.deleted = 0
              AND m.channel_id IN (SELECT value FROM json_each(?2))
-             AND (?3 IS NULL OR m.author_id = ?3)"#,
-        fts,
-        channels,
-        author
-    )
-    .fetch_one(e)
-    .await
+             AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))"#,
+                fts,
+                channels,
+                author,
+                before,
+                after,
+                has
+            )
+            .fetch_one(e)
+            .await
+        }
+        None => {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "n!: i64"
+           FROM messages m
+           WHERE ?1 IS NULL AND m.deleted = 0
+             AND m.channel_id IN (SELECT value FROM json_each(?2))
+             AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))"#,
+                Option::<String>::None,
+                channels,
+                author,
+                before,
+                after,
+                has
+            )
+            .fetch_one(e)
+            .await
+        }
+    }
 }
 
 /// Messages in `channels` that mention `user` (directly, through one of `roles`, or with

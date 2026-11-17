@@ -275,6 +275,68 @@ async fn search_finds_only_what_i_may_read() {
 }
 
 #[tokio::test]
+async fn search_filters_without_words() {
+    let server = start("users-search-filters", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let general = server.channel_id(&space_id, "general");
+    let first = send(
+        &server,
+        &owner,
+        &general,
+        "see https://example.org for pizza",
+    )
+    .await;
+    let aid = server
+        .upload(&owner, "menu.txt", "text/plain", b"pizza".to_vec())
+        .await
+        .ok()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    server
+        .post(
+            &format!("/channels/{general}/messages"),
+            Some(&owner),
+            json!({ "content": "the menu", "nonce": common::nonce(), "attachment_ids": [aid] }),
+        )
+        .await
+        .ok();
+    send(&server, &owner, &general, "plain words").await;
+    let total = |found: Value| found["total"].as_u64().unwrap();
+
+    let instance = server.get("/instance", None).await.ok();
+    assert!(
+        instance["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("search_filters"))
+    );
+    let found = server.get("/search?has=link", Some(&owner)).await.ok();
+    assert_eq!(total(found), 1, "no words, only a filter");
+    let found = server.get("/search?has=file", Some(&owner)).await.ok();
+    assert_eq!(found["messages"][0]["content"], "the menu");
+    assert_eq!(total(found), 1);
+    let found = server
+        .get("/search?q=pizza&has=image", Some(&owner))
+        .await
+        .ok();
+    assert_eq!(total(found), 0);
+    let after = first["id"].as_str().unwrap();
+    let found = server
+        .get(
+            &format!("/search?after={after}&author_id={owner_id}"),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(total(found), 2, "newer than the first message");
+    server
+        .get("/search?has=smells", Some(&owner))
+        .await
+        .err(400, "BAD_REQUEST");
+}
+
+#[tokio::test]
 async fn mentions_inbox_lists_messages_that_ping_me() {
     let server = start("users-mentions", RegistrationMode::Open).await;
     let (owner, owner_id, space_id) = server.owner().await;
