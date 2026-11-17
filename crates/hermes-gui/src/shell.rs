@@ -215,6 +215,8 @@ pub struct Shell {
     /// How tall each row growing into the chat turned out, by its animation key (see
     /// `channel::grow_in`).
     pub grow_heights: crate::channel::GrowHeights,
+    /// Colours of code blocks already worked out.
+    pub syntax_cache: std::cell::RefCell<crate::syntax::Cache>,
     pub row_tints: std::cell::RefCell<
         std::collections::HashMap<String, (crate::sidebar::RowState, crate::sidebar::RowState)>,
     >,
@@ -396,6 +398,7 @@ impl Shell {
             rail_pill_slot: std::cell::Cell::new(0.),
             row_tints: Default::default(),
             grow_heights: Default::default(),
+            syntax_cache: Default::default(),
             markup_cache: Default::default(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),

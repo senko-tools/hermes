@@ -13,6 +13,7 @@ name = "hermes"
 path = "src/main.rs"
 
 [dependencies]
+syntect.workspace = true
 hermes-audio.workspace = true
 hermes-client-core.workspace = true
 arboard.workspace = true

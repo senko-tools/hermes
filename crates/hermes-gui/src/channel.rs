@@ -3538,12 +3538,16 @@ impl Shell {
                 }
                 self.render_pieces(pieces, inst, channel, message, index, system, revealed, cx)
             }
-            Block::Code { code, .. } => {
+            Block::Code { code, language } => {
                 let part = Part {
                     message,
                     index: selection::BLOCKS + index as u16,
                 };
-                let (text, record) = self.selectable(inst, channel, part, code, vec![]);
+                let colors = self
+                    .syntax_cache
+                    .borrow_mut()
+                    .highlights(&code, language.as_deref());
+                let (text, record) = self.selectable(inst, channel, part, code, colors);
                 div()
                     .flex()
                     .flex_col()

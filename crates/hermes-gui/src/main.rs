@@ -47,6 +47,7 @@ mod sidebar;
 mod single_instance;
 mod smooth_scroll;
 mod space_settings;
+mod syntax;
 #[cfg(test)]
 mod tests;
 mod theme;
