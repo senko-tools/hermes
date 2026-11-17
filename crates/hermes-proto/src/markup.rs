@@ -10,6 +10,7 @@
 //! The parser is hand-written (see `docs/DECISIONS.md`) and never fails: anything that does not
 //! form a complete construct is kept as text.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use crate::id::Id;
@@ -59,6 +60,8 @@ pub fn parse(input: &str) -> Vec<Span> {
     // Group lines into plain and quote blocks. Lines inside a code fence belong to the block in
     // which the fence was opened, so `> ` inside code is not a quote.
     let fences = fence_ranges(text);
+    // Fences are sorted and do not overlap, and lines come in order: one pass over both.
+    let mut fence = 0;
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut in_quote = false;
@@ -66,7 +69,12 @@ pub fn parse(input: &str) -> Vec<Span> {
     for line in text.split_inclusive('\n') {
         let start = offset;
         offset += line.len();
-        let inside_fence = fences.iter().any(|&(s, e)| s < start && start < e);
+        while fences.get(fence).is_some_and(|&(_, e)| e <= start) {
+            fence += 1;
+        }
+        let inside_fence = fences
+            .get(fence)
+            .is_some_and(|&(s, e)| s < start && start < e);
         if !inside_fence {
             match (quote_body(line), in_quote) {
                 (Some(body), true) => {
@@ -205,6 +213,14 @@ fn is_language(s: &str) -> bool {
 /// Maximum nesting of formatting delimiters; deeper markers stay text. Bounds recursion.
 const MAX_DEPTH: u8 = 12;
 
+/// Steps (scanning a byte, copying a byte of a memoized span) an inline run may take per byte, plus
+/// [`BASE_STEPS`], before no further delimiters are tried: the markers left over stay text.
+/// Ordinary messages, nested formatting included, take one or two steps per byte; only marker soup
+/// (thousands of interleaved, unclosed markers) gets near this, and without it such input costs
+/// time quadratic in its length. See `docs/DECISIONS.md` (2026-11-18).
+const STEPS_PER_BYTE: usize = 64;
+const BASE_STEPS: usize = 4096;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Delim {
     Bold,
@@ -264,15 +280,48 @@ struct Inline<'a> {
     /// Results of trying a delimiter at a position and depth. The outcome depends only on these,
     /// so memoizing keeps pathological input (many unclosed markers) from blowing up.
     memo: HashMap<(usize, Delim, u8), ParseResult>,
+    /// For each `*` / `_` byte, the length of the run of that byte starting there (0 elsewhere).
+    /// Precomputed so long marker runs do not make every lookup rescan the run.
+    runs: Vec<u32>,
+    /// Matching `]` of each `[` and `)` of each `(` (see [`bracket_pairs`]). Only filled outside
+    /// link text, where links are parsed.
+    pairs: HashMap<usize, usize>,
+    /// The last `>` lookup of [`angle`]: searched from, found at.
+    next_gt: Cell<(usize, Option<usize>)>,
+    /// Scanning steps left (see [`STEPS_PER_BYTE`]).
+    steps: usize,
 }
 
 impl<'a> Inline<'a> {
     fn new(s: &'a str, in_link: bool) -> Self {
+        let bytes = s.as_bytes();
+        let has_runs = bytes.iter().any(|b| matches!(b, b'*' | b'_'));
+        let mut runs = vec![0u32; if has_runs { s.len() } else { 0 }];
+        for i in (0..runs.len()).rev() {
+            if matches!(bytes[i], b'*' | b'_') {
+                runs[i] = if bytes.get(i + 1) == Some(&bytes[i]) {
+                    runs[i + 1] + 1
+                } else {
+                    1
+                };
+            }
+        }
         let mut inline = Inline {
             s,
             in_link,
             closers: Default::default(),
             memo: HashMap::new(),
+            runs,
+            pairs: if in_link || !s.contains('[') {
+                HashMap::new()
+            } else {
+                bracket_pairs(s)
+            },
+            next_gt: Cell::new((usize::MAX, None)),
+            steps: s
+                .len()
+                .saturating_mul(STEPS_PER_BYTE)
+                .saturating_add(BASE_STEPS),
         };
         inline.closers = Delim::ALL.map(|d| {
             s.char_indices()
@@ -301,6 +350,7 @@ impl<'a> Inline<'a> {
         let mut text = String::new();
         let mut i = start;
         while i < s.len() {
+            self.steps = self.steps.saturating_sub(1);
             let rest = &s[i..];
             if let Some(d) = closer
                 && (!out.is_empty() || !text.is_empty())
@@ -371,7 +421,7 @@ impl<'a> Inline<'a> {
         let rest = &self.s[i..];
         let prev_is_word = self.prev_char(i).is_some_and(is_word_char);
         match rest.as_bytes()[0] {
-            b'<' => angle(rest, self.in_link),
+            b'<' => angle(rest, self.gt_after(i)? - i, self.in_link),
             b'@' if !prev_is_word => {
                 for (word, span) in [("@everyone", Span::Everyone), ("@here", Span::Here)] {
                     if rest.starts_with(word) && !rest[word.len()..].starts_with(is_word_char) {
@@ -389,7 +439,7 @@ impl<'a> Inline<'a> {
                     },
                 )
             }),
-            b'[' if !self.in_link && self.prev_char(i) != Some('!') => markdown_link(rest),
+            b'[' if !self.in_link && self.prev_char(i) != Some('!') => self.markdown_link(i),
             _ => None,
         }
     }
@@ -397,7 +447,7 @@ impl<'a> Inline<'a> {
     fn delimited(&mut self, i: usize, depth: u8) -> Option<(usize, Span)> {
         for d in Delim::ALL {
             if self.can_open(i, d)
-                && let Some((end, children)) = self.try_delim(i, d, depth)
+                && let Some((end, children)) = self.take_delim(i, d, depth)
             {
                 return Some((end, d.wrap(children)));
             }
@@ -405,12 +455,48 @@ impl<'a> Inline<'a> {
         None
     }
 
-    /// Length of the run of `ch` starting at `i`.
+    /// Length of the run of `ch` (`*` or `_`) starting at `i`.
     fn run_len(&self, i: usize, ch: u8) -> usize {
-        self.s.as_bytes()[i..]
-            .iter()
-            .take_while(|&&b| b == ch)
-            .count()
+        if self.s.as_bytes().get(i) == Some(&ch) {
+            self.runs[i] as usize
+        } else {
+            0
+        }
+    }
+
+    /// The first `>` at or after `i`. Remembers the last answer: every `<` of a line without `>`
+    /// would otherwise scan to its end again.
+    fn gt_after(&self, i: usize) -> Option<usize> {
+        let (from, found) = self.next_gt.get();
+        if from <= i && found.is_none_or(|gt| gt >= i) {
+            return found;
+        }
+        let found = self.s[i..].find('>').map(|gt| i + gt);
+        self.next_gt.set((i, found));
+        found
+    }
+
+    /// `[text](https://…)` at `i`.
+    fn markdown_link(&self, i: usize) -> Option<(usize, Span)> {
+        let text_end = *self.pairs.get(&i)?;
+        let paren = text_end + 1;
+        if self.s.as_bytes().get(paren) != Some(&b'(') {
+            return None;
+        }
+        let url_end = *self.pairs.get(&paren)?;
+        let label = &self.s[i + 1..text_end];
+        let url = &self.s[paren + 1..url_end];
+        if label.trim().is_empty() || !is_http_url(url) {
+            return None;
+        }
+        let children = Inline::new(label, true).parse_all();
+        Some((
+            url_end + 1 - i,
+            Span::Link {
+                url: url.to_owned(),
+                children,
+            },
+        ))
     }
 
     fn can_open(&self, i: usize, d: Delim) -> bool {
@@ -470,7 +556,8 @@ impl<'a> Inline<'a> {
             || !(self.can_open(i, double) && self.try_delim(i, double, depth).is_some())
     }
 
-    fn try_delim(&mut self, i: usize, d: Delim, depth: u8) -> ParseResult {
+    /// Whether `d` opens at `i` and closes later; where it ends. The result is kept in `memo`.
+    fn try_delim(&mut self, i: usize, d: Delim, depth: u8) -> Option<usize> {
         if depth >= MAX_DEPTH {
             return None;
         }
@@ -482,11 +569,24 @@ impl<'a> Inline<'a> {
         }
         let key = (i, d, depth);
         if let Some(result) = self.memo.get(&key) {
-            return result.clone();
+            return result.as_ref().map(|(end, _)| *end);
+        }
+        if self.steps == 0 {
+            return None;
         }
         let result = self.parse_until(from, Some(d), depth + 1);
-        self.memo.insert(key, result.clone());
-        result
+        let end = result.as_ref().map(|(end, _)| *end);
+        self.memo.insert(key, result);
+        end
+    }
+
+    /// [`Inline::try_delim`], and a copy of the children. The copy costs about the length of the
+    /// span, so it counts against the step budget too: copying big subtrees over and over is what
+    /// made some input quadratic even when scanning was not.
+    fn take_delim(&mut self, i: usize, d: Delim, depth: u8) -> ParseResult {
+        let end = self.try_delim(i, d, depth)?;
+        self.steps = self.steps.saturating_sub(end - i);
+        self.memo.get(&(i, d, depth)).cloned().flatten()
     }
 }
 
@@ -533,9 +633,8 @@ fn code_span(rest: &str) -> Result<(usize, Span), usize> {
     Err(run)
 }
 
-/// `<@id>`, `<@&id>`, `<#id>` and `<https://…>`.
-fn angle(rest: &str, in_link: bool) -> Option<(usize, Span)> {
-    let close = rest.find('>')?;
+/// `<@id>`, `<@&id>`, `<#id>` and `<https://…>`; `close` is the offset of the first `>`.
+fn angle(rest: &str, close: usize, in_link: bool) -> Option<(usize, Span)> {
     let inner = &rest[1..close];
     let len = close + 1;
     let span = if let Some(id) = inner.strip_prefix("@&") {
@@ -594,52 +693,31 @@ fn bare_url(rest: &str) -> Option<&str> {
     is_http_url(url).then_some(url)
 }
 
-/// `[text](https://…)`.
-fn markdown_link(rest: &str) -> Option<(usize, Span)> {
-    let mut depth = 0usize;
-    let mut text_end = None;
-    for (i, b) in rest.bytes().enumerate().skip(1) {
-        match b {
-            b'[' => depth += 1,
-            b']' if depth == 0 => {
-                text_end = Some(i);
-                break;
-            }
-            b']' => depth -= 1,
-            _ => {}
-        }
-    }
-    let text_end = text_end?;
-    let label = &rest[1..text_end];
-    let after = rest[text_end + 1..].strip_prefix('(')?;
-
-    let mut parens = 0usize;
-    let mut url_end = None;
-    for (i, c) in after.char_indices() {
+/// The `]` closing each `[` and the `)` closing each `(`, as byte offsets. A `]` or `)` closes the
+/// nearest open one (nesting counts); whitespace ends every open `(` (link targets have none).
+fn bracket_pairs(s: &str) -> HashMap<usize, usize> {
+    let mut pairs = HashMap::new();
+    let mut brackets = Vec::new();
+    let mut parens = Vec::new();
+    for (i, c) in s.char_indices() {
         match c {
-            c if c.is_whitespace() => return None,
-            '(' => parens += 1,
-            ')' if parens == 0 => {
-                url_end = Some(i);
-                break;
+            '[' => brackets.push(i),
+            ']' => {
+                if let Some(open) = brackets.pop() {
+                    pairs.insert(open, i);
+                }
             }
-            ')' => parens -= 1,
+            '(' => parens.push(i),
+            ')' => {
+                if let Some(open) = parens.pop() {
+                    pairs.insert(open, i);
+                }
+            }
+            c if c.is_whitespace() => parens.clear(),
             _ => {}
         }
     }
-    let url = &after[..url_end?];
-    if label.trim().is_empty() || !is_http_url(url) {
-        return None;
-    }
-    let len = text_end + 2 + url.len() + 1;
-    let children = Inline::new(label, true).parse_all();
-    Some((
-        len,
-        Span::Link {
-            url: url.to_owned(),
-            children,
-        },
-    ))
+    pairs
 }
 
 #[cfg(test)]
@@ -896,6 +974,34 @@ mod tests {
             vec![t("[a]("), link("https://x"), t(" y)")],
         );
         check("[](https://x)", vec![t("[]("), link("https://x"), t(")")]);
+        check(
+            "[a [b] c](https://x/(y)) [d]]",
+            vec![
+                Link {
+                    url: "https://x/(y)".into(),
+                    children: vec![t("a [b] c")],
+                },
+                t(" [d]]"),
+            ],
+        );
+        check(
+            "[[a](https://x)",
+            vec![
+                t("["),
+                Link {
+                    url: "https://x".into(),
+                    children: vec![t("a")],
+                },
+            ],
+        );
+        check(
+            "[a](https://x (y))",
+            vec![t("[a]("), link("https://x"), t(" (y))")],
+        );
+        check(
+            "[a]](https://x)",
+            vec![t("[a]]("), link("https://x"), t(")")],
+        );
         // No links inside link text.
         check(
             "[https://a.b](https://c.d)",
@@ -938,6 +1044,46 @@ mod tests {
     }
 
     #[test]
+    fn mentions_after_unclosed_angles() {
+        // The `>` lookup is shared between the `<`s of a run.
+        check(
+            "<<@1> <#2>",
+            vec![t("<"), UserMention(Id(1)), t(" "), ChannelMention(Id(2))],
+        );
+        check("<a <@3", vec![t("<a <@3")]);
+        check("<@1><@2>", vec![UserMention(Id(1)), UserMention(Id(2))]);
+    }
+
+    #[test]
+    fn long_marker_runs() {
+        let stars = "*".repeat(5000);
+        check(&stars, vec![t(&stars)]);
+        check("****a****", vec![Bold(vec![Bold(vec![t("a")])])]);
+    }
+
+    #[test]
+    fn marker_soup_beyond_the_step_budget_stays_text() {
+        // Everything is kept, as formatting or as text; nothing is lost or duplicated.
+        fn text_len(spans: &[Span]) -> usize {
+            spans
+                .iter()
+                .map(|s| match s {
+                    Text(t) => t.len(),
+                    Bold(c) | Underline(c) | Strike(c) | Spoiler(c) => 4 + text_len(c),
+                    Italic(c) => 2 + text_len(c),
+                    other => panic!("unexpected {other:?}"),
+                })
+                .sum()
+        }
+        let input = "*a **a ~~a ||a __a _a ".repeat(400);
+        assert_eq!(text_len(&parse(&input)), input.len());
+        // Ordinary text is far from the budget, so it is parsed in full.
+        let normal = "**bold *it __u ~~s ||sp sp|| s~~ u__ it* bold** text. ".repeat(80);
+        let spans = parse(&normal);
+        assert_eq!(spans.iter().filter(|s| matches!(s, Bold(_))).count(), 80);
+    }
+
+    #[test]
     fn pathological_input_is_fast() {
         let inputs = [
             "**__~~||*_".repeat(400),
@@ -957,6 +1103,12 @@ mod tests {
             "[a](".repeat(1000),
             "**a* ".repeat(800),
             "||~~".repeat(1000) + "x",
+            "*a**".repeat(1000),
+            "***a ".repeat(800),
+            "[[]](".repeat(800),
+            "```\n".repeat(1000),
+            "<http://".repeat(500),
+            "~~||**__a".repeat(450),
         ];
         let start = std::time::Instant::now();
         for input in &inputs {

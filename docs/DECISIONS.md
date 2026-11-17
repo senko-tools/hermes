@@ -1890,3 +1890,14 @@ Linux-only release on the Forgejo instance (git.8w.fi).
 - **Why:** the queue was unbounded, and other members can make the server send messages to a connection at any rate
   (share start/stop, voice key relays), so a client that never reads could make the server's memory grow without
   limit. Dropping single messages instead would leave the client with a wrong picture of the room.
+## 2026-11-18: The markup parser has a work limit
+
+- **What:** `hermes-proto::markup` stops trying new formatting delimiters in an inline run once it has taken
+  64 steps per byte (plus 4096; a step is scanning a byte or copying a byte of an already parsed span). Markers after
+  that point mostly stay text, as unclosed ones always do, and a `***` there closes an open italic instead of starting
+  bold; the result is still the same on every client. Ordinary messages, nested formatting included, take one or two
+  steps per byte, so they parse exactly as before.
+- **Why:** a message of a few thousand interleaved, unclosed markers (`*a **a ~~a ||a __a _a ` repeated) made the
+  parser quadratic: about a second per parse in a debug build, and every client parses every message it shows. The
+  other quadratic cases found at the same time (long `*`/`_` runs, `[` and `<` without a closing `]`/`>`, many code
+  fences) were fixed without changing any output.
