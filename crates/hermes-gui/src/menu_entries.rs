@@ -82,6 +82,11 @@ pub enum Action {
     NotifyMentions,
     NotifyNothing,
     NotifyDefault,
+    MuteFor15Minutes,
+    MuteForHour,
+    MuteFor8Hours,
+    MuteForDay,
+    /// Until I unmute it.
     Mute,
     Unmute,
     // Channel
@@ -191,6 +196,10 @@ impl Action {
             Action::NotifyMentions => "Notify: only @mentions",
             Action::NotifyNothing => "Notify: nothing",
             Action::NotifyDefault => "Notify: like the server",
+            Action::MuteFor15Minutes => "Mute for 15 minutes",
+            Action::MuteForHour => "Mute for 1 hour",
+            Action::MuteFor8Hours => "Mute for 8 hours",
+            Action::MuteForDay => "Mute for 24 hours",
             Action::Mute => "Mute",
             Action::Unmute => "Unmute",
             Action::MarkRead => "Mark as read",
@@ -273,6 +282,10 @@ impl Action {
             | Action::NotifyMentions
             | Action::NotifyNothing
             | Action::NotifyDefault
+            | Action::MuteFor15Minutes
+            | Action::MuteForHour
+            | Action::MuteFor8Hours
+            | Action::MuteForDay
             | Action::Mute
             | Action::Unmute => Some("Notifications"),
             Action::CreateChannel | Action::CreateCategory => Some("Create"),
@@ -300,6 +313,7 @@ impl Action {
             Action::NotifyMentions => "Only @mentions",
             Action::NotifyNothing => "Nothing",
             Action::NotifyDefault => "Like the server",
+            Action::Mute => "Mute until I unmute",
             Action::CreateChannel => "Channel…",
             Action::CreateCategory => "Category…",
             other => other.label(),
@@ -356,6 +370,8 @@ impl Action {
 pub struct Entry {
     pub action: Action,
     pub checked: bool,
+    /// For "Unmute": until when it is muted (Unix ms), when not for ever.
+    pub until: Option<i64>,
 }
 
 impl From<Action> for Entry {
@@ -363,7 +379,26 @@ impl From<Action> for Entry {
         Entry {
             action,
             checked: false,
+            until: None,
         }
+    }
+}
+
+impl Action {
+    /// How long a mute entry mutes for, in minutes; `None` for anything else.
+    pub const fn mute_minutes(self) -> Option<i64> {
+        match self {
+            Action::MuteFor15Minutes => Some(15),
+            Action::MuteForHour => Some(60),
+            Action::MuteFor8Hours => Some(8 * 60),
+            Action::MuteForDay => Some(24 * 60),
+            _ => None,
+        }
+    }
+
+    /// Mutes or unmutes: these get a separator of their own in the notifications submenu.
+    const fn is_mute(self) -> bool {
+        self.mute_minutes().is_some() || matches!(self, Action::Mute | Action::Unmute)
     }
 }
 
@@ -664,6 +699,7 @@ pub fn entries_with(
                 out.push(Some(Entry {
                     action,
                     checked: current == status,
+                    until: None,
                 }));
             }
             out.push(None);
@@ -724,10 +760,13 @@ pub fn grouped(entries: &[Option<Entry>]) -> Vec<Grouped> {
             continue;
         }
         let mut inside = Entries::new();
+        let mut after_mute = false;
         for member in members {
-            if matches!(member.action, Action::Mute | Action::Unmute) && !inside.is_empty() {
+            let mute = member.action.is_mute();
+            if mute && !after_mute && !inside.is_empty() {
                 inside.push(None);
             }
+            after_mute = mute;
             inside.push(Some(member));
         }
         out.push(Grouped::Submenu {
@@ -811,12 +850,28 @@ fn notification_entries(
         out.push(Some(Entry {
             action,
             checked: current == l,
+            until: None,
         }));
     }
-    let muted = setting.is_some_and(|n| n.is_muted(hermes_client_core::now_ms()));
-    out.push(Some(
-        if muted { Action::Unmute } else { Action::Mute }.into(),
-    ));
+    let muted = setting.filter(|n| n.is_muted(hermes_client_core::now_ms()));
+    match muted {
+        Some(n) => out.push(Some(Entry {
+            until: n.muted_until.filter(|u| {
+                *u != hermes_client_core::proto::models::NotificationSetting::MUTED_FOREVER
+            }),
+            ..Action::Unmute.into()
+        })),
+        None => push(
+            out,
+            [
+                Action::MuteFor15Minutes,
+                Action::MuteForHour,
+                Action::MuteFor8Hours,
+                Action::MuteForDay,
+                Action::Mute,
+            ],
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -860,6 +915,29 @@ mod tests {
             ],
             "a lone group member stays a plain entry"
         );
+    }
+
+    #[test]
+    fn the_mutes_share_one_separator() {
+        let entry = |action: Action| Some(Entry::from(action));
+        let lines = grouped(&[
+            entry(Action::NotifyAll),
+            entry(Action::NotifyMentions),
+            entry(Action::MuteFor15Minutes),
+            entry(Action::MuteForHour),
+            entry(Action::Mute),
+        ]);
+        let [Grouped::Submenu { entries, .. }] = lines.as_slice() else {
+            panic!("{lines:?}");
+        };
+        assert_eq!(
+            entries.iter().filter(|e| e.is_none()).count(),
+            1,
+            "{entries:?}"
+        );
+        assert_eq!(entries[2], None);
+        assert_eq!(Action::MuteForDay.mute_minutes(), Some(24 * 60));
+        assert_eq!(Action::Mute.mute_minutes(), None);
     }
 
     fn member_entries(s: &InstanceStore, locally_muted: bool) -> Vec<Action> {

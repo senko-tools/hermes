@@ -186,6 +186,10 @@ impl Shell {
                 | Action::NotifyMentions
                 | Action::NotifyNothing
                 | Action::NotifyDefault
+                | Action::MuteFor15Minutes
+                | Action::MuteForHour
+                | Action::MuteFor8Hours
+                | Action::MuteForDay
                 | Action::Mute
                 | Action::Unmute),
             ) => self.set_notifications(inst, id, a, cx),
@@ -481,11 +485,17 @@ impl Shell {
             Action::NotifyMentions => Some((NotificationLevel::Mentions, muted_until)),
             Action::NotifyNothing => Some((NotificationLevel::None, muted_until)),
             Action::Mute => Some((level, Some(NotificationSetting::MUTED_FOREVER))),
+            a if a.mute_minutes().is_some() => Some((
+                level,
+                a.mute_minutes()
+                    .map(|m| hermes_client_core::now_ms() + m * 60_000),
+            )),
             Action::Unmute => Some((level, None)),
             _ => None,
         };
         let text = match action {
             Action::Mute => "Muted",
+            a if a.mute_minutes().is_some() => "Muted for a while",
             Action::Unmute => "Unmuted",
             _ => "Notifications changed",
         };

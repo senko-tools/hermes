@@ -417,8 +417,26 @@ fn action_line(target: &Target, entry: Entry, label: &'static str) -> Line {
         return Line::Move;
     }
     let (target, action) = (target.clone(), entry.action);
+    // A mute that ends says when.
+    let label: SharedString = match entry.until {
+        Some(until) => {
+            let offset = hermes_client_core::time::local_offset_secs();
+            let today = hermes_client_core::time::day(hermes_client_core::now_ms(), offset);
+            let pattern = if hermes_client_core::time::day(until, offset) == today {
+                "%H:%M"
+            } else {
+                "%d.%m. %H:%M"
+            };
+            format!(
+                "{label} (muted until {})",
+                hermes_client_core::time::format(until, pattern, offset)
+            )
+            .into()
+        }
+        None => label.into(),
+    };
     Line::Item {
-        label: label.into(),
+        label,
         checked: entry.checked,
         danger: action.is_negative(),
         run: Rc::new(move |this, window, cx| {
