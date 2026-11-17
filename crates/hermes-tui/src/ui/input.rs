@@ -11,14 +11,15 @@ use crate::app::{App, Mode};
 
 /// Rows the input box needs (2 for the border, up to 6 lines of text).
 pub fn height(app: &App, area_width: u16) -> u16 {
-    let inner = area_width.saturating_sub(2).max(1) as usize;
-    let lines: usize = app
-        .input
-        .text()
+    let inner = area_width.saturating_sub(2).max(1);
+    let text = app.input.text();
+    let lines: usize = text
         .split('\n')
-        .map(|l| width(l).div_ceil(inner).max(1))
+        .map(|l| wrap_line(l, inner as usize).len())
         .sum();
-    lines.clamp(1, 6) as u16 + 2
+    // After a line that fills its last row exactly, the cursor sits on a row of its own.
+    let (cursor_row, _) = cursor_position(text, app.input.cursor(), inner);
+    lines.max(cursor_row + 1).clamp(1, 6) as u16 + 2
 }
 
 pub fn draw(f: &mut Frame, app: &App, area: Rect) {
@@ -75,12 +76,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             dim(),
         )))
     } else {
+        // Wrapped here by character, the same way `cursor_position` counts (ratatui's word wrap
+        // would put the cursor in the wrong place on long lines).
+        let w = inner.width.max(1) as usize;
         Paragraph::new(
             text.split('\n')
-                .map(|l| Line::from(l.to_owned()))
+                .flat_map(|l| wrap_line(l, w))
+                .map(|row| Line::from(row.to_owned()))
                 .collect::<Vec<_>>(),
         )
-        .wrap(ratatui::widgets::Wrap { trim: false })
         .scroll((scroll, 0))
     };
     f.render_widget(paragraph.block(block), area);
@@ -90,22 +94,42 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Splits one line into rows of at most `w` cells, by character (a character wider than the box
+/// gets a row of its own).
+fn wrap_line(line: &str, w: usize) -> Vec<&str> {
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut used = 0;
+    for (i, c) in line.char_indices() {
+        let cw = width(c.encode_utf8(&mut [0; 4]));
+        if used + cw > w && used > 0 {
+            rows.push(&line[start..i]);
+            start = i;
+            used = 0;
+        }
+        used += cw;
+    }
+    rows.push(&line[start..]);
+    rows
+}
+
 /// The cursor's wrapped (row, column) inside a box `box_width` cells wide.
 fn cursor_position(text: &str, cursor: usize, box_width: u16) -> (usize, usize) {
     let w = box_width.max(1) as usize;
-    let mut row = 0;
-    let mut col = 0;
-    let lines: Vec<&str> = text[..cursor].split('\n').collect();
-    for (i, line) in lines.iter().enumerate() {
-        let lw = width(line);
-        if i + 1 < lines.len() {
-            row += lw.div_ceil(w).max(1);
-        } else {
-            row += lw / w;
-            col = lw % w;
-        }
-    }
-    (row, col)
+    let before = &text[..cursor];
+    let (row, line) = match before.rsplit_once('\n') {
+        Some((earlier, line)) => (
+            earlier.split('\n').map(|l| wrap_line(l, w).len()).sum(),
+            line,
+        ),
+        None => (0, before),
+    };
+    // On its own line, the cursor sits after the last row's text, or at the start of the next
+    // row when that one is full.
+    let rows = wrap_line(line, w);
+    let row = row + rows.len() - 1;
+    let col = rows.last().map_or(0, |r| width(r));
+    if col >= w { (row + 1, 0) } else { (row, col) }
 }
 
 #[cfg(test)]
@@ -122,5 +146,18 @@ mod tests {
         assert_eq!(cursor_position(text, text.len(), 10), (7, 1));
         // The cursor at the start stays on the first row.
         assert_eq!(cursor_position(text, 0, 10), (0, 0));
+    }
+
+    #[test]
+    fn rows_wrap_by_character_like_the_cursor() {
+        // Word wrapping would move "world" to the next row whole; the cursor counts characters.
+        assert_eq!(wrap_line("hello world", 8), ["hello wo", "rld"]);
+        assert_eq!(cursor_position("hello world", 11, 8), (1, 3));
+        assert_eq!(wrap_line("", 8), [""]);
+        assert_eq!(wrap_line("abcdefgh", 8), ["abcdefgh"]);
+        assert_eq!(cursor_position("abcdefgh", 8, 8), (1, 0));
+        // A wide character that does not fit moves to the next row.
+        assert_eq!(wrap_line("abc😀", 4), ["abc", "😀"]);
+        assert_eq!(cursor_position("abc😀", "abc😀".len(), 4), (1, 2));
     }
 }
