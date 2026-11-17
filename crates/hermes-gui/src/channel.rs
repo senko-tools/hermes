@@ -1844,7 +1844,15 @@ impl Shell {
                 // Its own width in window pixels, for the double-click's full size.
                 let natural = shown.size(0).width.0 as f32 / self.scale.max(0.5);
                 let fitted = layout.get().fitted;
-                let picture = img(shown).object_fit(gpui_kit::ObjectFit::Contain);
+                // The id lets gpui step through an animation's frames; without one a GIF
+                // stays on its first frame.
+                let picture =
+                    img(shown)
+                        .object_fit(gpui_kit::ObjectFit::Contain)
+                        .id(SharedString::from(format!(
+                            "viewer-pic-{}",
+                            viewer.attachment.id
+                        )));
                 let picture = if zoomed {
                     picture
                         .flex_shrink_0()
