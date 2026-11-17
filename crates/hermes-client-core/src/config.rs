@@ -484,11 +484,154 @@ pub fn set_value(
         .map_err(|e: toml::de::Error| ConfigError::InvalidSetting(format!("`{key}`: {e}")))
 }
 
+/// How [`write_atomic_with`] writes a file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WriteOptions {
+    /// Flushed to the disk before it replaces the old file, so even a power cut leaves the old
+    /// or the new contents. Costs a disk flush: for rarely written files whose loss weakens
+    /// security (pins, tokens), not for settings saved while a slider moves.
+    pub durable: bool,
+    /// Readable by this user only (Unix; on Windows the per-user config directory is private).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub private: bool,
+}
+
 /// Writes through a temporary file and a rename, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    write_atomic_with(path, bytes, WriteOptions::default())
+}
+
+/// [`write_atomic`] with options. The temporary file has a name of its own (process and
+/// counter), so two writers of the same file, here or in the other client, never write into
+/// each other's half-written copy, and one left over by a crash is never read.
+pub(crate) fn write_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    options: WriteOptions,
+) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file path"))?;
+    let mut tmp_name = name.to_owned();
+    tmp_name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let tmp = path.with_file_name(tmp_name);
+    let result = write_new(&tmp, bytes, options).and_then(|()| replace(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    if options.durable {
+        sync_dir(path);
+    }
+    remove_stale(path, name);
+    result
+}
+
+/// Makes the rename itself survive a power cut (Unix; NTFS journals it).
+fn sync_dir(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent()
+        && let Ok(dir) = std::fs::File::open(if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        })
+    {
+        let _ = dir.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Temporary files of `path` left by a crash in the middle of a write (they may hold tokens), and
+/// the one older versions used (`<stem>.tmp`). Only old ones: a fresh one may be another
+/// process's write in progress.
+fn remove_stale(path: &Path, name: &std::ffi::OsStr) {
+    const STALE: Duration = Duration::from_secs(60);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let (prefix, legacy) = (
+        format!("{}.", name.to_string_lossy()),
+        path.with_extension("tmp"),
+    );
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let entry_name = entry_name.to_string_lossy();
+        let ours = entry_name.starts_with(&prefix) && entry_name.ends_with(".tmp");
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE);
+        if (ours || entry.path() == legacy) && old && entry.path() != path {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn write_new(tmp: &Path, bytes: &[u8], options: WriteOptions) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if options.private {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open.mode(0o600);
+    }
+    let mut file = open.open(tmp)?;
+    // `mode` only applies to a new file; a stale one of the same name keeps its own.
+    #[cfg(unix)]
+    if options.private {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    if options.durable {
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Renames `from` over `to`. On Windows a virus scanner or indexer that has `to` open for a moment
+/// makes the rename fail, so it is tried again a few times.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::io::ErrorKind;
+        let mut tries: u64 = 0;
+        loop {
+            match std::fs::rename(from, to) {
+                // Errors that waiting does not mend are returned at once.
+                Err(err)
+                    if tries < 5
+                        && !matches!(err.kind(), ErrorKind::NotFound | ErrorKind::InvalidInput) =>
+                {
+                    tracing::debug!("{} not replaced yet ({err}), trying again", to.display());
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(25 * tries));
+                }
+                result => return result,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(from, to)
 }
 
 /// Watches `config.toml` and sends the newly loaded config on every change (debounced by
@@ -499,7 +642,9 @@ pub fn watch(
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
 
-    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel();
+    // One waiting signal is enough: a burst of events (an editor saving, every write of this
+    // client) is one reload, and nothing piles up while a reload waits.
+    let (raw_tx, mut raw_rx) = mpsc::channel(1);
     let file_name = path.file_name().map(|n| n.to_owned());
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res
@@ -509,23 +654,46 @@ pub fn watch(
                 .iter()
                 .any(|p| p.file_name() == file_name.as_deref())
         {
-            let _ = raw_tx.send(());
+            let _ = raw_tx.try_send(());
         }
     })?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_owned();
     std::fs::create_dir_all(&dir).map_err(notify::Error::io)?;
     watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
     tokio::spawn(async move {
-        let mut last: Option<String> = std::fs::read_to_string(&path).ok();
+        let mut last: Option<String> = tokio::fs::read_to_string(&path).await.ok();
         while raw_rx.recv().await.is_some() {
             tokio::time::sleep(Duration::from_millis(250)).await;
             while raw_rx.try_recv().is_ok() {}
-            let text = std::fs::read_to_string(&path).ok();
-            if text == last {
+            let mut tries = 0;
+            let text = loop {
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => break Some(text),
+                    // Gone for a moment (an editor that deletes and writes again): not a change
+                    // to the defaults. Taken in once it is back.
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break None,
+                    // Held open by another program for a moment, say.
+                    Err(err) if tries < 4 => {
+                        tries += 1;
+                        tracing::debug!("{} not read yet ({err}), trying again", path.display());
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    Err(err) => {
+                        tracing::warn!("{} not reloaded: {err}", path.display());
+                        break None;
+                    }
+                }
+            };
+            let Some(text) = text else {
+                continue;
+            };
+            if last.as_ref() == Some(&text) {
                 continue;
             }
-            last = text;
-            if tx.send(ClientConfig::load(&path)).is_err() {
+            let loaded =
+                ClientConfig::parse(&text).map_err(|e| ConfigError::Parse(path.clone(), e));
+            last = Some(text);
+            if tx.send(loaded).is_err() {
                 break;
             }
         }
@@ -599,6 +767,61 @@ mod tests {
         assert!(set_value(&c, "buffer.nope", "1").is_err());
         assert!(set_value(&c, "buffer", "1").is_err());
         assert!(set_value(&c, "buffer.group_minutes", "many").is_err());
+    }
+
+    #[test]
+    fn atomic_writes_replace_whole_files_only() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CONFIG_FILE);
+        write_atomic(&path, b"first").unwrap();
+        // What a crash in the middle of a write leaves: a temporary file, and the old file whole.
+        let stale = dir.join(format!("{CONFIG_FILE}.{}-0.tmp", std::process::id()));
+        std::fs::write(&stale, b"half of a ne").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        // Writing again replaces the file over the existing one, whatever is lying around.
+        let options = WriteOptions {
+            durable: true,
+            private: true,
+        };
+        write_atomic_with(&path, b"second", options).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names.len(),
+            2,
+            "a fresh leftover may be a write in progress: {names:?}"
+        );
+        assert!(names.contains(&CONFIG_FILE.to_owned()));
+        // An old one goes, and so does the temporary file of older versions.
+        let legacy = dir.join("config.tmp");
+        std::fs::write(&legacy, b"old").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for old in [&stale, &legacy] {
+            std::fs::File::options()
+                .write(true)
+                .open(old)
+                .unwrap()
+                .set_modified(an_hour_ago)
+                .unwrap();
+        }
+        write_atomic(&path, b"third").unwrap();
+        assert!(!stale.exists() && !legacy.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"third");
+        // Not a file.
+        assert!(write_atomic(Path::new("/"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

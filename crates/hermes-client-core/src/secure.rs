@@ -12,6 +12,7 @@ use hermes_proto::models::{Attachment, ChannelKind, Message, MessageKind};
 use crate::core::{Core, CoreError, InstanceId, Result, content_type, now_ms};
 use crate::e2ee::{self, Directory, E2eeError, Identity, Inner, InnerAttachment};
 use crate::store::Changed;
+use crate::tokens::Lookup;
 
 /// Devices asked for longer ago than this are asked for again before sending to them. Changes are
 /// announced too, so this only matters for an announcement that got lost.
@@ -64,12 +65,20 @@ impl Core {
         }
         let slot = Self::secret_slot(me);
         let tokens = self.tokens();
-        let identity = tokens
-            .get(inst, &slot)
-            .and_then(|secret| Identity::from_secret(&secret));
-        let identity = identity.unwrap_or_else(|| {
+        let identity = match tokens.lookup(inst, &slot) {
+            Lookup::Found(secret) => Identity::from_secret(&secret).ok_or(Lookup::Missing),
+            other => Err(other),
+        };
+        let identity = identity.unwrap_or_else(|lookup| {
             let identity = Identity::generate();
-            if let Err(err) = tokens.set(inst, &slot, &identity.to_secret()) {
+            // A credential store that did not answer may still hold this device's key: the new
+            // one goes to the file, so that key is not replaced and is used again next time.
+            let kept = if lookup == Lookup::Unavailable {
+                tokens.set_in_file(inst, &slot, &identity.to_secret())
+            } else {
+                tokens.set(inst, &slot, &identity.to_secret())
+            };
+            if let Err(err) = kept {
                 tracing::error!("could not keep this device's encryption key: {err}");
             }
             identity

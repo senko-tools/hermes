@@ -14,7 +14,8 @@
 //!   derived from it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
@@ -32,7 +33,7 @@ use sha2::{Digest, Sha256};
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::config::write_atomic;
+use crate::config::{WriteOptions, write_atomic_with};
 
 const WRAP_INFO: &[u8] = b"hermes-e2ee/v1/wrap";
 const MESSAGE_SIG: &[u8] = b"hermes-e2ee/v1/message";
@@ -443,7 +444,8 @@ pub fn open_message(
         return Err(E2eeError::Malformed);
     }
     let len = u32::from_be_bytes([plain[0], plain[1], plain[2], plain[3]]) as usize;
-    let json = plain.get(4..4 + len).ok_or(E2eeError::Malformed)?;
+    // `4 + len` could overflow where `usize` is 32 bits.
+    let json = plain[4..].get(..len).ok_or(E2eeError::Malformed)?;
     serde_json::from_slice(json).map_err(|_| E2eeError::Malformed)
 }
 
@@ -550,20 +552,67 @@ pub struct Directory {
     fetched: HashMap<Id, i64>,
     /// Goes up whenever anyone's devices change, so voice knows to hand out keys again.
     revision: u64,
+    saver: Saver,
 }
 
 impl Directory {
     pub fn load(path: Option<PathBuf>) -> Directory {
-        let users = path
-            .as_ref()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let (users, path) = match path {
+            Some(path) => match Self::read(&path) {
+                Some(users) => (users, Some(path)),
+                // Saving over a file that could not be read would lose what it pins.
+                None => (HashMap::new(), None),
+            },
+            None => (HashMap::new(), None),
+        };
         Directory {
             path,
             users,
             fetched: HashMap::new(),
             revision: 0,
+            saver: Saver::default(),
+        }
+    }
+
+    /// The users pinned in `path`: none if it does not exist yet. `None` when it is there but
+    /// cannot be taken in and must not be saved over (the keys seen are then kept in memory only).
+    fn read(path: &Path) -> Option<HashMap<Id, KnownUser>> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(HashMap::new()),
+            Err(err) => {
+                tracing::warn!(
+                    "known encryption keys in {} could not be read ({err}); keys seen now are \
+                     only kept until Hermes closes",
+                    path.display()
+                );
+                return None;
+            }
+        };
+        let err = match serde_json::from_slice(&bytes) {
+            Ok(users) => return Some(users),
+            Err(err) => err,
+        };
+        // Kept aside for a look, rather than replaced by the next save.
+        let aside = path.with_extension("json.corrupt");
+        match std::fs::rename(path, &aside) {
+            Ok(()) => {
+                tracing::warn!(
+                    "known encryption keys in {} are unreadable ({err}), so everyone's are trusted \
+                     on first use again; the file was moved to {}",
+                    path.display(),
+                    aside.display()
+                );
+                Some(HashMap::new())
+            }
+            Err(move_err) => {
+                tracing::warn!(
+                    "known encryption keys in {} are unreadable ({err}) and could not be moved \
+                     aside ({move_err}); keys seen now are only kept until Hermes closes",
+                    path.display()
+                );
+                None
+            }
         }
     }
 
@@ -571,20 +620,20 @@ impl Directory {
         self.revision
     }
 
+    /// Hands the file's new contents to the saver: called with the directory locked, which must
+    /// not wait for the disk.
     fn save(&self) {
         if let Some(path) = &self.path {
-            if let Some(dir) = path.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
             match serde_json::to_vec_pretty(&self.users) {
-                Ok(bytes) => {
-                    if let Err(err) = write_atomic(path, &bytes) {
-                        tracing::warn!("known encryption keys not saved: {err}");
-                    }
-                }
+                Ok(bytes) => self.saver.save(path, bytes),
                 Err(err) => tracing::warn!("known encryption keys not saved: {err}"),
             }
         }
+    }
+
+    /// Waits until every change so far is on the disk.
+    pub fn flush(&self) {
+        self.saver.flush();
     }
 
     /// Takes in what the server says `user`'s devices are. Keys that do not check out are dropped.
@@ -666,6 +715,80 @@ impl Directory {
         {
             entry.unseen.clear();
             self.save();
+        }
+    }
+}
+
+/// Writes a directory's file on a thread of its own, so a change never waits for the disk while
+/// the directory is locked (from async tasks and the UI thread). Writes happen one at a time and
+/// always take the newest contents, so a later change is never overwritten by an earlier one. A
+/// write under way finishes even if the directory goes meanwhile; dropping one never waits.
+#[derive(Debug, Default)]
+struct Saver {
+    state: Arc<(Mutex<SaveState>, Condvar)>,
+}
+
+#[derive(Debug, Default)]
+struct SaveState {
+    /// The newest contents not written yet.
+    pending: Option<Vec<u8>>,
+    /// A thread is writing (or about to).
+    writing: bool,
+}
+
+impl Saver {
+    fn save(&self, path: &Path, bytes: Vec<u8>) {
+        let (lock, _) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        state.pending = Some(bytes);
+        if state.writing {
+            return;
+        }
+        state.writing = true;
+        drop(state);
+        let (shared, owned) = (self.state.clone(), path.to_owned());
+        let spawned = std::thread::Builder::new()
+            .name("hermes-e2ee-save".into())
+            .spawn(move || write_pending(&shared, &owned));
+        if let Err(err) = spawned {
+            tracing::warn!("no thread for saving known encryption keys ({err}); saving here");
+            write_pending(&self.state, path);
+        }
+    }
+
+    fn flush(&self) {
+        let (lock, done) = &*self.state;
+        let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        while state.writing {
+            state = done.wait(state).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+fn write_pending(shared: &(Mutex<SaveState>, Condvar), path: &Path) {
+    let (lock, done) = shared;
+    loop {
+        let bytes = {
+            let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            match state.pending.take() {
+                Some(bytes) => bytes,
+                None => {
+                    state.writing = false;
+                    done.notify_all();
+                    return;
+                }
+            }
+        };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // Durable: pins lost to a power cut would be trusted on first use again.
+        let options = WriteOptions {
+            durable: true,
+            private: false,
+        };
+        if let Err(err) = write_atomic_with(path, &bytes, options) {
+            tracing::warn!("known encryption keys not saved: {err}");
         }
     }
 }
@@ -1216,11 +1339,66 @@ mod tests {
         let (one, two) = (Identity::generate(), Identity::generate());
         let mut known = Directory::load(Some(path.clone()));
         known.update(BOB, vec![one.public(BOB)], 1);
-        drop(known);
+        known.flush();
         // A server that swaps someone's keys while I am away is still noticed.
         let mut known = Directory::load(Some(path));
         known.update(BOB, vec![two.public(BOB)], 2);
         assert_eq!(known.unseen(BOB), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_newest_directory_is_what_gets_saved() {
+        let dir = std::env::temp_dir().join(format!("hermes-e2ee-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known.json");
+        let mut known = Directory::load(Some(path.clone()));
+        let one = Identity::generate();
+        known.update(BOB, vec![one.public(BOB)], 1);
+        known.flush();
+        let saved = std::fs::read(&path).unwrap();
+        // A crash in the middle of an earlier write left its temporary file behind.
+        std::fs::write(dir.join("known.json.1-0.tmp"), b"{\"half").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+
+        // Many changes in a row, while earlier ones may still be on their way to the disk.
+        let mut users = Vec::new();
+        for i in 0..50 {
+            let user = Id(1000 + i);
+            known.update(user, vec![Identity::generate().public(user)], 2);
+            users.push(user);
+        }
+        let devices = Identity::generate().public(BOB);
+        known.update(BOB, vec![one.public(BOB), devices], 3);
+        known.flush();
+        let known = Directory::load(Some(path.clone()));
+        assert_eq!(known.unseen(BOB), 1, "the last change won");
+        assert!(users.iter().all(|u| known.live_devices(*u).len() == 1));
+        drop(known);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unreadable_directory_is_kept_aside() {
+        let dir = std::env::temp_dir().join(format!("hermes-e2ee-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("known.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let mut known = Directory::load(Some(path.clone()));
+        assert_eq!(known.live_devices(BOB).len(), 0);
+        known.update(BOB, vec![Identity::generate().public(BOB)], 1);
+        known.flush();
+        assert_eq!(
+            std::fs::read(dir.join("known.json.corrupt")).unwrap(),
+            b"{ not json"
+        );
+        assert_eq!(
+            Directory::load(Some(path)).live_devices(BOB).len(),
+            1,
+            "new keys are pinned in a new file"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
