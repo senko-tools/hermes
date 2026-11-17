@@ -286,6 +286,8 @@ pub struct Voice {
     pub auto_gain: bool,
     /// How loud automatic gain makes you, dBFS.
     pub agc_target_db: i32,
+    /// Takes what the speakers play out of the microphone.
+    pub echo_cancellation: bool,
     /// While someone speaks, screen share and media sound go down by `ducking_db`.
     pub ducking: bool,
     pub ducking_db: u32,
@@ -331,6 +333,7 @@ impl Default for Voice {
             noise_suppression: true,
             auto_gain: false,
             agc_target_db: -18,
+            echo_cancellation: false,
             ducking: false,
             ducking_db: 12,
             close_mic_when_muted: false,

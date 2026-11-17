@@ -11,6 +11,7 @@ pub mod capture;
 pub mod codec;
 pub mod devices;
 pub mod dsp;
+pub mod echo;
 pub mod engine;
 pub mod jitter;
 pub mod media;
@@ -140,6 +141,8 @@ pub struct AudioSettings {
     pub opus_fec: bool,
     pub opus_dtx: bool,
     pub auto_gain: bool,
+    /// Takes what the speakers play out of the microphone (for speakers or laptop microphones).
+    pub echo_cancellation: bool,
     /// Screen share and media sound go this many dB down while someone speaks; `None`: off.
     pub ducking_db: Option<f32>,
     /// Join/leave/mute sounds.
@@ -166,6 +169,7 @@ impl Default for AudioSettings {
             opus_fec: true,
             opus_dtx: true,
             auto_gain: false,
+            echo_cancellation: false,
             ducking_db: None,
             sounds: true,
             sounds_volume: 0.6,

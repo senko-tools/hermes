@@ -267,7 +267,11 @@ impl Playback {
         }
         let sounds = self.sounds.next(FRAME);
         self.mixer.add_sound(sounds);
-        self.mixer.finish(self.output_volume)
+        let out = self.mixer.finish(self.output_volume);
+        // What the speakers play, for the echo canceller (when it is on).
+        crate::mixer::to_mono(out, &mut self.mono);
+        crate::echo::played(&self.mono);
+        out
     }
 
     /// Mixes the next 20 ms at 48 kHz, both sides averaged (for mono outputs).

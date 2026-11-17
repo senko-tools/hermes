@@ -256,6 +256,7 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
         ducking_db: v.ducking.then(|| v.ducking_db.clamp(3, 30) as f32),
+        echo_cancellation: v.echo_cancellation,
         close_mic_when_muted: v.close_mic_when_muted,
         opus_fec: v.opus_fec,
         opus_dtx: v.opus_dtx,
@@ -282,6 +283,7 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     v.agc_target_db = s.agc_target_db.round() as i32;
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
+    v.echo_cancellation = s.echo_cancellation;
     v.ducking = s.ducking_db.is_some();
     if let Some(db) = s.ducking_db {
         v.ducking_db = db.round() as u32;

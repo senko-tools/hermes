@@ -194,11 +194,14 @@ impl Shell {
                             this.stop_ringing();
                         }
                         this.net.clear();
-                        if !this.config.voice.noise_suppression && !this.headphones_hint_shown {
+                        if !this.config.voice.noise_suppression
+                            && !this.config.voice.echo_cancellation
+                            && !this.headphones_hint_shown
+                        {
                             this.headphones_hint_shown = true;
                             this.info(
-                                "Noise suppression is off: headphones are recommended (there is \
-                                 no echo cancellation).",
+                                "Noise suppression and echo cancellation are off: headphones are \
+                                 recommended.",
                                 cx,
                             );
                         }

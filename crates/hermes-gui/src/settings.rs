@@ -2312,6 +2312,16 @@ impl Shell {
                     ),
                 ),
                 setting(
+                    "Echo cancellation",
+                    "For speakers or a laptop's own microphone: others don't hear                      themselves back. Not needed with headphones.",
+                    voice_switch(
+                        "echo",
+                        v.echo_cancellation,
+                        |v, on| v.echo_cancellation = on,
+                        cx,
+                    ),
+                ),
+                setting(
                     "Automatic gain",
                     "Evens out how loud you are.",
                     voice_switch("gain", v.auto_gain, |v, on| v.auto_gain = on, cx),

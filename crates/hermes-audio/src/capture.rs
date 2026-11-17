@@ -18,6 +18,7 @@ pub struct Capture {
     frame: [f32; FRAME],
     denoiser: Option<Denoiser>,
     agc: Option<Agc>,
+    echo: Option<crate::echo::EchoCanceller>,
     pub gate: Gate,
     encoder: Encoder,
     input_volume: f32,
@@ -38,6 +39,7 @@ impl Capture {
             frame: [0.0; FRAME],
             denoiser: None,
             agc: None,
+            echo: None,
             gate: Gate::default(),
             encoder: Encoder::new(bitrate),
             input_volume: 1.0,
@@ -69,6 +71,13 @@ impl Capture {
         self.gate.ptt_release_delay = settings.ptt_release_delay;
         self.gate.hold = settings.vad_hold;
         self.gate.level_only = settings.vad_level_only;
+        if settings.echo_cancellation != self.echo.is_some() {
+            self.echo = if settings.echo_cancellation {
+                crate::echo::EchoCanceller::new()
+            } else {
+                None
+            };
+        }
         if settings.noise_suppression != self.denoiser.is_some() {
             self.denoiser = settings.noise_suppression.then(Denoiser::default);
         }
@@ -117,6 +126,9 @@ impl Capture {
 
     /// One 20 ms frame: denoise, AGC, gate, encode. Returns the datagram to send, if any.
     fn process_frame(&mut self) -> Option<Vec<u8>> {
+        if let Some(echo) = &mut self.echo {
+            echo.process(&mut self.frame);
+        }
         let probability = self.denoiser.as_mut().map(|d| d.process(&mut self.frame));
         if let Some(agc) = &mut self.agc {
             agc.process(&mut self.frame);
