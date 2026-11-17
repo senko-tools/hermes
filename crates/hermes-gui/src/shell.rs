@@ -267,6 +267,8 @@ pub struct Shell {
     pub screen_names: Vec<String>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
+    /// My share's sound, while it is sent.
+    pub share_sound: Option<crate::screen::sound::ShareSound>,
     /// The latest picture of each screen share I watch.
     pub screens: HashMap<ChannelKey, Share>,
     /// The screen share shown alone in the voice room (clicked to enlarge).
@@ -416,6 +418,7 @@ impl Shell {
             share_menu: None,
             screen_names: Vec::new(),
             capture: None,
+            share_sound: None,
             screens: HashMap::new(),
             enlarged_share: None,
             watching_shares: HashSet::new(),

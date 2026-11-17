@@ -21,6 +21,7 @@ mod mf_decode;
 #[cfg(windows)]
 mod mf_encode;
 mod scale;
+pub mod sound;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -362,6 +363,7 @@ impl Shell {
         }
         if self.capture.is_some() && !self.core.sharing_screen() {
             self.capture = None;
+            self.share_sound = None;
         }
     }
 
@@ -390,7 +392,10 @@ impl Shell {
         let quality = capture::Quality::from_config(&v.share_resolution, v.share_fps);
         let preference = capture::Preference::from_config(&v.share_preference);
         match capture::Capture::start(self.core.clone(), &screen, quality, preference) {
-            Ok(capture) => self.capture = Some(capture),
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.start_share_sound(cx);
+            }
             Err(err) => {
                 self.core.stop_screen_share();
                 self.error(format!("Could not share the screen: {err}"), cx);
@@ -399,7 +404,22 @@ impl Shell {
         cx.notify();
     }
 
+    /// Sends what the computer plays along with the share, when that is wanted and the voice
+    /// server forwards it. Without it the share goes on silently.
+    fn start_share_sound(&mut self, cx: &mut Context<Self>) {
+        if !self.config.voice.share_sound || !self.core.share_audio_supported() {
+            return;
+        }
+        let core = self.core.clone();
+        let send: sound::Send = Box::new(move |opus, level| core.send_share_sound(opus, level));
+        match sound::ShareSound::start(send) {
+            Ok(sound) => self.share_sound = Some(sound),
+            Err(err) => self.info(format!("Sharing without sound: {err}"), cx),
+        }
+    }
+
     pub fn stop_share(&mut self, cx: &mut Context<Self>) {
+        self.share_sound = None;
         if self.capture.take().is_some() {
             self.core.stop_screen_share();
         }

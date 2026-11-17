@@ -129,6 +129,8 @@ pub(crate) struct Voice {
     volumes: Mutex<UserVolumes>,
     /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
     rest_state: Arc<tokio::sync::Mutex<()>>,
+    /// The sequence number and timestamp of my screen share's next sound frame.
+    share_sound: Mutex<(u16, u32)>,
 }
 
 #[derive(Default)]
@@ -224,6 +226,7 @@ impl Voice {
             state: Mutex::default(),
             volumes: Mutex::new(volumes),
             rest_state: Arc::default(),
+            share_sound: Mutex::default(),
         }
     }
 
@@ -1624,6 +1627,43 @@ impl Core {
             let _ = s.control.send(ClientControl::RequestKeyframe {
                 participant_id: pid,
             });
+        }
+    }
+
+    /// Sends one 20 ms frame of my screen share's sound (already Opus, stereo). Dropped while not
+    /// sharing, when the server does not forward share sound, or before there is a key.
+    pub fn send_share_sound(&self, opus: &[u8], level: f32) {
+        if !self.sharing_screen() || !self.share_audio_supported() {
+            return;
+        }
+        let Some(conn) = self.voice().link.lock().expect("voice link").clone() else {
+            return;
+        };
+        let (sequence, timestamp) = {
+            let mut next = self.voice().share_sound.lock().expect("share sound");
+            let now = *next;
+            *next = (
+                now.0.wrapping_add(1),
+                now.1.wrapping_add(voice::FRAME_SAMPLES),
+            );
+            now
+        };
+        let header = hermes_proto::voice::AudioHeader {
+            voice_active: true,
+            sender_id: 0,
+            timestamp,
+            sequence,
+            audio_level: voice::audio_level(level),
+        };
+        let datagram = header.encode_as(AudioKind::Share, opus);
+        let sealed = self
+            .voice()
+            .crypto
+            .lock()
+            .expect("voice crypto")
+            .seal_audio(&datagram);
+        if let Some(sealed) = sealed {
+            let _ = conn.send_datagram(sealed.into());
         }
     }
 

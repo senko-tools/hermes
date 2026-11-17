@@ -2432,6 +2432,16 @@ impl Shell {
                     wrap().children(fps_chips),
                 ),
                 setting(
+                    "Share sound",
+                    "Others hear what your computer plays, but not this call. From your next                      share; needs Windows 10 version 2004 or later.",
+                    Switch::new("share-sound")
+                        .cursor_pointer()
+                        .checked(v.share_sound)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            this.persist("voice.share_sound", &on.to_string(), cx);
+                        })),
+                ),
+                setting(
                     "When it cannot keep up",
                     "What your share keeps when it falls behind",
                     wrap().children(pref_chips),

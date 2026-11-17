@@ -310,6 +310,8 @@ pub struct Voice {
     /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
     /// `clarity` (sharp, full-size pictures).
     pub share_preference: String,
+    /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
+    pub share_sound: bool,
 }
 
 impl Default for Voice {
@@ -342,6 +344,7 @@ impl Default for Voice {
             share_resolution: "1080p".into(),
             share_fps: 60,
             share_preference: "smoothness".into(),
+            share_sound: true,
         }
     }
 }
