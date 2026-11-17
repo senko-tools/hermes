@@ -106,9 +106,57 @@ pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
     out
 }
 
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The whole date and time, spelled out: `Saturday, 31 October 2026 at 13:57:05`.
+pub fn long(unix_ms: i64, offset_secs: i64) -> String {
+    let secs = unix_ms.div_euclid(1000) + offset_secs;
+    let days = secs.div_euclid(86_400);
+    let (y, mo, d) = civil(days);
+    // 1970-01-01 was a Thursday.
+    let weekday = WEEKDAYS[(days + 4).rem_euclid(7) as usize];
+    let month = MONTHS[(mo as usize).clamp(1, 12) - 1];
+    format!(
+        "{weekday}, {d} {month} {y} at {}",
+        format(unix_ms, "%H:%M:%S", offset_secs)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_dates() {
+        // 2026-10-31 13:57:05 UTC, a Saturday.
+        let ms = 1_793_455_025_000;
+        assert_eq!(long(ms, 0), "Saturday, 31 October 2026 at 13:57:05");
+        assert_eq!(long(ms, 11 * 3600), "Sunday, 1 November 2026 at 00:57:05");
+        assert_eq!(long(0, 0), "Thursday, 1 January 1970 at 00:00:00");
+    }
 
     #[test]
     fn formats() {

@@ -53,6 +53,15 @@ const ROW_GROUP: &str = "message-row";
 /// Compact messages: the picture before the name.
 const COMPACT_AVATAR: f32 = 18.;
 
+/// What a message's time says under the pointer: the whole date, and when it was edited.
+fn time_tip(msg: &ChatMessage, utc_offset: i64) -> SharedString {
+    let sent = time::long(msg.created_at() as i64, utc_offset);
+    SharedString::from(match msg.edited_at {
+        Some(at) => format!("{sent} · edited {}", time::long(at, utc_offset)),
+        None => sent,
+    })
+}
+
 /// The height of one line of body text (gpui's default line height).
 fn body_line() -> gpui_kit::Pixels {
     theme::body_size() * 1.618
@@ -2710,13 +2719,8 @@ impl Shell {
                 msg.author.id,
                 cx,
             );
-            // An edited message says when, under the pointer over its time.
-            let edited_tip = msg.edited_at.map(|at| {
-                SharedString::from(format!(
-                    "Edited {}",
-                    time::format(at, &self.config.buffer.timestamp_format, self.utc_offset)
-                ))
-            });
+            // Under the pointer its time says the whole date, and when it was edited.
+            let time_tip = time_tip(msg, self.utc_offset);
             let time = div()
                 .id(SharedString::from(format!("time-{id}")))
                 .relative()
@@ -2725,10 +2729,8 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .child(time)
                 .child(time_record)
-                .when_some(edited_tip, |d, tip| {
-                    d.tooltip(move |window, cx| {
-                        gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                    })
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(time_tip.clone()).build(window, cx)
                 });
             let lock = crate::encryption::lock_mark(
                 msg.lock,
@@ -2924,7 +2926,12 @@ impl Shell {
             .into_any_element()
         } else if m.grouped {
             // Always laid out and only made visible on hover, so hovering never resizes the row.
+            let tip = time_tip(msg, self.utc_offset);
             div()
+                .id(SharedString::from(format!("gutter-time-{id}")))
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
                 .pt(px(3.))
                 .text_size(theme::caption_size())
                 .text_color(rgba(0))
