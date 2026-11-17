@@ -53,6 +53,21 @@ const ROW_GROUP: &str = "message-row";
 /// Compact messages: the picture before the name.
 const COMPACT_AVATAR: f32 = 18.;
 
+/// A forwarded message's text: who wrote it where, then their words quoted, then a link to the
+/// original when it had files.
+fn forwarded_text(content: &str, author: &str, place: &str, files: usize, link: &str) -> String {
+    let mut out = format!("*Forwarded from {author} in {place}*");
+    for line in content.lines() {
+        out.push_str("\n> ");
+        out.push_str(line);
+    }
+    if files > 0 {
+        let s = if files == 1 { "" } else { "s" };
+        out.push_str(&format!("\n{files} file{s}: {link}"));
+    }
+    out
+}
+
 /// What a message's time says under the pointer: the whole date, and when it was edited.
 fn time_tip(msg: &ChatMessage, utc_offset: i64) -> SharedString {
     let sent = time::long(msg.created_at() as i64, utc_offset);
@@ -2017,6 +2032,51 @@ impl Shell {
         )
     }
 
+    /// Sends message `message` of `from` again in `to`, quoted under a "Forwarded from" line.
+    /// Files stay where they are (an upload belongs to one message); a link leads to them.
+    pub fn forward_message(
+        &mut self,
+        inst: InstanceId,
+        from: Id,
+        message: Id,
+        to: Id,
+        cx: &mut Context<Self>,
+    ) {
+        let content = {
+            let store = self.core.store();
+            let Some(s) = store.instance(&inst) else {
+                return;
+            };
+            let Some(m) = s.window(from).and_then(|w| w.get(message)) else {
+                return;
+            };
+            let place = s
+                .channel(from)
+                .map(|c| view::channel_title(s, c))
+                .unwrap_or_default();
+            let author = s.display_name(s.space_of(from), m.author.id);
+            forwarded_text(
+                &m.content,
+                &author,
+                &place,
+                m.attachments.len(),
+                &format!("hermes://{inst}/channels/{from}/{message}"),
+            )
+        };
+        let draft = Draft {
+            content,
+            reply_to: None,
+            attachments: Vec::new(),
+        };
+        match self.core.send_message(&inst, to, draft) {
+            Ok(_) => self.info("Forwarded", cx),
+            Err(err) => self.error(format!("could not forward: {err}"), cx),
+        }
+        if self.chats.contains_key(&(inst.clone(), to)) {
+            self.sync_rows(&(inst, to));
+        }
+    }
+
     // ---- message actions (from the menu) ------------------------------------------------------
 
     /// Menu actions on messages. `false` if this is not one.
@@ -2068,6 +2128,9 @@ impl Shell {
             (Target::Message(inst, channel, message), Action::MarkUnreadHere) => {
                 self.core.mark_unread(&inst, channel, message);
                 cx.notify();
+            }
+            (Target::Message(inst, channel, message), Action::Forward) => {
+                self.open_forward(inst, channel, message, window, cx);
             }
             (Target::Message(inst, channel, message), Action::CopyLink) => {
                 self.copy(
@@ -4202,6 +4265,28 @@ mod tests {
             token_before("a /nick", 7),
             None,
             "commands start the message"
+        );
+    }
+
+    #[test]
+    fn forwarded_text_quotes_and_links_files() {
+        assert_eq!(
+            forwarded_text(
+                "hi
+there",
+                "Bob",
+                "#general",
+                0,
+                "hermes://x"
+            ),
+            "*Forwarded from Bob in #general*
+> hi
+> there"
+        );
+        assert_eq!(
+            forwarded_text("", "Bob", "#general", 2, "hermes://x"),
+            "*Forwarded from Bob in #general*
+2 files: hermes://x"
         );
     }
 

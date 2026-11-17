@@ -50,6 +50,8 @@ pub struct CommandBar {
     /// Indexes into `entries` matching the input, best first.
     shown: Vec<usize>,
     pub selected: usize,
+    /// Picking where to forward this message (instance, channel, message) to.
+    forward: Option<(InstanceId, Id, Id)>,
     _events: Subscription,
 }
 
@@ -81,6 +83,33 @@ impl CommandBar {
     }
 }
 
+/// Where a message of `inst` can be forwarded: its text channels and DMs I may write in.
+pub fn forward_entries(store: &Store, inst: &InstanceId) -> Vec<Entry> {
+    let Some(s) = store.instance(inst) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (space_id, space) in &s.spaces {
+        for c in view::channel_tree(s, *space_id) {
+            if c.kind == ChannelKind::Text && view::can(s, c.id, Permissions::SEND_MESSAGES) {
+                out.push(Entry {
+                    label: format!("#{}", c.name),
+                    detail: space.space.name.clone(),
+                    command: Command::Open(inst.clone(), c.id),
+                });
+            }
+        }
+    }
+    for dm in view::dm_list(s) {
+        out.push(Entry {
+            label: dm.name,
+            detail: "Direct message".into(),
+            command: Command::Open(inst.clone(), dm.id),
+        });
+    }
+    out
+}
+
 impl Shell {
     pub fn open_command_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entries = {
@@ -92,9 +121,43 @@ impl Shell {
                 &self.config.keys,
             )
         };
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Jump to a channel, a person or an action…")
-        });
+        self.show_command_bar(
+            entries,
+            "Jump to a channel, a person or an action…",
+            None,
+            window,
+            cx,
+        );
+    }
+
+    /// The command bar listing where message `message` of `channel` can be forwarded to.
+    pub fn open_forward(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = forward_entries(&self.core.store(), &inst);
+        self.show_command_bar(
+            entries,
+            "Forward to a channel or a DM…",
+            Some((inst, channel, message)),
+            window,
+            cx,
+        );
+    }
+
+    fn show_command_bar(
+        &mut self,
+        entries: Vec<Entry>,
+        placeholder: &'static str,
+        forward: Option<(InstanceId, Id, Id)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let events = cx.subscribe_in(
             &input,
             window,
@@ -119,6 +182,7 @@ impl Shell {
             entries,
             shown: Vec::new(),
             selected: 0,
+            forward,
             _events: events,
         };
         bar.filter("");
@@ -129,7 +193,16 @@ impl Shell {
 
     pub fn run_command_bar(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let command = self.command_bar.as_ref().and_then(|bar| bar.command(n));
+        let forward = self
+            .command_bar
+            .as_ref()
+            .and_then(|bar| bar.forward.clone());
         self.close_later("command-bar", |s| s.command_bar = None, cx);
+        if let (Some((inst, from, message)), Some(Command::Open(_, to))) = (forward, &command) {
+            self.forward_message(inst, from, message, *to, cx);
+            cx.notify();
+            return;
+        }
         match command {
             Some(Command::Open(inst, channel)) => self.select(inst, channel, window, cx),
             Some(Command::MessageUser(inst, user)) => self.message_user(inst, user, window, cx),

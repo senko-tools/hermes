@@ -126,6 +126,7 @@ pub enum Action {
     MoveServerDown,
     MarkUnreadHere,
     CopyLink,
+    Forward,
     EditNote,
     EditLocalName,
     Report,
@@ -250,6 +251,7 @@ impl Action {
             Action::MoveServerDown => "Move down",
             Action::MarkUnreadHere => "Mark unread from here",
             Action::CopyLink => "Copy link",
+            Action::Forward => "Forward…",
             Action::EditNote => "Personal note…",
             Action::EditLocalName => "Name them for me…",
             Action::Report => "Report…",
@@ -581,6 +583,9 @@ pub fn entries_with(
             push(&mut out, [Action::CopyText]);
             if manage {
                 push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
+            }
+            if msg.is_some_and(|m| !m.content.is_empty() || !m.attachments.is_empty()) {
+                push(&mut out, [Action::Forward]);
             }
             push(&mut out, [Action::MarkUnreadHere, Action::CopyLink]);
             if !own {
