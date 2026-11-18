@@ -85,6 +85,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.dismissed_by_this_press(&crate::modal::PopupKey::Emoji(target.clone())) {
+            return;
+        }
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find an emoji"));
         let events = cx.subscribe_in(
             &input,
@@ -290,7 +293,14 @@ impl Shell {
                 .font_family(theme::font())
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_emoji_picker(cx)))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if let Some(picker) = &this.emoji_picker
+                        && !crate::modal::closing("emoji-picker-in")
+                    {
+                        this.note_dismissed(crate::modal::PopupKey::Emoji(picker.target.clone()));
+                    }
+                    this.close_emoji_picker(cx);
+                }))
                 .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
                     if event.keystroke.key == "escape" {
                         cx.stop_propagation();

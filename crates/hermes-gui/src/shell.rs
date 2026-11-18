@@ -151,6 +151,9 @@ pub struct Shell {
     /// Chat text selected with the mouse.
     pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
+    /// The popup the mouse press going on closed (`Shell::note_dismissed`). Cleared when
+    /// each press starts.
+    pub dismissed_by_press: Option<crate::modal::PopupKey>,
     /// Where the last menu opened: what its entries open goes there too.
     pub menu_at: Point<Pixels>,
     /// The same, with what was clicked: popups its entries open hug it.
@@ -369,6 +372,7 @@ impl Shell {
             page_serial: 0,
             selection: Default::default(),
             menu: None,
+            dismissed_by_press: None,
             menu_at: Point::default(),
             menu_from: crate::modal::PopupFrom::point(Point::default()),
             popup_triggers: Default::default(),
@@ -1740,6 +1744,10 @@ impl Render for Shell {
             .bg(theme::background())
             .text_color(theme::text())
             .text_size(crate::theme::body_size())
+            // Each press starts with nothing closed by it. Captured here, before the popups' own
+            // "pressed outside" listeners and before any element could stop it. A popup closed
+            // some other way (Escape, an entry chosen) is forgotten at the next press too.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.dismissed_by_press = None))
             // After any element has seen the release: it bubbles from them up to here.
             .on_mouse_up(
                 MouseButton::Right,

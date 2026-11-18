@@ -572,7 +572,9 @@ impl Shell {
             .child(self.render_spark())
             .child(self.popup_trigger())
             .on_click(cx.listener(|this, event: &gpui_kit::ClickEvent, _, cx| {
-                if this.network_open.is_some() && !crate::modal::closing("network-in") {
+                if this.dismissed_by_this_press(&crate::modal::PopupKey::Network) {
+                    // The press closed it: it stays closed.
+                } else if this.network_open.is_some() && !crate::modal::closing("network-in") {
                     this.close_later("network-in", |s| s.network_open = None, cx);
                 } else {
                     this.cancel_closing("network-in");
@@ -846,6 +848,9 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.network_open.is_some() && !crate::modal::closing("network-in") {
+                        this.note_dismissed(crate::modal::PopupKey::Network);
+                    }
                     this.close_later("network-in", |s| s.network_open = None, cx);
                     cx.notify();
                 }))

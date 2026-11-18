@@ -19,6 +19,7 @@ use crate::shell::Shell;
 
 pub struct OpenMenu {
     view: Entity<PopupMenu>,
+    target: Target,
     position: Point<Pixels>,
     _dismiss: Subscription,
 }
@@ -118,6 +119,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.dismissed_by_this_press(&crate::modal::PopupKey::Menu(target.clone())) {
+            return;
+        }
         let lines = self.menu_lines(&target);
         if lines.is_empty() {
             return;
@@ -128,12 +132,18 @@ impl Shell {
         let view = build_menu(shell, lines, window, cx);
         view.focus_handle(cx).focus(window, cx);
         let dismiss = cx.subscribe_in(&view, window, |this, _, _: &DismissEvent, _, cx| {
+            if let Some(open) = &this.menu
+                && !crate::modal::closing("menu")
+            {
+                this.note_dismissed(crate::modal::PopupKey::Menu(open.target.clone()));
+            }
             this.close_later("menu", |s| s.menu = None, cx);
             cx.notify();
         });
         self.cancel_closing("menu");
         self.menu = Some(OpenMenu {
             view,
+            target,
             position,
             _dismiss: dismiss,
         });

@@ -652,6 +652,49 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         visual.run_until_parked();
     }
 
+    // Right-clicking the same name again closes its menu instead of opening it again, and the
+    // next right-click opens it.
+    let name_bounds = visual
+        .update(|_, cx| shell.read(cx).selection.bounds_of(author_part))
+        .expect("the name is drawn");
+    // The menu opens at the pointer, down and right: pressing just left of where it opened
+    // lands on the name, outside the menu.
+    let first = name_bounds.center();
+    let again = point(name_bounds.left() + px(2.), first.y);
+    let right_click = |visual: &mut VisualTestContext, at: gpui_kit::Point<gpui_kit::Pixels>| {
+        visual.update(|window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        visual.simulate_mouse_move(at, None, Modifiers::none());
+        visual.simulate_mouse_down(at, right, Modifiers::none());
+        visual.simulate_mouse_up(at, right, Modifiers::none());
+        visual.run_until_parked();
+    };
+    let menu_shown = |visual: &mut VisualTestContext| {
+        visual.update(|_, cx| shell.read(cx).menu.is_some() && !crate::modal::closing("menu"))
+    };
+    right_click(&mut visual, first);
+    assert!(
+        menu_shown(&mut visual),
+        "the first right-click opens the menu"
+    );
+    right_click(&mut visual, again);
+    assert!(!menu_shown(&mut visual), "the second right-click closes it");
+    right_click(&mut visual, again);
+    assert!(
+        menu_shown(&mut visual),
+        "the third right-click opens it again"
+    );
+    visual.update(|_, cx| {
+        shell.update(cx, |this, cx| {
+            this.cancel_closing("menu");
+            this.menu = None;
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+
     // A left click on a name opens the person's profile, not their menu.
     visual.update(|window, cx| {
         window.refresh();

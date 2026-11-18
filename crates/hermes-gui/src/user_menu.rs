@@ -39,6 +39,9 @@ impl Shell {
         let Target::Member(inst, space, user) = target.clone() else {
             return;
         };
+        if self.dismissed_by_this_press(&crate::modal::PopupKey::Profile(inst.clone(), user)) {
+            return;
+        }
         let at = self.popup_from(position);
         self.show_profile(inst, space, user, at, cx);
     }
@@ -477,6 +480,12 @@ impl Shell {
                 .text_color(theme::text())
                 .text_size(theme::secondary_size())
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if let Some(card) = &this.profile
+                        && !crate::modal::closing("profile-card-in")
+                    {
+                        let key = crate::modal::PopupKey::Profile(card.inst.clone(), card.user);
+                        this.note_dismissed(key);
+                    }
                     this.close_later("profile-card-in", |s| s.profile = None, cx);
                     cx.notify();
                 }))

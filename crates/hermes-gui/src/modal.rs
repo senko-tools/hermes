@@ -104,6 +104,35 @@ impl Shell {
         self.closing_serials.remove(id);
         CLOSING.with(|c| c.borrow_mut().remove(id));
     }
+
+    /// The press going on closed `key`. A popup closes on the press outside it, so without this
+    /// the release on what opened it would open it again at once.
+    pub fn note_dismissed(&mut self, key: PopupKey) {
+        self.dismissed_by_press = Some(key);
+    }
+
+    /// Whether this press closed `key`: then what opened it leaves it closed.
+    pub fn dismissed_by_this_press(&mut self, key: &PopupKey) -> bool {
+        if self.dismissed_by_press.as_ref() == Some(key) {
+            self.dismissed_by_press = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// A popup and what it is for, so pressing what opened it again closes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PopupKey {
+    Menu(Target),
+    /// Someone's profile card, wherever it was opened from.
+    Profile(
+        hermes_client_core::InstanceId,
+        hermes_client_core::proto::id::Id,
+    ),
+    Emoji(crate::emoji_picker::PickFor),
+    Network,
 }
 
 /// The dimmed backdrop with `card` in the middle. `id` names the dialog. The backdrop darkens
