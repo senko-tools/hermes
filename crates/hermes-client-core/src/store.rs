@@ -457,6 +457,26 @@ impl InstanceStore {
             .is_none_or(|r| r.last_read_id < last)
     }
 
+    /// Read marks the server may not know (not sent yet, or kept on this device): a channel is
+    /// read up to the newer of the two.
+    pub fn merge_read_marks(&mut self, marks: &[(Id, Id)]) {
+        for &(channel, message) in marks {
+            let last = self.channel(channel).and_then(|c| c.last_message_id);
+            let state = self.read_states.entry(channel).or_insert(ReadState {
+                channel_id: channel,
+                last_read_id: Id(0),
+                mention_count: 0,
+            });
+            if state.last_read_id < message {
+                state.last_read_id = message;
+                // Mentions may be newer than the mark; read to the end, none are left.
+                if last.is_none_or(|last| message >= last) {
+                    state.mention_count = 0;
+                }
+            }
+        }
+    }
+
     pub fn mention_count(&self, channel: Id) -> u32 {
         self.read_states
             .get(&channel)
@@ -1347,6 +1367,26 @@ pub(crate) mod tests {
         );
         assert_eq!(s.mention_count(Id(11)), 0);
         assert!(!s.unread(Id(11)));
+    }
+
+    #[test]
+    fn merged_read_marks_keep_the_newer() {
+        let mut s = store();
+        let bob = user(2, "bob");
+        let mut m = message(100, 11, &bob, "<@1>");
+        m.mentions.users = vec![Id(1)];
+        s.apply(ServerEvent::MessageCreate(m), 0);
+        assert!(s.unread(Id(11)));
+        // A mark before the mention keeps it counted; one at the end reads the channel.
+        s.merge_read_marks(&[(Id(11), Id(50))]);
+        assert_eq!(s.read_states[&Id(11)].last_read_id, Id(50));
+        assert_eq!(s.mention_count(Id(11)), 1);
+        assert!(s.unread(Id(11)));
+        s.merge_read_marks(&[(Id(11), Id(100))]);
+        assert!(!s.unread(Id(11)));
+        assert_eq!(s.mention_count(Id(11)), 0);
+        s.merge_read_marks(&[(Id(11), Id(60))]);
+        assert_eq!(s.read_states[&Id(11)].last_read_id, Id(100));
     }
 
     #[test]

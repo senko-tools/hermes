@@ -7,7 +7,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -26,6 +26,7 @@ use crate::config::{self, ClientConfig, ConfigError, ConfigPaths, InstanceEntry}
 use crate::gateway::{self, Command, ConnStatus, Gateway, GatewayEvent};
 use crate::known_hosts::KnownHosts;
 use crate::notify::{self, Notification};
+use crate::read_marks::LocalReadMarks;
 use crate::rest::{self, Rest};
 use crate::store::{
     Changed, HistoryAnchor, InstanceStore, LocalId, PAGE, PendingMessage, PendingState,
@@ -343,8 +344,11 @@ struct InstanceHandle {
     down_since: Mutex<Option<std::time::Instant>>,
     connected: tokio::sync::watch::Sender<bool>,
     outbox: Outbox,
-    /// channel → newest message to ack, waiting for the debounce.
+    /// channel → newest message to ack, waiting for the debounce or a reconnect after a failed
+    /// send.
     read_marks: Mutex<HashMap<Id, Id>>,
+    /// A send of the read marks is scheduled.
+    read_debounce: AtomicBool,
     typing_sent: Mutex<HashMap<Id, Instant>>,
 }
 
@@ -369,6 +373,8 @@ pub(crate) struct Inner {
     watcher: Mutex<Option<::notify::RecommendedWatcher>>,
     pub(crate) voice: Voice,
     pub(crate) accounts: crate::secure::Accounts,
+    /// What I have read, kept on this device while syncing read marks is off.
+    local_reads: Mutex<LocalReadMarks>,
 }
 
 /// The client core. Cheap to clone. Must be created inside a tokio runtime.
@@ -380,6 +386,33 @@ pub struct Core {
 impl fmt::Debug for Core {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Core").finish_non_exhaustive()
+    }
+}
+
+/// Sends the waiting read marks; a mark is dropped once the server has it, and kept (for the
+/// next reconnect) when sending failed.
+async fn send_read_marks(handle: &InstanceHandle) {
+    let marks: Vec<(Id, Id)> = handle
+        .read_marks
+        .lock()
+        .expect("read marks")
+        .iter()
+        .map(|(c, m)| (*c, *m))
+        .collect();
+    for (channel, message) in marks {
+        let done = match handle.rest.ack(channel, message).await {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::info!("ack {channel}: {err}");
+                // Not a network error: the message or channel is gone, no use trying again.
+                !err.is_network()
+            }
+        };
+        let mut marks = handle.read_marks.lock().expect("read marks");
+        // A newer mark that came meanwhile still waits.
+        if done && marks.get(&channel) == Some(&message) {
+            marks.remove(&channel);
+        }
     }
 }
 
@@ -437,8 +470,15 @@ impl Core {
             options.user_volumes,
             audio_tx,
         );
+        let local_reads = options
+            .paths
+            .as_ref()
+            .map_or_else(LocalReadMarks::in_memory, |p| {
+                LocalReadMarks::load(&p.read_marks())
+            });
         let core = Core {
             inner: Arc::new(Inner {
+                local_reads: Mutex::new(local_reads),
                 client_name: options.client_name,
                 paths: options.paths,
                 config: RwLock::new(config),
@@ -829,6 +869,7 @@ impl Core {
             connected,
             outbox: Outbox::default(),
             read_marks: Mutex::new(HashMap::new()),
+            read_debounce: AtomicBool::new(false),
             typing_sent: Mutex::new(HashMap::new()),
         });
         self.inner
@@ -1035,6 +1076,7 @@ impl Core {
                         .map(|s| s.space.id)
                         .collect();
                     self.with_store(&inst, |s| s.apply_ready(*ready));
+                    self.restore_read_marks(&inst, &handle);
                     self.changed(&inst, [Changed::All]);
                     self.publish_device(&inst);
                     self.spawn_blocks(&inst);
@@ -1053,7 +1095,11 @@ impl Core {
                         });
                     }
                 }
-                GatewayEvent::Resumed => {}
+                GatewayEvent::Resumed => {
+                    // Marks that failed while the connection was down.
+                    let handle = handle.clone();
+                    tokio::spawn(async move { send_read_marks(&handle).await });
+                }
                 GatewayEvent::Dispatch(mut event) => {
                     match event.as_mut() {
                         // Opened here, in order, so nothing else ever sees the sealed form.
@@ -1628,7 +1674,8 @@ impl Core {
     }
 
     /// Marks a channel read up to `message`: shown at once, sent to the server after 1 s
-    /// (only the newest mark of a burst is sent).
+    /// (only the newest mark of a burst is sent). A mark that could not be sent is kept and sent
+    /// again after the next reconnect. With syncing off it is kept on this device instead.
     pub fn mark_read(&self, inst: &str, channel: Id, message: Id) {
         let Some(handle) = self.handle(inst) else {
             return;
@@ -1655,29 +1702,100 @@ impl Core {
         }
         self.changed(inst, [Changed::ReadState(channel)]);
         if !self.config().privacy.send_read_marks {
+            self.keep_read_mark(inst, channel, message);
             return;
         }
-        let first = handle
+        {
+            let mut marks = handle.read_marks.lock().expect("read marks");
+            let mark = marks.entry(channel).or_insert(message);
+            *mark = (*mark).max(message);
+        }
+        if !handle.read_debounce.swap(true, Ordering::SeqCst) {
+            tokio::spawn(async move {
+                tokio::time::sleep(READ_DEBOUNCE).await;
+                handle.read_debounce.store(false, Ordering::SeqCst);
+                send_read_marks(&handle).await;
+            });
+        }
+    }
+
+    /// After `ready`: read marks the server does not have yet (not sent, or kept on this device
+    /// with syncing off) still count, and waiting ones are sent again.
+    fn restore_read_marks(&self, inst: &str, handle: &Arc<InstanceHandle>) {
+        let mut marks: Vec<(Id, Id)> = handle
             .read_marks
             .lock()
             .expect("read marks")
-            .insert(channel, message)
-            .is_none();
-        if first {
-            tokio::spawn(async move {
-                tokio::time::sleep(READ_DEBOUNCE).await;
-                let mark = handle
-                    .read_marks
-                    .lock()
-                    .expect("read marks")
-                    .remove(&channel);
-                if let Some(message) = mark
-                    && let Err(err) = handle.rest.ack(channel, message).await
-                {
-                    tracing::info!("ack {channel}: {err}");
-                }
-            });
+            .iter()
+            .map(|(c, m)| (*c, *m))
+            .collect();
+        let sync = self.config().privacy.send_read_marks;
+        if !sync {
+            marks.extend(self.inner.local_reads.lock().expect("local reads").of(inst));
         }
+        if marks.is_empty() {
+            return;
+        }
+        self.with_store(inst, |s| s.merge_read_marks(&marks));
+        if sync {
+            let handle = handle.clone();
+            tokio::spawn(async move { send_read_marks(&handle).await });
+        }
+    }
+
+    /// Sends every waiting read mark now (the app is closing or losing the focus).
+    pub async fn flush_read_marks(&self) {
+        let handles: Vec<_> = self
+            .inner
+            .instances
+            .lock()
+            .expect("instances")
+            .values()
+            .cloned()
+            .collect();
+        futures_util::future::join_all(handles.iter().map(|h| send_read_marks(h))).await;
+    }
+
+    /// [`flush_read_marks`](Self::flush_read_marks), waiting at most `timeout`: for the UI
+    /// thread right before the app quits. Needs a tokio runtime entered on this thread.
+    pub fn flush_read_marks_blocking(&self, timeout: Duration) {
+        let pending = self
+            .inner
+            .instances
+            .lock()
+            .expect("instances")
+            .values()
+            .any(|h| !h.read_marks.lock().expect("read marks").is_empty());
+        if !pending {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let core = self.clone();
+        tokio::spawn(async move {
+            core.flush_read_marks().await;
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(timeout);
+    }
+
+    /// Keeps a read mark on this device (syncing is off); the file is written off this thread.
+    fn keep_read_mark(&self, inst: &str, channel: Id, message: Id) {
+        let changed = self
+            .inner
+            .local_reads
+            .lock()
+            .expect("local reads")
+            .set(inst, channel, message);
+        if !changed {
+            return;
+        }
+        let core = self.clone();
+        tokio::task::spawn_blocking(move || {
+            // Saved under the lock, so the last write has the newest marks.
+            if let Err(err) = core.inner.local_reads.lock().expect("local reads").save() {
+                tracing::warn!("read marks: {err}");
+            }
+        });
     }
 
     /// Puts a channel back to unread from `message` on.
@@ -1685,6 +1803,12 @@ impl Core {
         let Some(handle) = self.handle(inst) else {
             return;
         };
+        // A waiting read mark would undo this.
+        handle
+            .read_marks
+            .lock()
+            .expect("read marks")
+            .remove(&channel);
         let before = Id(message.0.saturating_sub(1));
         self.with_store(inst, |s| {
             let mention_count = s.read_states.get(&channel).map_or(0, |r| r.mention_count);
@@ -1704,6 +1828,8 @@ impl Core {
                     tracing::info!("ack {channel}: {err}");
                 }
             });
+        } else {
+            self.keep_read_mark(inst, channel, before);
         }
     }
 

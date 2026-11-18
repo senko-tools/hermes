@@ -72,6 +72,10 @@ impl ConfigPaths {
     pub fn user_volumes(&self) -> PathBuf {
         self.dir.join(crate::volumes::USER_VOLUMES_FILE)
     }
+
+    pub fn read_marks(&self) -> PathBuf {
+        self.dir.join(crate::read_marks::READ_MARKS_FILE)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
