@@ -2614,7 +2614,8 @@ impl Shell {
                     .rounded(theme::radius_small())
                     .cursor_pointer()
                     .text_size(theme::secondary_size())
-                    .hover(|d| d.bg(theme::hover()))
+                    // The chosen row keeps its own highlight.
+                    .when(n != view.suggestion, |d| d.hover(|d| d.bg(theme::hover())))
                     .child(suggestion.label.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.accept_suggestion(&accept, n, window, cx);
@@ -2956,6 +2957,8 @@ impl Shell {
                     .cursor_pointer()
                     .text_size(theme::caption_size())
                     .text_color(theme::text_tertiary())
+                    // A click jumps to it: its text brightens under the pointer.
+                    .hover(|d| d.text_color(theme::text_secondary()))
                     .child(icon(assets::REPLY, 12., theme::text_tertiary()))
                     .child(
                         div()
@@ -3517,15 +3520,17 @@ impl Shell {
             .occlude()
             .children(buttons)
             .child(
-                tip_button("palette-close", assets::CLOSE, "Close").on_click(cx.listener(
-                    move |this, _, _, cx| {
+                tip_button("palette-close", assets::CLOSE, "Close")
+                    // Like the reactions beside it.
+                    .size(px(30.))
+                    .hover(|d| d.bg(theme::hover()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         if let Some(view) = this.chats.get_mut(&(close_inst.clone(), channel)) {
                             view.palette = None;
                         }
                         cx.notify();
-                    },
-                )),
+                    })),
             )
             // It pops up over the message's corner as it fades in.
             .with_animation(
