@@ -713,3 +713,52 @@ async fn share_transport_benchmark() {
     );
     let _ = (&mut p.alice_events, &mut p.bob_events);
 }
+
+/// An address that does not answer (an IPv6 that does not reach the server, say) is passed over
+/// for the next one, as the HTTPS connection does.
+#[tokio::test]
+async fn voice_tries_the_next_address_when_one_does_not_answer() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let dir = std::env::temp_dir().join(format!("hermes-cc-voice-{}-fallback", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut config = Config::default();
+    config.storage.data_dir = dir.join("data");
+    std::fs::create_dir_all(&config.storage.data_dir).unwrap();
+    let (endpoint, cert_sha256) =
+        hermes_server::voice::endpoint::bind(&config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let real = endpoint.local_addr().unwrap();
+    let server = endpoint.clone();
+    tokio::spawn(async move {
+        while let Some(incoming) = server.accept().await {
+            tokio::spawn(async move {
+                if let Ok(conn) = incoming.await {
+                    // Held until the client closes it.
+                    let _ = conn.closed().await;
+                }
+            });
+        }
+    });
+    // A UDP port nobody listens on any more.
+    let dead = std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let quic = hermes_client_core::proto::api::QuicEndpoint {
+        host: "127.0.0.1".into(),
+        port: real.port(),
+        cert_sha256,
+    };
+    let (answered, conn) =
+        hermes_client_core::voice::connect_any(&quic, &[dead, real], Duration::from_secs(1))
+            .await
+            .expect("the second address answers");
+    assert_eq!(answered, real);
+    conn.close(0u32.into(), b"done");
+
+    let err = hermes_client_core::voice::connect_any(&quic, &[dead], Duration::from_secs(1))
+        .await
+        .expect_err("nothing answers");
+    assert!(err.to_string().contains("timed out"), "{err}");
+    endpoint.close(0u32.into(), b"done");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1968,25 +1968,126 @@ async fn write_screen(conn: quinn::Connection, mut frames: mpsc::Receiver<Vec<u8
 
 /// Resolves the endpoint of a `/voice/join` answer and connects with the pinned certificate.
 async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connection, String> {
-    let failed = |e: &dyn std::fmt::Display| format!("Voice connection failed: {e}");
-    let fingerprint = Fingerprint::parse(&join.quic.cert_sha256).map_err(|e| failed(&e))?;
-    let crypto = crate::tls::voice_config(fingerprint).map_err(|e| failed(&e))?;
-    let crypto = QuicClientConfig::try_from(crypto).map_err(|e| failed(&e))?;
+    connect_quic(&join.quic)
+        .await
+        .map(|(_, conn)| conn)
+        .map_err(|e| e.to_string())
+}
+
+/// Why a voice (QUIC) connection could not be made.
+#[derive(Debug, Clone)]
+pub enum QuicError {
+    /// The host did not resolve, or the certificate fingerprint was not valid.
+    Setup(String),
+    /// Every address failed: each with why.
+    Addresses(Vec<(SocketAddr, String)>),
+}
+
+impl std::fmt::Display for QuicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuicError::Setup(e) => write!(f, "Voice connection failed: {e}"),
+            QuicError::Addresses(failed) => {
+                let all_timed_out = failed.iter().all(|(_, e)| e == TIMED_OUT);
+                if all_timed_out {
+                    write!(f, "Voice connection timed out (is UDP blocked?)")?;
+                } else {
+                    write!(f, "Voice connection failed")?;
+                }
+                for (n, (addr, e)) in failed.iter().enumerate() {
+                    write!(f, "{} {addr}: {e}", if n == 0 { ":" } else { ";" })?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+const TIMED_OUT: &str = "timed out";
+
+/// The addresses `host` resolves to, in the order the system prefers, without repeats.
+pub async fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    let mut addrs: Vec<SocketAddr> = Vec::new();
+    for addr in tokio::net::lookup_host((host, port)).await? {
+        if !addrs.contains(&addr) {
+            addrs.push(addr);
+        }
+    }
+    Ok(addrs)
+}
+
+/// The order to try `addrs` in: the system's first choice, then the other family's first, then
+/// the rest, so one family that does not get through costs one timeout, not several.
+fn try_order(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let Some(&first) = addrs.first() else {
+        return Vec::new();
+    };
+    let mut order = vec![first];
+    if let Some(&other) = addrs.iter().find(|a| a.is_ipv6() != first.is_ipv6()) {
+        order.push(other);
+    }
+    for &addr in addrs {
+        if !order.contains(&addr) {
+            order.push(addr);
+        }
+    }
+    order
+}
+
+/// Connects to the voice endpoint `quic`, trying each of its addresses in turn: a server whose
+/// IPv6 does not reach it is still reached over IPv4, as the HTTPS connection is. Returns the
+/// address that answered.
+pub async fn connect_quic(
+    quic: &hermes_proto::api::QuicEndpoint,
+) -> std::result::Result<(SocketAddr, quinn::Connection), QuicError> {
+    let host = quic.host.as_str();
+    let addrs = resolve(host, quic.port)
+        .await
+        .map_err(|e| QuicError::Setup(e.to_string()))?;
+    if addrs.is_empty() {
+        return Err(QuicError::Setup("no address".into()));
+    }
+    // Every address together gets about as long as one did before, but at least a few seconds.
+    let each = (CONNECT_TIMEOUT / u32::try_from(addrs.len()).unwrap_or(u32::MAX))
+        .max(Duration::from_secs(4));
+    connect_any(quic, &addrs, each).await
+}
+
+/// [`connect_quic`] over `addrs` (as resolved), giving each `each` to answer.
+pub async fn connect_any(
+    quic: &hermes_proto::api::QuicEndpoint,
+    addrs: &[SocketAddr],
+    each: Duration,
+) -> std::result::Result<(SocketAddr, quinn::Connection), QuicError> {
+    let mut failed = Vec::new();
+    for addr in try_order(addrs) {
+        match connect_addr(quic, addr, each).await {
+            Ok(conn) => return Ok((addr, conn)),
+            Err(e) => failed.push((addr, e)),
+        }
+    }
+    Err(QuicError::Addresses(failed))
+}
+
+/// Connects to the voice endpoint `quic` at `addr` only, with the pinned certificate.
+pub async fn connect_addr(
+    quic: &hermes_proto::api::QuicEndpoint,
+    addr: SocketAddr,
+    timeout: Duration,
+) -> std::result::Result<quinn::Connection, String> {
+    let fingerprint = Fingerprint::parse(&quic.cert_sha256).map_err(|e| e.to_string())?;
+    let crypto = crate::tls::voice_config(fingerprint).map_err(|e| e.to_string())?;
+    let crypto = QuicClientConfig::try_from(crypto).map_err(|e| e.to_string())?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.transport_config(Arc::new(transport_config()));
-    let host = join.quic.host.as_str();
-    let addr: SocketAddr = tokio::net::lookup_host((host, join.quic.port))
-        .await
-        .map_err(|e| failed(&e))?
-        .next()
-        .ok_or_else(|| failed(&"no address"))?;
     let bind: SocketAddr = if addr.is_ipv6() {
         "[::]:0".parse().expect("valid")
     } else {
         "0.0.0.0:0".parse().expect("valid")
     };
-    let mut endpoint = quinn::Endpoint::client(bind).map_err(|e| failed(&e))?;
+    let mut endpoint = quinn::Endpoint::client(bind).map_err(|e| e.to_string())?;
     endpoint.set_default_client_config(config);
+    let host = quic.host.as_str();
     let server_name = if host.parse::<std::net::IpAddr>().is_ok() || host.is_empty() {
         "hermes-voice"
     } else {
@@ -1994,11 +2095,11 @@ async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connect
     };
     let connecting = endpoint
         .connect(addr, server_name)
-        .map_err(|e| failed(&e))?;
-    match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
+        .map_err(|e| e.to_string())?;
+    match tokio::time::timeout(timeout, connecting).await {
         Ok(Ok(conn)) => Ok(conn),
-        Ok(Err(err)) => Err(failed(&err)),
-        Err(_) => Err("Voice connection timed out (is UDP blocked?)".into()),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(TIMED_OUT.to_owned()),
     }
 }
 
@@ -2048,6 +2149,18 @@ async fn read_frames(mut recv: quinn::RecvStream, frames: mpsc::Sender<ServerCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn addresses_are_tried_first_choice_then_the_other_family() {
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        let six = a("[2001:db8::1]:7700");
+        let six_b = a("[2001:db8::2]:7700");
+        let four = a("192.0.2.1:7700");
+        assert_eq!(try_order(&[six, six_b, four]), vec![six, four, six_b]);
+        assert_eq!(try_order(&[four, six]), vec![four, six]);
+        assert_eq!(try_order(&[four]), vec![four]);
+        assert!(try_order(&[]).is_empty());
+    }
 
     #[test]
     fn a_share_that_lost_a_frame_waits_for_a_keyframe() {
