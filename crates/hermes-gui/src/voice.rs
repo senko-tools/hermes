@@ -581,7 +581,8 @@ impl Shell {
                 cx.notify();
             }));
         let share = self.share_voice_button("panel-share", cx);
-        let leave = self.leave_voice_button("panel-leave", cx);
+        // The panel is narrow: its Leave keeps its square.
+        let leave = self.leave_voice_button("panel-leave", false, cx);
         Some(
             div()
                 .flex()
@@ -963,11 +964,16 @@ impl Shell {
         )
     }
 
-    /// Leave, which fills red under the pointer.
-    fn leave_voice_button(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
+    /// Leave, which fills red under the pointer; `grow`: it also grows into a pill with its name.
+    fn leave_voice_button(
+        &self,
+        id: &'static str,
+        grow: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.voice_button(
             VoiceButton {
-                hover: OnHover::Fill,
+                hover: OnHover::Fill { grow },
                 ..VoiceButton::new(id, assets::HANG_UP, Look::negative(), "Leave")
             },
             cx.listener(|this, _, _, cx| this.leave_voice(cx)),
@@ -1008,7 +1014,7 @@ impl Shell {
                             .child(mute)
                             .child(deafen),
                     )
-                    .child(self.leave_voice_button("bar-leave", cx)),
+                    .child(self.leave_voice_button("bar-leave", true, cx)),
             )
             // It floats up into place when the room opens.
             .with_animation(
@@ -1033,9 +1039,11 @@ impl Shell {
         speaking: bool,
         nested: bool,
         _dm: bool,
-        in_block: bool,
+        block: Option<crate::sidebar::RowState>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let in_block = block.is_some();
+        let key = format!("voice-user-{channel}-{user}");
         let (avatar, space) = {
             let store = self.core.store();
             let s = store.instance(&inst);
@@ -1052,6 +1060,7 @@ impl Shell {
             .flex()
             .flex_shrink_0()
             .items_center()
+            .relative()
             .gap(px(8.))
             .h(px(30.))
             .pl(px(if nested { 46. } else { 36. }))
@@ -1071,7 +1080,14 @@ impl Shell {
             } else {
                 theme::text_secondary()
             })
-            .hover(|d| d.text_color(theme::accent()).bg(theme::hover()))
+            // In a highlighted block: a pill of the block's hue, and the name brightens.
+            .map(|d| match block {
+                Some(block) => d
+                    .hover(|d| d.text_color(theme::text()))
+                    .on_hover(self.track_hover(key.clone(), cx))
+                    .child(self.block_hover_pill(&key, block)),
+                None => d.hover(|d| d.text_color(theme::accent()).bg(theme::hover())),
+            })
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     cx.stop_propagation();
@@ -1086,8 +1102,7 @@ impl Shell {
                     .child(avatar)
                     .with_spring(
                         SharedString::from(format!("voice-ring-{channel}-{user}")),
-                        gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING))
-                            .to(speaking),
+                        gpui_kit::SpringAnimation::new(ring_spring(speaking)).to(speaking),
                         |d, phase| {
                             d.border_color(theme::alpha(theme::speaking(), phase.0.clamp(0., 1.)))
                         },
@@ -1445,7 +1460,7 @@ impl Shell {
         // nothing inside moves.
         let ring = div().absolute().inset_0().rounded(radius).with_spring(
             SharedString::from(format!("tile-ring-{user}")),
-            gpui_kit::SpringAnimation::new(crate::theme::paced(RING_SPRING)).to(p.speaking),
+            gpui_kit::SpringAnimation::new(ring_spring(p.speaking)).to(p.speaking),
             |d, phase| {
                 let t = phase.0.clamp(0., 1.);
                 theme::border_width(d, px(1. + t)).border_color(theme::mix(
@@ -1841,9 +1856,18 @@ const VOICE_PANEL_MAX: f32 = 200.;
 /// How much wider Leave grows under the pointer, for its name.
 const LEAVE_LABEL: f32 = 48.;
 
-/// Quick, without overshoot: a speaking ring lights up and fades fast, yet does not flicker
-/// between words. Critically damped is 2 * sqrt(480) = 44.
-const RING_SPRING: gpui_kit::SpringConfig = gpui_kit::SpringConfig::new(480., 44., 1.);
+/// A speaking ring lights up almost at once (about 85% in 50 ms) and fades a little slower
+/// (about 120 ms). Both are critically damped (damping 2 * sqrt(stiffness)), so they never
+/// overshoot, and not paced by the motion speed: the ring is live status, and a spring starting
+/// from rest already eases in, which read as a delay. Speech detection holds 250 ms between
+/// words, so it does not flicker.
+fn ring_spring(speaking: bool) -> gpui_kit::SpringConfig {
+    if speaking {
+        gpui_kit::SpringConfig::new(4900., 140., 1.)
+    } else {
+        gpui_kit::SpringConfig::new(1225., 70., 1.)
+    }
+}
 
 /// What the pointer does to a voice button, on top of its `Look`'s hover colour.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1856,8 +1880,9 @@ pub enum OnHover {
     /// deafen stay red and crossed out; the tooltip says what a click does). Previewing the off
     /// look read as a change that had not happened.
     Deepen,
-    /// It fills with its colour and the icon tips over (leave).
-    Fill,
+    /// It fills with its colour and the icon tips over (leave). `grow`: it also widens into a
+    /// pill with its name (the call bar); without, it keeps its square and has a tooltip.
+    Fill { grow: bool },
 }
 
 /// An icon button of the voice and user panels.
@@ -1907,7 +1932,7 @@ impl Shell {
         let hovered = self.is_hovered(id);
         let tip = SharedString::from(if on { tips.1 } else { tips.0 });
         // Leave grows into a pill with its name, so its width follows the inside.
-        let grows = hover == OnHover::Fill;
+        let grows = hover == OnHover::Fill { grow: true };
         div()
             .id(id)
             .flex_shrink_0()
@@ -1987,10 +2012,25 @@ fn paint_voice_button(
         OnHover::Deepen => {
             bg = theme::alpha(look.on, 0.16 * t + 0.12 * h * t);
         }
-        OnHover::Fill => {
+        OnHover::Fill { grow } => {
             color = theme::mix(color, theme::on_accent(), h);
             bg = theme::alpha(look.on, 0.16 * t + h * (1. - 0.16 * t));
             tilt = -0.4 * h;
+            if !grow {
+                // Drawn like the other buttons below, in its square.
+                let d = d.relative().bg(bg);
+                return d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon(off_glyph, 18., color).with_transformation(
+                            Transformation::scale(size(pop, pop)).with_rotation(radians(tilt)),
+                        )),
+                );
+            }
             // The handset keeps its square; the name slides out of it to the right.
             let glyph = icon(off_glyph, 18., color).with_transformation(
                 Transformation::scale(size(pop, pop)).with_rotation(radians(tilt)),
