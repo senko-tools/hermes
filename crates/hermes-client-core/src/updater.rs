@@ -541,15 +541,36 @@ fn old_files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// The new version is up: the old files and the marker go.
+/// The new version is up: the old files and the marker go. The watcher still runs from
+/// `hermes.exe.old` for up to half a second after the marker goes, and Windows does not delete a
+/// running program, so what is still in use is tried again for a little while.
 pub fn finish_started() {
     let Some(dir) = install_dir() else { return };
     if std::fs::remove_file(dir.join(STARTED_MARKER)).is_ok() {
         tracing::info!("update installed");
     }
-    for old in old_files(&dir) {
-        let _ = std::fs::remove_file(old);
+    let mut left: Vec<PathBuf> = old_files(&dir)
+        .into_iter()
+        .filter(|old| std::fs::remove_file(old).is_err())
+        .collect();
+    if left.is_empty() {
+        return;
     }
+    let _ = std::thread::Builder::new()
+        .name("update-cleanup".into())
+        .spawn(move || {
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(250));
+                left.retain(|old| std::fs::remove_file(old).is_err() && old.exists());
+                if left.is_empty() {
+                    return;
+                }
+            }
+            tracing::info!(
+                "could not remove {} old file(s) of the last update",
+                left.len()
+            );
+        });
 }
 
 /// Whether the new version has said it is up.
