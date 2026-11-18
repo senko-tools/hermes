@@ -695,6 +695,30 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
     });
     visual.run_until_parked();
 
+    // A hover on something no longer drawn (a Leave button that hid itself) is forgotten; the
+    // hover of something still drawn stays.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            this.hovered.insert("rail-home".into());
+            this.hovered.insert("gone-button".into());
+            cx.notify();
+        });
+        window.refresh();
+        window.draw(cx).clear(cx);
+        window.refresh();
+        window.draw(cx).clear(cx);
+        shell.update(cx, |this, cx| {
+            assert!(this.is_hovered("rail-home"), "drawn: its hover stays");
+            assert!(
+                !this.is_hovered("gone-button"),
+                "not drawn: its hover is dropped"
+            );
+            this.hovered.clear();
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+
     // A left click on a name opens the person's profile, not their menu.
     visual.update(|window, cx| {
         window.refresh();

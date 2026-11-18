@@ -134,6 +134,9 @@ pub struct Shell {
     pub hovered_file: Option<hermes_client_core::proto::id::Id>,
     /// What the pointer is over, of the things that change on a spring under it (`hover.rs`).
     pub hovered: HashSet<gpui_kit::SharedString>,
+    /// The keys `track_hover` was given while drawing the last frame. Something that is no
+    /// longer drawn never hears the pointer leave, so its key is dropped from `hovered` instead.
+    pub hover_tracked: std::rc::Rc<std::cell::RefCell<HashSet<gpui_kit::SharedString>>>,
     /// The copy button used a moment ago: it says "Copied".
     pub copied: Option<String>,
     /// What is playing its way out, with the serial of its close (`modal.rs`).
@@ -360,6 +363,7 @@ impl Shell {
             right_pressed: None,
             hovered_file: None,
             hovered: HashSet::new(),
+            hover_tracked: Default::default(),
             copied: None,
             closing_serials: HashMap::new(),
             closing_serial: 0,
@@ -1583,6 +1587,7 @@ impl Render for Shell {
         self.viewport = window.viewport_size();
         // This frame paints them again.
         self.popup_triggers.borrow_mut().clear();
+        self.forget_vanished_hovers();
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);

@@ -14,6 +14,14 @@ impl Shell {
         self.hovered.contains(key)
     }
 
+    /// Drops the hover of what the last frame did not draw: it went away under the pointer (a
+    /// Leave button that hid itself), so it never heard the pointer leave and would show its
+    /// hover when it comes back. Called at the start of each frame.
+    pub fn forget_vanished_hovers(&mut self) {
+        let drawn = std::mem::take(&mut *self.hover_tracked.borrow_mut());
+        self.hovered.retain(|key| drawn.contains(key));
+    }
+
     /// An `on_hover` listener that notes the pointer over `key`. Several can be true at once, so
     /// something inside a hovered tile does not end the tile's hover.
     pub fn track_hover(
@@ -22,6 +30,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
         let key = key.into();
+        self.hover_tracked.borrow_mut().insert(key.clone());
         cx.listener(move |this, hovered: &bool, _, cx| {
             let changed = if *hovered {
                 this.hovered.insert(key.clone())
