@@ -1,7 +1,7 @@
 name: release
 
 # Builds every release artifact from PLAN.md section 18.1 and publishes them as one GitHub release
-# on a `v*` tag (a pre-release for tags with a `-`, e.g. v0.1.0-alpha.6):
+# (a pre-release for versions with a `-`, e.g. 0.1.0-alpha.6):
 #   - hermes-server for x86_64 and aarch64 Linux (static musl) and x86_64 Windows
 #   - the Docker image ghcr.io/senko-tools/hermes-server (amd64 + arm64)
 #   - Hermes-Setup-<version>.exe (NSIS installer with hermes:// links, built by cargo-packager from
@@ -10,9 +10,15 @@ name: release
 #   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
 # macOS builds are left out for now.
 #
-# Anything but a tag is a dry run: everything is built and uploaded as workflow artifacts, but no
+# To release: bump the version (Cargo.toml and crates/hermes-gui/Packager.toml), push `dev`, then
+# Actions > release > Run workflow on `dev` with that version (`gh workflow run release.yml --ref
+# dev -f version=1.3.0`). The workflow tags the commit `v<version>` itself. Running on `dev` lets
+# the builds use the Rust caches of earlier `dev` runs; a tag push still releases too, but GitHub
+# gives a tag run no caches from `dev`, so everything is compiled from scratch.
+#
+# Anything else is a dry run: everything is built and uploaded as workflow artifacts, but no
 # release is created and no image is pushed. A dry run starts when this workflow or the release
-# Dockerfile changes on `dev`, or by hand ("Run workflow").
+# Dockerfile changes on `dev`, or by hand without a version.
 on:
   push:
     tags: ["v*"]
@@ -21,6 +27,11 @@ on:
       - .github/workflows/release.yml
       - deploy/docker/Dockerfile.release
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.3.0 (must match Cargo.toml); empty for a dry run"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -36,13 +47,32 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
+      - uses: actions/checkout@v7
       - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="${INPUT_VERSION#v}"
+            cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+            if [ "$version" != "$cargo_version" ]; then
+              echo "::error::version $version is not the one in Cargo.toml ($cargo_version)"
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+              echo "::error::tag v$version already exists"
+              exit 1
+            fi
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "version=dev-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
 
   server-linux:
@@ -87,8 +117,38 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  server-windows:
+    name: server x86_64-pc-windows-msvc
+    # Its own runner: the GUI job's build is the slowest part of a release.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # No VC++ redistributable needed on the user's machine.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: server-windows
+      - name: Build
+        run: cargo build --release --locked -p hermes-server
+      - name: Package
+        run: |
+          mkdir -p dist stage
+          cp target/release/hermes-server.exe LICENSE-AGPL-3.0 stage/
+          (cd stage && 7z a -tzip -bso0 "../dist/hermes-server-x86_64-pc-windows-msvc.zip" .)
+          ls -l dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-server
+          path: dist/
+          if-no-files-found: error
+
   windows:
-    name: windows (server, GUI, TUI)
+    name: windows (GUI, TUI)
     needs: version
     runs-on: windows-latest
     defaults:
@@ -107,7 +167,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           # `-nasm`: builds cached from before NASM was installed lack OpenH264's assembly.
-          key: windows-release-nasm
+          key: windows-gui-release-nasm
       - name: NASM
         # OpenH264's SIMD assembly. Without NASM its build quietly falls back to plain C, and
         # screen sharing encodes several times slower.
@@ -115,7 +175,11 @@ jobs:
           choco install nasm -y --no-progress
           echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
       - name: Build
-        run: cargo build --release --locked -p hermes-server -p hermes-gui -p hermes-tui
+        # Everything this job needs in one cargo run: hermes.exe, hermes-tui.exe and make-update.
+        # The packages must stay the same as the `before-packaging-command` in Packager.toml:
+        # another set of packages unifies dependency features differently and rebuilds ~120
+        # crates (12 min) in the Installer step.
+        run: cargo build --release --locked -p hermes-gui -p hermes-tui -p hermes-client-core
       - name: Check that OpenH264 has its assembly
         run: |
           if grep -rqs "not using any assembly" target/release/build/openh264-sys2-*/output; then
@@ -146,18 +210,17 @@ jobs:
       - name: cargo-packager
         run: cargo install cargo-packager --version 0.11.8 --locked
       - name: Installer
+        # Its `before-packaging-command` finds nothing left to build.
         run: |
-          # The version in Cargo.toml is the workspace's; the installer file is named after the tag.
+          # The version in Cargo.toml is the workspace's; the installer file is named after the release.
           (cd crates/hermes-gui && cargo packager --release -c Packager.toml -f nsis)
           mv dist/*-setup.exe "dist/Hermes-Setup-$VERSION.exe"
       - name: Package
         run: |
-          mkdir -p dist stage/server stage/portable stage/tui
+          mkdir -p dist stage/portable stage/tui
           r=target/release
-          cp "$r/hermes-server.exe" LICENSE-AGPL-3.0 stage/server/
           cp "$r/hermes.exe" "$r/hermes-tui.exe" LICENSE-GPL-3.0 target/ffmpeg/* stage/portable/
           cp "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/tui/
-          (cd stage/server && 7z a -tzip -bso0 "../../dist/hermes-server-x86_64-pc-windows-msvc.zip" .)
           (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)
           (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
           ls -l dist
@@ -165,6 +228,7 @@ jobs:
         # What the app's updater downloads (crates/hermes-client-core/src/updater.rs): every file
         # of the portable folder compressed, patches from the last three releases' files, and
         # the manifest signed with UPDATE_SIGNING_KEY (a secret; `make-update keygen` makes it).
+        # make-update was built in the Build step and compresses on every core.
         env:
           GH_TOKEN: ${{ github.token }}
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
@@ -173,7 +237,6 @@ jobs:
             echo "::notice::UPDATE_SIGNING_KEY is not set: no update files, the app will only link to the release"
             exit 0
           fi
-          cargo build --release --locked -p hermes-client-core --bin make-update
           previous=()
           for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --exclude-drafts               --json tagName -q '.[].tagName' | grep -v "^v$VERSION$" | head -3); do
             mkdir -p "prev/$tag"
@@ -251,7 +314,7 @@ jobs:
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
-        if: github.ref_type == 'tag'
+        if: needs.version.outputs.publish == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -260,7 +323,7 @@ jobs:
         with:
           context: ctx
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.ref_type == 'tag' }}
+          push: ${{ needs.version.outputs.publish == 'true' }}
           tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -268,7 +331,7 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
   release:
-    needs: [server-linux, windows, tui-linux, docker]
+    needs: [version, server-linux, server-windows, windows, tui-linux, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -284,6 +347,10 @@ jobs:
           path: dist
       - uses: actions/download-artifact@v7
         with:
+          name: windows-server
+          path: dist
+      - uses: actions/download-artifact@v7
+        with:
           name: tui-linux
           path: dist
       - name: Add the install files and checksums
@@ -293,18 +360,19 @@ jobs:
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
       - name: Upload (dry run)
-        if: github.ref_type != 'tag'
+        if: needs.version.outputs.publish != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: release-dry-run
           path: dist/
       - name: Create release
-        if: github.ref_type == 'tag'
+        if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: v${{ needs.version.outputs.version }}
         run: |
           flags=""
           case "$TAG" in *-*) flags="--prerelease" ;; esac
-          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+          # On a dispatch run this also creates the tag, on the commit that was built.
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Hermes $TAG" --generate-notes $flags

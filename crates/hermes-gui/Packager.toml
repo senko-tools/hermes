@@ -17,7 +17,9 @@ icons = ["assets/icons/hermes.ico", "assets/icons/icon-256.png"]
 formats = ["nsis"]
 out-dir = "../../dist"
 binaries-dir = "../../target/release"
-before-packaging-command = "cargo build --release -p hermes-gui -p hermes-tui"
+# The same packages as the release workflow's Build step (make-update is in hermes-client-core):
+# a different set unifies dependency features differently and rebuilds ~120 crates.
+before-packaging-command = "cargo build --release -p hermes-gui -p hermes-tui -p hermes-client-core"
 binaries = [
   { path = "hermes", main = true },
   { path = "hermes-tui", main = false },
