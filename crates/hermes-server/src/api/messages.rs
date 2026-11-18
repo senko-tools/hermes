@@ -382,6 +382,8 @@ pub async fn send(
     db::messages::set_mentions(&mut tx, row.id, &resolved.mentions).await?;
     db::messages::set_last_message_id(&mut tx, channel_id, row.id).await?;
     db::messages::add_mention_counts(&mut tx, channel_id, &resolved.notify, row.id).await?;
+    // Writing in a channel reads it, so a restart does not show my own message as new.
+    db::messages::set_read(&mut *tx, auth.user_id, channel_id, row.id).await?;
     tx.commit().await?;
     if let Some(cached) = state.cache_mut().channels.get_mut(&channel_id) {
         let last = &mut cached.channel.last_message_id;
@@ -410,6 +412,7 @@ pub async fn send(
         ServerEvent::MessageCreate(message.clone()),
         Audience::User(auth.user_id),
     );
+    // No read state event: my sessions mark the channel read when they see my own message.
     Ok(Json(message))
 }
 
@@ -783,9 +786,14 @@ pub async fn ack(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
+    // Marking unread from a message acks the id right before it, which is no message.
+    let after = Id(req.message_id.0.saturating_add(1));
     if db::messages::get(&state.db.read, channel_id, req.message_id)
         .await?
         .is_none()
+        && db::messages::get(&state.db.read, channel_id, after)
+            .await?
+            .is_none()
     {
         return Err(Error::not_found("message"));
     }

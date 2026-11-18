@@ -535,10 +535,12 @@ async fn mentions_and_read_states() {
     assert_eq!(read_state(&server, &bob_id, &general).await, Some((0, 1)));
     assert_eq!(read_state(&server, &carol_id, &general).await, Some((0, 1)));
     assert_eq!(read_state(&server, &owner_id, &general).await, None);
+    // Writing reads the channel up to my own message, with no mention counted.
+    let m_id: i64 = id(&m).parse().unwrap();
     assert_eq!(
         read_state(&server, &alice_id, &general).await,
-        None,
-        "not the author"
+        Some((m_id, 0)),
+        "the author has read it"
     );
     // Stored mentions come back in history.
     let history = server
@@ -553,7 +555,11 @@ async fn mentions_and_read_states() {
     for (user, count) in [(&alice_id, 1), (&bob_id, 2), (&carol_id, 2)] {
         assert_eq!(read_state(&server, user, &general).await.unwrap().1, count);
     }
-    assert_eq!(read_state(&server, &owner_id, &general).await, None);
+    let everyone_id: i64 = id(&everyone).parse().unwrap();
+    assert_eq!(
+        read_state(&server, &owner_id, &general).await,
+        Some((everyone_id, 0))
+    );
 
     // @here only counts online users.
     server
@@ -621,6 +627,31 @@ async fn mentions_and_read_states() {
         .post(&ack, Some(&bob), json!({ "message_id": secret }))
         .await
         .err(404, "NOT_FOUND");
+    // Mark unread from a message: the id right before it.
+    server
+        .post(
+            &ack,
+            Some(&bob),
+            json!({ "message_id": (m_id - 1).to_string() }),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        read_state(&server, &bob_id, &general).await,
+        Some((m_id - 1, 0))
+    );
+    server
+        .post(
+            &ack,
+            Some(&bob),
+            json!({ "message_id": (m_id - 2).to_string() }),
+        )
+        .await
+        .err(404, "NOT_FOUND");
+    server
+        .post(&ack, Some(&bob), json!({ "message_id": id(&m) }))
+        .await
+        .ok();
 
     // A mention newer than the read position counts; editing does not count again.
     let late = send(&server, &alice, &general, &format!("<@{bob_id}>")).await;
