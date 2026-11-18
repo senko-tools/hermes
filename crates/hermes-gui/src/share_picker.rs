@@ -1,6 +1,6 @@
 //! What to share, picked from pictures: a panel over most of the window with the screens on
-//! top, a divider, and the windows below in a scrolling grid. All cards are the same size, and
-//! rows are centred. Picking a card only selects it; Share starts. The pictures are taken on a
+//! top, a divider, and the windows below in a scrolling grid. All cards are the same size, as
+//! wide as the panel allows (see [`card_layout`]), and rows are centred. Picking a card only selects it; Share starts. The pictures are taken on a
 //! background thread every few seconds, only while the picker is open.
 //!
 //! The choice is `voice.share_screen`, saved when sharing starts: the last screen comes back
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, ObjectFit, RenderImage, SharedString, div, img};
 use image::Frame;
@@ -23,14 +23,35 @@ use crate::voice::chip;
 
 /// How often the pictures are taken again while the picker is open.
 const REFRESH: Duration = Duration::from_millis(2500);
-/// A card: its picture's size, and the two lines under it.
-const CARD_W: f32 = 184.;
-const PICTURE_H: f32 = 104.;
+/// The narrowest and widest a card gets; between them, cards stretch to fill their rows.
+const MIN_CARD: f32 = 230.;
+const MAX_CARD: f32 = 320.;
+/// The most cards in a row.
+const MAX_COLUMNS: usize = 6;
+/// The space inside a card around its picture and lines.
+const CARD_PAD: f32 = 6.;
 /// The gap between cards.
 const GAP: f32 = 12.;
+/// The body's padding on each side.
+const BODY_PAD: f32 = 20.;
 /// The space kept around the picker, and the widest it gets.
 const MARGIN: f32 = 40.;
-const MAX_W: f32 = 1080.;
+const MAX_W: f32 = 1400.;
+/// The narrowest the panel gets.
+const MIN_W: f32 = 320.;
+
+/// How many cards fit in a row `inner` wide, and how wide each is: as many as fit at
+/// [`MIN_CARD`], stretched to fill the row up to [`MAX_CARD`].
+fn card_layout(inner: f32) -> (usize, f32) {
+    let columns = (((inner + GAP) / (MIN_CARD + GAP)).floor() as usize).clamp(1, MAX_COLUMNS);
+    let width = (inner - GAP * (columns - 1) as f32) / columns as f32;
+    (columns, width.clamp(1., MAX_CARD))
+}
+
+/// The panel's width in a window `viewport` wide (in unscaled pixels).
+fn panel_width(viewport: f32) -> f32 {
+    (viewport - 2. * MARGIN).clamp(MIN_W, MAX_W)
+}
 /// The id `close_later` knows it by.
 const ID: &str = "share-picker";
 
@@ -187,9 +208,13 @@ impl Shell {
         source: &ShareSource,
         selected: bool,
         pictured: bool,
+        card_w: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let value = source.value.clone();
+        // No picture is coming: its own face, so it does not melt into the panel.
+        let empty = source.picture.is_none() && (pictured || source.minimized);
+        let picture_h = (card_w - 2. * CARD_PAD) * 9. / 16.;
         let picture: AnyElement = match &source.picture {
             Some(picture) => img(picture.clone())
                 .size_full()
@@ -234,12 +259,15 @@ impl Shell {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .w(px(CARD_W))
-            .p(px(6.))
+            .w(px(card_w))
+            .p(px(CARD_PAD))
             .gap(px(6.))
             .rounded(theme::row_radius())
             .cursor_pointer()
-            .when(selected, |d| d.bg(theme::alpha(theme::accent(), 0.12)))
+            .when(selected, |d| {
+                d.bg(theme::alpha(theme::accent(), 0.12))
+                    .hover(|d| d.bg(theme::alpha(theme::accent(), 0.18)))
+            })
             .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
             .child(
                 div()
@@ -247,10 +275,18 @@ impl Shell {
                     .items_center()
                     .justify_center()
                     .w_full()
-                    .h(px(PICTURE_H))
+                    .h(px(picture_h))
                     .rounded(theme::radius_small())
                     .overflow_hidden()
-                    .bg(theme::code_background())
+                    .map(|d| {
+                        if empty {
+                            d.bg(theme::mix(theme::code_background(), theme::text(), 0.08))
+                                .border_1()
+                                .border_color(theme::border())
+                        } else {
+                            d.bg(theme::code_background())
+                        }
+                    })
                     .child(picture),
             )
             .child(
@@ -311,6 +347,9 @@ impl Shell {
         use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
         let picker = self.share_menu.as_ref()?;
         let voice = &self.config.voice;
+        let width = panel_width(self.viewport.width.as_f32() / theme::scale());
+        // The body's padding, and a little for the scrollbar and rounding.
+        let (_, card_w) = card_layout(width - 2. * BODY_PAD - 12.);
         let grid = |cards: Vec<AnyElement>| {
             div()
                 .flex()
@@ -327,7 +366,14 @@ impl Shell {
                 .map(|(n, s)| {
                     (
                         s.window,
-                        self.share_card(n, s, s.value == picker.selected, picker.pictured, cx),
+                        self.share_card(
+                            n,
+                            s,
+                            s.value == picker.selected,
+                            picker.pictured,
+                            card_w,
+                            cx,
+                        ),
                     )
                 })
                 .partition(|(window, _)| !window),
@@ -377,7 +423,7 @@ impl Shell {
                 .min_h_0()
                 .overflow_y_scroll()
                 .gap(px(16.))
-                .px(px(20.))
+                .px(px(BODY_PAD))
                 .py(px(16.))
                 .child(divider("SCREENS"))
                 .child(grid(screens))
@@ -426,22 +472,27 @@ impl Shell {
         };
         // The server says whether it passes a share's sound on; known once in a room.
         let no_sound = self.core.voice_channel().is_some() && !self.core.share_audio_supported();
-        let sound = div()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .child(
-                Checkbox::new("share-sound")
-                    .cursor_pointer()
-                    .label("Share sound")
-                    .checked(voice.share_sound)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.set_share_setting("voice.share_sound", &on.to_string(), cx);
-                    })),
-            )
-            .when(no_sound, |d| {
-                d.child(caption("This server does not pass sound on"))
-            });
+        // A switch like Settings' own, as tall as the chips beside it.
+        let sound = option(
+            "SHARE SOUND",
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .min_h(px(28.))
+                .child(
+                    Switch::new("share-sound")
+                        .cursor_pointer()
+                        .checked(voice.share_sound)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            this.set_share_setting("voice.share_sound", &on.to_string(), cx);
+                        })),
+                )
+                .when(no_sound, |d| {
+                    d.child(caption("This server does not pass sound on"))
+                })
+                .into_any_element(),
+        );
         let footer = div()
             .flex()
             .flex_wrap()
@@ -529,14 +580,13 @@ impl Shell {
         let way = if closing { "out" } else { "in" };
         let shown = move |t: f32| if closing { 1. - t } else { t };
         let scrim = theme::scrim();
-        let width = (self.viewport.width.as_f32() / theme::scale() - 2. * MARGIN).min(MAX_W);
         let card = div()
             .id("share-picker-card")
             .occlude()
             .relative()
             .flex()
             .flex_col()
-            .w(px(width.max(320.)))
+            .w(px(width))
             .h_full()
             .rounded(theme::radius_large())
             .bg(theme::sidebar())
@@ -598,4 +648,36 @@ fn window_glyph() -> gpui_kit::Div {
         .border(px(2.))
         .border_color(color)
         .child(div().w_full().h(px(5.)).bg(color))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cards_fill_their_rows_between_the_smallest_and_largest_size() {
+        // Too narrow for even one card at its smallest: one card, as wide as there is room.
+        assert_eq!(card_layout(200.), (1, 200.));
+        // One fits; it grows up to its largest.
+        assert_eq!(card_layout(300.), (1, 300.));
+        assert_eq!(card_layout(470.), (1, MAX_CARD));
+        // Two fit at 230 + 12 + 230 = 472.
+        let (columns, width) = card_layout(500.);
+        assert_eq!(columns, 2);
+        assert!((width - 244.).abs() < 0.01);
+        // Never more than the most per row, and a row never overflows.
+        for inner in [600., 900., 1200., 1356., 2000.] {
+            let (columns, width) = card_layout(inner);
+            assert!(columns <= MAX_COLUMNS);
+            assert!((MIN_CARD..=MAX_CARD).contains(&width));
+            assert!(columns as f32 * width + (columns - 1) as f32 * GAP <= inner + 0.01);
+        }
+    }
+
+    #[test]
+    fn the_panel_keeps_its_margin_within_its_limits() {
+        assert_eq!(panel_width(300.), MIN_W);
+        assert_eq!(panel_width(1000.), 920.);
+        assert_eq!(panel_width(3000.), MAX_W);
+    }
 }
