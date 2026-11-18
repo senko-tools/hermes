@@ -68,6 +68,8 @@ pub const ACCOUNT_PLUS: &str = "account-plus";
 pub const LINK: &str = "link-variant";
 pub const BAN: &str = "cancel";
 pub const FOLDER_PLUS: &str = "folder-plus-outline";
+pub const ALERT: &str = "alert";
+pub const PULSE: &str = "pulse";
 
 const FONTS: [&[u8]; 4] = [
     include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"),

@@ -16,6 +16,7 @@ mod command_bar;
 mod crop;
 mod desktop;
 mod desktop_shell;
+mod diagnostics;
 mod drag;
 mod emoji_picker;
 mod encryption;

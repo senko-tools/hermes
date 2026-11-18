@@ -42,10 +42,11 @@ pub enum Tab {
     Privacy,
     Keybinds,
     Admin,
+    Diagnostics,
     About,
 }
 
-const TABS: [(Tab, &str, &str); 9] = [
+const TABS: [(Tab, &str, &str); 10] = [
     (Tab::Account, assets::ACCOUNT, "Account"),
     (Tab::Appearance, assets::PALETTE, "Appearance"),
     (Tab::Chat, assets::CHAT, "Chat"),
@@ -54,6 +55,7 @@ const TABS: [(Tab, &str, &str); 9] = [
     (Tab::Privacy, assets::LOCK, "Privacy"),
     (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
     (Tab::Admin, assets::SERVER, "Instance"),
+    (Tab::Diagnostics, assets::PULSE, "Diagnostics"),
     (Tab::About, assets::INFO, "About"),
 ];
 
@@ -481,17 +483,29 @@ impl Shell {
                 self.core.set_mic_test(false);
             }
         }
-        self.core.set_level_meter(false);
+        // Diagnostics still listening finish first; they turn the meter off themselves.
+        let listening = self
+            .diagnostics
+            .as_ref()
+            .is_some_and(crate::diagnostics::Run::listening);
+        if !listening {
+            self.core.set_level_meter(false);
+        }
         cx.notify();
     }
 
-    fn settings_open_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+    pub(crate) fn settings_open_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         let Some(page) = &mut self.settings else {
             return;
         };
         page.tab = tab;
         page.fine_timers = (tab == Tab::Voice).then(crate::desktop::window::FineTimers::new);
-        self.core.set_level_meter(tab == Tab::Voice);
+        // Diagnostics listen to the microphone for a moment of their own.
+        let listening = self
+            .diagnostics
+            .as_ref()
+            .is_some_and(crate::diagnostics::Run::listening);
+        self.core.set_level_meter(tab == Tab::Voice || listening);
         match tab {
             Tab::Account => self.load_sessions(cx),
             Tab::Admin => self.load_admin(cx),
@@ -897,6 +911,7 @@ impl Shell {
             Tab::Privacy => self.tab_privacy(cx),
             Tab::Admin => self.tab_admin(page, cx),
             Tab::Keybinds => self.tab_keybinds(page, cx),
+            Tab::Diagnostics => self.tab_diagnostics(cx),
             Tab::About => self.tab_about(cx),
         };
         Some(frame(

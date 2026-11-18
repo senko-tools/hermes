@@ -881,6 +881,61 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
     });
     visual.run_until_parked();
 
+    // Diagnostics run against the server and this computer, and draw.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            this.open_settings(window, cx);
+            this.settings_open_tab(crate::settings::Tab::Diagnostics, cx);
+            this.run_diagnostics(cx);
+        });
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    for _ in 0..400 {
+        visual.run_until_parked();
+        let done = visual.update(|_, cx| {
+            shell
+                .read(cx)
+                .diagnostics
+                .as_ref()
+                .is_some_and(crate::diagnostics::Run::finished)
+        });
+        if done {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        let groups = shell
+            .read(cx)
+            .diagnostics
+            .as_ref()
+            .unwrap()
+            .groups()
+            .to_vec();
+        assert_eq!(groups.len(), 2, "the server and this computer");
+        let server = groups[0].1.as_ref().expect("finished");
+        let https = server
+            .iter()
+            .find(|c| c.name.starts_with("HTTPS"))
+            .expect("an HTTPS check");
+        assert_eq!(
+            https.level,
+            hermes_client_core::diagnostics::Level::Working,
+            "{https:?}"
+        );
+        let computer = groups[1].1.as_ref().expect("finished");
+        let updates = computer.iter().find(|c| c.name == "Updates").unwrap();
+        assert!(
+            updates.detail.contains("turned off"),
+            "GitHub is not asked: {updates:?}"
+        );
+        shell.update(cx, |this, cx| this.close_settings(cx));
+    });
+    visual.run_until_parked();
+
     // Each kind of menu opens and draws, submenus included.
     let targets = [
         Target::Space(inst.clone(), space),

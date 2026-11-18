@@ -27,6 +27,20 @@ fn command(name: &str) -> Command {
     command
 }
 
+/// The first line of `ffmpeg -version` (diagnostics), or why FFmpeg could not run.
+pub fn version() -> Result<String, String> {
+    let out = command("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg -version failed ({})", out.status));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.lines().next().unwrap_or("ffmpeg").trim().to_owned())
+}
+
 /// What a file holds.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probe {

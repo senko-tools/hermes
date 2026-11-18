@@ -253,6 +253,8 @@ pub struct Shell {
     pub input_level: f32,
     /// Whether the microphone would go through now, as the input mode decides.
     pub input_open: bool,
+    /// The last run of the Diagnostics tab.
+    pub diagnostics: Option<crate::diagnostics::Run>,
     /// `input_open` as the meter last drew it.
     pub meter_open: bool,
     /// What the level meter's bar shows, and when it was last drawn.
@@ -431,6 +433,7 @@ impl Shell {
             headphones_hint_shown: false,
             input_level: -60.0,
             input_open: false,
+            diagnostics: None,
             meter_open: false,
             meter_shown: -60.0,
             meter_drawn: Instant::now(),
@@ -674,6 +677,7 @@ impl Shell {
             CoreEvent::InputLevel { db, open } => {
                 self.input_level = db;
                 self.input_open = open;
+                self.diagnostics_heard(db);
                 return;
             }
             CoreEvent::StoreChanged { inst, what } => {

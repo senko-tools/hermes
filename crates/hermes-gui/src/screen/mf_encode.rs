@@ -353,6 +353,55 @@ impl Drop for MfEncoder {
 }
 
 /// The hardware H.264 encoders of the GPU `luid`, best first.
+/// The names of the hardware H.264 encoders on any GPU (diagnostics): none means screen
+/// sharing encodes in software.
+pub fn hardware_encoder_names() -> Result<Vec<String>, String> {
+    let input = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_NV12,
+    };
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: MFVideoFormat_H264,
+    };
+    // SAFETY: a successful MFStartup is balanced by the MFShutdown at the end. MFTEnum2 returns
+    // a CoTaskMem array of `count` activation objects, each holding one reference: each is moved
+    // out with `take` (dropped after its name is read) before the array is freed, once.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(failed("Media Foundation"))?;
+        let result = (|| {
+            let mut attributes: Option<IMFAttributes> = None;
+            MFCreateAttributes(&mut attributes, 0).map_err(failed("encoder search"))?;
+            let attributes = attributes.ok_or("encoder search: no attributes")?;
+            let mut list: *mut Option<IMFActivate> = std::ptr::null_mut();
+            let mut count = 0u32;
+            MFTEnum2(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
+                Some(&input),
+                Some(&output),
+                &attributes,
+                &mut list,
+                &mut count,
+            )
+            .map_err(failed("encoder search"))?;
+            let mut names = Vec::new();
+            if !list.is_null() {
+                for i in 0..count as usize {
+                    if let Some(activate) = (*list.add(i)).take() {
+                        names.push(friendly_name(&activate));
+                    }
+                }
+                CoTaskMemFree(Some(list as *const _));
+            }
+            Ok(names)
+        })();
+        let _ = MFShutdown();
+        result
+    }
+}
+
 fn enumerate(luid: LUID) -> Result<Vec<IMFActivate>, String> {
     let input = MFT_REGISTER_TYPE_INFO {
         guidMajorType: MFMediaType_Video,

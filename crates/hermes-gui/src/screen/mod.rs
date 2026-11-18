@@ -556,6 +556,18 @@ fn micros(d: std::time::Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
+/// The hardware H.264 encoders screen sharing can use; empty means it encodes in software.
+pub fn hardware_encoders() -> Result<Vec<String>, String> {
+    #[cfg(windows)]
+    {
+        mf_encode::hardware_encoder_names()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
