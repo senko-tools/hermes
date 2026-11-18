@@ -1,4 +1,4 @@
-//! UI sounds (join/leave/mute/ping/ring), synthesized at 48 kHz so no asset files are needed.
+//! UI sounds (join/leave/mute/message/ping/ring), synthesized at 48 kHz so no asset files are needed.
 
 use std::f32::consts::TAU;
 
@@ -12,18 +12,21 @@ pub enum Sound {
     Leave,
     Mute,
     Unmute,
-    /// A mention or message ping.
+    /// A new message (DMs, and channels set to notify for every message).
+    Message,
+    /// A mention, or one of my words.
     Ping,
     /// One ring of an incoming call (about 1.6 s; the UI repeats it for up to 30 s).
     Ring,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 6] = [
+    pub const ALL: [Sound; 7] = [
         Sound::Join,
         Sound::Leave,
         Sound::Mute,
         Sound::Unmute,
+        Sound::Message,
         Sound::Ping,
         Sound::Ring,
     ];
@@ -37,6 +40,8 @@ impl Sound {
             Sound::Leave => &[(523.25, 0.09), (392.0, 0.16)],
             Sound::Mute => &[(330.0, 0.08)],
             Sound::Unmute => &[(440.0, 0.08)],
+            // A low, short pair under the ping, so a plain message stands out less.
+            Sound::Message => &[(349.23, 0.08), (440.0, 0.14)],
             Sound::Ping => &[(440.0, 0.10), (554.37, 0.18)],
             Sound::Ring => &[(523.25, 0.30), (392.0, 0.30)],
         }
