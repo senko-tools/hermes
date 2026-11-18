@@ -14,9 +14,164 @@ single-binary server, a [gpui](https://www.gpui.rs) desktop client and a
   [releases](https://github.com/senko-tools/hermes/releases), open an invite link from a friend
   or paste a server address. Windows SmartScreen warns about the unsigned installer: choose
   *More info → Run anyway*. The terminal client `hermes-tui` comes with it.
-- **Host it:** [`docs/self-hosting.md`](docs/self-hosting.md) walks through it step by step.
+- **Host it:** see [Hosting a server](#hosting-a-server) below.
 - **New to the app?** Right-click almost anything (channels, spaces, messages, people) for its
   actions, press `Ctrl+K` to jump anywhere, and `Ctrl+F` to search.
+
+## Hosting a server
+
+Pick **one** of the four ways below. Each ends with a **first-time setup link**: open it in the
+Hermes app to create the owner account. After that, invite friends from the app (right-click the
+space → *Invite people*). Running it, backups, a reverse proxy and troubleshooting are in
+[`docs/self-hosting.md`](docs/self-hosting.md).
+
+| Way | Best for |
+|---|---|
+| [1. Install script](#way-1-install-script-linux) | a Linux VPS or home server (recommended) |
+| [2. Docker](#way-2-docker) | a machine that already runs Docker |
+| [3. Game server panel](#way-3-game-server-panel-pterodactyl-pelican-reviactyl) | Pterodactyl, Pelican, Reviactyl and similar panels |
+| [4. By hand](#way-4-by-hand-linux-or-windows) | trying it out, or Windows |
+
+### What you need
+
+- **A computer that is always on and reachable from the internet**: a small VPS (1 CPU and 1 GB
+  of RAM are plenty for a group of friends), a home server with port forwarding, or a slot on a
+  game server panel.
+- **One port, open for both TCP and UDP.** The default is `7700`. TCP carries messages, UDP
+  carries voice: with only TCP open, everything works except voice. Only one program can use a
+  port, so two Hermes servers on one machine need two different ports.
+- **Optional: a domain name** (for example `chat.example.com`) pointing at the server. With a
+  domain, the install script gets a free Let's Encrypt certificate. Without one, the server uses
+  its own certificate; the app asks once to trust it (people who join with an invite link are not
+  asked).
+
+### Way 1: install script (Linux)
+
+Works on Debian 12/13, Ubuntu 22.04 or newer, and most other Linux systems with systemd.
+
+1. **Connect to the server** with SSH. On Windows, open *Terminal* and type
+   `ssh root@your-server-ip`.
+2. **Run the installer:**
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/senko-tools/hermes/main/deploy/install.sh | sudo sh
+   ```
+
+3. **Answer its three questions:**
+   - *Domain or IP*: what your friends will connect to, for example `chat.example.com`.
+   - *Server name*: shown in the app, for example `Friends`.
+   - *Email for Let's Encrypt* (only with a domain): where certificate expiry warnings go.
+
+   It installs the server as a service that starts with the computer, gets the certificate
+   (renewed automatically), sets up a nightly database backup and opens the port in `ufw` if you
+   use it.
+4. **Open the ports in your provider's firewall** if it has one in its web console (Hetzner,
+   AWS, Oracle…): inbound **TCP 7700** and **UDP 7700**, plus **TCP 80** with a domain (for the
+   certificate).
+5. **Copy the link** from the framed *Hermes first-time setup* block it prints, and open it in
+   the Hermes app.
+
+To upgrade later, run the same command again: your data is kept. To change the domain, name or
+port: `curl … | sudo sh -s -- --domain new.example.com --reconfigure` (`--name`, `--port` work
+the same way; `--help` lists them all).
+
+### Way 2: Docker
+
+1. **Download the compose file** into a new folder:
+
+   ```sh
+   mkdir hermes && cd hermes
+   curl -LO https://raw.githubusercontent.com/senko-tools/hermes/main/deploy/docker/compose.yaml
+   ```
+
+2. **Edit it** (`nano compose.yaml`): set `HERMES__INSTANCE__PUBLIC_HOST` to your domain or
+   public IP and `HERMES__INSTANCE__NAME` to the server's name.
+3. **Create the data folder** (the server runs as user 10001):
+
+   ```sh
+   mkdir -p data && sudo chown 10001:10001 data
+   ```
+
+4. **Start it:**
+
+   ```sh
+   docker compose up -d
+   ```
+
+5. **Open TCP 7700 and UDP 7700** in every firewall in front of the machine.
+6. **Get the setup link** with `docker compose logs hermes` and open it in the Hermes app.
+
+To upgrade: `docker compose pull && docker compose up -d`. For a real certificate, mount the
+certificate files and set `HERMES__TLS__MODE: "files"`, `HERMES__TLS__CERT_FILE` and
+`HERMES__TLS__KEY_FILE`; the server reloads them when they are renewed.
+
+### Way 3: game server panel (Pterodactyl, Pelican, Reviactyl)
+
+Steps 1 and 2 need the panel's admin area.
+
+1. **Import the egg:** download
+   [`deploy/pterodactyl/egg-hermes.json`](deploy/pterodactyl/egg-hermes.json) (it is also
+   attached to every release). In the panel go to *Admin → Nests*, pick or create a nest (for
+   example *Chat*) and choose *Import Egg*.
+2. **Add a free port:** *Admin → Nodes →* your node *→ Allocations*. Add an IP (`0.0.0.0` is
+   fine) and a port that **nothing else on that machine uses**. If another Hermes server
+   already runs there (for example from the install script), it holds `7700`: pick another
+   port, such as `7701`.
+3. **Create the server:** *Admin → Servers → Create New*:
+   - *Node* and *Default allocation*: the port from step 2.
+   - *Nest* / *Egg*: **Hermes**. Leave the Docker image as it is.
+   - *Memory*: 512 MB is enough. Give the disk room for uploaded files.
+   - *Public host*: the domain or public IP friends connect to, **without** a port (the panel
+     adds it).
+   - *Instance name*: shown in the app.
+   - *Registration mode*: leave `invite_only` unless you want anyone to be able to sign up.
+   - *Version*: `latest`, or a release tag such as `v1.3.0`.
+4. **Wait for the install** to finish (the server shows *Installing*). It downloads the server
+   for your CPU and writes `hermes.toml`.
+5. **Open the port for TCP and UDP** in the machine's firewall and the provider's, for example
+   `sudo ufw allow 7701/tcp && sudo ufw allow 7701/udp`. The panel forwards the allocation for
+   both.
+6. **Start the server.** When the console says `Hermes is ready`, scroll up to the *first-time
+   setup* link and open it in the Hermes app.
+
+To upgrade, *Reinstall* the server from the panel (with *Version* on `latest` or the new tag): the
+configuration and data are kept. The server uses the panel's port even though `hermes.toml` says
+`7700`, so leave that file's port alone.
+
+If the console shows *address already in use*, the port from step 2 is taken: check what uses it
+with `sudo ss -tulpn | grep <port>` and pick another allocation.
+
+### Way 4: by hand (Linux or Windows)
+
+Good for trying Hermes out. Unlike Way 1 it does not start by itself after a reboot or renew
+certificates.
+
+1. **Download the server** from the [latest release](https://github.com/senko-tools/hermes/releases/latest):
+   - Linux on a normal PC or VPS: `hermes-server-x86_64-unknown-linux-musl.tar.gz`
+   - Linux on ARM (Raspberry Pi 4/5, Ampere): `hermes-server-aarch64-unknown-linux-musl.tar.gz`
+   - Windows: `hermes-server-x86_64-pc-windows-msvc.zip`
+2. **Unpack it into a new folder.** On Linux: `mkdir hermes && tar -xzf hermes-server-*.tar.gz -C hermes && cd hermes`.
+   On Windows: right-click the zip → *Extract All*, then open *Terminal* in that folder.
+3. **Write the config file:** `./hermes-server init` (Windows: `.\hermes-server.exe init`). This
+   creates `hermes.toml`.
+4. **Edit `hermes.toml`:** set `public_host` under `[instance]` to your domain or public IP, and
+   `name` to the server's name.
+5. **Open the port for TCP and UDP.**
+   - Linux with ufw: `sudo ufw allow 7700/tcp && sudo ufw allow 7700/udp`
+   - Windows: in *Terminal* opened as administrator:
+
+     ```powershell
+     New-NetFirewallRule -DisplayName "Hermes TCP" -Direction Inbound -Protocol TCP -LocalPort 7700 -Action Allow
+     New-NetFirewallRule -DisplayName "Hermes UDP" -Direction Inbound -Protocol UDP -LocalPort 7700 -Action Allow
+     ```
+
+   - At home, also forward TCP and UDP 7700 on your router to this computer.
+6. **Start it:** `./hermes-server run` (Windows: `.\hermes-server.exe run`). It keeps running
+   while the window is open; `Ctrl+C` stops it.
+7. **Open the setup link** it prints in the Hermes app.
+
+The database and uploads go to the `data` folder next to `hermes.toml`. To upgrade, stop the
+server, replace the program file with the new one and start it again.
 
 The full specification and build plan is [`PLAN.md`](PLAN.md). Deviations from it are logged in
 [`docs/DECISIONS.md`](docs/DECISIONS.md).
