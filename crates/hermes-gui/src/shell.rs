@@ -267,12 +267,12 @@ pub struct Shell {
     pub network_open: Option<crate::modal::PopupFrom>,
     /// The size of the voice room's tile area, as last drawn.
     pub room_area: Size<Pixels>,
-    /// The share menu is open, where it was asked for.
-    pub share_menu: Option<crate::modal::PopupFrom>,
+    /// The share picker, while it is open.
+    pub share_menu: Option<crate::share_picker::SharePicker>,
+    /// Counts the picker's openings, so an old refresh loop stops.
+    pub share_generation: u64,
     /// The screens that can be shared, primary first.
     pub screen_names: Vec<String>,
-    /// The windows that can be shared: (`voice.share_screen` value, label).
-    pub share_windows: Vec<(String, String)>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
     /// My share's sound, while it is sent.
@@ -429,8 +429,8 @@ impl Shell {
             network_open: None,
             room_area: crate::voice::no_area(),
             share_menu: None,
+            share_generation: 0,
             screen_names: Vec::new(),
-            share_windows: Vec::new(),
             capture: None,
             share_sound: None,
             screens: HashMap::new(),

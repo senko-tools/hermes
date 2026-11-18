@@ -66,7 +66,7 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   list fade in where they are, without sliding (`theme::enter`, `theme::FADE` = 120 ms). The main page
   crossfades: the page that left is drawn under the new one while it fades out (`Shell::leaving`), except
   voice pages (they hold share video) and one result page to another (they share a search field).
-  Popups opened by a click (share, network, volume, profile) go through `modal::popup`. Right-click menus
+  Popups opened by a click (network, volume, profile) go through `modal::popup`. Right-click menus
   keep their own placement.
 - **Motion, round 18 (2026-11-11):** things that change under the pointer note it in `Shell::hovered`
   (`hover.rs`: `track_hover`, `is_hovered`, `HOVER_SPRING`) and spring towards it, since gpui's `.hover`
@@ -157,6 +157,13 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 - **Level meter:** up to 60 fps, only while the bar moves; it holds `FineTimers` (1 ms Windows timers)
   while the Voice tab shows, since 15.6 ms timer ticks made it stutter.
 
+- **Share picker (2026-11-18):** `share_picker.rs`, a panel over most of the window (40 px margin, at most
+  1080 wide): screens on top, a labelled rule, windows below in a scrolling grid. Every card is the same
+  size (184 px, 104 px picture) and rows are centred (`flex_wrap` + `justify_center`, like the voice
+  tiles). Pictures come from `capture::sources(true)` on a blocking thread every 2.5 s while it is open
+  (about 1 s for ten windows in release; the first listing comes without pictures so the cards show at
+  once). Minimized windows get a plain card. A click selects, Share (or a double click) saves
+  `voice.share_screen` and starts; the footer holds resolution, frame rate, preference and Share sound.
 - **Unencrypted chats (2026-11-18):** encrypted is the normal case and shows no mark (messages lost
   their grey lock). A chat the server can read has an amber note above its composer, always, and
   opening one shows a popup (`unencrypted.rs`) as `privacy.warn_unencrypted` says: `every`, `first`

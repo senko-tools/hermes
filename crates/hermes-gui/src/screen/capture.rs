@@ -347,45 +347,140 @@ pub fn fit(width: u32, height: u32, quality: Quality) -> (u32, u32) {
 /// What `voice.share_screen` names when it is one window: `window:<id>`.
 pub const WINDOW_PREFIX: &str = "window:";
 
-/// The windows that can be shared, as (`voice.share_screen` value, "App: title"), largest first.
-/// Hermes' own windows and minimized or untitled ones are left out.
-pub fn windows() -> Vec<(String, String)> {
+/// Something the share picker offers: a screen or a window.
+pub struct Shareable {
+    /// Its `voice.share_screen` value: `""` for the primary screen, another screen's name, or
+    /// `window:<id>`.
+    pub value: String,
+    /// "Screen 2", or the window's title.
+    pub title: String,
+    /// "Primary" or the screen's device name, or the window's app.
+    pub detail: String,
+    pub window: bool,
+    /// A minimized window cannot be captured: it has no picture.
+    pub minimized: bool,
+    /// A small picture, BGRA, at most [`THUMB_WIDTH`] wide; `None` when it could not be taken.
+    pub picture: Option<image::RgbaImage>,
+}
+
+/// How wide the share picker's pictures are made.
+pub const THUMB_WIDTH: u32 = 240;
+
+/// The screens (the primary one first) and the windows (largest first, minimized ones last)
+/// that can be shared, with a small picture of each when `pictures`. Hermes' own windows and
+/// untitled or tiny ones are left out. Slow (a few ms per picture): call it off the UI thread.
+pub fn sources(pictures: bool) -> Vec<Shareable> {
     #[cfg(windows)]
     {
+        let mut out = Vec::new();
+        if let Ok(monitors) = xcap::Monitor::all() {
+            let mut monitors: Vec<_> = monitors
+                .into_iter()
+                .filter_map(|m| Some((!m.is_primary().unwrap_or(false), m.name().ok()?, m)))
+                .collect();
+            monitors.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+            for (n, (secondary, name, monitor)) in monitors.into_iter().enumerate() {
+                out.push(Shareable {
+                    value: if secondary {
+                        name.clone()
+                    } else {
+                        String::new()
+                    },
+                    title: format!("Screen {}", n + 1),
+                    detail: if secondary {
+                        name.trim_start_matches(['\\', '.']).to_owned()
+                    } else {
+                        "Primary".into()
+                    },
+                    window: false,
+                    minimized: false,
+                    picture: pictures
+                        .then(|| monitor.capture_image().ok().map(thumbnail))
+                        .flatten(),
+                });
+            }
+        }
         let Ok(all) = xcap::Window::all() else {
-            return Vec::new();
+            return out;
         };
         let me = std::process::id();
-        let mut found: Vec<(u64, String, String)> = all
-            .iter()
-            .filter(|w| !w.is_minimized().unwrap_or(true))
+        let mut windows: Vec<(bool, u64, Shareable, xcap::Window)> = all
+            .into_iter()
             .filter(|w| w.pid().is_ok_and(|pid| pid != me))
             .filter_map(|w| {
                 let title = w.title().ok().filter(|t| !t.trim().is_empty())?;
-                let app = w.app_name().unwrap_or_default();
+                let minimized = w.is_minimized().unwrap_or(false);
                 let area = u64::from(w.width().ok()?) * u64::from(w.height().ok()?);
-                (area >= 64 * 64).then(|| {
-                    let label = if app.is_empty() || title.contains(&app) {
-                        title
-                    } else {
-                        format!("{app}: {title}")
-                    };
-                    (
-                        area,
-                        format!("{WINDOW_PREFIX}{}", w.id().unwrap_or(0)),
-                        label,
-                    )
-                })
+                if !minimized && area < 64 * 64 {
+                    return None;
+                }
+                let source = Shareable {
+                    value: format!("{WINDOW_PREFIX}{}", w.id().ok()?),
+                    title,
+                    detail: w.app_name().unwrap_or_default(),
+                    window: true,
+                    minimized,
+                    picture: None,
+                };
+                Some((minimized, area, source, w))
             })
             .collect();
-        found.sort_by_key(|w| std::cmp::Reverse(w.0));
-        found
-            .into_iter()
-            .map(|(_, value, label)| (value, label))
-            .collect()
+        windows.sort_by_key(|w| (w.0, std::cmp::Reverse(w.1)));
+        for (minimized, _, mut source, window) in windows {
+            if pictures && !minimized {
+                source.picture = window.capture_image().ok().map(thumbnail);
+            }
+            out.push(source);
+        }
+        out
     }
     #[cfg(not(windows))]
-    Vec::new()
+    {
+        let _ = pictures;
+        Vec::new()
+    }
+}
+
+/// `picture` made at most [`THUMB_WIDTH`] wide (and as tall as a 4:3 picture would be), in BGRA.
+/// Each pixel averages a 4x4 grid of samples from its patch of the original: far cheaper than
+/// filtering every pixel of a 4K screen, and smooth enough for a picture this small.
+#[cfg(windows)]
+fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
+    const SAMPLES: u32 = 4;
+    let (w, h) = picture.dimensions();
+    let scale = (THUMB_WIDTH as f32 / w.max(1) as f32)
+        .min(THUMB_WIDTH as f32 * 0.75 / h.max(1) as f32)
+        .min(1.);
+    let (tw, th) = (
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+    );
+    let src = picture.as_raw();
+    let mut out = image::RgbaImage::new(tw, th);
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let mut sum = [0u32; 4];
+        for sy in 0..SAMPLES {
+            let py = ((u64::from(y) * u64::from(SAMPLES) + u64::from(sy)) * u64::from(h)
+                / (u64::from(th) * u64::from(SAMPLES))) as usize;
+            for sx in 0..SAMPLES {
+                let px = ((u64::from(x) * u64::from(SAMPLES) + u64::from(sx)) * u64::from(w)
+                    / (u64::from(tw) * u64::from(SAMPLES))) as usize;
+                let i = (py * w as usize + px) * 4;
+                for (c, total) in sum.iter_mut().enumerate() {
+                    *total += u32::from(src[i + c]);
+                }
+            }
+        }
+        let n = SAMPLES * SAMPLES;
+        // BGRA for gpui.
+        *pixel = image::Rgba([
+            (sum[2] / n) as u8,
+            (sum[1] / n) as u8,
+            (sum[0] / n) as u8,
+            (sum[3] / n) as u8,
+        ]);
+    }
+    out
 }
 
 /// The names of the screens, the primary one first (empty where capture is unavailable).
@@ -1174,18 +1269,18 @@ mod tests {
     #[ignore = "needs a desktop"]
     #[cfg(windows)]
     fn windows_are_listed_and_captured() {
-        let list = windows();
-        assert!(!list.is_empty(), "no windows");
-        let (value, label) = &list[0];
-        let id: u32 = value.strip_prefix(WINDOW_PREFIX).unwrap().parse().unwrap();
-        let window = xcap::Window::all()
-            .unwrap()
-            .into_iter()
-            .find(|w| w.id().ok() == Some(id))
-            .unwrap();
-        let image = window.capture_image().unwrap();
-        eprintln!("{label}: {}x{}", image.width(), image.height());
-        assert!(image.width() > 0);
+        let list = sources(true);
+        let window = list
+            .iter()
+            .find(|s| s.window && !s.minimized)
+            .expect("no windows");
+        let picture = window.picture.as_ref().expect("no picture");
+        eprintln!("{}: {}x{}", window.title, picture.width(), picture.height());
+        assert!(picture.width() <= THUMB_WIDTH);
+        assert!(
+            list.iter().any(|s| !s.window && s.value.is_empty()),
+            "no primary screen"
+        );
     }
 
     #[test]

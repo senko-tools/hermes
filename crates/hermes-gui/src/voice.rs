@@ -10,7 +10,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnimationExt as _, AnyElement, Context, Entity, FontWeight, Pixels, Point, SharedString, Size,
+    AnimationExt as _, AnyElement, Context, Entity, FontWeight, Pixels, SharedString, Size,
     Subscription, Window, canvas, div, img, size,
 };
 use hermes_client_core::audio::{InputMode, Sound};
@@ -958,9 +958,7 @@ impl Shell {
                 tips: ("Share your screen", "Stop sharing"),
                 hover: OnHover::Stop(assets::MONITOR_STOP),
             },
-            cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                this.share_button(event.position(), window, cx);
-            }),
+            cx.listener(move |this, _, _, cx| this.share_button(cx)),
             cx,
         )
     }
@@ -1669,15 +1667,12 @@ impl Shell {
     // ---- sharing --------------------------------------------------------------------------------
 
     /// The panel's share button: asks what to share first; a running share stops right away.
-    fn share_button(&mut self, at: Point<Pixels>, _window: &mut Window, cx: &mut Context<Self>) {
+    fn share_button(&mut self, cx: &mut Context<Self>) {
         if self.core.sharing_screen() {
             self.stop_share(cx);
             return;
         }
-        self.cancel_closing("share-menu-in");
-        self.share_menu = Some(self.popup_from(at));
-        self.load_screens(cx);
-        cx.notify();
+        self.open_share_picker(cx);
     }
 
     /// The screens that can be shared, listed in the background.
@@ -1685,25 +1680,19 @@ impl Shell {
         self.run(
             cx,
             async {
-                tokio::task::spawn_blocking(|| {
-                    (
-                        crate::screen::capture::screens(),
-                        crate::screen::capture::windows(),
-                    )
-                })
-                .await
-                .unwrap_or_default()
+                tokio::task::spawn_blocking(crate::screen::capture::screens)
+                    .await
+                    .unwrap_or_default()
             },
-            |this, (screens, windows), _, cx| {
+            |this, screens, _, cx| {
                 this.screen_names = screens;
-                this.share_windows = windows;
                 cx.notify();
             },
         );
     }
 
-    /// Saves a choice of the share menu, which also stands as the setting.
-    fn set_share_setting(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
+    /// Saves a choice of the share picker, which also stands as the setting.
+    pub fn set_share_setting(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
         self.persist(key, value, cx);
     }
 
@@ -1728,199 +1717,6 @@ impl Shell {
                 )
             }))
             .into_any_element()
-    }
-
-    pub fn render_share_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use crate::screen::capture::{FRAME_RATES, RESOLUTIONS};
-        let at = self.share_menu?;
-        let voice = &self.config.voice;
-        // A labelled section: a small heading over its choices.
-        let section = |name: &'static str, choices: Vec<AnyElement>| {
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(6.))
-                .child(
-                    div()
-                        .text_size(theme::caption_size())
-                        .text_color(theme::text_tertiary())
-                        .child(name.to_uppercase()),
-                )
-                .child(div().flex().flex_wrap().gap(px(6.)).children(choices))
-        };
-        let mut screens = vec![String::new()];
-        screens.extend(self.screen_names.iter().skip(1).cloned());
-        let screen_chips = screens
-            .into_iter()
-            .enumerate()
-            .map(|(n, screen)| {
-                let label = if screen.is_empty() {
-                    "Primary screen".to_owned()
-                } else {
-                    screen.trim_start_matches(['\\', '.']).to_owned()
-                };
-                chip(("share-screen", n), label, screen == voice.share_screen)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let value = format!("{screen:?}");
-                        this.set_share_setting("voice.share_screen", &value, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        // Or one window: its picture alone, covered or not.
-        let window_chips: Vec<AnyElement> = self
-            .share_windows
-            .iter()
-            .take(12)
-            .enumerate()
-            .map(|(n, (value, label))| {
-                let short: String = if label.chars().count() > 36 {
-                    label.chars().take(35).chain(['…']).collect()
-                } else {
-                    label.clone()
-                };
-                let value = value.clone();
-                chip(("share-window", n), short, value == voice.share_screen)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let value = format!("{value:?}");
-                        this.set_share_setting("voice.share_screen", &value, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        let resolutions = RESOLUTIONS
-            .into_iter()
-            .enumerate()
-            .map(|(n, name)| {
-                let label = if name == "native" { "Full size" } else { name };
-                chip(("share-res", n), label, voice.share_resolution == name)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let value = format!("{name:?}");
-                        this.set_share_setting("voice.share_resolution", &value, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        let rates = FRAME_RATES
-            .into_iter()
-            .enumerate()
-            .map(|(n, fps)| {
-                chip(
-                    ("share-fps", n),
-                    format!("{fps} fps"),
-                    voice.share_fps == fps,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_share_setting("voice.share_fps", &fps.to_string(), cx);
-                }))
-                .into_any_element()
-            })
-            .collect();
-        Some(crate::modal::popup(
-            "share-menu-in",
-            at,
-            400.,
-            self.viewport,
-            div()
-                .id("share-menu")
-                .occlude()
-                .flex()
-                .flex_col()
-                .w(px(400.))
-                .rounded(theme::radius_large())
-                .bg(theme::sidebar())
-                .border_1()
-                .border_color(theme::border())
-                .shadow_lg()
-                .font_family(theme::font())
-                .text_color(theme::text())
-                .text_size(theme::secondary_size())
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
-                    cx.notify();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(16.))
-                        .py(px(12.))
-                        .border_b_1()
-                        .border_color(theme::border())
-                        .child(icon(assets::MONITOR_SHARE, 18., theme::accent()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_size(theme::body_size())
-                                .child("Share your screen"),
-                        )
-                        .child(
-                            crate::channel::tip_button("share-close", assets::CLOSE, "Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(14.))
-                        .px(px(16.))
-                        .py(px(14.))
-                        .child(section("Screen", screen_chips))
-                        .when(!window_chips.is_empty(), |d| {
-                            d.child(section("Or a window", window_chips))
-                        })
-                        .child(section("Resolution", resolutions))
-                        .child(section("Frame rate", rates))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .child(
-                                    div()
-                                        .text_size(theme::caption_size())
-                                        .text_color(theme::text_tertiary())
-                                        .child("WHEN IT FALLS BEHIND, KEEP"),
-                                )
-                                .child(self.render_preference_picker(cx)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap(px(8.))
-                        .px(px(16.))
-                        .py(px(12.))
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .child(
-                            Button::new("share-cancel")
-                                .cursor_pointer()
-                                .label("Cancel")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("share-start")
-                                .cursor_pointer()
-                                .primary()
-                                .label("Start sharing")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_later("share-menu-in", |s| s.share_menu = None, cx);
-                                    this.start_share(cx);
-                                })),
-                        ),
-                ),
-        ))
     }
 
     /// The header's voice button of the open room.

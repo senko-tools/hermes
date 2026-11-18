@@ -42,6 +42,7 @@ mod rows;
 mod screen;
 mod selection;
 mod settings;
+mod share_picker;
 mod shell;
 mod sidebar;
 mod single_instance;

@@ -109,7 +109,7 @@ impl Shell {
         }
         if self.viewer.take().is_some()
             || self.volume_menu.take().is_some()
-            || self.share_menu.take().is_some()
+            || self.take_share_picker()
             || self.network_open.take().is_some()
             || self.menu.take().is_some()
             || self.command_bar.take().is_some()
