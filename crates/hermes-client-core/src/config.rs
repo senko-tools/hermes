@@ -83,6 +83,7 @@ pub struct ClientConfig {
     pub buffer: Buffer,
     pub voice: Voice,
     pub notifications: Notifications,
+    pub privacy: Privacy,
     /// GUI keybinds, action = "key combo".
     pub keys: BTreeMap<String, String>,
     pub tui: Tui,
@@ -100,6 +101,7 @@ impl Default for ClientConfig {
             buffer: Buffer::default(),
             voice: Voice::default(),
             notifications: Notifications::default(),
+            privacy: Privacy::default(),
             keys: [
                 ("command_bar", "Ctrl+K"),
                 ("toggle_mute", "Ctrl+Shift+M"),
@@ -122,6 +124,30 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// A newer version found on start is installed right away (the app restarts).
+    pub auto_update: bool,
+    /// Hermes starts when I sign in to the computer.
+    pub start_on_login: bool,
+    /// How long a line in the status bar stays, in seconds.
+    pub status_seconds: u32,
+    /// Minutes without input before the status turns idle; 0 = never.
+    pub auto_idle_minutes: u32,
+    /// The status chosen last: `online`, `idle`, `dnd` or `invisible`.
+    pub presence: String,
+    /// No sliding or fading, whatever the system says.
+    pub reduce_motion: bool,
+    /// How long things take to slide and fade: `snappy`, `normal` or `calm`.
+    pub motion_speed: String,
+    /// The mouse wheel glides instead of jumping.
+    pub smooth_scroll: bool,
+    /// How far a wheel notch goes, as a multiple of the plain distance.
+    pub scroll_speed: f64,
+    /// GIFs and other animated pictures move while the window has the focus.
+    pub animate_pictures: bool,
+    /// Where downloads go; empty = the Downloads folder.
+    pub download_dir: String,
+    /// Ask for a place each time something is downloaded.
+    pub ask_where_to_save: bool,
 }
 
 impl Default for General {
@@ -131,6 +157,18 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            auto_update: false,
+            start_on_login: false,
+            status_seconds: 5,
+            auto_idle_minutes: 10,
+            presence: "online".into(),
+            reduce_motion: false,
+            motion_speed: "normal".into(),
+            smooth_scroll: true,
+            scroll_speed: 1.25,
+            animate_pictures: true,
+            download_dir: String::new(),
+            ask_where_to_save: false,
         }
     }
 }
@@ -142,6 +180,8 @@ pub struct Font {
     pub mono_family: String,
     pub size: u16,
     pub ui_scale: f64,
+    /// How much larger titles are than the text.
+    pub heading_extra: i32,
 }
 
 impl Default for Font {
@@ -151,6 +191,7 @@ impl Default for Font {
             mono_family: "JetBrainsMono Nerd Font".into(),
             size: 11,
             ui_scale: 1.0,
+            heading_extra: 4,
         }
     }
 }
@@ -163,6 +204,14 @@ pub struct Sidebar {
     pub show_voice_users: bool,
     /// Width of the member list (desktop client).
     pub member_list_width: u16,
+    /// The servers on the rail, as `instance/id`; those not listed follow.
+    pub server_order: Vec<String>,
+    /// The member list shows beside a chat.
+    pub show_members: bool,
+    /// The sidebar shows (Ctrl+B hides it).
+    pub visible: bool,
+    pub show_unread_dots: bool,
+    pub show_mention_counts: bool,
 }
 
 impl Default for Sidebar {
@@ -172,6 +221,11 @@ impl Default for Sidebar {
             width: 240,
             show_voice_users: true,
             member_list_width: 232,
+            server_order: Vec::new(),
+            show_members: true,
+            visible: true,
+            show_unread_dots: true,
+            show_mention_counts: true,
         }
     }
 }
@@ -185,6 +239,16 @@ pub struct Buffer {
     pub enter_sends: bool,
     pub image_previews: bool,
     pub show_typing: bool,
+    /// Bold, code blocks and the like are drawn; off shows messages as they were typed.
+    pub markdown: bool,
+    /// Compact messages: time, a small picture, the name and the text on one line.
+    pub compact: bool,
+    /// Pictures and videos in the chat, in percent of their normal size.
+    pub media_scale: u32,
+    /// The reactions offered first, separated by spaces.
+    pub quick_reactions: String,
+    /// The emoji picked last, newest first, separated by spaces.
+    pub recent_emoji: String,
 }
 
 impl Default for Buffer {
@@ -196,6 +260,11 @@ impl Default for Buffer {
             enter_sends: true,
             image_previews: true,
             show_typing: true,
+            markdown: true,
+            compact: false,
+            media_scale: 100,
+            quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
+            recent_emoji: String::new(),
         }
     }
 }
@@ -212,10 +281,31 @@ pub struct Voice {
     pub ptt_key: String,
     pub ptt_release_delay_ms: u32,
     pub vad_sensitivity: i32,
+    /// How long voice activity stays open after you stop, in ms.
+    pub vad_hold_ms: u32,
+    /// Only loudness opens voice activity (noise suppression's voice detection can't).
+    pub vad_level_only: bool,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+    /// How loud automatic gain makes you, dBFS.
+    pub agc_target_db: i32,
+    /// Takes what the speakers play out of the microphone.
+    pub echo_cancellation: bool,
+    /// While someone speaks, screen share and media sound go down by `ducking_db`.
+    pub ducking: bool,
+    pub ducking_db: u32,
+    /// While muted the microphone is really closed, so the system shows it as unused.
+    pub close_mic_when_muted: bool,
+    /// Sends extra data so that lost packets can be rebuilt.
+    pub opus_fec: bool,
+    /// Sends nothing at all during silence.
+    pub opus_dtx: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
+    /// The volume of sound and video files in the chat, as a slider position (1.0 = 100 %).
+    pub media_volume: f64,
+    /// Sound and video files play silently.
+    pub media_muted: bool,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
     /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
@@ -225,6 +315,8 @@ pub struct Voice {
     /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
     /// `clarity` (sharp, full-size pictures).
     pub share_preference: String,
+    /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
+    pub share_sound: bool,
 }
 
 impl Default for Voice {
@@ -239,14 +331,26 @@ impl Default for Voice {
             ptt_key: String::new(),
             ptt_release_delay_ms: 150,
             vad_sensitivity: -50,
+            vad_hold_ms: 300,
+            vad_level_only: false,
             noise_suppression: true,
             auto_gain: false,
+            agc_target_db: -18,
+            echo_cancellation: false,
+            ducking: false,
+            ducking_db: 12,
+            close_mic_when_muted: false,
+            opus_fec: true,
+            opus_dtx: true,
             sounds: true,
             sounds_volume: 0.6,
+            media_volume: 1.0,
+            media_muted: false,
             share_screen: String::new(),
             share_resolution: "1080p".into(),
             share_fps: 60,
             share_preference: "smoothness".into(),
+            share_sound: true,
         }
     }
 }
@@ -258,6 +362,17 @@ pub struct Notifications {
     pub sound: bool,
     pub show_preview: bool,
     pub flash_taskbar: bool,
+    pub toast_dms: bool,
+    pub toast_mentions: bool,
+    pub toast_other: bool,
+    pub sound_dms: bool,
+    pub sound_mentions: bool,
+    pub sound_other: bool,
+    /// No notifications between these times (`HH:MM`, local); empty = none.
+    pub quiet_from: String,
+    pub quiet_to: String,
+    /// Words that notify like a mention, separated by spaces.
+    pub keywords: String,
 }
 
 impl Default for Notifications {
@@ -267,6 +382,45 @@ impl Default for Notifications {
             sound: true,
             show_preview: true,
             flash_taskbar: true,
+            toast_dms: true,
+            toast_mentions: true,
+            toast_other: true,
+            sound_dms: true,
+            sound_mentions: true,
+            sound_other: true,
+            quiet_from: String::new(),
+            quiet_to: String::new(),
+            keywords: String::new(),
+        }
+    }
+}
+
+/// What this device tells the server. Who may reach me is kept on the server instead
+/// (`/users/@me/privacy`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Privacy {
+    /// Others see that I am typing.
+    pub send_typing: bool,
+    /// The server keeps what I have read, which also syncs it to my other devices.
+    pub send_read_marks: bool,
+    /// Searches never leave this device, so older unencrypted messages are not found.
+    pub local_search_only: bool,
+    /// When opening a chat that is not end-to-end encrypted shows a warning: `"every"` time,
+    /// the `"first"` time for each chat, or `"never"`. Kept on this device only.
+    pub warn_unencrypted: String,
+    /// The chats that warning was shown for (`instance/channel`), for `"first"`.
+    pub warned_unencrypted: Vec<String>,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Privacy {
+            send_typing: true,
+            send_read_marks: true,
+            local_search_only: false,
+            warn_unencrypted: "first".into(),
+            warned_unencrypted: Vec::new(),
         }
     }
 }
@@ -488,8 +642,7 @@ pub fn set_value(
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct WriteOptions {
     /// Flushed to the disk before it replaces the old file, so even a power cut leaves the old
-    /// or the new contents. Costs a disk flush: for rarely written files whose loss weakens
-    /// security (pins, tokens), not for settings saved while a slider moves.
+    /// or the new contents. Costs a disk flush; [`write_atomic`] always pays it.
     pub durable: bool,
     /// Readable by this user only (Unix; on Windows the per-user config directory is private).
     #[cfg_attr(not(unix), allow(dead_code))]
@@ -498,7 +651,15 @@ pub(crate) struct WriteOptions {
 
 /// Writes through a temporary file and a rename, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_atomic_with(path, bytes, WriteOptions::default())
+    // What is renamed has reached the disk.
+    write_atomic_with(
+        path,
+        bytes,
+        WriteOptions {
+            durable: true,
+            private: false,
+        },
+    )
 }
 
 /// [`write_atomic`] with options. The temporary file has a name of its own (process and
@@ -549,8 +710,8 @@ fn sync_dir(path: &Path) {
 }
 
 /// Temporary files of `path` left by a crash in the middle of a write (they may hold tokens), and
-/// the one older versions used (`<stem>.tmp`). Only old ones: a fresh one may be another
-/// process's write in progress.
+/// the ones older versions used (`<stem>.tmp` and `<stem>.<pid>.<n>.tmp`). Only old ones: a fresh
+/// one may be another process's write in progress.
 fn remove_stale(path: &Path, name: &std::ffi::OsStr) {
     const STALE: Duration = Duration::from_secs(60);
     let Some(dir) = path.parent() else {
@@ -568,10 +729,27 @@ fn remove_stale(path: &Path, name: &std::ffi::OsStr) {
         format!("{}.", name.to_string_lossy()),
         path.with_extension("tmp"),
     );
+    let stem_prefix = path
+        .file_stem()
+        .map(|stem| format!("{}.", stem.to_string_lossy()));
+    // `<stem>.<pid>.<n>.tmp`
+    let numbered = |entry_name: &str| {
+        stem_prefix
+            .as_deref()
+            .and_then(|p| entry_name.strip_prefix(p))
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .and_then(|rest| rest.split_once('.'))
+            .is_some_and(|(pid, n)| {
+                [pid, n]
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+    };
     for entry in entries.flatten() {
         let entry_name = entry.file_name();
         let entry_name = entry_name.to_string_lossy();
-        let ours = entry_name.starts_with(&prefix) && entry_name.ends_with(".tmp");
+        let ours = (entry_name.starts_with(&prefix) && entry_name.ends_with(".tmp"))
+            || numbered(&entry_name);
         let old = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -807,8 +985,10 @@ mod tests {
         // An old one goes, and so does the temporary file of older versions.
         let legacy = dir.join("config.tmp");
         std::fs::write(&legacy, b"old").unwrap();
+        let numbered = dir.join("config.4242.7.tmp");
+        std::fs::write(&numbered, b"old").unwrap();
         let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
-        for old in [&stale, &legacy] {
+        for old in [&stale, &legacy, &numbered] {
             std::fs::File::options()
                 .write(true)
                 .open(old)
@@ -817,7 +997,7 @@ mod tests {
                 .unwrap();
         }
         write_atomic(&path, b"third").unwrap();
-        assert!(!stale.exists() && !legacy.exists());
+        assert!(!stale.exists() && !legacy.exists() && !numbered.exists());
         assert_eq!(std::fs::read(&path).unwrap(), b"third");
         // Not a file.
         assert!(write_atomic(Path::new("/"), b"x").is_err());

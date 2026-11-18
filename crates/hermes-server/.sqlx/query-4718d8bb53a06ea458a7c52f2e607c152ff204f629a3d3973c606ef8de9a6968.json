@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE attachments SET message_id = NULL\n         WHERE message_id IN (SELECT value FROM json_each(?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "4718d8bb53a06ea458a7c52f2e607c152ff204f629a3d3973c606ef8de9a6968"
+}

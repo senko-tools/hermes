@@ -1806,6 +1806,24 @@ Asked for by the developer.
   client, `spikes/` (throwaway Phase 0 experiments nothing used), its workflow, the `iced` and `pulldown-cmark` workspace
   dependencies and a `data/` folder that was committed by mistake (a test database and a throwaway TLS key) are gone.
 
+## 2026-11-08: Why 1440p at 60 fps smeared
+
+- **Measured (developer's share, 1440p60, NVIDIA encoder):** asked for 15.5 Mbit/s, the share ran at about
+  5.7, with 60.0 fps captured and sent, 0 frames refused and 0 lost at the server. `encoder_spends_its_bitrate`
+  (ignored test) feeds the encoder moving, detailed pictures: it delivers 101 % of its target, so the lower rate
+  was what that screen needed, not a cap. The test's picture is noisy on purpose, which limits what it can say
+  about quality.
+- **Encoder settings stay.** Raising `CommonQualityVsSpeed` from 33 to 66 or more did not improve the PSNR
+  (34.2 against 34.0 dB) and pushed the 99th percentile of encoding past 16.7 ms; 1.5x the bits gave 0.4 dB.
+  Settings applied after the media types are partly ignored (keyframe interval, buffer), so they stay before.
+- **The bug:** on the watcher, a frame lost to a full decoder queue or a timed-out stream was dropped without a
+  keyframe request, so the decoder went on without its references until the next periodic keyframe, up to 5 s.
+  Such a share now waits for a keyframe, asked for every 500 ms, as the server does for frames lost before it.
+  The decoder queue is 16 frames, and pictures a newer frame replaces are not converted to BGRA. No watcher log
+  from the session existed, so this is the leading cause rather than a confirmed one.
+- **Send buffer:** `VIDEO_SEND_WINDOW` (two of the largest frames) replaces 16 MiB, which could hide seconds of a
+  share from a slow connection instead of stepping its quality down.
+
 ## 2026-11-18: Linux CI on Forgejo Actions
 
 - **What:** `.forgejo/workflows/ci.yml` runs the same checks as `.github/workflows/ci.yml` (`cargo fmt --check`,
@@ -1819,6 +1837,7 @@ Asked for by the developer.
 - **Why:** the developer asked for CI on the Forgejo instance with proper build caching. The runner image behind
   `ubuntu-latest` is not known (often Debian with only node.js), so the jobs install their own compilers and
   libraries, and actions are named by full URL.
+
 ## 2026-11-18: Forgejo release workflow for the Linux artifacts
 
 Requested by the developer (Forgejo Actions on `ubuntu-latest` with build caching). PLAN.md
@@ -1845,6 +1864,7 @@ Linux-only release on the Forgejo instance (git.8w.fi).
 - **Note:** once `.forgejo/workflows/` exists, Forgejo no longer reads `.github/workflows/`, so
   the Forgejo instance runs only the workflows in `.forgejo/workflows/`.
 - **Why:** the developer wants releases on the self-hosted Forgejo instance as well.
+
 ## 2026-11-18: Dependency refresh
 
 - **What (PLAN.md section 6 pins):** patch bumps `arc-swap` 1.9.3 → 1.9.5, `bytes` 1.12.1 → 1.12.2,
@@ -1873,6 +1893,7 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   its DirectWrite text and DirectX renderer.
 - **Why:** part of the 2026-11-18 dependency refresh. It is a separate change so it can be reverted
   on its own if the new kit misbehaves on Windows.
+
 ## 2026-11-18: Zoom in with the + key
 
 - **What:** `zoom_in` also answers to `Ctrl++` and `Ctrl+Shift+=` while `[keys]` leaves it at its default `Ctrl+=`
@@ -1881,6 +1902,7 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   German and similar layouts `=` needs Shift and `+` is a key of its own, so `Ctrl+=` could not be pressed and zooming
   in only worked from the settings. `Ctrl+Shift+=` is what a US keyboard reports for "Ctrl and +". (The US-position
   matching of 2026-10-31 belonged to the iced client; the gpui keystroke has no physical key to match on.)
+
 ## 2026-11-18: Bounded voice control queue
 
 - **What:** the server keeps at most 1024 control messages (`CONTROL_QUEUE`) waiting for one voice
@@ -1890,6 +1912,7 @@ Linux-only release on the Forgejo instance (git.8w.fi).
 - **Why:** the queue was unbounded, and other members can make the server send messages to a connection at any rate
   (share start/stop, voice key relays), so a client that never reads could make the server's memory grow without
   limit. Dropping single messages instead would leave the client with a wrong picture of the room.
+
 ## 2026-11-18: The markup parser has a work limit
 
 - **What:** `hermes-proto::markup` stops trying new formatting delimiters in an inline run once it has taken
@@ -1901,15 +1924,16 @@ Linux-only release on the Forgejo instance (git.8w.fi).
   parser quadratic: about a second per parse in a debug build, and every client parses every message it shows. The
   other quadratic cases found at the same time (long `*`/`_` runs, `[` and `<` without a closing `]`/`>`, many code
   fences) were fixed without changing any output.
+
 ## 2026-11-18: Database indexes and fewer queries per request
 
-- **`0009_indexes.sql`** adds indexes that section 7.3 does not list, for lookups and foreign keys
+- **`0019_indexes.sql`** adds indexes that section 7.3 does not list, for lookups and foreign keys
   that no primary key, UNIQUE constraint or index served (each was a full table scan):
-  `attachments(message_id, created_at)` (a message's attachments, the SET NULL when messages go,
-  the sweep of expired unattached uploads), `sessions(user_id)`,
-  `message_mentions(kind, target_id, message_id)` (mentions inbox), `channels(space_id)`,
-  `channels(parent_id)`, `roles(space_id)`, `read_states(channel_id)`, `member_roles(role_id)`,
-  `channel_overrides(role_id)`, `users(avatar_id)` and `spaces(icon_id)`. Columns that only point
+  `attachments(created_at) WHERE message_id IS NULL` (the sweep of expired unattached uploads),
+  `message_mentions(kind, target_id, message_id)` (mentions inbox, in the order it pages),
+  `channels(parent_id)`, `roles(space_id)`, `read_states(channel_id)`, `member_roles(role_id)` and
+  `channel_overrides(role_id)`. Sessions, channels by space, avatars, icons and a message's
+  attachments are already indexed by `0014_retries_and_indexes.sql`. Columns that only point
   at `users(id)` stay unindexed, since users are disabled and never deleted.
 - **Mentions inbox:** `GET /users/@me/mentions` now starts from the matching `message_mentions`
   rows instead of checking every message of every readable channel; results, order and paging

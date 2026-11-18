@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO channel_keys\n               (channel_id, epoch, user_id, device_id, sender_id, sender_device, eph, key, sig)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)\n             ON CONFLICT (channel_id, epoch, user_id, device_id) DO UPDATE SET\n               sender_device = excluded.sender_device, eph = excluded.eph,\n               key = excluded.key, sig = excluded.sig\n             WHERE channel_keys.sender_id = excluded.sender_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "5d0acd5a4a40da63ffdda6f4865325993a1d4da7344f80a542ee52b1eba7b7c4"
+}

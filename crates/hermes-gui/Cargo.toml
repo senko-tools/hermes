@@ -13,6 +13,7 @@ name = "hermes"
 path = "src/main.rs"
 
 [dependencies]
+syntect.workspace = true
 hermes-audio.workspace = true
 hermes-client-core.workspace = true
 arboard.workspace = true
@@ -37,7 +38,7 @@ tray-icon.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Windows APIs: Desktop Duplication, Media Foundation and the shader
-# compiler for screen sharing, push-to-talk polling, minidumps, and hiding the window to the tray.
+# compiler for screen sharing, process loopback for a share's sound, push-to-talk polling, minidumps, and hiding the window to the tray.
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
@@ -46,9 +47,12 @@ windows = { workspace = true, features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Media",
+    "Win32_Media_Audio",
     "Win32_Media_MediaFoundation",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_Memory",

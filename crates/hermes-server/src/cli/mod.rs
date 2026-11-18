@@ -55,6 +55,12 @@ pub enum Command {
         /// File to create; it must not exist yet.
         output: PathBuf,
     },
+    /// Replace the database with a backup. The server must be stopped; the current database is
+    /// kept beside it.
+    Restore {
+        /// A file written by `backup`.
+        input: PathBuf,
+    },
     /// Check that the server on this machine answers `GET /healthz` (exit code 0 if it does).
     Healthcheck,
     /// Manage accounts: list, reset-password, set-admin, disable, enable.
@@ -143,6 +149,7 @@ pub fn run() -> ExitCode {
             expires,
         }) => invite_create(&cli.config, space, uses, expires),
         Command::Backup { output } => backup(&cli.config, &output),
+        Command::Restore { input } => restore(&cli.config, &input),
         Command::Healthcheck => health(&cli.config),
         Command::User(command) => user::run(&cli.config, command),
         Command::Version => {
@@ -328,6 +335,40 @@ fn invite_create(path: &Path, space: Option<Id>, uses: Option<u32>, expires: Lif
         println!("\n{}\n{}", links.web, links.app);
         ExitCode::SUCCESS
     })
+}
+
+fn restore(path: &Path, input: &Path) -> ExitCode {
+    let Some(loaded) = load_or_report(path) else {
+        return ExitCode::FAILURE;
+    };
+    let Some(runtime) = small_runtime() else {
+        return ExitCode::FAILURE;
+    };
+    let port = loaded.config.network.port;
+    let running = std::net::TcpStream::connect_timeout(
+        &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+        std::time::Duration::from_secs(1),
+    )
+    .is_ok();
+    if running {
+        eprintln!("Something is listening on port {port}. Stop the server first.");
+        return ExitCode::FAILURE;
+    }
+    let target = loaded.config.storage.data_dir.join(crate::db::DB_FILE);
+    match runtime.block_on(crate::db::restore(input, &target)) {
+        Ok(kept) => {
+            println!("Restored {} to {}.", input.display(), target.display());
+            if let Some(kept) = kept {
+                println!("The previous database is at {}.", kept.display());
+            }
+            println!("Files in <data_dir>/files are not part of the database; restore them too.");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Restore failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn backup(path: &Path, output: &Path) -> ExitCode {

@@ -42,7 +42,7 @@ async fn add_join_remove() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&alice),
-            json!({ "content": "boo", "nonce": "n" }),
+            json!({ "content": "boo", "nonce": common::nonce() }),
         )
         .await
         .ok();
@@ -141,7 +141,7 @@ async fn at_most_twenty_emoji() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "react!", "nonce": "n" }),
+            json!({ "content": "react!", "nonce": common::nonce() }),
         )
         .await
         .ok();

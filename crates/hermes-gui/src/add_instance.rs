@@ -8,9 +8,12 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Entity, SharedString, Subscription, Window, div,
+};
 use hermes_client_core::address::{AddTarget, HostPort, InviteLink};
 use hermes_client_core::proto::api::RegistrationMode;
+use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Invite;
 use hermes_client_core::{CertStatus, Core, CoreError, InstanceId, Probe};
 
@@ -58,6 +61,22 @@ pub enum Tab {
     SignIn,
     Register,
 }
+
+/// `hermes://<instance>/channels/<channel>/<message>`, from "Copy link".
+fn parse_message_link(link: &str) -> Option<(InstanceId, Id, Id)> {
+    let rest = link.trim().strip_prefix("hermes://")?;
+    let mut parts = rest.split('/');
+    let inst = parts.next()?;
+    if parts.next()? != "channels" {
+        return None;
+    }
+    let channel = parts.next()?.parse::<u64>().ok()?;
+    let message = parts.next()?.parse::<u64>().ok()?;
+    Some((inst.to_owned(), Id(channel), Id(message)))
+}
+
+/// `submit` says this when the password was right and a code is still needed.
+const NEEDS_CODE: &str = "two-factor code needed";
 
 /// What a probe found.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +128,12 @@ impl Shell {
     /// Starts the add-instance flow with an invite link or address (command line, a forwarded
     /// `hermes://` link) and goes on with it.
     pub fn open_link(&mut self, link: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((inst, channel, message)) = parse_message_link(&link)
+            && self.core.instance_ids().contains(&inst)
+        {
+            self.jump_to(inst, channel, message, window, cx);
+            return;
+        }
         self.open_add_instance(link, window, cx);
         self.submit_address(cx);
     }
@@ -149,6 +174,7 @@ impl Shell {
             }),
         ];
         address.update(cx, |input, cx| input.focus(window, cx));
+        self.cancel_closing("add-instance");
         self.add_instance = Some(AddInstance {
             step: Step::Address,
             busy: false,
@@ -302,29 +328,48 @@ impl Shell {
             return;
         }
         let account = (**account).clone();
+        let retry = account.clone();
         dialog.busy = true;
         dialog.error = None;
         let token = dialog.token();
         let core = self.core.clone();
-        self.run(cx, submit(core, account), move |this, result, _, cx| {
-            let current = this.add_instance_for(token).is_some();
-            match result {
-                Ok(inst) => {
-                    // Signed in even if the dialog went Back meanwhile: what is left of it is
-                    // done too, unless it is busy with something else.
-                    if current || this.add_instance.as_ref().is_some_and(|d| !d.busy) {
-                        this.add_instance = None;
+        self.run(
+            cx,
+            submit(core, account),
+            move |this, result, window, cx| {
+                let current = this.add_instance_for(token).is_some();
+                match result {
+                    Ok(inst) => {
+                        // Signed in even if the dialog went Back meanwhile: what is left of it is
+                        // done too, unless it is busy with something else.
+                        if current || this.add_instance.as_ref().is_some_and(|d| !d.busy) {
+                            this.close_later("add-instance", |s| s.add_instance = None, cx);
+                        }
+                        this.info(format!("Signed in to {inst}"), cx);
                     }
-                    this.info(format!("Signed in to {inst}"), cx);
-                }
-                Err(err) => {
-                    if let Some(dialog) = this.add_instance_for(token) {
-                        dialog.busy = false;
-                        dialog.error = Some(err);
+                    // Only for the dialog that asked: one left with Back dropped this sign-in.
+                    Err(err) if err == NEEDS_CODE => {
+                        if current {
+                            this.close_later("add-instance", |s| s.add_instance = None, cx);
+                            this.open_form_login_code(
+                                retry.host.clone(),
+                                retry.username.trim().to_owned(),
+                                retry.password.clone(),
+                                retry.invite.clone(),
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        if let Some(dialog) = this.add_instance_for(token) {
+                            dialog.busy = false;
+                            dialog.error = Some(err);
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
         cx.notify();
     }
 
@@ -348,7 +393,7 @@ impl Shell {
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.add_instance = None;
+                this.close_later("add-instance", |s| s.add_instance = None, cx);
                 cx.notify();
             }));
         let back = Button::new("add-back")
@@ -517,6 +562,7 @@ impl Shell {
                     .cursor_pointer()
                     .large()
                     .primary()
+                    .loading(busy)
                     .label(match (busy, tab) {
                         (true, _) => "Please wait…",
                         (false, Tab::SignIn) => "Sign in",
@@ -535,10 +581,25 @@ impl Shell {
                 );
             }
         }
+        // Each step, and each tab of the account step, fades in where the last one was.
+        let step = match &dialog_state.step {
+            Step::Address => "address".to_owned(),
+            Step::Fingerprint { .. } => "fingerprint".to_owned(),
+            Step::Account(account) => format!("account-{:?}", account.tab),
+        };
         Some(dialog(
             "add-instance",
             480.,
-            div().flex().flex_col().gap(px(14.)).children(body),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(14.))
+                .children(body)
+                .with_animation(
+                    SharedString::from(format!("add-instance-{step}")),
+                    gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
+                    |d, t| d.opacity(t),
+                ),
         ))
     }
 }
@@ -566,11 +627,13 @@ fn tab_button(
         .id(name)
         .px(px(12.))
         .py(px(6.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))
         .when(!selected && enabled, |d| {
-            d.cursor_pointer().hover(|d| d.bg(theme::hover()))
+            d.cursor_pointer()
+                .text_color(theme::text_secondary())
+                .hover(|d| d.text_color(theme::accent()))
         })
         .when(!enabled, |d| d.text_color(theme::text_tertiary()))
         .child(name)
@@ -657,6 +720,11 @@ pub async fn submit(core: Core, account: Account) -> Result<InstanceId, String> 
                 },
                 None => Ok(inst),
             },
+            Err(CoreError::Rest(hermes_client_core::rest::Error::Api(api)))
+                if api.code == hermes_client_core::proto::ErrorCode::TwoFactorRequired =>
+            {
+                return Err(NEEDS_CODE.to_owned());
+            }
             Err(e) => Err(e),
         },
     };

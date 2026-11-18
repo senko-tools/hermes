@@ -114,8 +114,10 @@ pub async fn start_with(
     config.limits.requests_per_second = 100_000;
     config.limits.login_attempts_per_minute = 100_000;
     config.limits.messages_per_5s = 100_000;
+    config.limits.actions_per_minute = 2_400_000;
     // Most tests send plain DMs; tests/e2ee.rs turns this on.
     config.privacy.require_dm_encryption = false;
+    config.privacy.require_channel_encryption = false;
     let mut state = AppState::load(config).await.unwrap();
     configure(&mut state);
     let quic = state.config.voice.enabled.then(|| {
@@ -222,16 +224,29 @@ impl TestServer {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Res {
-        let res = self
+        self.upload_with(token, filename, content_type, bytes, &[])
+            .await
+    }
+
+    /// [`TestServer::upload`] with more headers.
+    pub async fn upload_with(
+        &self,
+        token: &str,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        headers: &[(&str, &str)],
+    ) -> Res {
+        let mut req = self
             .client
             .post(format!("{}/attachments", self.base))
             .bearer_auth(token)
             .header("content-type", content_type)
-            .header("x-filename", filename)
-            .body(bytes)
-            .send()
-            .await
-            .unwrap();
+            .header("x-filename", filename);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        let res = req.body(bytes).send().await.unwrap();
         let status = res.status();
         let text = res.text().await.unwrap();
         let body = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -308,6 +323,7 @@ impl TestServer {
         log.as_array()
             .unwrap()
             .iter()
+            .filter(|e| e["action"] != "invite_create")
             .map(|e| e["action"].as_str().unwrap().to_owned())
             .collect()
     }
@@ -494,3 +510,15 @@ impl Ws {
         }
     }
 }
+
+/// A nonce no other message of this run has, as a real client's random ones are.
+pub fn nonce() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "test-{}",
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
+/// What every test account signs in with.
+pub const PASSWORD: &str = "correct horse";

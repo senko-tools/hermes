@@ -2,6 +2,7 @@
 //! Chat, Voice & Audio, Notifications, Keybinds and About. Every change is written to
 //! `config.toml`.
 
+use gpui_kit::AnimationExt as _;
 use gpui_kit::component::IndexPath;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -15,10 +16,9 @@ use hermes_client_core::audio::AudioDevices;
 use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
-use hermes_client_core::{CoreError, InstanceId, time};
+use hermes_client_core::{InstanceId, time};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::keybinds::{ACTIONS, Action, Keybinds};
 use crate::results::Remote;
 use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, RESOLUTIONS};
@@ -39,17 +39,21 @@ pub enum Tab {
     Chat,
     Voice,
     Notifications,
+    Privacy,
     Keybinds,
+    Admin,
     About,
 }
 
-const TABS: [(Tab, &str, &str); 7] = [
+const TABS: [(Tab, &str, &str); 9] = [
     (Tab::Account, assets::ACCOUNT, "Account"),
     (Tab::Appearance, assets::PALETTE, "Appearance"),
     (Tab::Chat, assets::CHAT, "Chat"),
     (Tab::Voice, assets::MIC, "Voice & Audio"),
     (Tab::Notifications, assets::BELL, "Notifications"),
+    (Tab::Privacy, assets::LOCK, "Privacy"),
     (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
+    (Tab::Admin, assets::SERVER, "Instance"),
     (Tab::About, assets::INFO, "About"),
 ];
 
@@ -90,14 +94,21 @@ enum SliderKind {
     InputVolume,
     OutputVolume,
     Vad,
+    VadHold,
+    AgcTarget,
+    Ducking,
     ReleaseDelay,
     SoundsVolume,
+    MediaVolume,
+    ScrollSpeed,
 }
 
-/// How often the level meter can redraw the window at most.
-const METER_FPS: f32 = 30.0;
-/// The bar has to move this far for a redraw (a pixel or so on a setting row).
-const METER_STEP_DB: f32 = 0.25;
+/// How often the level meter can redraw the window at most. Every frame redraws the whole window,
+/// so this is not the display's rate: drawing at 144 Hz all the time cost about 10 % CPU and GPU.
+const METER_FPS: f32 = 60.0;
+/// The bar has to move this far for a redraw (under a pixel on a setting row), so a settled
+/// meter costs nothing.
+const METER_STEP_DB: f32 = 0.1;
 
 /// Where the level meter's bar goes next: it follows the level quickly upwards and falls slowly, as
 /// meters do, in dB and `seconds` after it was last drawn.
@@ -138,6 +149,23 @@ impl SelectItem for DeviceChoice {
     }
 }
 
+/// The installed fonts, with the one in use even if it is not installed any more.
+fn font_choices(names: &[String], current: &str) -> (Vec<DeviceChoice>, usize) {
+    let mut all: Vec<String> = names.to_vec();
+    if !all.iter().any(|n| n == current) {
+        all.insert(0, current.to_owned());
+    }
+    let selected = all.iter().position(|n| n == current).unwrap_or(0);
+    let choices = all
+        .into_iter()
+        .map(|name| DeviceChoice {
+            name: SharedString::from(name.clone()),
+            value: name,
+        })
+        .collect();
+    (choices, selected)
+}
+
 /// The choices for the device saved as `current`: the system default, what is plugged in, and the
 /// saved device even when it is not there, so the dropdown says what is really set.
 fn device_choices(names: &[String], current: &str) -> (Vec<DeviceChoice>, usize) {
@@ -174,11 +202,20 @@ pub struct SettingsPage {
     pub sessions: Remote<Vec<SessionInfo>>,
     /// Counts the session list loads; only the newest one's answer is shown.
     sessions_load: u64,
+    /// The action waiting for a key press, by its config name.
+    pub capturing_key: Option<&'static str>,
+    /// Whether this account has two-factor login, once known.
+    two_factor: Option<bool>,
+    admin_users: Remote<Vec<hermes_client_core::proto::api::AdminUser>>,
+    admin_log: Remote<Vec<hermes_client_core::proto::api::AdminLogEntry>>,
+    admin_settings: Option<hermes_client_core::proto::api::AdminSettings>,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
     pub mic_test: bool,
-    font: Entity<InputState>,
-    mono_font: Entity<InputState>,
+    /// Held while the Voice tab and its level meter show.
+    fine_timers: Option<crate::desktop::window::FineTimers>,
+    font: Entity<SelectState<Vec<DeviceChoice>>>,
+    mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     ptt_key: Entity<InputState>,
     sliders: Vec<(SliderKind, Entity<SliderState>)>,
@@ -196,10 +233,9 @@ impl Shell {
     /// visibly move: a window redraw is what costs, not the meter.
     pub fn start_meter_timer(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut wait = std::time::Duration::from_secs_f32(1.0 / METER_FPS);
             loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_secs_f32(1.0 / METER_FPS))
-                    .await;
+                cx.background_executor().timer(wait).await;
                 let alive = this.update(cx, |this, cx| {
                     let showing = this
                         .settings
@@ -209,7 +245,7 @@ impl Shell {
                     let seconds = now.duration_since(this.meter_drawn).as_secs_f32();
                     this.meter_drawn = now;
                     if !showing {
-                        return;
+                        return false;
                     }
                     let next = meter_step(this.meter_shown, this.input_level, seconds);
                     let moved = (next - this.meter_shown).abs();
@@ -217,10 +253,17 @@ impl Shell {
                     if moved >= METER_STEP_DB {
                         cx.notify();
                     }
+                    true
                 });
-                if alive.is_err() {
+                let Ok(showing) = alive else {
                     return;
-                }
+                };
+                // Hardly anything to do while the Voice tab is closed.
+                wait = std::time::Duration::from_secs_f32(if showing {
+                    1.0 / METER_FPS
+                } else {
+                    0.25
+                });
             }
         })
         .detach();
@@ -243,18 +286,27 @@ impl Shell {
                 input
             })
         };
-        let font_input = text_field(
-            font.family.clone(),
-            "Installed font, e.g. Segoe UI",
-            window,
-            cx,
-        );
-        let mono_input = text_field(
-            font.mono_family.clone(),
-            "Installed font, e.g. Consolas",
-            window,
-            cx,
-        );
+        let mut installed = cx.text_system().all_font_names();
+        installed.sort();
+        installed.dedup();
+        let mut font_select = |current: &str, key: &'static str| {
+            let (choices, selected) = font_choices(&installed, current);
+            let state =
+                cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+            let events = cx.subscribe(
+                &state,
+                move |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                    if let SelectEvent::Confirm(Some(value)) = event {
+                        this.persist(key, &toml_string(value.clone()), cx);
+                        this.reload_theme(cx);
+                        this.remeasure_chats();
+                    }
+                },
+            );
+            (state, events)
+        };
+        let (font_input, font_events) = font_select(&font.family, "font.family");
+        let (mono_input, mono_events) = font_select(&font.mono_family, "font.mono_family");
         let time_format = text_field(
             self.config.buffer.timestamp_format.clone(),
             "%H:%M",
@@ -263,20 +315,8 @@ impl Shell {
         );
         let ptt_key = text_field(voice.ptt_key.clone(), "e.g. Mouse4", window, cx);
         let mut events = vec![
-            cx.subscribe_in(&font_input, window, |this, input, event, _, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let value = input.read(cx).value().trim().to_owned();
-                    this.persist("font.family", &toml_string(value), cx);
-                    this.reload_theme(cx);
-                }
-            }),
-            cx.subscribe_in(&mono_input, window, |this, input, event, _, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    let value = input.read(cx).value().trim().to_owned();
-                    this.persist("font.mono_family", &toml_string(value), cx);
-                    this.reload_theme(cx);
-                }
-            }),
+            font_events,
+            mono_events,
             cx.subscribe_in(&time_format, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
@@ -341,11 +381,46 @@ impl Shell {
                 voice.ptt_release_delay_ms as f32,
             ),
             (
+                SliderKind::VadHold,
+                100.,
+                1000.,
+                10.,
+                (voice.vad_hold_ms as f32).clamp(100., 1000.),
+            ),
+            (
+                SliderKind::Ducking,
+                3.,
+                30.,
+                1.,
+                (voice.ducking_db as f32).clamp(3., 30.),
+            ),
+            (
+                SliderKind::AgcTarget,
+                -30.,
+                -6.,
+                1.,
+                (voice.agc_target_db as f32).clamp(-30., -6.),
+            ),
+            (
                 SliderKind::SoundsVolume,
                 0.,
                 1.,
                 0.05,
                 voice.sounds_volume as f32,
+            ),
+            (
+                SliderKind::MediaVolume,
+                0.,
+                1.,
+                0.05,
+                (voice.media_volume as f32).clamp(0., 1.),
+            ),
+            (
+                SliderKind::ScrollSpeed,
+                0.5,
+                3.,
+                0.05,
+                self.config.general.scroll_speed as f32,
             ),
         ];
         let mut sliders = Vec::new();
@@ -377,8 +452,14 @@ impl Shell {
             account_inst: None,
             sessions: Remote::Idle,
             sessions_load: 0,
+            capturing_key: None,
+            two_factor: None,
+            admin_users: Remote::Idle,
+            admin_log: Remote::Idle,
+            admin_settings: None,
             device_selects: None,
             mic_test: false,
+            fine_timers: None,
             font: font_input,
             mono_font: mono_input,
             time_format,
@@ -407,9 +488,11 @@ impl Shell {
             return;
         };
         page.tab = tab;
+        page.fine_timers = (tab == Tab::Voice).then(crate::desktop::window::FineTimers::new);
         self.core.set_level_meter(tab == Tab::Voice);
         match tab {
             Tab::Account => self.load_sessions(cx),
+            Tab::Admin => self.load_admin(cx),
             Tab::Voice => self.load_devices(cx),
             _ => {}
         }
@@ -434,8 +517,26 @@ impl Shell {
             return;
         };
         page.sessions = Remote::Loading;
+        page.two_factor = None;
         page.sessions_load += 1;
         let load = page.sessions_load;
+        let twofa_core = self.core.clone();
+        let twofa_inst = inst.clone();
+        self.run(
+            cx,
+            async move {
+                let rest = twofa_core.rest(&twofa_inst).ok()?;
+                rest.two_factor().await.ok().map(|s| s.enabled)
+            },
+            move |this, enabled, _, cx| {
+                if let Some(page) = &mut this.settings
+                    && page.sessions_load == load
+                {
+                    page.two_factor = enabled;
+                }
+                cx.notify();
+            },
+        );
         let core = self.core.clone();
         self.run(
             cx,
@@ -530,7 +631,12 @@ impl Shell {
             SliderKind::OutputVolume => voice.output_volume = rounded(value) as _,
             SliderKind::Vad => voice.vad_sensitivity = value as i32,
             SliderKind::ReleaseDelay => voice.ptt_release_delay_ms = value as u32,
+            SliderKind::VadHold => voice.vad_hold_ms = value as u32,
+            SliderKind::AgcTarget => voice.agc_target_db = value as i32,
+            SliderKind::Ducking => voice.ducking_db = value as u32,
             SliderKind::SoundsVolume => voice.sounds_volume = rounded(value) as _,
+            SliderKind::MediaVolume => voice.media_volume = rounded(value) as _,
+            SliderKind::ScrollSpeed => self.config.general.scroll_speed = rounded(value) as _,
         }
         cx.notify();
     }
@@ -551,6 +657,14 @@ impl Shell {
             SliderKind::GroupMinutes => {
                 let value = self.config.buffer.group_minutes.to_string();
                 self.persist("buffer.group_minutes", &value, cx);
+            }
+            SliderKind::MediaVolume => {
+                let value = format!("{:.3}", self.config.voice.media_volume);
+                self.persist("voice.media_volume", &value, cx);
+            }
+            SliderKind::ScrollSpeed => {
+                let value = format!("{:.2}", self.config.general.scroll_speed);
+                self.persist("general.scroll_speed", &value, cx);
             }
             _ => {
                 let voice = self.config.voice.clone();
@@ -721,33 +835,7 @@ impl Shell {
     }
 
     fn pick_avatar(&mut self, inst: InstanceId, cx: &mut Context<Self>) {
-        let core = self.core.clone();
-        self.run(
-            cx,
-            async move {
-                let Some(file) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a picture")
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                    .pick_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let avatar = core.upload(&inst, file.path()).await?;
-                core.rest(&inst)?
-                    .update_me(&UpdateMeRequest {
-                        avatar_id: Some(Some(avatar.id)),
-                        ..UpdateMeRequest::default()
-                    })
-                    .await?;
-                Ok::<_, CoreError>(Some(()))
-            },
-            |this, result, _, cx| match result {
-                Ok(Some(())) => this.info("Avatar changed", cx),
-                Ok(None) => {}
-                Err(err) => this.error(format!("could not change it: {err}"), cx),
-            },
-        );
+        self.pick_picture(crate::crop::CropFor::Avatar(inst), cx);
     }
 
     fn revoke_sessions(&mut self, ids: Vec<Id>, cx: &mut Context<Self>) {
@@ -787,8 +875,10 @@ impl Shell {
     /// The page: navigation on the left, the tab on the right.
     pub fn render_settings(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let page = self.settings.as_ref()?;
+        let admin = self.is_instance_admin();
         let nav: Vec<AnyElement> = TABS
             .iter()
+            .filter(|(tab, _, _)| *tab != Tab::Admin || admin)
             .map(|(tab, glyph, name)| {
                 let tab = *tab;
                 nav_item(glyph, name, page.tab == tab, format!("settings-tab-{name}"))
@@ -802,13 +892,18 @@ impl Shell {
             Tab::Chat => self.tab_chat(page, cx),
             Tab::Voice => self.tab_voice(page, cx),
             Tab::Notifications => self.tab_notifications(cx),
-            Tab::Keybinds => self.tab_keybinds(),
+            Tab::Privacy => self.tab_privacy(cx),
+            Tab::Admin => self.tab_admin(page, cx),
+            Tab::Keybinds => self.tab_keybinds(page, cx),
             Tab::About => self.tab_about(cx),
         };
         Some(frame(
             "User settings".into(),
             nav,
-            content,
+            theme::enter(
+                SharedString::from(format!("settings-{:?}", page.tab)),
+                content,
+            ),
             cx.listener(|this, _, _, cx| this.close_settings(cx)),
         ))
     }
@@ -869,10 +964,7 @@ impl Shell {
                 .unwrap_or_default()
         );
         if me.instance_admin {
-            hint.push_str(
-                ". You are an admin of this instance: manage users with the hermes-server user \
-                 commands or the API (/admin/users).",
-            );
+            hint.push_str(" · instance admin");
         }
         let username_inst = inst.clone();
         let copy_handle = me.user.handle();
@@ -883,9 +975,14 @@ impl Shell {
                 .child(
                     Button::new("account-username-copy")
                         .cursor_pointer()
-                        .label("Copy")
+                        .label(self.copy_label("account-username-copy", "Copy"))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy(copy_handle.clone(), "Username", cx);
+                            this.copy_from(
+                                "account-username-copy",
+                                copy_handle.clone(),
+                                "Username",
+                                cx,
+                            );
                         })),
                 )
                 .child(
@@ -951,6 +1048,47 @@ impl Shell {
                     )
                 }),
         ));
+        let has_banner = me.user.banner.is_some();
+        let (banner_inst, unbanner_inst) = (inst.clone(), inst.clone());
+        account_rows.push(setting(
+            "Banner",
+            "The wide picture at the top of your profile.",
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Button::new("account-banner")
+                        .cursor_pointer()
+                        .label(if has_banner { "Change…" } else { "Upload…" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_picture(
+                                crate::crop::CropFor::Banner(banner_inst.clone()),
+                                cx,
+                            );
+                        })),
+                )
+                .when(has_banner, |d| {
+                    d.child(
+                        Button::new("account-banner-remove")
+                            .cursor_pointer()
+                            .label("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.call_status(
+                                    &unbanner_inst,
+                                    "Banner removed",
+                                    |r| async move {
+                                        r.update_me(&UpdateMeRequest {
+                                            banner_id: Some(None),
+                                            ..UpdateMeRequest::default()
+                                        })
+                                        .await
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                }),
+        ));
         let password_inst = inst.clone();
         account_rows.push(setting(
             "Password",
@@ -965,7 +1103,7 @@ impl Shell {
 
         let dm_chips = [
             (DmFrom::Everyone, "Everyone"),
-            (DmFrom::Spaces, "People in my spaces"),
+            (DmFrom::Spaces, "People in my servers"),
             (DmFrom::Nobody, "Nobody"),
         ]
         .into_iter()
@@ -986,15 +1124,12 @@ impl Shell {
         let privacy_rows = vec![
             setting(
                 "Direct messages from",
-                "Who can start a conversation with you on this instance. Conversations you \
-                 already have stay open.",
+                "Who can start a conversation with you.",
                 wrap().children(dm_chips),
             ),
             setting(
                 "Message requests",
-                "Messages from everyone else wait in Requests: you are notified once per \
-                 request, and they stay quiet until you accept. Off: they cannot message you \
-                 at all.",
+                "Messages from anyone else wait in Requests. Off: they cannot message you.",
                 Switch::new("allow-requests")
                     .cursor_pointer()
                     .checked(privacy.message_requests)
@@ -1008,11 +1143,27 @@ impl Shell {
                         );
                     })),
             ),
+            setting(
+                "Show when I was last online",
+                "On your profile, for people who share a server with you and your friends.",
+                Switch::new("show-last-online")
+                    .cursor_pointer()
+                    .checked(privacy.show_last_online)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        this.set_privacy(
+                            UpdatePrivacyRequest {
+                                show_last_online: Some(*on),
+                                ..UpdatePrivacyRequest::default()
+                            },
+                            cx,
+                        );
+                    })),
+            ),
         ];
 
         let mut device_rows: Vec<AnyElement> = Vec::new();
         match &page.sessions {
-            Remote::Idle | Remote::Loading => device_rows.push(muted("Loading…")),
+            Remote::Idle | Remote::Loading => device_rows.push(theme::skeleton("devices", 3)),
             Remote::Failed(err) => device_rows.push(
                 div()
                     .text_size(theme::secondary_size())
@@ -1067,13 +1218,12 @@ impl Shell {
                 group("Account", account_rows),
                 group("Privacy", privacy_rows),
                 group("Signed-in devices", device_rows),
+                self.security_group(page, &inst, cx),
                 group(
                     "End-to-end encryption",
                     vec![setting(
                         "This device",
-                        "Direct messages, files and calls are encrypted here and only your and their \
-                         devices can read them, not the server. A device can only read what was sent \
-                         after it signed in. Its key stays on this computer.",
+                        "Only your and their devices can read DMs, files and calls.",
                         muted(
                             self.core.my_device_id(&inst).map_or_else(String::new, |d| {
                                 d.chars().take(16).collect::<String>()
@@ -1146,11 +1296,7 @@ impl Shell {
                     .gap(px(8.))
                     .children(cards)
                     .into_any_element(),
-                muted(
-                    "Your own themes are .toml files in the themes folder: copy one to start, and \
-                     changes show up as soon as you save. Keys you leave out come from the dark \
-                     theme.",
-                ),
+                muted("Your own themes are .toml files in the themes folder."),
             ],
         );
         let shown_px = i32::from(config.font.size) + 3;
@@ -1159,13 +1305,34 @@ impl Shell {
             vec![
                 setting(
                     "Font",
-                    "Used for all text. Any installed font's name works; Enter saves.",
-                    Input::new(&page.font),
+                    "Any font installed on this computer.",
+                    Select::new(&page.font).cursor_pointer(),
                 ),
                 setting(
                     "Code font",
-                    "Used for code blocks and inline code. Enter saves.",
-                    Input::new(&page.mono_font),
+                    "For code blocks.",
+                    Select::new(&page.mono_font).cursor_pointer(),
+                ),
+                setting(
+                    "Size of titles",
+                    "",
+                    wrap().children(
+                        [(2, "Small"), (4, "Normal"), (8, "Large")]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, (extra, name))| {
+                                chip(
+                                    ("heading-extra", n),
+                                    name,
+                                    config.font.heading_extra == extra,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist("font.heading_extra", &extra.to_string(), cx);
+                                    },
+                                ))
+                            }),
+                    ),
                 ),
                 setting(
                     "Font size",
@@ -1204,11 +1371,7 @@ impl Shell {
                     &if self.ui_scale_draft.is_some() {
                         format!("{:.0} %, applied when you let go", scale * 100.)
                     } else {
-                        format!(
-                            "{:.0} % on top of the system scaling. Ctrl+= and Ctrl+- zoom, Ctrl+0 \
-                             resets.",
-                            scale * 100.
-                        )
+                        format!("{:.0} % · Ctrl+= and Ctrl+- zoom", scale * 100.)
                     },
                     div()
                         .flex()
@@ -1222,8 +1385,7 @@ impl Shell {
                 setting(
                     "Panel widths",
                     &format!(
-                        "Sidebar {} px, member list {} px. Drag the sidebar's edge to resize; a \
-                         double-click on it resets.",
+                        "Sidebar {} px, member list {} px",
                         config.sidebar.width, config.sidebar.member_list_width
                     ),
                     Button::new("reset-widths")
@@ -1239,7 +1401,12 @@ impl Shell {
         page_body(
             "Appearance",
             None,
-            vec![theme_group, text_group, layout_group],
+            vec![
+                theme_group,
+                text_group,
+                layout_group,
+                self.motion_group(page, cx),
+            ],
         )
     }
 
@@ -1286,7 +1453,7 @@ impl Shell {
                         ),
                         self.flag(
                             "Show image previews",
-                            "Images in messages are shown, not just linked.",
+                            "",
                             b.image_previews,
                             "buffer.image_previews",
                             cx,
@@ -1296,6 +1463,13 @@ impl Shell {
                             "",
                             b.show_typing,
                             "buffer.show_typing",
+                            cx,
+                        ),
+                        self.flag(
+                            "Format messages",
+                            "Off: bold, code blocks and the like show as they were typed.",
+                            b.markdown,
+                            "buffer.markdown",
                             cx,
                         ),
                         self.flag(
@@ -1312,22 +1486,651 @@ impl Shell {
                     vec![
                         setting(
                             "Group messages",
-                            &format!(
-                                "Messages by the same person within {} minutes share one name line.",
-                                b.group_minutes
-                            ),
+                            &format!("Within {} minutes", b.group_minutes),
                             self.slider(page, SliderKind::GroupMinutes),
                         ),
                         setting(
-                            "Time format",
-                            &format!(
-                                "strftime style: %H:%M is 18:05, %I:%M %p is 06:05 PM. Now: {preview}. Enter saves."
+                            "Quick reactions",
+                            &self.config.buffer.quick_reactions,
+                            Button::new("edit-reactions")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_quick_reactions(window, cx);
+                                })),
+                        ),
+                        setting(
+                            "Status line stays",
+                            &format!("{} seconds", self.config.general.status_seconds),
+                            wrap().children([3, 5, 10].into_iter().enumerate().map(|(n, secs)| {
+                                chip(
+                                    ("status-seconds", n),
+                                    format!("{secs} s"),
+                                    self.config.general.status_seconds == secs,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist(
+                                            "general.status_seconds",
+                                            &secs.to_string(),
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            })),
+                        ),
+                        self.flag(
+                            "Compact messages",
+                            "Time, a small picture, the name and the text on one line.",
+                            b.compact,
+                            "buffer.compact",
+                            cx,
+                        ),
+                        setting(
+                            "Clock",
+                            "",
+                            wrap().children(
+                                [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")]
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(n, (format, name))| {
+                                        chip(("clock", n), name, b.timestamp_format == format)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.persist(
+                                                    "buffer.timestamp_format",
+                                                    &toml_string(format.to_owned()),
+                                                    cx,
+                                                );
+                                            }))
+                                    }),
                             ),
+                        ),
+                        setting(
+                            "Time format",
+                            &format!("Now: {preview}. Enter saves."),
                             Input::new(&page.time_format),
                         ),
                     ],
                 ),
+                self.sidebar_group(cx),
+                self.files_group(page, cx),
             ],
+        )
+    }
+
+    fn motion_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        let g = &self.config.general;
+        group(
+            "Motion",
+            vec![
+                self.flag(
+                    "Reduce motion",
+                    "No sliding or fading.",
+                    g.reduce_motion,
+                    "general.reduce_motion",
+                    cx,
+                ),
+                setting(
+                    "Motion speed",
+                    "How long things take to slide and fade.",
+                    wrap().children(theme::MOTION_SPEEDS.into_iter().enumerate().map(
+                        |(n, (value, label, _))| {
+                            crate::voice::chip(
+                                ("settings-motion", n),
+                                label,
+                                g.motion_speed.eq_ignore_ascii_case(value),
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.persist(
+                                        "general.motion_speed",
+                                        &toml_string(value.to_owned()),
+                                        cx,
+                                    );
+                                },
+                            ))
+                        },
+                    )),
+                ),
+                self.flag(
+                    "Smooth scrolling",
+                    "The mouse wheel glides instead of jumping.",
+                    g.smooth_scroll,
+                    "general.smooth_scroll",
+                    cx,
+                ),
+                setting(
+                    "Scroll speed",
+                    &format!("{:.2} x", g.scroll_speed),
+                    self.slider(page, SliderKind::ScrollSpeed),
+                ),
+                self.flag(
+                    "Animate pictures",
+                    "GIFs move while the window has the focus.",
+                    g.animate_pictures,
+                    "general.animate_pictures",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn sidebar_group(&self, cx: &mut Context<Self>) -> AnyElement {
+        let s = &self.config.sidebar;
+        group(
+            "Sidebar",
+            vec![
+                self.flag(
+                    "Show unread dots",
+                    "",
+                    s.show_unread_dots,
+                    "sidebar.show_unread_dots",
+                    cx,
+                ),
+                self.flag(
+                    "Show mention counts",
+                    "",
+                    s.show_mention_counts,
+                    "sidebar.show_mention_counts",
+                    cx,
+                ),
+                self.flag(
+                    "Show who is in voice channels",
+                    "",
+                    s.show_voice_users,
+                    "sidebar.show_voice_users",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn files_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        let g = &self.config.general;
+        let folder = if g.download_dir.is_empty() {
+            "The Downloads folder".to_owned()
+        } else {
+            g.download_dir.clone()
+        };
+        group(
+            "Files",
+            vec![
+                setting(
+                    "Media volume",
+                    &format!("{:.0} %", self.config.voice.media_volume * 100.),
+                    self.slider(page, SliderKind::MediaVolume),
+                ),
+                setting(
+                    "Download folder",
+                    &folder,
+                    wrap()
+                        .child(
+                            Button::new("download-choose")
+                                .cursor_pointer()
+                                .label("Choose…")
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.choose_download_dir(cx)),
+                                ),
+                        )
+                        .child(
+                            Button::new("download-reset")
+                                .cursor_pointer()
+                                .label("Reset")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.persist(
+                                        "general.download_dir",
+                                        &toml_string(String::new()),
+                                        cx,
+                                    );
+                                })),
+                        ),
+                ),
+                setting(
+                    "Size of pictures and videos",
+                    &format!("{} %", self.config.buffer.media_scale),
+                    wrap().children(
+                        [(75, "Small"), (100, "Normal"), (150, "Large")]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, (scale, name))| {
+                                chip(
+                                    ("media-scale", n),
+                                    name,
+                                    self.config.buffer.media_scale == scale,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.persist("buffer.media_scale", &scale.to_string(), cx);
+                                    },
+                                ))
+                            }),
+                    ),
+                ),
+                setting(
+                    "Saved on this device",
+                    "Thumbnails come back as needed, the search index fills up again.",
+                    wrap()
+                        .child(
+                            Button::new("clear-thumbs")
+                                .cursor_pointer()
+                                .label("Clear pictures")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.clear_pictures();
+                                    this.info("Pictures cleared", cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("clear-index")
+                                .cursor_pointer()
+                                .label("Clear search index")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    for inst in this.core.instance_ids() {
+                                        this.core.clear_search_index(&inst);
+                                    }
+                                    this.info("Search index cleared", cx);
+                                })),
+                        ),
+                ),
+                self.flag(
+                    "Ask where to save",
+                    "Choose a place for each download.",
+                    g.ask_where_to_save,
+                    "general.ask_where_to_save",
+                    cx,
+                ),
+            ],
+        )
+    }
+
+    fn choose_download_dir(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            async {
+                rfd::AsyncFileDialog::new()
+                    .pick_folder()
+                    .await
+                    .map(|folder| folder.path().display().to_string())
+            },
+            |this, picked, _, cx| {
+                if let Some(folder) = picked {
+                    this.persist("general.download_dir", &toml_string(folder), cx);
+                }
+            },
+        );
+    }
+
+    fn is_instance_admin(&self) -> bool {
+        let store = self.core.store();
+        self.account_instance()
+            .and_then(|inst| store.instance(&inst).and_then(|s| s.me.clone()))
+            .is_some_and(|me| me.instance_admin)
+    }
+
+    fn security_group(
+        &self,
+        page: &SettingsPage,
+        inst: &InstanceId,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let on = page.two_factor == Some(true);
+        let (form_inst, export_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
+        group(
+            "Security and your data",
+            vec![
+                setting(
+                    "Two-factor login",
+                    if on {
+                        "On: signing in also needs a code."
+                    } else {
+                        "Signing in can also need a code from an authenticator app."
+                    },
+                    Button::new("two-factor")
+                        .cursor_pointer()
+                        .label(if on { "Turn off" } else { "Turn on" })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if on {
+                                this.open_form_two_factor_disable(form_inst.clone(), window, cx);
+                            } else {
+                                this.open_form_two_factor_begin(form_inst.clone(), window, cx);
+                            }
+                        })),
+                ),
+                setting(
+                    "Connect when Hermes starts",
+                    "",
+                    Switch::new("autoconnect")
+                        .cursor_pointer()
+                        .checked(
+                            self.config
+                                .instances
+                                .iter()
+                                .find(|e| e.id == *inst)
+                                .is_none_or(|e| e.autoconnect),
+                        )
+                        .on_click(cx.listener({
+                            let inst = inst.clone();
+                            move |this, on: &bool, _, cx| {
+                                if let Err(err) = this.core.set_autoconnect(&inst, *on) {
+                                    this.error(err.to_string(), cx);
+                                }
+                                this.apply_config(cx);
+                            }
+                        })),
+                ),
+                setting(
+                    "Your data",
+                    "A file with your profile, servers and messages as the server holds them.",
+                    Button::new("export-account")
+                        .cursor_pointer()
+                        .label("Export…")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.export_account(export_inst.clone(), cx);
+                        })),
+                ),
+                setting(
+                    "Delete account",
+                    "This cannot be undone.",
+                    Button::new("delete-account")
+                        .cursor_pointer()
+                        .danger()
+                        .label("Delete…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_form_delete_account(delete_inst.clone(), window, cx);
+                        })),
+                ),
+            ],
+        )
+    }
+
+    fn export_account(&mut self, inst: InstanceId, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        self.run_status(cx, async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_file_name("hermes-export.json")
+                .save_file()
+                .await;
+            let Some(file) = file else {
+                return Ok("Export cancelled".to_owned());
+            };
+            let text = core
+                .rest(&inst)
+                .map_err(|e| e.to_string())?
+                .export_account()
+                .await
+                .map_err(|e| e.to_string())?;
+            let path = file.path().to_path_buf();
+            let written = path.clone();
+            tokio::task::spawn_blocking(move || std::fs::write(written, text))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Saved to {}", path.display()))
+        });
+    }
+
+    fn load_admin(&mut self, cx: &mut Context<Self>) {
+        let Some(inst) = self.account_instance() else {
+            return;
+        };
+        if let Some(page) = &mut self.settings {
+            page.admin_users = Remote::Loading;
+            page.admin_log = Remote::Loading;
+        }
+        let core = self.core.clone();
+        self.run(
+            cx,
+            async move {
+                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                let users = rest
+                    .admin_users(None, 200)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let log = rest.admin_log().await.map_err(|e| e.to_string())?;
+                let settings = rest.admin_settings().await.map_err(|e| e.to_string())?;
+                Ok::<_, String>((users, log, settings))
+            },
+            |this, result, _, cx| {
+                if let Some(page) = &mut this.settings {
+                    match result {
+                        Ok((users, log, settings)) => {
+                            page.admin_users = Remote::Ready(users);
+                            page.admin_log = Remote::Ready(log);
+                            page.admin_settings = Some(settings);
+                        }
+                        Err(err) => {
+                            page.admin_users = Remote::Failed(err.clone());
+                            page.admin_log = Remote::Failed(err);
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn tab_admin(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        use hermes_client_core::proto::api::{AdminSettings, RegistrationMode as Mode};
+        let Some(inst) = self.account_instance() else {
+            return muted("Add an instance first.");
+        };
+        let current = page.admin_settings.map(|s| s.registration_mode);
+        let chips = [
+            (Mode::Open, "Open"),
+            (Mode::InviteOnly, "Invite only"),
+            (Mode::Closed, "Closed"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (mode, name))| {
+            let inst = inst.clone();
+            chip(("registration", n), name, current == Some(mode)).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    let core = this.core.clone();
+                    let inst = inst.clone();
+                    this.run(
+                        cx,
+                        async move {
+                            core.rest(&inst)
+                                .map_err(|e| e.to_string())?
+                                .set_admin_settings(&AdminSettings {
+                                    registration_mode: mode,
+                                })
+                                .await
+                                .map_err(|e| e.to_string())
+                        },
+                        |this, result, _, cx| match result {
+                            Ok(_) => this.load_admin(cx),
+                            Err(err) => this.error(err, cx),
+                        },
+                    );
+                },
+            ))
+        });
+        let mut users: Vec<AnyElement> = Vec::new();
+        match &page.admin_users {
+            Remote::Idle | Remote::Loading => users.push(theme::skeleton("users", 4)),
+            Remote::Failed(err) => users.push(muted(err.clone())),
+            Remote::Ready(list) => {
+                for entry in list {
+                    let id = entry.user.id;
+                    let flags = match (entry.instance_admin, entry.disabled) {
+                        (true, _) => "admin",
+                        (_, true) => "disabled",
+                        _ => "",
+                    };
+                    let disabled = entry.disabled;
+                    let admin = entry.instance_admin;
+                    let (disable_inst, admin_inst) = (inst.clone(), inst.clone());
+                    users.push(setting(
+                        &entry.user.handle(),
+                        flags,
+                        wrap()
+                            .child(
+                                Button::new(SharedString::from(format!("admin-disable-{id}")))
+                                    .cursor_pointer()
+                                    .label(if disabled { "Enable" } else { "Disable" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.admin_patch(
+                                            disable_inst.clone(),
+                                            id,
+                                            Some(!disabled),
+                                            None,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("admin-admin-{id}")))
+                                    .cursor_pointer()
+                                    .label(if admin { "Remove admin" } else { "Make admin" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.admin_patch(
+                                            admin_inst.clone(),
+                                            id,
+                                            None,
+                                            Some(!admin),
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    ));
+                }
+            }
+        }
+        let mut log: Vec<AnyElement> = Vec::new();
+        match &page.admin_log {
+            Remote::Idle | Remote::Loading => log.push(theme::skeleton("log", 5)),
+            Remote::Failed(err) => log.push(muted(err.clone())),
+            Remote::Ready(list) if list.is_empty() => log.push(muted("Nothing yet.")),
+            Remote::Ready(list) => {
+                for entry in list {
+                    log.push(muted(format!(
+                        "{} · {} · {}",
+                        time::format(entry.created_at, "%Y-%m-%d %H:%M", self.utc_offset),
+                        entry.action,
+                        entry.details
+                    )));
+                }
+            }
+        }
+        page_body(
+            "Instance",
+            None,
+            vec![
+                group(
+                    "Who can make an account",
+                    vec![
+                        setting(
+                            "Registration",
+                            "Takes effect at once, and over the config file.",
+                            wrap().children(chips),
+                        ),
+                        setting(
+                            "Channels must be encrypted",
+                            "Set in the server's config file.",
+                            muted(
+                                if self
+                                    .core
+                                    .store()
+                                    .instance(&inst)
+                                    .and_then(|s| {
+                                        s.instance.as_ref().map(|i| i.limits.channels_encrypted)
+                                    })
+                                    .unwrap_or(false)
+                                {
+                                    "Yes"
+                                } else {
+                                    "No"
+                                },
+                            ),
+                        ),
+                    ],
+                ),
+                group("Accounts", users),
+                group("Log", log),
+            ],
+        )
+    }
+
+    fn admin_patch(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        disabled: Option<bool>,
+        instance_admin: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        let core = self.core.clone();
+        self.run(
+            cx,
+            async move {
+                core.rest(&inst)
+                    .map_err(|e| e.to_string())?
+                    .admin_update_user(
+                        user,
+                        &hermes_client_core::proto::api::AdminUserPatch {
+                            disabled,
+                            instance_admin,
+                            tagless: None,
+                        },
+                    )
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            |this, result, _, cx| match result {
+                Ok(()) => this.load_admin(cx),
+                Err(err) => this.error(err, cx),
+            },
+        );
+    }
+
+    fn tab_privacy(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = &self.config.privacy;
+        page_body(
+            "Privacy",
+            None,
+            vec![group(
+                "What this device tells the server",
+                vec![
+                    self.flag(
+                        "Show others when I am typing",
+                        "",
+                        p.send_typing,
+                        "privacy.send_typing",
+                        cx,
+                    ),
+                    self.flag(
+                        "Sync what I have read",
+                        "Off: the server is not told, and your other devices will not know either.",
+                        p.send_read_marks,
+                        "privacy.send_read_marks",
+                        cx,
+                    ),
+                    setting(
+                        "Close the microphone while muted",
+                        "The system then shows it as unused. Unmuting takes a moment longer.",
+                        Switch::new("close-mic")
+                            .cursor_pointer()
+                            .checked(self.config.voice.close_mic_when_muted)
+                            .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                let on = *on;
+                                this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
+                            })),
+                    ),
+                    self.flag(
+                        "Search on this device only",
+                        "Older unencrypted messages are then not found.",
+                        p.local_search_only,
+                        "privacy.local_search_only",
+                        cx,
+                    ),
+                    setting(
+                        "Warn about unencrypted chats",
+                        "A popup when opening a chat the server can read. The note above                          the message box is always there.",
+                        self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
+                    ),
+                ],
+            )],
         )
     }
 
@@ -1347,7 +2150,7 @@ impl Shell {
                 setting("Speakers", "", device_select(selects.map(|s| &s.output))),
                 setting(
                     "Device list",
-                    "Plugged in a headset? List the devices again.",
+                    "",
                     Button::new("devices-refresh")
                         .cursor_pointer()
                         .label("Refresh devices")
@@ -1398,24 +2201,30 @@ impl Shell {
                     .h_full()
                     .rounded(px(3.))
                     .w(gpui_kit::relative(fill))
-                    .bg(if open {
-                        theme::speaking()
-                    } else {
-                        theme::text_tertiary()
-                    }),
+                    // Green while the voice would go through, blending so it does not flicker.
+                    .with_spring(
+                        "meter-open",
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            gpui_kit::SpringConfig::new(260., 34., 1.),
+                        ))
+                        .to(open),
+                        |d, phase| {
+                            d.bg(theme::mix(
+                                theme::text_tertiary(),
+                                theme::speaking(),
+                                phase.0.clamp(0., 1.),
+                            ))
+                        },
+                    ),
             );
-        let mut input_rows = vec![setting(
-            "Input mode",
-            "Voice activity sends while you talk; push-to-talk while a key is held.",
-            wrap().children(mode_chips),
-        )];
+        let mut input_rows = vec![setting("Input mode", "", wrap().children(mode_chips))];
         if ptt_mode {
             input_rows.push(setting(
                 "Push-to-talk key",
                 if cfg!(windows) {
-                    "Works in every app: Mouse4, Mouse5, CapsLock, F1–F24, letters, Ctrl+Space… Enter saves."
+                    "e.g. Mouse4, F13, Ctrl+Space. Enter saves."
                 } else {
-                    "On this system it only works while the Hermes window is focused. Enter saves."
+                    "Only while Hermes is focused. Enter saves."
                 },
                 Input::new(&page.ptt_key),
             ));
@@ -1427,10 +2236,7 @@ impl Shell {
         }
         input_rows.push(setting(
             "Voice activity sensitivity",
-            &format!(
-                "Opens above {} dBFS · microphone now {level:.0} dBFS",
-                v.vad_sensitivity
-            ),
+            &format!("Opens above {} dBFS · now {level:.0}", v.vad_sensitivity),
             div()
                 .flex()
                 .flex_col()
@@ -1439,10 +2245,28 @@ impl Shell {
                 .child(meter)
                 .child(self.slider(page, SliderKind::Vad)),
         ));
+        if !ptt_mode {
+            input_rows.push(setting(
+                "Stay open after speaking",
+                &format!("{} ms, so the ends of words are not cut off", v.vad_hold_ms),
+                self.slider(page, SliderKind::VadHold),
+            ));
+            input_rows.push(setting(
+                "Only loudness opens the microphone",
+                "Noise suppression's voice detection can't open it below the line.",
+                Switch::new("vad-level-only")
+                    .cursor_pointer()
+                    .checked(v.vad_level_only)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        let on = *on;
+                        this.change_voice(cx, move |voice| voice.vad_level_only = on);
+                    })),
+            ));
+        }
         let mic_test = page.mic_test;
         input_rows.push(setting(
             "Mic test",
-            "Hear your processed microphone (use headphones).",
+            "Hear yourself (use headphones).",
             Button::new("mic-test")
                 .cursor_pointer()
                 .label(if mic_test { "Stop test" } else { "Start test" })
@@ -1471,9 +2295,31 @@ impl Shell {
             "Processing",
             vec![
                 setting(
+                    "Rebuild lost sound",
+                    "Sends a little extra, so a dropped packet can be recovered.",
+                    Switch::new("opus-fec")
+                        .cursor_pointer()
+                        .checked(v.opus_fec)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.change_voice(cx, |voice| voice.opus_fec = on);
+                        })),
+                ),
+                setting(
+                    "Send nothing during silence",
+                    "Saves bandwidth.",
+                    Switch::new("opus-dtx")
+                        .cursor_pointer()
+                        .checked(v.opus_dtx)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.change_voice(cx, |voice| voice.opus_dtx = on);
+                        })),
+                ),
+                setting(
                     "Noise suppression",
                     if v.noise_suppression {
-                        "Removes background noise like fans and keyboards."
+                        "Removes fans, keyboards and the like."
                     } else {
                         "Without it, headphones are recommended."
                     },
@@ -1485,9 +2331,34 @@ impl Shell {
                     ),
                 ),
                 setting(
+                    "Echo cancellation",
+                    "For speakers or a laptop's own microphone: others don't hear                      themselves back. Not needed with headphones.",
+                    voice_switch(
+                        "echo",
+                        v.echo_cancellation,
+                        |v, on| v.echo_cancellation = on,
+                        cx,
+                    ),
+                ),
+                setting(
                     "Automatic gain",
                     "Evens out how loud you are.",
                     voice_switch("gain", v.auto_gain, |v, on| v.auto_gain = on, cx),
+                ),
+                setting(
+                    "Lower other sound while someone speaks",
+                    "Screen share sound, videos and audio files step back for voices.",
+                    voice_switch("ducking", v.ducking, |v, on| v.ducking = on, cx),
+                ),
+                setting(
+                    "Lowered by",
+                    &format!("{} dB", v.ducking_db),
+                    self.slider(page, SliderKind::Ducking),
+                ),
+                setting(
+                    "Automatic gain level",
+                    &format!("Aims for {} dBFS. Higher is louder.", v.agc_target_db),
+                    self.slider(page, SliderKind::AgcTarget),
                 ),
             ],
         );
@@ -1518,11 +2389,7 @@ impl Shell {
                     &format!("{:.0} %", v.sounds_volume * 100.),
                     self.slider(page, SliderKind::SoundsVolume),
                 ),
-                setting(
-                    "Join a voice channel with",
-                    "With double-click, a single click only opens the channel's voice room.",
-                    wrap().children(join_chips),
-                ),
+                setting("Join a voice channel with", "", wrap().children(join_chips)),
             ],
         );
         let mut screens = vec![String::new()];
@@ -1582,30 +2449,30 @@ impl Shell {
         let sharing = group(
             "Screen sharing",
             vec![
-                setting(
-                    "Screen to share",
-                    "Only people in the call see it. Start and stop it with the share button in \
-                     the voice panel.",
-                    wrap().children(screen_chips),
-                ),
+                setting("Screen to share", "", wrap().children(screen_chips)),
                 setting(
                     "Resolution",
-                    "The largest size your screen is sent at. Larger is sharper but uses more CPU \
-                     and bandwidth. Applies the next time you share.",
+                    "From your next share",
                     wrap().children(res_chips),
                 ),
                 setting(
                     "Frame rate",
-                    "Frames per second. More is smoother (video, games) but uses more bandwidth. \
-                     Applies the next time you share.",
+                    "From your next share",
                     wrap().children(fps_chips),
                 ),
                 setting(
+                    "Share sound",
+                    "Others hear what your computer plays, but not this call. From your next                      share; needs Windows 10 version 2004 or later.",
+                    Switch::new("share-sound")
+                        .cursor_pointer()
+                        .checked(v.share_sound)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            this.persist("voice.share_sound", &on.to_string(), cx);
+                        })),
+                ),
+                setting(
                     "When it cannot keep up",
-                    "What your share keeps when your connection or computer falls behind. \
-                     Smoothness keeps the frame rate and lowers sharpness, then size; Clarity \
-                     keeps sharp, full-size pictures and lowers the frame rate; Mixed is in \
-                     between. Also on your tile while you share.",
+                    "What your share keeps when it falls behind",
                     wrap().children(pref_chips),
                 ),
             ],
@@ -1629,11 +2496,7 @@ impl Shell {
         let g = &self.config.general;
         page_body(
             "Notifications",
-            Some(
-                "Which messages notify is set per space or channel: right-click it and pick \
-                 \"Notify: …\" or Mute. By default spaces notify on @mentions and DMs on every \
-                 message.",
-            ),
+            Some("Per server and channel: right-click it, Notifications."),
             vec![
                 group(
                     "Desktop notifications",
@@ -1653,6 +2516,76 @@ impl Shell {
                             cx,
                         ),
                         self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
+                        setting(
+                            "Quiet hours",
+                            &if n.quiet_from.is_empty() {
+                                "None".to_owned()
+                            } else {
+                                format!("{} to {}", n.quiet_from, n.quiet_to)
+                            },
+                            Button::new("quiet-hours")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_quiet_hours(window, cx);
+                                })),
+                        ),
+                        setting(
+                            "Words that notify me",
+                            &if n.keywords.is_empty() {
+                                "None".to_owned()
+                            } else {
+                                n.keywords.clone()
+                            },
+                            Button::new("keywords")
+                                .cursor_pointer()
+                                .label("Change")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_form_keywords(window, cx);
+                                })),
+                        ),
+                        self.flag(
+                            "Pop up for DMs",
+                            "",
+                            n.toast_dms,
+                            "notifications.toast_dms",
+                            cx,
+                        ),
+                        self.flag(
+                            "Pop up for mentions",
+                            "",
+                            n.toast_mentions,
+                            "notifications.toast_mentions",
+                            cx,
+                        ),
+                        self.flag(
+                            "Pop up for other messages",
+                            "",
+                            n.toast_other,
+                            "notifications.toast_other",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for DMs",
+                            "",
+                            n.sound_dms,
+                            "notifications.sound_dms",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for mentions",
+                            "",
+                            n.sound_mentions,
+                            "notifications.sound_mentions",
+                            cx,
+                        ),
+                        self.flag(
+                            "Sound for other messages",
+                            "",
+                            n.sound_other,
+                            "notifications.sound_other",
+                            cx,
+                        ),
                         self.flag(
                             "Flash the taskbar button",
                             "",
@@ -1672,6 +2605,49 @@ impl Shell {
                             "general.close_to_tray",
                             cx,
                         ),
+                        setting(
+                            "Start when I sign in",
+                            "Hermes opens by itself when you sign in to this computer.",
+                            Switch::new("start-on-login")
+                                .cursor_pointer()
+                                .checked(g.start_on_login)
+                                .on_click(cx.listener(|this, on: &bool, _, cx| {
+                                    let on = *on;
+                                    match crate::desktop::set_start_on_login(on) {
+                                        Ok(()) => this.persist(
+                                            "general.start_on_login",
+                                            &on.to_string(),
+                                            cx,
+                                        ),
+                                        Err(err) => this.error(err, cx),
+                                    }
+                                })),
+                        ),
+                        setting(
+                            "Go idle after",
+                            "With nothing touched for this long.",
+                            wrap().children(
+                                [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")]
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(n, (minutes, name))| {
+                                        chip(
+                                            ("idle-after", n),
+                                            name,
+                                            g.auto_idle_minutes == minutes,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.persist(
+                                                    "general.auto_idle_minutes",
+                                                    &minutes.to_string(),
+                                                    cx,
+                                                );
+                                            }),
+                                        )
+                                    }),
+                            ),
+                        ),
                         self.flag(
                             "Start minimized to the tray",
                             "",
@@ -1686,23 +2662,110 @@ impl Shell {
                             "general.check_for_updates",
                             cx,
                         ),
+                        self.flag(
+                            "Install updates by themselves",
+                            "A newer version found on start is downloaded (only what changed) \
+                             and Hermes restarts into it.",
+                            g.auto_update,
+                            "general.auto_update",
+                            cx,
+                        ),
+                        setting(
+                            "Check for updates now",
+                            "",
+                            Button::new("update-now")
+                                .cursor_pointer()
+                                .label("Check")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.check_for_update_now(cx);
+                                })),
+                        ),
                     ],
                 ),
             ],
         )
     }
 
-    fn tab_keybinds(&self) -> AnyElement {
+    /// A key pressed while a keybind waits for one. Whether it was taken.
+    pub fn capture_key(&mut self, keystroke: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
+        let Some(page) = self.settings.as_mut() else {
+            return false;
+        };
+        let Some(name) = page.capturing_key else {
+            return false;
+        };
+        page.capturing_key = None;
+        if keystroke.key == "escape" {
+            cx.notify();
+            return true;
+        }
+        let m = keystroke.modifiers;
+        let mut combo = String::new();
+        for (on, part) in [(m.control, "Ctrl+"), (m.shift, "Shift+"), (m.alt, "Alt+")] {
+            if on {
+                combo.push_str(part);
+            }
+        }
+        combo.push_str(&keystroke.key.to_uppercase());
+        let taken = ACTIONS
+            .iter()
+            .filter(|(_, other, ..)| *other != name)
+            .find(|(action, ..)| {
+                Keybinds::combo_text(&self.config.keys, *action).is_some_and(|text| text == combo)
+            })
+            .map(|(.., title)| *title);
+        if let Some(title) = taken {
+            self.warn(format!("{combo} was already used for {title}"), cx);
+        }
+        self.persist(&format!("keys.{name}"), &toml_string(combo), cx);
+        true
+    }
+
+    fn tab_keybinds(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let mut groups: Vec<AnyElement> = KEY_GROUPS
             .iter()
             .map(|(title, actions)| {
                 let rows = actions
                     .iter()
                     .filter_map(|action| ACTIONS.iter().find(|(a, ..)| a == action))
-                    .map(|(action, _, _, title)| {
+                    .map(|(action, name, default, title)| {
                         let combo =
                             Keybinds::combo_text(&self.config.keys, *action).unwrap_or_default();
-                        setting(title, "", key_caps(&combo))
+                        let (name, default): (&'static str, &'static str) = (name, default);
+                        let waiting = page.capturing_key == Some(name);
+                        setting(
+                            title,
+                            if waiting {
+                                "Press the keys; Escape cancels."
+                            } else {
+                                ""
+                            },
+                            wrap()
+                                .child(key_caps(&combo))
+                                .child(
+                                    Button::new(SharedString::from(format!("bind-{name}")))
+                                        .cursor_pointer()
+                                        .label(if waiting { "Waiting…" } else { "Change" })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(page) = &mut this.settings {
+                                                page.capturing_key = Some(name);
+                                            }
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("unbind-{name}")))
+                                        .cursor_pointer()
+                                        .label("Reset")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.persist(
+                                                &format!("keys.{name}"),
+                                                &toml_string(default.to_owned()),
+                                                cx,
+                                            );
+                                        })),
+                                ),
+                        )
                     })
                     .collect();
                 group(title, rows)
@@ -1711,17 +2774,21 @@ impl Shell {
         groups.push(group(
             "Everywhere",
             vec![muted(
-                "Right-click channels, spaces, messages and people for more actions. Double-click \
-                 a voice channel to join it. Drag channels and roles to reorder them. Escape \
-                 closes menus and dialogs. Ctrl+K finds anything.",
+                "Right-click anything for more. Drag channels and roles to reorder them.",
             )],
+        ));
+        groups.push(group(
+            "These do not change",
+            vec![
+                setting("Close what is on top", "", key_caps("Escape")),
+                setting("Copy what is selected", "", key_caps("Ctrl+C")),
+                setting("Open the menu", "", key_caps("Shift+F10")),
+                setting("Edit your last message", "", key_caps("Up")),
+            ],
         ));
         page_body(
             "Keybinds",
-            Some(
-                "Change them in the [keys] section of config.toml; changes apply at once. \
-                 Examples: \"Ctrl+K\", \"Alt+Shift+Down\", \"Ctrl+\\\\\".",
-            ),
+            Some("Click Change, then press the keys."),
             groups,
         )
     }
@@ -1743,7 +2810,7 @@ impl Shell {
                             .items_center()
                             .justify_center()
                             .size(px(56.))
-                            .rounded(px(12.))
+                            .rounded(theme::radius_large())
                             .bg(theme::accent_soft())
                             .child(icon(assets::FEATHER, 28., theme::accent())),
                     )
@@ -1770,8 +2837,7 @@ impl Shell {
                     .text_size(theme::secondary_size())
                     .text_color(theme::text_secondary())
                     .child(
-                        "A self-hostable chat with spaces, text and voice channels, DMs and \
-                         calls. Licensed GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
+                        "Self-hostable chat. GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
                     ),
             )
             .child(
@@ -1782,10 +2848,10 @@ impl Shell {
                     .child(
                         Button::new("about-debug")
                             .cursor_pointer()
-                            .label("Copy debug info")
+                            .label(self.copy_label("about-debug", "Copy debug info"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let text = this.debug_info();
-                                this.copy(text, "Debug info", cx);
+                                this.copy_from("about-debug", text, "Debug info", cx);
                             })),
                     )
                     .child(
@@ -1822,7 +2888,7 @@ impl Shell {
 
 // ---- parts, also used by the space settings ---------------------------------------------------
 
-fn toml_string(value: String) -> String {
+pub(crate) fn toml_string(value: String) -> String {
     toml::Value::String(value).to_string()
 }
 
@@ -1838,6 +2904,8 @@ pub fn muted(text: impl Into<SharedString>) -> AnyElement {
         .into_any_element()
 }
 
+const NAV_ITEM: &str = "nav-item";
+
 /// An entry of a page's navigation column. The caller adds what a click does.
 pub fn nav_item(
     glyph: &str,
@@ -1845,8 +2913,26 @@ pub fn nav_item(
     selected: bool,
     id: String,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    // The chosen tab's background flows out of the last one and into the new one.
+    let pill = div()
+        .absolute()
+        .inset_0()
+        .rounded(theme::row_radius())
+        .with_spring(
+            SharedString::from(format!("{id}-pill")),
+            gpui_kit::SpringAnimation::new(crate::theme::paced(crate::hover::HOVER_SPRING))
+                .to(selected),
+            |d, phase| {
+                let t = phase.0.clamp(0., 1.);
+                // It grows from the left edge as it fills in.
+                d.bg(theme::alpha(theme::selected(), t))
+                    .right(gpui_kit::relative(0.3 * (1. - t)))
+            },
+        );
     div()
         .id(SharedString::from(id))
+        .relative()
+        .child(pill)
         .flex()
         .flex_shrink_0()
         .items_center()
@@ -1861,9 +2947,12 @@ pub fn nav_item(
         } else {
             theme::text_secondary()
         })
-        .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
-        .child(icon(glyph, 18., theme::text_tertiary()))
+        .group(NAV_ITEM)
+        .when(!selected, |d| d.hover(|d| d.text_color(theme::accent())))
+        .child(
+            icon(glyph, 18., theme::text_tertiary())
+                .group_hover(NAV_ITEM, |s| s.text_color(theme::accent())),
+        )
         .child(SharedString::from(name.to_owned()))
 }
 
@@ -1892,22 +2981,28 @@ pub fn frame(
                 .p(px(12.))
                 .overflow_y_scroll()
                 .bg(theme::sidebar())
+                // The whole line goes back, not just the arrow.
                 .child(
                     div()
+                        .id("page-close")
+                        .group("page-close")
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
-                        .gap(px(4.))
-                        .pb(px(8.))
-                        .child(icon_button("page-close", assets::ARROW_LEFT).on_click(close))
+                        .gap(px(8.))
+                        .h(px(30.))
+                        .mb(px(8.))
+                        .px(px(6.))
+                        .cursor_pointer()
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .hover(|d| d.text_color(theme::accent()))
                         .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(theme::caption_size())
-                                .text_color(theme::text_tertiary())
-                                .child(title),
-                        ),
+                            icon(assets::ARROW_LEFT, 18., theme::text_tertiary())
+                                .group_hover("page-close", |s| s.text_color(theme::accent())),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(title))
+                        .on_click(close),
                 )
                 .children(nav),
         )
@@ -1968,7 +3063,7 @@ pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> An
                 .flex_col()
                 .gap(px(14.))
                 .p(px(14.))
-                .rounded(px(8.))
+                .rounded(theme::radius_large())
                 .bg(theme::sidebar())
                 .children(rows),
         )
@@ -2177,17 +3272,38 @@ fn theme_card(
         .cursor_pointer()
         .child(
             div()
+                .relative()
                 .w_full()
                 .h(px(PREVIEW_HEIGHT))
                 .overflow_hidden()
-                .rounded(px(6.))
-                .when(chosen, |d| d.border_2().border_color(theme::accent()))
-                .when(!chosen, |d| {
-                    d.border_1()
-                        .border_color(theme::border())
-                        .group_hover("theme-card", |d| d.border_color(theme::text_tertiary()))
-                })
-                .child(picture),
+                .rounded(theme::row_radius())
+                .child(picture)
+                // The ring lies over the preview, so choosing never shrinks it; it thickens and
+                // takes the accent on a spring.
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .rounded(theme::row_radius())
+                        .when(!chosen, |d| {
+                            d.group_hover("theme-card", |d| d.border_color(theme::text_tertiary()))
+                        })
+                        .with_spring(
+                            ("theme-card-ring", n),
+                            gpui_kit::SpringAnimation::new(crate::theme::paced(
+                                crate::hover::HOVER_SPRING,
+                            ))
+                            .to(chosen),
+                            |d, phase| {
+                                let t = phase.0.clamp(0., 1.);
+                                theme::border_width(d, px(1. + t)).border_color(theme::mix(
+                                    theme::border(),
+                                    theme::accent(),
+                                    t,
+                                ))
+                            },
+                        ),
+                ),
         )
         .child(
             div()
@@ -2229,7 +3345,7 @@ fn key_caps(combo: &str) -> AnyElement {
             div()
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(4.))
+                .rounded(theme::radius_small())
                 .border_1()
                 .border_color(theme::border())
                 .bg(theme::raised())

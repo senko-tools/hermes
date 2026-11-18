@@ -2,22 +2,23 @@
 
 use std::sync::Arc;
 
-use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode};
-use hermes_proto::ErrorCode;
+use axum::extract::State;
+use axum::http::StatusCode;
 use hermes_proto::api::{AuthResponse, LoginRequest, RegisterRequest, SessionInfo};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{PrivacySettings, User};
+use hermes_proto::{ApiError, ErrorCode};
 use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
-use super::{ApiResult, Error, Json, Path, PeerAddr};
+use super::{ApiResult, Error, Json, Path};
 use crate::auth::{self, Auth};
 use crate::config::RegistrationMode;
 use crate::db;
 use crate::gateway::bus::Audience;
 use crate::invites;
+use crate::ratelimit;
 use crate::setup::DefaultSpace;
 use crate::state::{AppState, CachedUser};
 use crate::time::now_ms;
@@ -25,6 +26,9 @@ use crate::time::now_ms;
 fn registration_closed(message: &str) -> Error {
     Error::new(ErrorCode::RegistrationClosed, message)
 }
+
+/// How long the guesses at one account are counted over.
+const ACCOUNT_GUESS_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 fn invite_invalid() -> Error {
     Error::new(
@@ -58,8 +62,6 @@ fn check_mode(mode: RegistrationMode, first_user: bool, has_invite: bool) -> Api
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<PeerAddr>,
-    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
@@ -81,28 +83,26 @@ pub async fn register(
 
     // Cheap checks before hashing; repeated authoritatively inside the transaction.
     let first_user = state.cache().users.is_empty();
-    check_mode(
-        state.config.registration.mode,
-        first_user,
-        invite_code.is_some(),
-    )?;
-    if invite_code.is_some_and(|c| !invites::is_valid_code(c)) {
-        return Err(invite_invalid());
+    check_mode(state.registration_mode(), first_user, invite_code.is_some())?;
+    if let Some(code) = invite_code {
+        // Hashing is what costs, so a made-up code must not get that far.
+        let usable = invites::is_valid_code(code)
+            && db::invites::get(&state.db.read, code)
+                .await?
+                .is_some_and(|invite| invite.is_usable(now_ms()));
+        if !usable {
+            return Err(invite_invalid());
+        }
     }
     let password_hash = auth::hash_password(req.password).await?;
 
     let now = now_ms();
     let user_id = state.ids.next();
     let token = auth::new_token();
-    let ip = state.client_ip(peer.0, &headers).to_string();
     let mut tx = state.db.write.begin().await?;
 
     let first_user = db::auth::count_users(&mut *tx).await? == 0;
-    check_mode(
-        state.config.registration.mode,
-        first_user,
-        invite_code.is_some(),
-    )?;
+    check_mode(state.registration_mode(), first_user, invite_code.is_some())?;
     let join_space = match invite_code {
         Some(code) => db::invites::take_use(&mut tx, code, now)
             .await?
@@ -161,7 +161,7 @@ pub async fn register(
     if let Some(space_id) = join_space {
         db::spaces::insert_member(&mut tx, space_id, user_id, now).await?;
     }
-    let session_id = insert_session(&mut tx, &state, user_id, &token, &device_name, &ip).await?;
+    let session_id = insert_session(&mut tx, &state, user_id, &token, &device_name).await?;
     tx.commit().await?;
 
     let user = CachedUser {
@@ -172,6 +172,7 @@ pub async fn register(
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         },
         instance_admin: first_user,
         disabled: false,
@@ -218,7 +219,6 @@ async fn insert_session(
     user_id: Id,
     token: &str,
     device_name: &str,
-    ip: &str,
 ) -> ApiResult<Id> {
     let id = state.ids.next();
     let session = db::auth::NewSession {
@@ -227,7 +227,7 @@ async fn insert_session(
         token_hash: &auth::token_hash(token),
         device_name,
         created_at: now_ms(),
-        ip: Some(ip),
+        ip: None,
     };
     db::auth::insert_session(conn, &session).await?;
     Ok(id)
@@ -235,8 +235,6 @@ async fn insert_session(
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    ConnectInfo(peer): ConnectInfo<PeerAddr>,
-    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
@@ -248,14 +246,23 @@ pub async fn login(
     let device_name = device_name.unwrap_or_default();
 
     let login = req.username.trim().trim_start_matches('@').to_lowercase();
+    // Guesses from many addresses still count against the one account.
+    state
+        .account_limiter
+        .check(
+            &login,
+            state
+                .config
+                .limits
+                .login_attempts_per_minute
+                .saturating_mul(2),
+            ACCOUNT_GUESS_PERIOD,
+        )
+        .map_err(|wait| Error(ApiError::rate_limited(ratelimit::retry_ms(wait))))?;
+    // Whether a name is taken, or by how many, is not told to whoever asks.
     let handle = db::auth::resolve_handle(&state.db.read, &login)
         .await?
-        .map_err(|()| {
-            Error::new(
-                ErrorCode::InvalidCredentials,
-                "Several accounts have this name: add your # number, like name#1234",
-            )
-        })?;
+        .unwrap_or(None);
     let credentials = match &handle {
         Some(handle) => db::auth::credentials_by_username(&state.db.read, handle).await?,
         None => None,
@@ -266,9 +273,27 @@ pub async fn login(
     let Some(credentials) = credentials.filter(|_| verified) else {
         return Err(Error::new(
             ErrorCode::InvalidCredentials,
-            "Wrong username or password",
+            "Wrong name or password. If several people have your name, add its # number.",
         ));
     };
+    if let Some(secret) = &credentials.totp_secret {
+        let now = u64::try_from(now_ms() / 1000).unwrap_or(0);
+        match req.totp.as_deref() {
+            None => {
+                return Err(Error::new(
+                    ErrorCode::TwoFactorRequired,
+                    "Enter the code from your authenticator",
+                ));
+            }
+            Some(code) if !auth::totp::check(secret, code, now) => {
+                return Err(Error::new(
+                    ErrorCode::InvalidCredentials,
+                    "That code is not right",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     if credentials.disabled {
         return Err(Error::new(
             ErrorCode::AccountDisabled,
@@ -283,17 +308,8 @@ pub async fn login(
         .ok_or_else(|| Error::internal("user missing from the cache"))?;
 
     let token = auth::new_token();
-    let ip = state.client_ip(peer.0, &headers).to_string();
     let mut conn = state.db.write.acquire().await?;
-    insert_session(
-        &mut conn,
-        &state,
-        credentials.user_id,
-        &token,
-        &device_name,
-        &ip,
-    )
-    .await?;
+    insert_session(&mut conn, &state, credentials.user_id, &token, &device_name).await?;
     Ok(Json(AuthResponse { token, user }))
 }
 

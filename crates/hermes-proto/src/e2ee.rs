@@ -77,6 +77,108 @@ pub struct Envelope {
     pub keys: Vec<WrappedKey>,
     /// `device`'s signature over all of the above, the channel and the author.
     pub sig: String,
+    /// In a server channel: which of its keys the message's key is sealed under (in `keys`, as
+    /// a single entry with no device). `None` in a DM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u32>,
+}
+
+/// The most sealed keys one request can carry.
+pub const MAX_CHANNEL_KEYS: usize = 4096;
+
+/// Who hands a channel's keys to those who lack them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyHandover {
+    /// Any member's client, by itself.
+    Automatic,
+    /// Someone with `MANAGE_SPACE`, by hand.
+    Approved,
+}
+
+/// The rules of a server, or what they come to for a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyPolicy {
+    pub handover: KeyHandover,
+    /// Whether a new member gets the keys of what was written before.
+    pub new_members_read_history: bool,
+}
+
+/// What a channel changes of its server's rules; `None` follows the server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct KeyPolicyOverride {
+    #[serde(default)]
+    pub handover: Option<KeyHandover>,
+    #[serde(default)]
+    pub new_members_read_history: Option<bool>,
+}
+
+/// A channel's key of one epoch, sealed by one device for one device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedChannelKey {
+    pub epoch: u32,
+    /// Who it is for.
+    pub user_id: Id,
+    pub device: String,
+    pub sender_id: Id,
+    pub sender_device: String,
+    pub eph: String,
+    pub key: String,
+    /// `sender_device`'s signature over all of the above and the channel.
+    pub sig: String,
+}
+
+/// `GET /channels/{id}/keys`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelKeysQuery {
+    pub device: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelKeysResponse {
+    /// 0 while the channel has no key yet.
+    pub current_epoch: u32,
+    /// Someone who holds the current key can no longer read the channel.
+    pub rotate_needed: bool,
+    pub policy: KeyPolicy,
+    /// The keys sealed for the device that asked.
+    pub keys: Vec<SealedChannelKey>,
+}
+
+/// `GET /channels/{id}/keys/members`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyMembers {
+    /// Everyone who can read the channel.
+    pub users: Vec<Id>,
+    /// Those who hold its current key.
+    pub holders: Vec<Id>,
+}
+
+/// `POST /channels/{id}/keys/epochs`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartEpochRequest {
+    pub epoch: u32,
+    pub keys: Vec<SealedChannelKey>,
+}
+
+/// `PUT /channels/{id}/keys`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeliverKeysRequest {
+    pub keys: Vec<SealedChannelKey>,
+}
+
+/// `POST /channels/{id}/keys/requests`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestKeysRequest {
+    pub device: String,
+}
+
+/// A device waiting for a channel's keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyRequest {
+    pub channel_id: Id,
+    pub user_id: Id,
+    pub device: String,
 }
 
 /// A voice participant's sender key, sealed for the devices of one other participant. Relayed by
@@ -105,6 +207,9 @@ pub enum MessageLock {
     NotForThisDevice,
     /// Encrypted, and the signature or the data is wrong.
     Tampered,
+    /// In clear where everything is encrypted: not something its author can be shown to have
+    /// written.
+    Unsealed,
 }
 
 /// The key of an encrypted attachment, from inside its message. Not on the wire as such: the client
@@ -115,4 +220,30 @@ pub struct SealedFile {
     pub nonce: String,
     /// The name the file is stored under on the server.
     pub stored_name: String,
+    /// What was done to the file before it was encrypted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<Compression>,
+    /// A small preview of a picture, encrypted and stored beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb: Option<SealedThumb>,
+    /// Sealed in pieces of this many bytes, each on its own, so a part of the file can be read
+    /// without the rest (media starts while it downloads). `None`: sealed as one block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<u32>,
+}
+
+/// Where a picture's encrypted preview is, and its key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedThumb {
+    pub id: Id,
+    pub key: String,
+    pub nonce: String,
+    pub stored_name: String,
+}
+
+/// How a file was made smaller before it was encrypted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Compression {
+    Zstd,
 }

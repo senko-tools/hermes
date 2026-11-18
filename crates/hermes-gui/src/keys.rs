@@ -15,11 +15,20 @@ use crate::tree::Row;
 impl Shell {
     pub fn on_key(&mut self, event: &KeystrokeEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
+        if self.capture_key(keystroke, cx) {
+            cx.stop_propagation();
+            return;
+        }
         let key = keystroke.key.as_str();
         let plain = !keystroke.modifiers.modified();
         if self.command_bar_key(key, plain) {
             cx.stop_propagation();
             cx.notify();
+            return;
+        }
+        let m = keystroke.modifiers;
+        if key == "c" && m.control && !m.alt && !m.shift && self.copy_selection(cx) {
+            cx.stop_propagation();
             return;
         }
         if self.composer_key(key, plain, window, cx) {
@@ -48,7 +57,6 @@ impl Shell {
         }
         // Typing goes to a focused text field; only combos with Ctrl, Alt or Super count there.
         let typing = window.focused(cx).is_some();
-        let m = keystroke.modifiers;
         if typing && !(m.control || m.alt || m.platform) {
             return;
         }
@@ -93,12 +101,15 @@ impl Shell {
 
     /// Closes the top dialog, menu or page. `false` if none is open.
     fn close_top(&mut self) -> bool {
-        if self.keys_dialog.take().is_some() {
+        if self.keys_dialog.take().is_some()
+            || self.crop.take().is_some()
+            || self.close_media_full()
+        {
             return true;
         }
         if self.viewer.take().is_some()
             || self.volume_menu.take().is_some()
-            || self.share_menu.take().is_some()
+            || self.take_share_picker()
             || self.network_open.take().is_some()
             || self.menu.take().is_some()
             || self.command_bar.take().is_some()
@@ -136,6 +147,7 @@ impl Shell {
     /// Whether a dialog covers the window.
     pub fn dialog_open(&self) -> bool {
         self.viewer.is_some()
+            || self.crop.is_some()
             || self.confirm.is_some()
             || self.form.is_some()
             || self.new_dm.is_some()
@@ -226,8 +238,8 @@ impl Shell {
             | Action::SplitDown
             | Action::ClosePane
             | Action::MaximizePane => {}
-            Action::ToggleMemberList => self.show_members = !self.show_members,
-            Action::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
+            Action::ToggleMemberList => self.toggle_members(cx),
+            Action::ToggleSidebar => self.toggle_sidebar(cx),
             Action::Settings => self.open_settings(window, cx),
             Action::ZoomIn => self.set_ui_scale(self.config.font.ui_scale + 0.1, window, cx),
             Action::ZoomOut => self.set_ui_scale(self.config.font.ui_scale - 0.1, window, cx),

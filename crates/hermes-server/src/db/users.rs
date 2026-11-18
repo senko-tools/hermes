@@ -2,20 +2,70 @@
 
 use hermes_proto::id::Id;
 use hermes_proto::models::{DmFrom, NotificationLevel, NotificationSetting, PrivacySettings, User};
-use sqlx::SqliteConnection;
+use sqlx::{SqliteConnection, SqlitePool};
 
 pub async fn update_profile(conn: &mut SqliteConnection, user: &User) -> Result<(), sqlx::Error> {
     let id = user.id.to_i64();
     let avatar_id = user.avatar.as_ref().map(|a| a.id.to_i64());
+    let banner_id = user.banner.as_ref().map(|a| a.id.to_i64());
     sqlx::query!(
-        "UPDATE users SET display_name = ?, avatar_id = ?, status_text = ? WHERE id = ?",
+        "UPDATE users SET display_name = ?, avatar_id = ?, status_text = ?, banner_id = ?
+         WHERE id = ?",
         user.display_name,
         avatar_id,
         user.status_text,
+        banner_id,
         id
     )
     .execute(conn)
     .await?;
+    Ok(())
+}
+
+/// Notes that `users` were online at `at`; an earlier time never replaces a later one.
+pub async fn set_last_online(pool: &SqlitePool, users: &[Id], at: i64) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for user in users {
+        let id = user.to_i64();
+        sqlx::query!(
+            "UPDATE users SET last_online_at = ?1
+             WHERE id = ?2 AND (last_online_at IS NULL OR last_online_at < ?1)",
+            at,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// When `user` was last online, if known.
+pub async fn last_online(pool: &SqlitePool, user: Id) -> Result<Option<i64>, sqlx::Error> {
+    let id = user.to_i64();
+    sqlx::query_scalar!("SELECT last_online_at FROM users WHERE id = ?", id)
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
+}
+
+/// Their "About me", if any.
+pub async fn bio(pool: &SqlitePool, user: Id) -> Result<Option<String>, sqlx::Error> {
+    let id = user.to_i64();
+    let bio = sqlx::query_scalar!("SELECT bio FROM users WHERE id = ?", id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(bio.filter(|b| !b.is_empty()))
+}
+
+pub async fn set_bio(
+    conn: &mut SqliteConnection,
+    user: Id,
+    bio: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    let (id, bio) = (user.to_i64(), bio.unwrap_or_default());
+    sqlx::query!("UPDATE users SET bio = ? WHERE id = ?", bio, id)
+        .execute(conn)
+        .await?;
     Ok(())
 }
 
@@ -58,9 +108,10 @@ pub async fn set_privacy(
     let id = user_id.to_i64();
     let dm_from = dm_from_name(privacy.dm_from);
     sqlx::query!(
-        "UPDATE users SET dm_from = ?, message_requests = ? WHERE id = ?",
+        "UPDATE users SET dm_from = ?, message_requests = ?, show_last_online = ? WHERE id = ?",
         dm_from,
         privacy.message_requests,
+        privacy.show_last_online,
         id
     )
     .execute(conn)

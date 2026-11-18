@@ -1,0 +1,448 @@
+//! Playing one file: FFmpeg decodes its sound into a [`MediaOutput`] and its pictures into a
+//! short queue; the sound played so far is the clock the pictures follow. Seeking starts both
+//! decoders again at the new time. A paused file runs no decoder: pausing stops them and playing
+//! starts them again where it was. All files share one output, since one plays at a time.
+
+use std::collections::VecDeque;
+use std::io::Read as _;
+use std::process::Child;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use gpui_kit::RenderImage;
+use hermes_audio::media::MediaOutput;
+use image::Frame;
+
+use super::ffmpeg::{self, Probe};
+use super::serve::Served;
+
+/// How many decoded pictures wait at most.
+const FRAMES_AHEAD: usize = 8;
+
+/// A decoder process and the thread that reads it. Dropping it stops both.
+struct Decoder {
+    child: Arc<Mutex<Child>>,
+    stop: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+}
+
+impl Drop for Decoder {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let mut child = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+type Pictures = Arc<Mutex<VecDeque<(u64, Arc<RenderImage>)>>>;
+
+pub struct Player {
+    served: Served,
+    pub probe: Probe,
+    output: Option<Arc<MediaOutput>>,
+    /// The volume as a slider position, set on the shared output while this one plays.
+    volume: f32,
+    /// Where the decoders started, and the output's played frames then.
+    start_ms: u64,
+    base_frames: u64,
+    /// The clock without sound: when the decoders started.
+    wall: Instant,
+    /// Where a paused file is.
+    paused_at: u64,
+    playing: bool,
+    /// The size pictures are decoded at.
+    size: (u32, u32),
+    /// A paused seek happened before the size was known: show that picture once it is.
+    want_still: bool,
+    pictures: Pictures,
+    audio: Option<Decoder>,
+    video: Option<Decoder>,
+    /// The picture shown now.
+    pub current: Option<Arc<RenderImage>>,
+    /// When the decoders last started, until the first picture showed (for the log).
+    first_picture: Option<Instant>,
+}
+
+impl Player {
+    /// Opens a file in memory: probes it and takes the sound output (`shared`, else a new one on
+    /// `device`), paused at `at` ms. Blocks: call it off the UI thread.
+    pub fn open(
+        source: super::serve::Source,
+        shared: Option<Arc<MediaOutput>>,
+        device: Option<&str>,
+        volume: f32,
+        at: u64,
+    ) -> Result<Player, String> {
+        let served = super::serve::serve(source)?;
+        let probe = ffmpeg::probe(&served.url)?;
+        if !probe.audio && probe.video.is_none() {
+            return Err("this file has no sound or picture".into());
+        }
+        let duration_ms = probe.duration_ms;
+        let output = match (probe.audio, shared) {
+            (false, _) => None,
+            (true, Some(output)) => Some(output),
+            (true, None) => Some(Arc::new(MediaOutput::open(device)?)),
+        };
+        Ok(Player {
+            served,
+            probe,
+            output,
+            volume,
+            start_ms: 0,
+            base_frames: 0,
+            wall: Instant::now(),
+            paused_at: at.min(duration_ms),
+            playing: false,
+            size: (0, 0),
+            want_still: false,
+            pictures: Arc::default(),
+            audio: None,
+            video: None,
+            current: None,
+            first_picture: None,
+        })
+    }
+
+    pub fn url(&self) -> &str {
+        &self.served.url
+    }
+
+    /// The shared sound output this file plays on, if it has sound.
+    pub fn output(&self) -> Option<&Arc<MediaOutput>> {
+        self.output.as_ref()
+    }
+
+    /// The bytes of the file it keeps in memory.
+    pub fn file_size(&self) -> usize {
+        self.served.size()
+    }
+
+    pub fn playing(&self) -> bool {
+        self.playing
+    }
+
+    /// Where playback is, in milliseconds.
+    pub fn position_ms(&self) -> u64 {
+        if !self.playing {
+            return self.paused_at;
+        }
+        let since_start = match &self.output {
+            Some(output) => {
+                let played = output.played_frames().saturating_sub(self.base_frames);
+                played * 1000 / u64::from(output.rate().max(1))
+            }
+            None => self.wall.elapsed().as_millis() as u64,
+        };
+        (self.start_ms + since_start).min(self.probe.duration_ms.max(1))
+    }
+
+    /// Whether it is playing and has played to the end.
+    pub fn ended(&self) -> bool {
+        let decoded =
+            |d: &Option<Decoder>| d.as_ref().is_none_or(|d| d.done.load(Ordering::Relaxed));
+        let sound_left = self.output.as_ref().is_some_and(|o| o.queued_frames() > 0);
+        let pictures_left = !self
+            .pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        self.playing
+            && decoded(&self.audio)
+            && decoded(&self.video)
+            && !sound_left
+            && !pictures_left
+            && (self.output.is_some() || self.position_ms() + 100 >= self.probe.duration_ms)
+    }
+
+    /// Plays from where it is paused; from the start once it is at the end.
+    pub fn play(&mut self) {
+        if self.playing {
+            return;
+        }
+        if self.paused_at + 250 >= self.probe.duration_ms {
+            self.paused_at = 0;
+        }
+        self.playing = true;
+        if let Some(output) = &self.output {
+            output.set_volume(self.volume);
+            output.set_paused(false);
+        }
+        self.restart(self.paused_at);
+    }
+
+    /// Stops where it is: the decoders end, the picture shown stays.
+    pub fn pause(&mut self) {
+        if !self.playing {
+            return;
+        }
+        self.paused_at = self.position_ms();
+        self.playing = false;
+        self.audio = None;
+        self.video = None;
+        self.pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if let Some(output) = &self.output {
+            output.set_paused(true);
+            output.clear();
+        }
+    }
+
+    /// The volume as a slider position.
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume;
+        if self.playing
+            && let Some(output) = &self.output
+        {
+            output.set_volume(volume);
+        }
+    }
+
+    /// Jumps to `ms`; keeps playing or paused as it was.
+    pub fn seek(&mut self, ms: u64) {
+        let ms = ms.min(self.probe.duration_ms.saturating_sub(1));
+        if self.playing {
+            self.restart(ms);
+        } else {
+            self.paused_at = ms;
+            self.show_still(ms);
+        }
+    }
+
+    /// Decodes the one picture at `ms`, so a paused video shows where it was moved to. FFmpeg
+    /// exits after it, so a paused file still runs no decoder.
+    fn show_still(&mut self, ms: u64) {
+        self.video = None;
+        self.pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        if self.probe.video.is_none() {
+            return;
+        }
+        if self.size.0 == 0 {
+            self.want_still = true;
+            return;
+        }
+        match ffmpeg::still(&self.served.url, ms, self.size.0, self.size.1) {
+            Ok(child) => {
+                self.video = Some(video_decoder(
+                    child,
+                    self.size,
+                    1.,
+                    ms,
+                    self.pictures.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!("media still: {err}"),
+        }
+    }
+
+    /// Whether a paused file's picture is still on its way, so drawing has to go on.
+    pub fn still_pending(&self) -> bool {
+        !self.playing && self.video.is_some()
+    }
+
+    /// The size pictures are decoded at; a change starts the video again where it is.
+    pub fn set_size(&mut self, width: u32, height: u32) {
+        let size = (width.max(2) & !1, height.max(2) & !1);
+        if size != self.size {
+            self.size = size;
+            if self.playing {
+                let at = self.position_ms();
+                self.restart_video(at);
+            } else if std::mem::take(&mut self.want_still) {
+                self.show_still(self.paused_at);
+            }
+        }
+    }
+
+    /// Starts both decoders at `ms`, dropping what was queued.
+    fn restart(&mut self, ms: u64) {
+        self.audio = None;
+        if let Some(output) = &self.output {
+            output.clear();
+            self.base_frames = output.played_frames();
+            match ffmpeg::audio(&self.served.url, ms, output.rate()) {
+                Ok(child) => self.audio = Some(audio_decoder(child, output)),
+                Err(err) => tracing::warn!("media sound: {err}"),
+            }
+        }
+        self.start_ms = ms;
+        self.wall = Instant::now();
+        self.first_picture = Some(self.wall);
+        self.restart_video(ms);
+    }
+
+    fn restart_video(&mut self, ms: u64) {
+        self.video = None;
+        self.pictures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let Some((_, _, fps)) = self.probe.video else {
+            return;
+        };
+        if self.size.0 == 0 {
+            return;
+        }
+        let fps = fps.clamp(1., 60.);
+        match ffmpeg::video(&self.served.url, ms, self.size.0, self.size.1, fps) {
+            Ok(child) => {
+                self.video = Some(video_decoder(
+                    child,
+                    self.size,
+                    fps,
+                    ms,
+                    self.pictures.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!("media video: {err}"),
+        }
+    }
+
+    /// Takes the picture due now. Returns the pictures it replaces, to be freed from the GPU.
+    pub fn advance(&mut self) -> Vec<Arc<RenderImage>> {
+        let now = self.position_ms();
+        let mut dropped = Vec::new();
+        let mut pictures = self.pictures.lock().unwrap_or_else(|e| e.into_inner());
+        while pictures.front().is_some_and(|(at, _)| *at <= now) {
+            if let Some((_, picture)) = pictures.pop_front() {
+                if let Some(started) = self.first_picture.take() {
+                    tracing::info!(
+                        "media: first picture {} ms after play",
+                        started.elapsed().as_millis()
+                    );
+                }
+                if let Some(old) = self.current.replace(picture) {
+                    dropped.push(old);
+                }
+            }
+        }
+        let empty = pictures.is_empty();
+        drop(pictures);
+        let still_done = self
+            .video
+            .as_ref()
+            .is_some_and(|d| d.done.load(Ordering::Relaxed));
+        if !self.playing && empty && still_done {
+            self.video = None;
+        }
+        dropped
+    }
+}
+
+/// Reads stereo samples from `child` into the output while it has room.
+fn audio_decoder(mut child: Child, output: &MediaOutput) -> Decoder {
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take();
+    let child = Arc::new(Mutex::new(child));
+    let sink = output.sink();
+    let (thread_stop, thread_done) = (stop.clone(), done.clone());
+    let spawned = std::thread::Builder::new()
+        .name("media-sound".into())
+        .spawn(move || {
+            if let Some(mut stdout) = stdout {
+                let mut bytes = vec![0u8; 16 * 1024];
+                let mut carry = Vec::new();
+                let started = Instant::now();
+                let mut first = true;
+                loop {
+                    while !sink.wants_more() {
+                        if thread_stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    let read = match stdout.read(&mut bytes) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => n,
+                    };
+                    if thread_stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    carry.extend_from_slice(&bytes[..read]);
+                    let whole = carry.len() - carry.len() % 8;
+                    let samples: Vec<f32> = carry[..whole]
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|b| f32::from_le_bytes(*b))
+                        .collect();
+                    carry.drain(..whole);
+                    if first && !samples.is_empty() {
+                        first = false;
+                        tracing::info!(
+                            "media: first sound {} ms after play",
+                            started.elapsed().as_millis()
+                        );
+                    }
+                    sink.push(&samples);
+                }
+            }
+            thread_done.store(true, Ordering::Relaxed);
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("media sound thread: {err}");
+        done.store(true, Ordering::Relaxed);
+    }
+    Decoder { child, stop, done }
+}
+
+/// Reads BGRA pictures from `child`, each due `1/fps` after the one before, from `from_ms`.
+fn video_decoder(
+    mut child: Child,
+    (width, height): (u32, u32),
+    fps: f32,
+    from_ms: u64,
+    pictures: Pictures,
+) -> Decoder {
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
+    let stdout = child.stdout.take();
+    let child = Arc::new(Mutex::new(child));
+    let (thread_stop, thread_done) = (stop.clone(), done.clone());
+    let spawned = std::thread::Builder::new()
+        .name("media-video".into())
+        .spawn(move || {
+            if let Some(mut stdout) = stdout {
+                let size = width as usize * height as usize * 4;
+                let mut n: u64 = 0;
+                loop {
+                    let mut pixels = vec![0u8; size];
+                    if stdout.read_exact(&mut pixels).is_err() {
+                        break;
+                    }
+                    let Some(buffer) = image::RgbaImage::from_raw(width, height, pixels) else {
+                        break;
+                    };
+                    let picture = Arc::new(RenderImage::new(vec![Frame::new(buffer)]));
+                    let due = from_ms + (n as f64 * 1000. / f64::from(fps)) as u64;
+                    n += 1;
+                    loop {
+                        if thread_stop.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let mut queue = pictures.lock().unwrap_or_else(|e| e.into_inner());
+                        if queue.len() < FRAMES_AHEAD {
+                            queue.push_back((due, picture));
+                            break;
+                        }
+                        drop(queue);
+                        std::thread::sleep(std::time::Duration::from_millis(4));
+                    }
+                }
+            }
+            thread_done.store(true, Ordering::Relaxed);
+        });
+    if let Err(err) = spawned {
+        tracing::warn!("media video thread: {err}");
+        done.store(true, Ordering::Relaxed);
+    }
+    Decoder { child, stop, done }
+}

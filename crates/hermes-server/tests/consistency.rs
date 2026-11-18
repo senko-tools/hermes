@@ -34,19 +34,19 @@ async fn history_keeps_each_message_parts_apart() {
 
     let first = send(
         &alice,
-        json!({ "content": "files", "nonce": "1", "attachment_ids": ["61", "60"] }),
+        json!({ "content": "files", "nonce": common::nonce(), "attachment_ids": ["61", "60"] }),
     )
     .await;
     let first_id = first["id"].as_str().unwrap().to_owned();
     let second = send(
         &bob,
-        json!({ "content": format!("<@{alice_id}>"), "nonce": "2", "reply_to_id": first_id,
+        json!({ "content": format!("<@{alice_id}>"), "nonce": common::nonce(), "reply_to_id": first_id,
                 "attachment_ids": ["62"] }),
     )
     .await;
     let third = send(
         &alice,
-        json!({ "content": "me too", "nonce": "3", "reply_to_id": first_id }),
+        json!({ "content": "me too", "nonce": common::nonce(), "reply_to_id": first_id }),
     )
     .await;
     for (message, emoji, token) in [
@@ -121,7 +121,7 @@ async fn no_reactions_on_deleted_messages() {
         .post(
             &path,
             Some(&owner),
-            json!({ "content": "hi", "nonce": "n" }),
+            json!({ "content": "hi", "nonce": common::nonce() }),
         )
         .await
         .ok();
@@ -155,7 +155,7 @@ async fn delete_racing_an_edit_stays_deleted() {
             .post(
                 &path,
                 Some(&alice),
-                json!({ "content": format!("secret {i}"), "nonce": "n" }),
+                json!({ "content": format!("secret {i}"), "nonce": common::nonce() }),
             )
             .await
             .ok();

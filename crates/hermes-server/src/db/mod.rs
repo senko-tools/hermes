@@ -14,6 +14,7 @@
 pub mod attachments;
 pub mod audit;
 pub mod auth;
+pub mod channel_keys;
 pub mod channels;
 pub mod devices;
 pub mod dms;
@@ -38,6 +39,9 @@ use sqlx::sqlite::{
 
 /// Name of the database file inside `storage.data_dir`.
 pub const DB_FILE: &str = "hermes.db";
+
+/// The write-ahead log is cut back to this many bytes after a checkpoint.
+const JOURNAL_SIZE_LIMIT: u64 = 4 * 1024 * 1024;
 
 /// Connections in the read pool. Writes go through a single connection (PLAN.md section 21).
 const READ_CONNECTIONS: u32 = 4;
@@ -72,11 +76,23 @@ impl Db {
         Ok(Self { read, write })
     }
 
-    /// Closes both pools, checkpointing the WAL.
+    /// Closes both pools, checkpointing the WAL. First lets SQLite refresh its query statistics.
     pub async fn close(&self) {
+        if let Err(err) = sqlx::query("PRAGMA optimize").execute(&self.write).await {
+            tracing::warn!("could not optimize the database: {err}");
+        }
         self.read.close().await;
         self.write.close().await;
     }
+}
+
+/// Bytes the database takes up on disk, its write-ahead log included.
+pub fn database_size(data_dir: &Path) -> u64 {
+    [DB_FILE.to_owned(), format!("{DB_FILE}-wal")]
+        .iter()
+        .filter_map(|name| std::fs::metadata(data_dir.join(name)).ok())
+        .map(|file| file.len())
+        .sum()
 }
 
 /// Writes a consistent copy of `<data_dir>/hermes.db` to `output` with `VACUUM INTO`, which is
@@ -108,6 +124,41 @@ pub async fn backup(data_dir: &Path, output: &Path) -> Result<(), sqlx::Error> {
     result.map(|_| ())
 }
 
+/// Puts the database file at `input` in place at `target`, after checking it, and returns where
+/// the previous one went.
+pub async fn restore(input: &Path, target: &Path) -> Result<Option<PathBuf>, String> {
+    use sqlx::ConnectOptions as _;
+    let mut conn = SqliteConnectOptions::new()
+        .filename(input)
+        .read_only(true)
+        .connect()
+        .await
+        .map_err(|e| format!("{}: {e}", input.display()))?;
+    let verdict: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&mut conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    if verdict != "ok" {
+        return Err(format!("{} is damaged: {verdict}", input.display()));
+    }
+    drop(conn);
+    let kept = if target.exists() {
+        let kept = target.with_extension(format!("before-restore-{}", crate::time::now_ms()));
+        std::fs::rename(target, &kept).map_err(|e| e.to_string())?;
+        Some(kept)
+    } else {
+        None
+    };
+    for suffix in ["wal", "shm"] {
+        let _ = std::fs::remove_file(target.with_extension(format!("db-{suffix}")));
+    }
+    if let Some(dir) = target.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(input, target).map_err(|e| e.to_string())?;
+    Ok(kept)
+}
+
 /// Pragmas from PLAN.md section 7.3, plus `synchronous = NORMAL`, the usual choice with WAL:
 /// a power loss may lose the last commits but cannot corrupt the database.
 fn connect_options(path: &PathBuf) -> SqliteConnectOptions {
@@ -118,6 +169,10 @@ fn connect_options(path: &PathBuf) -> SqliteConnectOptions {
         .foreign_keys(true)
         .busy_timeout(Duration::from_millis(5000))
         .synchronous(SqliteSynchronous::Normal)
+        // A burst of writes must not leave a large write-ahead log behind.
+        .pragma("journal_size_limit", JOURNAL_SIZE_LIMIT.to_string())
+        // What is deleted is overwritten, not just marked free.
+        .pragma("secure_delete", "ON")
 }
 
 /// The IDs as a JSON array for `json_each` (SQLite has no array parameters).

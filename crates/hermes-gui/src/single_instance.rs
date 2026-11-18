@@ -41,6 +41,25 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
+/// Held for as long as this client runs: one client per config directory, also while the first
+/// one is still starting and not listening yet.
+pub struct InstanceLock(#[allow(dead_code)] std::fs::File);
+
+/// Takes the config directory's lock: `None` if another client holds it.
+pub fn lock(dir: &Path) -> io::Result<Option<InstanceLock>> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("hermes.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(InstanceLock(file))),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(err)) => Err(err),
+    }
+}
+
 /// Sends `link` (or an empty line) to a running client. An error means none is running.
 pub async fn forward(endpoint: &Endpoint, link: Option<&str>) -> io::Result<()> {
     let line = format!("{}\n", link.unwrap_or("").replace(['\r', '\n'], ""));
@@ -141,6 +160,23 @@ impl Drop for RemoveOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_client_holds_the_lock() {
+        let dir = std::env::temp_dir().join(format!("hermes-gui-{}-lock", std::process::id()));
+        let first = lock(&dir).unwrap();
+        assert!(first.is_some());
+        assert!(
+            lock(&dir).unwrap().is_none(),
+            "a second client must not start"
+        );
+        drop(first);
+        assert!(
+            lock(&dir).unwrap().is_some(),
+            "free again once the first quits"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn second_launch_forwards_to_the_first() {

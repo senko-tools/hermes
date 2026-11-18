@@ -87,6 +87,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                     ChannelKind::Voice => ("◂) ", name.clone()),
                     ChannelKind::Category => ("", name.to_uppercase()),
                     ChannelKind::Dm | ChannelKind::GroupDm => ("", name.clone()),
+                    // From a newer server.
+                    ChannelKind::Unknown => ("? ", name.clone()),
                 };
                 let is_current = app
                     .current

@@ -23,6 +23,7 @@ pub fn user(id: u64, name: &str, display: Option<&str>) -> User {
         display_name: display.map(str::to_owned),
         avatar: None,
         status_text: None,
+        banner: None,
     }
 }
 
@@ -157,7 +158,9 @@ pub fn store() -> InstanceStore {
             limits: InstanceLimits {
                 max_upload_mb: 25,
                 max_message_length: 4000,
+                channels_encrypted: false,
             },
+            features: Vec::new(),
         },
     };
     let mut store = InstanceStore::default();

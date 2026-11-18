@@ -25,8 +25,10 @@ pub struct KeysDialog {
 /// The small mark next to a message's time, in a conversation that is encrypted.
 pub fn lock_mark(lock: MessageLock, private: bool) -> Option<Div> {
     let (name, color) = match lock {
-        MessageLock::Sealed => (assets::LOCK, theme::text_tertiary()),
+        // Encrypted is the normal case: no mark. Unencrypted chats say so above the composer.
+        MessageLock::Sealed => return None,
         MessageLock::NotForThisDevice | MessageLock::Tampered => (assets::LOCK, theme::warning()),
+        MessageLock::Unsealed => (assets::LOCK_OPEN, theme::danger()),
         // A message in a DM that is not encrypted: from before encryption, or a server's forgery.
         MessageLock::Plain if private => (assets::LOCK_OPEN, theme::warning()),
         MessageLock::Plain => return None,
@@ -37,6 +39,7 @@ pub fn lock_mark(lock: MessageLock, private: bool) -> Option<Div> {
 impl Shell {
     /// Opens the safety number of a conversation; asks the server for the latest keys.
     pub fn open_keys_dialog(&mut self, inst: InstanceId, channel: Id, cx: &mut Context<Self>) {
+        self.cancel_closing("keys-dialog");
         self.keys_dialog = Some(KeysDialog {
             inst: inst.clone(),
             channel,
@@ -71,7 +74,13 @@ impl Shell {
                 .map_or_else(|| user.to_string(), |s| s.display_name(None, user))
         };
         let details: AnyElement = match &open.keys {
-            None => paragraph("Asking for the latest keys…").into_any_element(),
+            None => div()
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(paragraph("Asking for the latest keys…"))
+                .child(theme::skeleton("keys", 3))
+                .into_any_element(),
             Some(Err(err)) => error_line(err.clone()).into_any_element(),
             Some(Ok(keys)) => div()
                 .flex()
@@ -80,13 +89,29 @@ impl Shell {
                 .child(
                     div()
                         .p(px(12.))
-                        .rounded(px(6.))
+                        .rounded(theme::row_radius())
                         .bg(theme::raised())
                         .font_family(theme::mono_font())
                         .font_weight(FontWeight::MEDIUM)
                         .text_size(theme::body_size())
                         .child(keys.safety_number.clone()),
                 )
+                .child({
+                    let (inst, channel) = (open.inst.clone(), open.channel);
+                    let verified = self.core.conversation_verified(&inst, channel);
+                    Button::new("keys-verified")
+                        .cursor_pointer()
+                        .label(if verified {
+                            "Verified: forget this"
+                        } else {
+                            "We compared these numbers"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.core
+                                .set_conversation_verified(&inst, channel, !verified);
+                            cx.notify();
+                        }))
+                })
                 .children(keys.devices.iter().map(|(user, devices)| {
                     let list = devices
                         .iter()
@@ -133,7 +158,7 @@ impl Shell {
                             .large()
                             .label("Close")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.keys_dialog = None;
+                                this.close_later("keys-dialog", |s| s.keys_dialog = None, cx);
                                 cx.notify();
                             })),
                     ),
@@ -179,7 +204,7 @@ impl Shell {
                 .mx(px(16.))
                 .mb(px(6.))
                 .p(px(8.))
-                .rounded(px(6.))
+                .rounded(theme::row_radius())
                 .bg(theme::raised())
                 .border_1()
                 .border_color(theme::warning())

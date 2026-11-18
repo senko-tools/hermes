@@ -1,6 +1,7 @@
 //! Desktop integration (PLAN.md section 15.7): notifications, the tray icon, taskbar flashing and
 //! closing to the tray.
 
+pub mod taskbar;
 pub mod tray;
 pub mod window;
 
@@ -38,6 +39,60 @@ pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String
     (title, body)
 }
 
+/// A number that changes whenever the user touches the mouse or keyboard; `None` where the system
+/// does not say.
+#[cfg(windows)]
+pub fn last_input() -> Option<u32> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in.
+    #[allow(unsafe_code)]
+    let ok = unsafe { GetLastInputInfo(&mut info) }.as_bool();
+    ok.then_some(info.dwTime)
+}
+
+#[cfg(not(windows))]
+pub fn last_input() -> Option<u32> {
+    None
+}
+
+/// Starts Hermes when the user signs in, or stops doing so.
+#[cfg(windows)]
+pub fn set_start_on_login(on: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let mut command = std::process::Command::new("reg");
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        command.args(["add", KEY, "/v", "Hermes", "/t", "REG_SZ", "/f", "/d"]);
+        command.arg(format!("\"{}\"", exe.display()));
+    } else {
+        command.args(["delete", KEY, "/v", "Hermes", "/f"]);
+    }
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| e.to_string())?;
+    // Deleting what was never there is fine too.
+    if status.success() || !on {
+        Ok(())
+    } else {
+        Err("the system refused the change".to_owned())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn set_start_on_login(_on: bool) -> Result<(), String> {
+    Err("starting at sign-in is only available on Windows for now".to_owned())
+}
+
 /// Whether a notification flashes the taskbar: DMs and mentions only.
 pub fn flashes(n: &Notification) -> bool {
     n.mention || n.space_id.is_none()
@@ -53,6 +108,30 @@ pub fn has_badge(store: &Store, instances: &[InstanceId]) -> bool {
     })
 }
 
+/// The number on the taskbar button: mentions everywhere, plus DMs with unread messages that
+/// have no mention count of their own.
+pub fn badge_count(store: &Store, instances: &[InstanceId]) -> u32 {
+    instances
+        .iter()
+        .filter_map(|i| store.instance(i))
+        .map(|s| {
+            let mentions: u32 = s.read_states.values().map(|r| r.mention_count).sum();
+            let dms = s
+                .dms
+                .values()
+                .filter(|c| matches!(c.kind, ChannelKind::Dm | ChannelKind::GroupDm))
+                .filter(|c| s.unread(c.id))
+                .filter(|c| {
+                    s.read_states
+                        .get(&c.id)
+                        .is_none_or(|r| r.mention_count == 0)
+                })
+                .count() as u32;
+            mentions + dms
+        })
+        .sum()
+}
+
 /// Shows a toast and waits (on a blocking thread) for it to be clicked; `Some` when clicked.
 pub async fn show_toast(
     inst: InstanceId,
@@ -63,11 +142,8 @@ pub async fn show_toast(
     let channel = n.channel_id;
     tokio::task::spawn_blocking(move || {
         let mut toast = notify_rust::Notification::new();
+        // No sound name: the toast stays silent, and the app plays its own soft ping instead.
         toast.summary(&title).body(&body).appname("Hermes");
-        #[cfg(any(windows, target_os = "macos"))]
-        if settings.sound {
-            toast.sound_name("Default");
-        }
         let handle = match toast.show() {
             Ok(handle) => handle,
             Err(err) => {

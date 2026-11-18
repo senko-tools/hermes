@@ -17,13 +17,23 @@ pub async fn get(State(state): State<Arc<AppState>>) -> Json<InstanceResponse> {
         description: config.instance.description.clone(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         protocol_version: PROTOCOL_VERSION,
-        registration_mode: config.registration.mode,
+        registration_mode: state.registration_mode(),
         limits: InstanceLimits {
             max_upload_mb: config.storage.max_upload_mb,
             max_message_length: config.limits.max_message_length,
+            channels_encrypted: config.privacy.require_channel_encryption,
         },
         voice: InstanceVoice {
             enabled: config.voice.enabled,
         },
+        features: features(),
     })
+}
+
+/// What this server can do beyond protocol 2, for `GET /instance` and `ready`.
+pub fn features() -> Vec<String> {
+    hermes_proto::compat::features::ALL
+        .iter()
+        .map(|f| (*f).to_owned())
+        .collect()
 }

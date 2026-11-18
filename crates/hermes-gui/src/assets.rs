@@ -4,7 +4,9 @@
 use std::borrow::Cow;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{App, AssetSource, Result, Rgba, SharedString, Svg, px, svg};
+use gpui_kit::{App, AssetSource, Result, Rgba, SharedString, Svg, svg};
+
+use crate::theme::px;
 
 include!(concat!(env!("OUT_DIR"), "/icons.rs"));
 
@@ -12,6 +14,9 @@ pub const FEATHER: &str = "feather";
 pub const POUND: &str = "pound";
 pub const VOLUME: &str = "volume-high";
 pub const PLUS: &str = "plus";
+pub const LAN_CONNECT: &str = "lan-connect";
+pub const LAN_PENDING: &str = "lan-pending";
+pub const LAN_DISCONNECT: &str = "lan-disconnect";
 pub const COG: &str = "cog";
 pub const HANG_UP: &str = "phone-hangup";
 pub const AT: &str = "at";
@@ -22,7 +27,8 @@ pub const REPLY: &str = "reply";
 pub const PENCIL: &str = "pencil";
 pub const CLOSE: &str = "close";
 pub const CHEVRON_DOWN: &str = "chevron-down";
-pub const CHEVRON_RIGHT: &str = "chevron-right";
+/// The handle on a row being dragged.
+pub const DRAG: &str = "dots-vertical";
 pub const ATTACH: &str = "paperclip";
 pub const CHAT: &str = "message-outline";
 pub const PHONE: &str = "phone";
@@ -34,6 +40,8 @@ pub const MIC_OFF: &str = "microphone-off";
 pub const HEADPHONES: &str = "headphones";
 pub const HEADPHONES_OFF: &str = "headphones-off";
 pub const MONITOR_SHARE: &str = "monitor-share";
+/// A monitor with a cross on its screen: stop sharing (drawn for Hermes from MDI's monitor).
+pub const MONITOR_STOP: &str = "monitor-stop";
 pub const WAVEFORM: &str = "waveform";
 pub const ARROW_LEFT: &str = "arrow-left";
 pub const ACCOUNT: &str = "account-circle";
@@ -44,7 +52,19 @@ pub const KEYBOARD: &str = "keyboard";
 pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";
 pub const SHIELD: &str = "shield-account";
+pub const COPY: &str = "content-copy";
+pub const EMOJI: &str = "emoticon-happy-outline";
+/// The media cards' icons.
+pub mod media_icons {
+    pub const PLAY: &str = "play";
+    pub const PAUSE: &str = "pause";
+    pub const VOLUME_OFF: &str = "volume-off";
+    pub const MUSIC: &str = "music-note";
+    pub const FULLSCREEN: &str = "fullscreen";
+    pub const FULLSCREEN_EXIT: &str = "fullscreen-exit";
+}
 pub const BELL: &str = "bell-outline";
+pub const ACCOUNT_PLUS: &str = "account-plus";
 pub const LINK: &str = "link-variant";
 pub const BAN: &str = "cancel";
 pub const FOLDER_PLUS: &str = "folder-plus-outline";

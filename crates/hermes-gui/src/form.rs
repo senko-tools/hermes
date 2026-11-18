@@ -31,6 +31,14 @@ const SLOWMODE: [(&str, u32); 8] = [
     ("1 hour", 3600),
 ];
 
+const BAN_LENGTH: [(&str, u32); 5] = [
+    ("Until lifted", 0),
+    ("1 hour", 1),
+    ("1 day", 24),
+    ("7 days", 168),
+    ("30 days", 720),
+];
+
 const BAN_DELETE: [(&str, u32); 4] = [
     ("Don't delete any", 0),
     ("From the last hour", 1),
@@ -100,8 +108,39 @@ pub enum Purpose {
         inst: InstanceId,
         space: Id,
     },
-    EditProfile(InstanceId),
+    /// `bio`: the form has an "About me" field (the server has the `bio` feature).
+    EditProfile {
+        inst: InstanceId,
+        bio: bool,
+    },
     ChangePassword(InstanceId),
+    LoginCode {
+        host: hermes_client_core::address::HostPort,
+        username: String,
+        password: String,
+        invite: Option<String>,
+    },
+    QuickReactions,
+    QuietHours,
+    Keywords,
+    Note {
+        inst: InstanceId,
+        user: Id,
+    },
+    LocalName {
+        inst: InstanceId,
+        user: Id,
+    },
+    TwoFactorBegin(InstanceId),
+    TwoFactorConfirm(InstanceId),
+    TwoFactorDisable(InstanceId),
+    DeleteAccount(InstanceId),
+    Report {
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        excerpt: String,
+    },
     ChangeUsername(InstanceId),
     AddFriend,
 }
@@ -316,9 +355,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let form = Form::new(Purpose::CreateSpace(inst), "Create a space", "Create")
-            .text("A space is a home for your group, with its own channels, roles and members.");
-        self.form = None;
+        let form = Form::new(Purpose::CreateSpace(inst), "Create a server", "Create")
+            .text("A server is a home for your group, with its own channels, roles and members.");
+        self.close_later("form", |s| s.form = None, cx);
         let built = Self::fields(form, window, cx).text("Name", "e.g. Friends", "");
         self.finish(built);
     }
@@ -331,6 +370,7 @@ impl Shell {
         {
             input.update(cx, |input, cx| input.focus(window, cx));
         }
+        self.cancel_closing("form");
         self.form = Some(form);
         cx.notify();
     }
@@ -525,7 +565,7 @@ impl Shell {
             format!("Ban {name}?"),
             "Ban",
         )
-        .text("They are removed from the space and cannot rejoin until unbanned.")
+        .text("They are removed from the server and cannot rejoin until unbanned.")
         .danger();
         let fields = Self::fields(form, window, cx)
             .text("Reason (optional)", "Shown in the ban list", "")
@@ -534,7 +574,8 @@ impl Shell {
                 "",
                 &labels(&BAN_DELETE),
                 BAN_DELETE[0].0,
-            );
+            )
+            .choice("How long", "", &labels(&BAN_LENGTH), BAN_LENGTH[0].0);
         self.finish(fields);
     }
 
@@ -559,7 +600,7 @@ impl Shell {
             "Change nickname",
             "Save",
         )
-        .text("A nickname is only used in this space. Leave it empty to remove it.");
+        .text("A nickname is only used in this server. Leave it empty to remove it.");
         let fields = Self::fields(form, window, cx).text("Nickname", "", current);
         self.finish(fields);
     }
@@ -593,20 +634,64 @@ impl Shell {
             store.instance(&inst).and_then(|s| s.me.clone())
         };
         let Some(me) = me else { return };
-        let form = Form::new(Purpose::EditProfile(inst), "Edit profile", "Save")
-            .text(format!("Signed in as @{}.", me.user.username));
-        let fields = Self::fields(form, window, cx)
+        let with_bio = self
+            .core
+            .store()
+            .instance(&inst)
+            .is_some_and(|s| s.has_feature(hermes_client_core::proto::compat::features::BIO));
+        if !with_bio {
+            self.show_profile_form(inst, me.user, None, window, cx);
+            return;
+        }
+        // The "About me" is only on the full profile: fetched first.
+        let Ok(rest) = self.core.rest(&inst) else {
+            return;
+        };
+        let id = me.user.id;
+        self.run(
+            cx,
+            async move { rest.user(id).await },
+            move |this, result, window, cx| {
+                let bio = result.ok().and_then(|p| p.bio).unwrap_or_default();
+                this.show_profile_form(inst.clone(), me.user.clone(), Some(bio), window, cx);
+            },
+        );
+    }
+
+    fn show_profile_form(
+        &mut self,
+        inst: InstanceId,
+        user: hermes_client_core::proto::models::User,
+        bio: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let purpose = Purpose::EditProfile {
+            inst,
+            bio: bio.is_some(),
+        };
+        let form = Form::new(purpose, "Edit profile", "Save")
+            .text(format!("Signed in as @{}.", user.username));
+        let mut fields = Self::fields(form, window, cx)
             .text_hint(
                 "Display name",
                 "Leave empty to use your username.",
                 "Shown instead of your username",
-                me.user.display_name.clone().unwrap_or_default(),
+                user.display_name.clone().unwrap_or_default(),
             )
             .text(
                 "Status",
                 "e.g. Working on a project",
-                me.user.status_text.clone().unwrap_or_default(),
+                user.status_text.clone().unwrap_or_default(),
             );
+        if let Some(bio) = bio {
+            fields = fields.text_hint(
+                "About me",
+                "Shown on your profile, up to 190 characters.",
+                "A few words about you",
+                bio,
+            );
+        }
         self.finish(fields);
     }
 
@@ -665,10 +750,192 @@ impl Shell {
         self.finish(fields);
     }
 
+    pub fn open_form_quick_reactions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.buffer.quick_reactions.clone();
+        let form = Form::new(Purpose::QuickReactions, "Quick reactions", "Save")
+            .text("The reactions offered first, separated by spaces.");
+        let fields = Self::fields(form, window, cx).text("Reactions", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_quiet_hours(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (from, to) = (
+            self.config.notifications.quiet_from.clone(),
+            self.config.notifications.quiet_to.clone(),
+        );
+        let form = Form::new(Purpose::QuietHours, "Quiet hours", "Save")
+            .text("No notifications between these times, like 22:00 and 07:00. Empty: none.");
+        let fields = Self::fields(form, window, cx)
+            .text("From", "22:00", from)
+            .text("Until", "07:00", to);
+        self.finish(fields);
+    }
+
+    pub fn open_form_keywords(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.config.notifications.keywords.clone();
+        let form = Form::new(Purpose::Keywords, "Words that notify me", "Save")
+            .text("Messages with these words notify like a mention. Separate them with spaces.");
+        let fields = Self::fields(form, window, cx).text("Words", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_note(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.core.note(&inst, user).unwrap_or_default();
+        let form = Form::new(Purpose::Note { inst, user }, "Personal note", "Save")
+            .text("Only you see this, and only on this device.");
+        let fields = Self::fields(form, window, cx).text("Note", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_local_name(
+        &mut self,
+        inst: InstanceId,
+        user: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.core.local_name(&inst, user).unwrap_or_default();
+        let form = Form::new(
+            Purpose::LocalName { inst, user },
+            "Name them for me",
+            "Save",
+        )
+        .text("Shown instead of their name, only to you. Empty goes back to theirs.");
+        let fields = Self::fields(form, window, cx).text("Name", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_login_code(
+        &mut self,
+        host: hermes_client_core::address::HostPort,
+        username: String,
+        password: String,
+        invite: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let purpose = Purpose::LoginCode {
+            host,
+            username,
+            password,
+            invite,
+        };
+        let form = Form::new(purpose, "Two-factor login", "Sign in")
+            .text("Enter the six digits your authenticator shows for this account.");
+        let fields = Self::fields(form, window, cx).text("Code", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_two_factor_begin(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorBegin(inst),
+            "Two-factor login",
+            "Continue",
+        )
+        .text("Signing in will also need a code from an authenticator app.");
+        let fields = Self::fields(form, window, cx).password("Your password");
+        self.finish(fields);
+    }
+
+    fn open_form_two_factor_confirm(
+        &mut self,
+        inst: InstanceId,
+        secret: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorConfirm(inst),
+            "Add it to your authenticator",
+            "Turn on",
+        )
+        .text(format!(
+            "Add an account by hand with this key, then enter the code it shows. If you lose \
+                 the authenticator, an administrator has to turn this off for you.\n\n{secret}"
+        ));
+        let fields = Self::fields(form, window, cx).text("Code", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_two_factor_disable(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::TwoFactorDisable(inst),
+            "Turn off two-factor login",
+            "Turn off",
+        )
+        .danger();
+        let fields = Self::fields(form, window, cx)
+            .password("Your password")
+            .text("Code from your authenticator", "123456", "");
+        self.finish(fields);
+    }
+
+    pub fn open_form_delete_account(
+        &mut self,
+        inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::DeleteAccount(inst),
+            "Delete your account?",
+            "Delete account",
+        )
+        .text(
+            "This cannot be undone. Your name, picture and devices go, and you leave every \
+                 server. Servers you own have to be given away or deleted first.",
+        )
+        .danger();
+        let fields = Self::fields(form, window, cx)
+            .password("Your password")
+            .check("Also delete all my messages", "", false);
+        self.finish(fields);
+    }
+
+    pub fn open_form_report(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        excerpt: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let form = Form::new(
+            Purpose::Report {
+                inst,
+                channel,
+                message,
+                excerpt,
+            },
+            "Report this message",
+            "Report",
+        )
+        .text("The moderators see your reason and the words of this message, even if it is encrypted.");
+        let fields = Self::fields(form, window, cx).text("What is wrong with it?", "", "");
+        self.finish(fields);
+    }
+
     fn form_done(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
         match result {
             Ok(text) => {
-                self.form = None;
+                self.close_later("form", |s| s.form = None, cx);
                 self.info(text, cx);
             }
             Err(err) => {
@@ -686,10 +953,12 @@ impl Shell {
     pub fn submit_form(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(form) = self.form.take() else { return };
         if form.busy {
+            self.cancel_closing("form");
             self.form = Some(form);
             return;
         }
         let result = self.start_submit(&form, cx);
+        self.cancel_closing("form");
         self.form = Some(form);
         let form = self.form.as_mut().expect("just put back");
         match result {
@@ -700,7 +969,7 @@ impl Shell {
     }
 
     /// Starts the request of a submitted form, or says what to fix first.
-    fn start_submit(&self, form: &Form, cx: &mut Context<Self>) -> Result<(), String> {
+    fn start_submit(&mut self, form: &Form, cx: &mut Context<Self>) -> Result<(), String> {
         let core = self.core.clone();
         match form.purpose.clone() {
             Purpose::CreateSpace(inst) => {
@@ -861,6 +1130,7 @@ impl Shell {
                 let req = BanRequest {
                     reason: (!reason.is_empty()).then_some(reason),
                     delete_messages_hours: lookup(&BAN_DELETE, form.selected(1)).filter(|h| *h > 0),
+                    duration_hours: lookup(&BAN_LENGTH, form.selected(2)).filter(|h| *h > 0),
                 };
                 self.form_call(cx, async move {
                     core.rest(&inst)?.ban(space, user, &req).await?;
@@ -895,7 +1165,7 @@ impl Shell {
                     },
                     move |this, result, _, cx| match result {
                         Ok(Some(link)) => {
-                            this.form = None;
+                            this.close_later("form", |s| s.form = None, cx);
                             this.copy(link, "Invite link", cx);
                             this.invite_created(inst, space, cx);
                         }
@@ -903,6 +1173,133 @@ impl Shell {
                         Err(err) => this.form_done(Err(err.to_string()), cx),
                     },
                 );
+            }
+            Purpose::LoginCode {
+                host,
+                username,
+                password,
+                invite,
+            } => {
+                let code = form.required(0, "the code", cx)?;
+                self.form_call(cx, async move {
+                    let inst = core
+                        .login_with_code(&host, &username, &password, Some(&code))
+                        .await?;
+                    if let Some(invite) = invite {
+                        let _ = core.join_invite(&inst, &invite).await;
+                    }
+                    Ok(format!("Signed in to {inst}"))
+                });
+            }
+            Purpose::QuickReactions => {
+                let value = form.value(0, cx);
+                self.persist(
+                    "buffer.quick_reactions",
+                    &toml::Value::String(value).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::QuietHours => {
+                let (from, to) = (form.value(0, cx), form.value(1, cx));
+                self.persist(
+                    "notifications.quiet_from",
+                    &toml::Value::String(from).to_string(),
+                    cx,
+                );
+                self.persist(
+                    "notifications.quiet_to",
+                    &toml::Value::String(to).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::Keywords => {
+                let value = form.value(0, cx);
+                self.persist(
+                    "notifications.keywords",
+                    &toml::Value::String(value).to_string(),
+                    cx,
+                );
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::Note { inst, user } => {
+                let text = form.value(0, cx);
+                self.core.set_note(&inst, user, &text);
+                cx.notify();
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::LocalName { inst, user } => {
+                let name = form.value(0, cx);
+                self.core.set_local_name(&inst, user, &name);
+                cx.notify();
+                self.form_call(cx, async { Ok("Saved".to_owned()) });
+            }
+            Purpose::TwoFactorBegin(inst) => {
+                let password = form.raw(0, cx);
+                if password.is_empty() {
+                    return Err("Your password is needed.".into());
+                }
+                let next = inst.clone();
+                self.run(
+                    cx,
+                    async move {
+                        core.rest(&inst)?
+                            .two_factor_begin(password)
+                            .await
+                            .map_err(CoreError::from)
+                    },
+                    move |this, result: Result<_, CoreError>, window, cx| match result {
+                        Ok(begun) => {
+                            this.close_later("form", |s| s.form = None, cx);
+                            this.open_form_two_factor_confirm(next, begun.secret, window, cx);
+                        }
+                        Err(err) => this.form_done(Err(err.to_string()), cx),
+                    },
+                );
+            }
+            Purpose::TwoFactorConfirm(inst) => {
+                let code = form.required(0, "the code", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?.two_factor_confirm(code).await?;
+                    Ok("Two-factor login is on".to_owned())
+                });
+            }
+            Purpose::TwoFactorDisable(inst) => {
+                let password = form.raw(0, cx);
+                let code = form.required(1, "the code", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?.two_factor_disable(password, code).await?;
+                    Ok("Two-factor login is off".to_owned())
+                });
+            }
+            Purpose::DeleteAccount(inst) => {
+                let password = form.raw(0, cx);
+                if password.is_empty() {
+                    return Err("Your password is needed.".into());
+                }
+                let delete_messages = form.checked(1);
+                self.form_call(cx, async move {
+                    core.rest(&inst)?
+                        .delete_account(password, delete_messages)
+                        .await?;
+                    core.remove_instance(&inst).await?;
+                    Ok("Your account has been deleted".to_owned())
+                });
+            }
+            Purpose::Report {
+                inst,
+                channel,
+                message,
+                excerpt,
+            } => {
+                let reason = form.required(0, "a reason", cx)?;
+                self.form_call(cx, async move {
+                    core.rest(&inst)?
+                        .report(channel, message, reason, excerpt)
+                        .await?;
+                    Ok("Reported to the moderators".to_owned())
+                });
             }
             Purpose::ChangePassword(inst) => {
                 let (current, new, again) = (form.raw(0, cx), form.raw(1, cx), form.raw(2, cx));
@@ -960,8 +1357,12 @@ impl Shell {
                     })
                 });
             }
-            Purpose::EditProfile(inst) => {
+            Purpose::EditProfile { inst, bio } => {
                 let (display, status) = (form.value(0, cx), form.value(1, cx));
+                let about = bio.then(|| form.value(2, cx));
+                if about.as_ref().is_some_and(|b| b.chars().count() > 190) {
+                    return Err("About me can be at most 190 characters".into());
+                }
                 if display.chars().count() > 32 {
                     return Err("the display name can be at most 32 characters".into());
                 }
@@ -971,7 +1372,8 @@ impl Shell {
                 let req = hermes_client_core::proto::api::UpdateMeRequest {
                     display_name: Some((!display.is_empty()).then_some(display)),
                     status_text: Some((!status.is_empty()).then_some(status)),
-                    avatar_id: None,
+                    bio: about.map(|b| (!b.is_empty()).then_some(b)),
+                    ..Default::default()
                 };
                 self.form_call(cx, async move {
                     core.rest(&inst)?.update_me(&req).await?;
@@ -1009,7 +1411,7 @@ impl Shell {
             .large()
             .label("Cancel")
             .on_click(cx.listener(|this, _, _, cx| {
-                this.form = None;
+                this.close_later("form", |s| s.form = None, cx);
                 cx.notify();
             }));
         let label = if form.busy {
@@ -1020,6 +1422,7 @@ impl Shell {
         let submit = Button::new("form-submit")
             .cursor_pointer()
             .large()
+            .loading(form.busy)
             .label(label)
             .disabled(form.busy)
             .when(form.busy, |b| b.cursor_default())
@@ -1073,28 +1476,19 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
         } => {
             let chips = options.iter().enumerate().map(|(n, option)| {
                 let chosen = n == *selected;
-                div()
-                    .id(SharedString::from(format!("form-{i}-{n}")))
-                    .px(px(10.))
-                    .py(px(5.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .text_size(theme::secondary_size())
-                    .when(chosen, |d| {
-                        d.bg(theme::accent()).text_color(theme::on_accent())
-                    })
-                    .when(!chosen, |d| {
-                        d.bg(theme::selected()).hover(|d| d.bg(theme::hover()))
-                    })
-                    .child(SharedString::from(option.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(Field::Choice { selected, .. }) =
-                            this.form.as_mut().and_then(|f| f.fields.get_mut(i))
-                        {
-                            *selected = n;
-                        }
-                        cx.notify();
-                    }))
+                crate::voice::chip(
+                    SharedString::from(format!("form-{i}-{n}")),
+                    option.clone(),
+                    chosen,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(Field::Choice { selected, .. }) =
+                        this.form.as_mut().and_then(|f| f.fields.get_mut(i))
+                    {
+                        *selected = n;
+                    }
+                    cx.notify();
+                }))
             });
             column
                 .child(name_line(label))

@@ -72,8 +72,15 @@ pub async fn search(
             format!("must be at most {MAX_QUERY_CHARS} characters"),
         ));
     }
-    let Some(fts) = fts_query(&q.q) else {
+    let fts = fts_query(&q.q);
+    if fts.is_none() && !q.has_filters() {
         return Err(validate::field_error("q", "type something to search for"));
+    }
+    let filter = db::messages::SearchFilter {
+        author: q.author_id,
+        before: q.before,
+        after: q.after,
+        has: q.has,
     };
     let channels = readable_channels(&state.cache(), auth.user_id, q.space_id, q.channel_id);
     if channels.is_empty() {
@@ -88,11 +95,21 @@ pub async fn search(
     }
     .limit();
     let db = &state.db.read;
-    // The page and the total are independent reads; run them on two pooled connections at once.
-    let (rows, total) = tokio::try_join!(
-        db::messages::search(db, &fts, &channels, q.author_id, q.before, limit),
-        db::messages::search_count(db, &fts, &channels, q.author_id),
-    )?;
+    let fts = fts.as_deref();
+    // Counting every match costs as much as the search: once, for the first page. A later page
+    // (`before` is the last one shown) needs no count. The page and the total are independent
+    // reads, so the first page runs them on two pooled connections at once.
+    let (rows, total) = if q.before.is_none() {
+        tokio::try_join!(
+            db::messages::search(db, fts, &channels, filter, limit),
+            db::messages::search_count(db, fts, &channels, filter),
+        )?
+    } else {
+        (
+            db::messages::search(db, fts, &channels, filter, limit).await?,
+            0,
+        )
+    };
     Ok(Json(SearchResponse {
         messages: messages::to_wire(&state, rows, auth.user_id).await?,
         total: u64::try_from(total).unwrap_or(0),

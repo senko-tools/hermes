@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT key_handover, new_members_read_history FROM spaces WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_handover",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "key_handover"
+          }
+        }
+      },
+      {
+        "name": "new_members_read_history",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "spaces",
+            "name": "new_members_read_history"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5b26a9e66ab0c72193b0b0e482283ac4f16aa6726bebc34855654e0ec77f2ae9"
+}

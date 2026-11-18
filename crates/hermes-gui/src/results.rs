@@ -9,7 +9,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
-use hermes_client_core::proto::api::SearchQuery;
+use hermes_client_core::proto::api::{SearchHas, SearchQuery};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Message as ChatMessage;
 use hermes_client_core::{InstanceId, time, view};
@@ -93,6 +93,114 @@ pub struct ResultsPage {
 
 /// Loaded results and, for a search, the total number of matches.
 type ResultPage = (Vec<(InstanceId, ChatMessage)>, Option<u64>);
+
+/// What a search's words ask for besides words.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Filters {
+    words: String,
+    author: Option<Id>,
+    channel: Option<Id>,
+    /// Only messages older than this.
+    before: Option<Id>,
+    /// Only messages newer than this.
+    after: Option<Id>,
+    has: Option<SearchHas>,
+}
+
+impl Filters {
+    fn any(&self) -> bool {
+        self.author.is_some()
+            || self.channel.is_some()
+            || self.before.is_some()
+            || self.after.is_some()
+            || self.has.is_some()
+    }
+}
+
+/// Whether an opened message passes the filters the server may not know (an older one ignores
+/// `after` and `has`, and encrypted messages are only known once opened).
+fn passes(m: &ChatMessage, f: &Filters) -> bool {
+    let has = match f.has {
+        None => true,
+        Some(SearchHas::File) => !m.attachments.is_empty(),
+        Some(SearchHas::Image) => m
+            .attachments
+            .iter()
+            .any(|a| a.content_type.starts_with("image/")),
+        Some(SearchHas::Link) => m.content.contains("http://") || m.content.contains("https://"),
+    };
+    has && f.after.is_none_or(|after| m.id > after) && f.before.is_none_or(|before| m.id < before)
+}
+
+/// Takes `from:name`, `in:channel`, `has:file|image|link` and `before:`, `after:` or
+/// `during:YYYY-MM-DD` out of a search. What matches nothing stays in the words.
+fn filters(
+    s: &hermes_client_core::store::InstanceStore,
+    query: &str,
+    space: Option<Id>,
+    utc_offset: i64,
+) -> Filters {
+    let mut f = Filters::default();
+    let (mut author, mut channel) = (None, None);
+    let mut rest = Vec::new();
+    let id_at = |ms: i64| Id::min_at_unix_ms(u64::try_from(ms).unwrap_or(0));
+    for word in query.split_whitespace() {
+        if let Some(kind) = word.strip_prefix("has:")
+            && let Some(has) = SearchHas::from_name(kind)
+        {
+            f.has = Some(has);
+            continue;
+        }
+        if let Some((name, date)) = word.split_once(':')
+            && let Some((start, end)) = time::parse_day(date, utc_offset)
+        {
+            match name {
+                "before" => {
+                    f.before = Some(id_at(start));
+                    continue;
+                }
+                "after" => {
+                    f.after = Some(Id(id_at(end).0.saturating_sub(1)));
+                    continue;
+                }
+                "during" | "on" => {
+                    f.after = Some(Id(id_at(start).0.saturating_sub(1)));
+                    f.before = Some(id_at(end));
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if let Some(name) = word.strip_prefix("from:") {
+            let name = name.trim_start_matches('@').to_lowercase();
+            let found = s
+                .users
+                .values()
+                .find(|u| u.username.to_lowercase() == name || u.handle().to_lowercase() == name);
+            if let Some(user) = found {
+                author = Some(user.id);
+                continue;
+            }
+        } else if let Some(name) = word.strip_prefix("in:") {
+            let name = name.trim_start_matches('#').to_lowercase();
+            let found = space.and_then(|id| s.spaces.get(&id)).and_then(|state| {
+                state
+                    .channels
+                    .values()
+                    .find(|c| c.name.as_deref().is_some_and(|n| n.to_lowercase() == name))
+            });
+            if let Some(found) = found {
+                channel = Some(found.id);
+                continue;
+            }
+        }
+        rest.push(word);
+    }
+    f.words = rest.join(" ");
+    f.author = author;
+    f.channel = channel;
+    f
+}
 
 impl Shell {
     /// Shows a results page, loading it unless it is a search or loaded already.
@@ -184,12 +292,32 @@ impl Shell {
                 } else {
                     None
                 };
+                let f = self.core.store().instance(&inst).map_or_else(
+                    || Filters {
+                        words: query.clone(),
+                        ..Filters::default()
+                    },
+                    |s| filters(s, &query, space, self.utc_offset),
+                );
+                if f.words.is_empty() && !f.any() {
+                    state.items = Remote::Idle;
+                    cx.notify();
+                    return;
+                }
+                // A later page goes on from the last one shown, never past the date asked for.
+                let before = match (before, f.before) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
                 let request = SearchQuery {
-                    q: query,
+                    q: f.words.clone(),
                     space_id: space,
+                    channel_id: f.channel,
+                    author_id: f.author,
                     before,
+                    after: f.after,
+                    has: f.has,
                     limit: Some(PAGE),
-                    ..SearchQuery::default()
                 };
                 let core = self.core.clone();
                 let done = key.clone();
@@ -197,14 +325,18 @@ impl Shell {
                     cx,
                     async move {
                         let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let mut res = rest.search(&request).await.map_err(|e| e.to_string())?;
+                        let mut res = core
+                            .search_with(&rest, &inst, &request)
+                            .await
+                            .map_err(|e| e.to_string())?;
                         core.open_messages(&inst, &mut res.messages).await;
+                        res.messages.retain(|m| passes(m, &f));
                         Ok::<ResultPage, String>((
                             res.messages
                                 .into_iter()
                                 .map(|m| (inst.clone(), m))
                                 .collect(),
-                            Some(res.total),
+                            (!append).then_some(res.total),
                         ))
                     },
                     move |this, result, _, cx| this.results_loaded(&done, append, result, cx),
@@ -369,7 +501,7 @@ impl Shell {
             } else {
                 "Loading…".to_owned()
             })),
-            Remote::Loading => list.push(muted("Loading…".to_owned())),
+            Remote::Loading => list.push(theme::skeleton("results", 5)),
             Remote::Failed(err) => list.push(
                 div()
                     .text_size(theme::secondary_size())
@@ -377,13 +509,26 @@ impl Shell {
                     .child(format!("Could not load: {err}"))
                     .into_any_element(),
             ),
-            Remote::Ready(items) if items.is_empty() => list.push(muted(match &key {
-                Key::Search(..) => format!("Nothing found for “{}”.", state.searched),
-                Key::Mentions => "Nobody mentioned you yet.".to_owned(),
-                Key::Pins(..) => {
-                    "Nothing is pinned here. Right-click a message and choose Pin.".to_owned()
-                }
-            })),
+            Remote::Ready(items) if items.is_empty() => list.push(match &key {
+                Key::Search(..) => theme::empty_state(
+                    "search",
+                    crate::assets::SEARCH,
+                    "Nothing found",
+                    format!("Nothing found for “{}”.", state.searched),
+                ),
+                Key::Mentions => theme::empty_state(
+                    "mentions",
+                    crate::assets::AT,
+                    "No mentions",
+                    "Nobody mentioned you yet.",
+                ),
+                Key::Pins(..) => theme::empty_state(
+                    "pins",
+                    crate::assets::PIN,
+                    "Nothing pinned",
+                    "Right-click a message and choose Pin.",
+                ),
+            }),
             Remote::Ready(items) => {
                 if let (Key::Search(..), Some(total)) = (&key, state.total) {
                     list.push(muted(format!(
@@ -520,7 +665,7 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
         .gap(px(2.))
         .px(px(8.))
         .py(px(6.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .hover(|d| d.bg(theme::hover()))
         .on_click(cx.listener(move |this, _, window, cx| {
@@ -533,6 +678,8 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
                 .gap(px(8.))
                 .child(
                     div()
+                        .min_w_0()
+                        .truncate()
                         .text_size(theme::secondary_size())
                         .font_weight(FontWeight::BOLD)
                         .child(SharedString::from(author)),
@@ -548,6 +695,8 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
                     div()
                         .text_size(theme::caption_size())
                         .text_color(theme::text_secondary())
+                        .max_w(px(220.))
+                        .truncate()
                         .child(place),
                 ),
         )
@@ -563,6 +712,33 @@ mod tests {
     use super::*;
     use hermes_client_core::proto::models::{MessageKind, User};
 
+    #[test]
+    fn search_words_give_filters() {
+        let s = hermes_client_core::store::InstanceStore::default();
+        let f = filters(&s, "pizza has:image during:2026-10-31 HAS:nope", None, 0);
+        assert_eq!(f.words, "pizza HAS:nope");
+        assert_eq!(f.has, Some(SearchHas::Image));
+        let (start, end) = time::parse_day("2026-10-31", 0).unwrap();
+        assert_eq!(f.before, Some(Id::min_at_unix_ms(end as u64)));
+        assert!(f.after.unwrap() < Id::min_at_unix_ms(start as u64));
+        let f = filters(&s, "before:2026-13-01", None, 0);
+        assert_eq!(f.words, "before:2026-13-01", "not a date: kept as words");
+        assert!(!f.any());
+
+        let mut m = msg(1);
+        m.content = "see https://example.org".into();
+        let link = Filters {
+            has: Some(SearchHas::Link),
+            ..Filters::default()
+        };
+        assert!(passes(&m, &link));
+        let file = Filters {
+            has: Some(SearchHas::File),
+            ..Filters::default()
+        };
+        assert!(!passes(&m, &file));
+    }
+
     fn msg(id: u64) -> ChatMessage {
         ChatMessage {
             id: Id(id << 22),
@@ -574,6 +750,7 @@ mod tests {
                 display_name: None,
                 avatar: None,
                 status_text: None,
+                banner: None,
             },
             content: String::new(),
             reply_to: None,
@@ -587,6 +764,7 @@ mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         }
     }
 

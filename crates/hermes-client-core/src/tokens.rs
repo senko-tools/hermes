@@ -18,30 +18,21 @@ pub enum TokenStore {
     File(PathBuf),
     /// In memory, for tests.
     Memory(Mutex<BTreeMap<String, String>>),
+    /// A credential store that cannot be read, for tests.
+    #[cfg(test)]
+    Failing,
 }
 
-/// What [`TokenStore::lookup`] found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Lookup {
-    Found(String),
-    /// Stored nowhere.
-    Missing,
-    /// Not in the file, and the credential store did not answer (locked, or not running yet), so
-    /// it may still be kept there.
-    Unavailable,
+/// Secrets went to the file because there is no credential store.
+static FALLBACK_USED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the user still has to be told that secrets are in a file.
+pub(crate) fn take_fallback_warning() -> bool {
+    FALLBACK_USED.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn account(instance: &str, username: &str) -> String {
     format!("{username}@{instance}")
-}
-
-/// Whether the credential store said it has no such entry, or that there is none at all (the file
-/// is all there is then), rather than failing to answer.
-fn certainly_missing(err: &keyring::Error) -> bool {
-    matches!(
-        err,
-        keyring::Error::NoEntry | keyring::Error::NoDefaultStore
-    )
 }
 
 impl TokenStore {
@@ -50,52 +41,29 @@ impl TokenStore {
     }
 
     pub fn get(&self, instance: &str, username: &str) -> Option<String> {
-        let account = account(instance, username);
-        match self {
-            TokenStore::Keyring { fallback } => keyring::Entry::new(SERVICE, &account)
-                .and_then(|e| e.get_password())
-                .ok()
-                .or_else(|| read_file(fallback).remove(&account)),
-            TokenStore::File(path) => read_file(path).remove(&account),
-            TokenStore::Memory(map) => map.lock().expect("token lock").get(&account).cloned(),
-        }
+        self.read(instance, username).ok().flatten()
     }
 
-    /// Like [`Self::get`], but tells "stored nowhere" apart from "the credential store did not
-    /// answer", for a secret that must not be replaced just because it could not be read.
-    pub fn lookup(&self, instance: &str, username: &str) -> Lookup {
+    /// What is kept under this name. `Ok(None)` means nothing is; an error means the credential
+    /// store could not say, so something may well be there. What cannot be replaced must not be
+    /// made anew on an error.
+    pub fn read(&self, instance: &str, username: &str) -> Result<Option<String>, String> {
         let account = account(instance, username);
-        let found = |value: Option<String>| value.map_or(Lookup::Missing, Lookup::Found);
         match self {
             TokenStore::Keyring { fallback } => {
                 match keyring::Entry::new(SERVICE, &account).and_then(|e| e.get_password()) {
-                    Ok(value) => Lookup::Found(value),
-                    Err(err) => match read_file(fallback).remove(&account) {
-                        Some(value) => Lookup::Found(value),
-                        None if certainly_missing(&err) => Lookup::Missing,
-                        None => {
-                            tracing::warn!("the credential store did not answer: {err}");
-                            Lookup::Unavailable
-                        }
+                    Ok(secret) => Ok(Some(secret)),
+                    Err(err) => match (read_file(fallback).remove(&account), err) {
+                        (Some(secret), _) => Ok(Some(secret)),
+                        (None, keyring::Error::NoEntry) => Ok(None),
+                        (None, err) => Err(err.to_string()),
                     },
                 }
             }
-            TokenStore::File(path) => found(read_file(path).remove(&account)),
-            TokenStore::Memory(map) => {
-                found(map.lock().expect("token lock").get(&account).cloned())
-            }
-        }
-    }
-
-    /// Keeps a secret in the file only, never in the credential store: for one made while the
-    /// credential store did not answer, which must not replace what it may hold there.
-    /// [`Self::get`] still prefers the credential store's copy.
-    pub fn set_in_file(&self, instance: &str, username: &str, token: &str) -> std::io::Result<()> {
-        match self {
-            TokenStore::Keyring { fallback } | TokenStore::File(fallback) => {
-                write_to_file(fallback, &account(instance, username), token)
-            }
-            TokenStore::Memory(_) => self.set(instance, username, token),
+            TokenStore::File(path) => Ok(read_file(path).remove(&account)),
+            TokenStore::Memory(map) => Ok(map.lock().expect("token lock").get(&account).cloned()),
+            #[cfg(test)]
+            TokenStore::Failing => Err("the credential store is locked".to_owned()),
         }
     }
 
@@ -112,6 +80,7 @@ impl TokenStore {
                         tracing::warn!(
                             "credential store unavailable ({err}); using the token file"
                         );
+                        FALLBACK_USED.store(true, std::sync::atomic::Ordering::Relaxed);
                         write_to_file(fallback, &account, token)
                     }
                 }
@@ -123,6 +92,8 @@ impl TokenStore {
                     .insert(account, token.to_owned());
                 Ok(())
             }
+            #[cfg(test)]
+            TokenStore::Failing => Err(std::io::Error::other("locked")),
         }
     }
 
@@ -140,6 +111,8 @@ impl TokenStore {
                 map.lock().expect("token lock").remove(&account);
                 Ok(())
             }
+            #[cfg(test)]
+            TokenStore::Failing => Err(std::io::Error::other("locked")),
         }
     }
 }
@@ -175,7 +148,10 @@ fn write_file(path: &Path, tokens: &BTreeMap<String, String>) -> std::io::Result
             durable: true,
             private: true,
         },
-    )
+    )?;
+    #[cfg(windows)]
+    restrict(path)?;
+    Ok(())
 }
 
 fn write_to_file(path: &Path, account: &str, token: &str) -> std::io::Result<()> {
@@ -194,9 +170,41 @@ fn remove_from_file(path: &Path, account: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Only the current user, also where the folder is not private (portable mode). On Unix the
+/// file is written owner-only from its first byte.
+#[cfg(windows)]
+fn restrict(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let Ok(user) = std::env::var("USERNAME") else {
+        return Ok(());
+    };
+    let status = std::process::Command::new("icacls")
+        .arg(path)
+        .args(["/inheritance:r", "/grant:r"])
+        .arg(format!("{user}:F"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+    if !status.is_ok_and(|s| s.success()) {
+        tracing::warn!("could not restrict {} to this user", path.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_that_cannot_be_read_is_not_an_empty_one() {
+        let store = TokenStore::Failing;
+        assert!(store.read("example.com", "alice").is_err());
+        let store = TokenStore::memory();
+        assert_eq!(store.read("example.com", "alice"), Ok(None));
+    }
 
     #[test]
     fn file_store() {
@@ -240,12 +248,12 @@ mod tests {
         for i in 0..8 {
             let expected = format!("hms_{i}");
             assert_eq!(
-                store.lookup(&format!("host{i}"), "alice"),
-                Lookup::Found(expected),
+                store.read(&format!("host{i}"), "alice"),
+                Ok(Some(expected)),
                 "no write is lost"
             );
         }
-        assert_eq!(store.lookup("nowhere", "alice"), Lookup::Missing);
+        assert_eq!(store.read("nowhere", "alice"), Ok(None));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -258,8 +266,6 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["tokens.toml"]);
-        store.set_in_file("host0", "alice", "hms_file").unwrap();
-        assert_eq!(store.get("host0", "alice").as_deref(), Some("hms_file"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

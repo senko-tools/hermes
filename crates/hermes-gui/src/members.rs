@@ -12,6 +12,31 @@ use crate::shell::Shell;
 use crate::theme::{self, px};
 
 impl Shell {
+    /// The member list's edge: dragging starts on press, a double-click goes back to the default.
+    fn render_member_edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("members-edge")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(6.))
+            .cursor_col_resize()
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    if event.click_count >= 2 {
+                        this.persist("sidebar.member_list_width", "232", cx);
+                        return;
+                    }
+                    let width = f32::from(this.config.sidebar.member_list_width);
+                    this.resizing = Some((event.position.x.as_f32(), width));
+                    this.resizing_members = true;
+                    cx.notify();
+                }),
+            )
+    }
+
     pub fn render_members(
         &self,
         inst: &InstanceId,
@@ -40,7 +65,13 @@ impl Shell {
         }
         match s.space_of(channel) {
             Some(space) => {
-                for group in view::member_groups(s, space) {
+                let groups = self
+                    .member_groups_cache
+                    .borrow_mut()
+                    .entry((inst.clone(), space))
+                    .or_insert_with(|| std::rc::Rc::new(view::member_groups(s, space)))
+                    .clone();
+                for group in groups.iter().cloned() {
                     content.push(heading(format!(
                         "{} — {}",
                         group.title.to_uppercase(),
@@ -93,19 +124,26 @@ impl Shell {
         }
         Some(
             div()
-                .id("members")
-                .flex()
-                .flex_col()
+                .relative()
                 .flex_shrink_0()
                 .h_full()
-                .w(px(f32::from(self.config.sidebar.member_list_width)))
-                .p(px(8.))
-                .gap(px(2.))
-                .overflow_y_scroll()
-                .bg(theme::sidebar())
-                .border_l_1()
-                .border_color(theme::border())
-                .children(content)
+                .child(
+                    div()
+                        .id("members")
+                        .flex()
+                        .flex_col()
+                        .flex_shrink_0()
+                        .h_full()
+                        .w(px(f32::from(self.config.sidebar.member_list_width)))
+                        .p(px(8.))
+                        .gap(px(2.))
+                        .overflow_y_scroll()
+                        .bg(theme::sidebar())
+                        .border_l_1()
+                        .border_color(theme::border())
+                        .children(content),
+                )
+                .child(self.render_member_edge(cx))
                 .into_any_element(),
         )
     }
@@ -129,9 +167,9 @@ impl Shell {
             .flex_shrink_0()
             .items_center()
             .gap(px(8.))
-            .h(px(42.))
-            .px(px(6.))
-            .rounded(px(4.))
+            .h(px(44.))
+            .px(px(8.))
+            .rounded(theme::row_radius())
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .text_size(theme::body_size())
@@ -139,8 +177,8 @@ impl Shell {
             .child(avatar)
             .child(div().flex_1().min_w_0().truncate().child(name))
             .on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu(open.clone(), event.position(), window, cx);
+                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.open_profile(&open, event.position(), cx);
                 }),
             );
         self.with_menu(element, target, cx).into_any_element()
@@ -152,7 +190,7 @@ fn heading(text: String) -> AnyElement {
         .flex_shrink_0()
         .pt(px(12.))
         .pb(px(4.))
-        .px(px(6.))
+        .px(px(8.))
         .text_size(theme::caption_size())
         .text_color(theme::text_tertiary())
         .child(text)

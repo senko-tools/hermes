@@ -20,6 +20,9 @@ pub struct AttachmentRow {
     pub has_thumb: bool,
     pub sha256: [u8; 32],
     pub created_at: i64,
+    /// What the uploader measured of a sound or video.
+    pub waveform: Option<Vec<u8>>,
+    pub duration_ms: Option<u64>,
 }
 
 impl AttachmentRow {
@@ -32,6 +35,8 @@ impl AttachmentRow {
             width: self.width,
             height: self.height,
             has_thumb: self.has_thumb,
+            waveform: self.waveform.clone(),
+            duration_ms: self.duration_ms,
             sealed: None,
         }
     }
@@ -48,10 +53,14 @@ pub async fn insert(e: impl SqliteExecutor<'_>, row: &AttachmentRow) -> Result<(
     let size = i64::try_from(row.size).unwrap_or(i64::MAX);
     let (width, height) = (row.width.map(i64::from), row.height.map(i64::from));
     let sha256 = row.sha256.as_slice();
+    let duration_ms = row
+        .duration_ms
+        .map(|d| i64::try_from(d).unwrap_or(i64::MAX));
     sqlx::query!(
         "INSERT INTO attachments (id, uploader_id, message_id, filename, content_type, size,
-                                  width, height, has_thumb, sha256, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                  width, height, has_thumb, sha256, created_at, waveform,
+                                  duration_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         uploader_id,
         message_id,
@@ -62,7 +71,9 @@ pub async fn insert(e: impl SqliteExecutor<'_>, row: &AttachmentRow) -> Result<(
         height,
         row.has_thumb,
         sha256,
-        row.created_at
+        row.created_at,
+        row.waveform,
+        duration_ms
     )
     .execute(e)
     .await?;
@@ -73,7 +84,7 @@ pub async fn get(e: impl SqliteExecutor<'_>, id: Id) -> Result<Option<Attachment
     let id = id.to_i64();
     let Some(r) = sqlx::query!(
         r#"SELECT id, uploader_id, message_id, filename, content_type, size, width, height,
-                  has_thumb AS "has_thumb: bool", sha256, created_at
+                  has_thumb AS "has_thumb: bool", sha256, created_at, waveform, duration_ms
            FROM attachments WHERE id = ?"#,
         id
     )
@@ -97,6 +108,11 @@ pub async fn get(e: impl SqliteExecutor<'_>, id: Id) -> Result<Option<Attachment
         has_thumb: r.has_thumb,
         sha256,
         created_at: r.created_at,
+        waveform: r.waveform,
+        duration_ms: r
+            .duration_ms
+            .map(|d| int(d, "attachments.duration_ms"))
+            .transpose()?,
     }))
 }
 
@@ -115,11 +131,12 @@ pub async fn message_channel(
     Ok(channel.map(Id::from_i64))
 }
 
-/// Whether the upload is some user's avatar or some space's icon (visible to every user).
+/// Whether the upload is some user's avatar or banner, or some space's icon (visible to every
+/// user).
 pub async fn is_avatar_or_icon(e: impl SqliteExecutor<'_>, id: Id) -> Result<bool, sqlx::Error> {
     let id = id.to_i64();
     sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1)
+        r#"SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)
                OR EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1) AS "used!: bool""#,
         id
     )
@@ -136,10 +153,42 @@ pub async fn total_size(e: impl SqliteExecutor<'_>) -> Result<u64, sqlx::Error> 
     int(total, "SUM(attachments.size)")
 }
 
+/// Bytes of all uploads of `user`.
+pub async fn total_size_of(e: impl SqliteExecutor<'_>, user: Id) -> Result<u64, sqlx::Error> {
+    let id = user.to_i64();
+    let total = sqlx::query_scalar!(
+        r#"SELECT COALESCE(SUM(size), 0) AS "total!: i64" FROM attachments WHERE uploader_id = ?"#,
+        id
+    )
+    .fetch_one(e)
+    .await?;
+    int(total, "SUM(attachments.size)")
+}
+
 /// An upload to delete: `(id, sha256, size)`.
 pub type Expired = (Id, [u8; 32], u64);
 
 /// Uploads created before `cutoff` that are attached to no message and are no avatar or icon.
+/// What a message has stored, before it is deleted.
+pub async fn stored_of_message(
+    e: impl SqliteExecutor<'_>,
+    message_id: Id,
+) -> Result<Vec<Expired>, sqlx::Error> {
+    let id = message_id.to_i64();
+    sqlx::query!(
+        "SELECT id, sha256, size FROM attachments WHERE message_id = ?",
+        id
+    )
+    .fetch_all(e)
+    .await?
+    .into_iter()
+    .filter_map(|r| {
+        let sha: [u8; 32] = r.sha256.as_slice().try_into().ok()?;
+        Some(int(r.size, "attachments.size").map(|size| (Id::from_i64(r.id), sha, size)))
+    })
+    .collect()
+}
+
 pub async fn expired_unattached(
     e: impl SqliteExecutor<'_>,
     cutoff: i64,
@@ -147,7 +196,7 @@ pub async fn expired_unattached(
     sqlx::query!(
         "SELECT id, sha256, size FROM attachments a
          WHERE message_id IS NULL AND created_at < ?
-           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id)
+           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = a.id OR banner_id = a.id)
            AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = a.id)",
         cutoff
     )
@@ -167,7 +216,7 @@ pub async fn delete_if_unused(e: impl SqliteExecutor<'_>, id: Id) -> Result<bool
     let done = sqlx::query!(
         "DELETE FROM attachments
          WHERE id = ?1 AND message_id IS NULL
-           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1)
+           AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)
            AND NOT EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1)",
         id
     )

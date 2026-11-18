@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::gateway::bus::Audience;
+use crate::ratelimit::KeyedLimiter;
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -50,6 +51,10 @@ const RING_LIFETIME: Duration = Duration::from_secs(60);
 pub const CONTROL_QUEUE: usize = 1024;
 
 pub type ConnId = u64;
+
+/// A microphone sends 50 a second; a rejoining client can catch up on a few.
+const VOICE_PACKETS_PER_SECOND: u32 = 150;
+const VOICE_KEYS_PER_MINUTE: u32 = 600;
 
 /// Where clients connect: the public UDP port and the certificate fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +283,10 @@ pub struct Voice {
     /// an item would lose a call's system message. It carries at most two items per call.
     after: mpsc::UnboundedSender<After>,
     after_rx: Mutex<Option<mpsc::UnboundedReceiver<After>>>,
+    /// Voice packets a connection may send: well above what a microphone produces.
+    packets: KeyedLimiter<ConnId>,
+    /// Sealed voice keys a connection may pass on.
+    keys: KeyedLimiter<ConnId>,
 }
 
 impl Voice {
@@ -292,6 +301,8 @@ impl Voice {
             token_lifetime: Duration::from_secs(voice::TOKEN_LIFETIME_SECS),
             after,
             after_rx: Mutex::new(Some(after_rx)),
+            packets: KeyedLimiter::default(),
+            keys: KeyedLimiter::default(),
         }
     }
 
@@ -771,7 +782,16 @@ impl Voice {
         peers: &mut Vec<quinn::Connection>,
     ) {
         let participant_id = match AudioHeader::decode_any(&data) {
-            Ok((AudioKind::Voice, ..)) => self.voice_recipients(state, conn_id, peers),
+            Ok((AudioKind::Voice, ..)) => {
+                if self
+                    .packets
+                    .check(&conn_id, VOICE_PACKETS_PER_SECOND, Duration::from_secs(1))
+                    .is_err()
+                {
+                    return;
+                }
+                self.voice_recipients(state, conn_id, peers)
+            }
             Ok((AudioKind::Share, ..)) => self.share_audio_recipients(state, conn_id, peers),
             Err(_) => return,
         };
@@ -841,7 +861,12 @@ impl Voice {
     /// Passes a sealed sender key to one other member of the sender's room (docs/e2ee.md). It is
     /// opaque here: the server only knows that a key went from one member to another.
     pub fn relay_key(&self, conn_id: ConnId, to: u16, key: String) {
-        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES {
+        if key.len() > hermes_proto::e2ee::MAX_VOICE_KEY_BYTES
+            || self
+                .keys
+                .check(&conn_id, VOICE_KEYS_PER_MINUTE, Duration::from_secs(60))
+                .is_err()
+        {
             return;
         }
         let reg = self.registry();

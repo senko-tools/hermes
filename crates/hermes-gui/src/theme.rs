@@ -532,6 +532,177 @@ const BLACK: Rgba = Rgba {
     a: 1.0,
 };
 
+/// How long a page, tab or list takes to fade in, or out under the next one, at the snappy
+/// speed. Use [`fade`], which follows the motion speed setting.
+pub const FADE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// The motion speed setting as a time scale (the bits of an `f32`).
+static MOTION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3FB3_3333);
+
+/// The motion speed settings, their names and how much longer than snappy each one takes.
+pub const MOTION_SPEEDS: [(&str, &str, f32); 3] = [
+    ("snappy", "Snappy", 1.0),
+    ("normal", "Normal", 1.4),
+    ("calm", "Calm", 2.0),
+];
+
+/// Follows `general.motion_speed`.
+pub fn set_motion_speed(name: &str) {
+    let scale = MOTION_SPEEDS
+        .iter()
+        .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+        .map_or(1.4, |(.., scale)| *scale);
+    MOTION.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How much longer than snappy things take now.
+pub fn motion() -> f32 {
+    f32::from_bits(MOTION.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// [`FADE`] at the current motion speed.
+pub fn fade() -> std::time::Duration {
+    FADE.mul_f32(motion())
+}
+
+/// `spring` at the current motion speed: as bouncy, but slower or faster.
+pub fn paced(spring: gpui_kit::SpringConfig) -> gpui_kit::SpringConfig {
+    let m = motion();
+    gpui_kit::SpringConfig::new(spring.stiffness / (m * m), spring.damping / m, spring.mass)
+}
+
+/// Fades `element` in where it is, once each time `id` first shows: a page or tab that just
+/// opened. Nothing moves, so the eye stays on the content. It fills its parent.
+pub fn enter(
+    id: impl Into<gpui_kit::ElementId>,
+    element: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .relative()
+        .size_full()
+        .child(element)
+        .with_animation(
+            id,
+            Animation::new(fade()).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t),
+        )
+        .into_any_element()
+}
+
+/// Like [`enter`], but it also rises a little into place: a chat that was switched to, so the
+/// switch reads as a move rather than a swap.
+pub fn enter_rising(
+    id: impl Into<gpui_kit::ElementId>,
+    element: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .relative()
+        .size_full()
+        .child(element)
+        .with_animation(
+            id,
+            Animation::new(fade() * 2).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t).top(px(10. * (1. - t))),
+        )
+        .into_any_element()
+}
+
+/// What an empty list says: an icon in a soft circle, a title and a hint, fading in. `id`
+/// names the list, so another list's empty state fades in again.
+pub fn empty_state(
+    id: impl Into<SharedString>,
+    glyph: &str,
+    title: impl Into<SharedString>,
+    hint: impl Into<SharedString>,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
+    gpui_kit::div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(8.))
+        .w_full()
+        .py(px(32.))
+        .child(
+            gpui_kit::div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(56.))
+                .rounded(px(28.))
+                .bg(alpha(accent(), 0.12))
+                .child(crate::assets::icon(glyph, 28., accent())),
+        )
+        .child(
+            gpui_kit::div()
+                .mt(px(4.))
+                .text_size(body_size())
+                .font_weight(gpui_kit::FontWeight::MEDIUM)
+                .text_color(text())
+                .child(title.into()),
+        )
+        .child(
+            gpui_kit::div()
+                .max_w(px(360.))
+                .text_center()
+                .text_size(secondary_size())
+                .text_color(text_tertiary())
+                .child(hint.into()),
+        )
+        .relative()
+        .with_animation(
+            SharedString::from(format!("empty-{}", id.into())),
+            Animation::new(fade() * 2).with_easing(ease_out_quint()),
+            |d, t| d.opacity(t).top(px(6. * (1. - t))),
+        )
+        .into_any_element()
+}
+
+/// Grey bars where a list will be while it loads, breathing softly. `id` names the list.
+pub fn skeleton(id: &str, rows: usize) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _, pulsating_between, relative};
+    // Uneven widths read as lines of text rather than a table.
+    const WIDTHS: [f32; 5] = [0.9, 0.62, 0.78, 0.5, 0.7];
+    gpui_kit::div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .w_full()
+        .children((0..rows).map(|n| {
+            gpui_kit::div()
+                .h(px(14.))
+                .w(relative(WIDTHS[n % WIDTHS.len()]))
+                .rounded(px(4.))
+                .bg(hover())
+        }))
+        .with_animation(
+            SharedString::from(format!("skeleton-{id}")),
+            Animation::new(std::time::Duration::from_millis(1400))
+                .repeat()
+                .with_easing(pulsating_between(0.45, 1.)),
+            |d, t| d.opacity(t),
+        )
+        .into_any_element()
+}
+
+/// Sets every border of `element` to `width`, which may be fractional (a ring that thickens on a
+/// spring); gpui's own setters only come in whole steps.
+pub fn border_width<E: gpui_kit::Styled>(mut element: E, width: Pixels) -> E {
+    let width: gpui_kit::AbsoluteLength = width.into();
+    let edges = &mut element.style().border_widths;
+    edges.top = Some(width);
+    edges.right = Some(width);
+    edges.bottom = Some(width);
+    edges.left = Some(width);
+    element
+}
+
 /// `a` blended towards `b` by `t` (0–1).
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
     Rgba {
@@ -636,9 +807,18 @@ pub fn mono_font() -> SharedString {
     with(|a| a.mono.clone())
 }
 
+/// `font.heading_extra`.
+pub static HEADING_EXTRA: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(4);
+
+/// Small corners: buttons, chips, boxes inside rows. Follows the theme's shape.
+pub fn radius_small() -> Pixels {
+    with(|a| gpui_kit::px(f32::from(a.theme.shape.row_radius) * (2. / 3.) * a.scale))
+}
+
 /// Page and dialog titles.
 pub fn heading_size() -> Pixels {
-    with(|a| gpui_kit::px((a.text + 4.0) * a.scale))
+    let extra = HEADING_EXTRA.load(std::sync::atomic::Ordering::Relaxed) as f32;
+    with(|a| gpui_kit::px((a.text + extra) * a.scale))
 }
 /// What is read: messages, row labels, setting names, inputs and buttons.
 pub fn body_size() -> Pixels {

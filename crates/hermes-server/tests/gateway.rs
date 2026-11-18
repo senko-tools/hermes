@@ -93,14 +93,24 @@ async fn close_codes() {
     ws.send_identify("hms_nope").await;
     assert_eq!(ws.closed().await, 4004);
 
-    // An unsupported protocol version.
+    // A protocol older than the server still serves.
     let mut ws = server.connect().await;
     ws.send(json!({ "op": "identify", "d": {
-        "token": owner, "protocol_version": 99,
+        "token": owner, "protocol_version": hermes_proto::MIN_CLIENT_PROTOCOL - 1,
         "client": { "name": "t", "version": "0", "os": "t" },
     }}))
     .await;
     assert_eq!(ws.closed().await, 4010);
+
+    // A newer client is welcome: it hides what this server's `features` lack.
+    let mut ws = server.connect().await;
+    ws.send(json!({ "op": "identify", "d": {
+        "token": owner, "protocol_version": 99,
+        "client": { "name": "t", "version": "9", "os": "t" },
+    }}))
+    .await;
+    let ready = ws.recv_op("ready").await;
+    assert!(ready["d"]["instance"]["features"].is_array(), "{ready}");
 
     // Identifying twice.
     let (mut ws, _) = server.identify(&owner).await;
@@ -255,6 +265,42 @@ async fn missing_heartbeats_close_with_4009() {
     // So does never identifying.
     let mut ws = server.connect().await;
     assert_eq!(ws.closed().await, 4009);
+}
+
+#[tokio::test]
+async fn identifying_ends_the_short_wait() {
+    let server = start_with(
+        "gw-identify-within",
+        RegistrationMode::InviteOnly,
+        |state| {
+            state.gateway.timings.identify_within = Duration::from_millis(200);
+            state.gateway.timings.heartbeat_interval = Duration::from_secs(2);
+        },
+    )
+    .await;
+    let (owner, _, _) = server.owner().await;
+
+    // Never identifying still closes after the short wait.
+    let mut ws = server.connect().await;
+    assert_eq!(ws.closed().await, 4009);
+
+    // After identify, the first heartbeat may come a whole interval later.
+    let (mut ws, ready) = server.identify(&owner).await;
+    let session_id = ready["session_id"].as_str().unwrap().to_owned();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    ws.send(json!({ "op": "heartbeat", "d": { "last_seq": 0 } }))
+        .await;
+    assert_eq!(ws.recv_op("heartbeat_ack").await["op"], "heartbeat_ack");
+    drop(ws);
+
+    // The same after resuming.
+    let mut ws = server.connect().await;
+    ws.send_resume(&owner, &session_id, 0).await;
+    ws.recv_op("resumed").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    ws.send(json!({ "op": "heartbeat", "d": { "last_seq": 0 } }))
+        .await;
+    assert_eq!(ws.recv_op("heartbeat_ack").await["op"], "heartbeat_ack");
 }
 
 #[tokio::test]

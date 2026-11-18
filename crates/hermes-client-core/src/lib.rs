@@ -4,7 +4,9 @@
 //! engine.
 
 pub mod address;
+pub mod channel_keys;
 pub mod commands;
+pub mod compress;
 pub mod config;
 mod core;
 pub mod crash;
@@ -14,13 +16,16 @@ pub mod gateway;
 pub mod known_hosts;
 pub mod logs;
 pub mod notify;
+pub mod remote_file;
 pub mod rest;
+pub mod search_index;
 pub mod secure;
 pub mod store;
 pub mod time;
 pub mod tls;
 pub mod tokens;
 pub mod update;
+pub mod updater;
 pub mod view;
 pub mod voice;
 pub mod volumes;

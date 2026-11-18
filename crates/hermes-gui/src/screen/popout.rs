@@ -1,0 +1,162 @@
+//! A watched screen share in a window of its own, which can go fullscreen: double-click or F11
+//! toggles it, Esc leaves fullscreen and then closes the window.
+
+use std::sync::Arc;
+
+use gpui_kit::prelude::*;
+use gpui_kit::{
+    AnyWindowHandle, Bounds, Context, FocusHandle, KeyDownEvent, RenderImage, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, img, px, size,
+};
+
+use crate::shell::{ChannelKey, Shell};
+use crate::theme;
+
+pub struct PopOut {
+    shell: WeakEntity<Shell>,
+    key: ChannelKey,
+    /// The picture drawn last: freed from this window's GPU memory once a newer one shows.
+    shown: Option<Arc<RenderImage>>,
+    focus: FocusHandle,
+}
+
+impl PopOut {
+    fn toggle_fullscreen(window: &mut Window) {
+        window.toggle_fullscreen();
+    }
+}
+
+impl Render for PopOut {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(shell) = self.shell.upgrade() else {
+            window.remove_window();
+            return div().into_any_element();
+        };
+        let (picture, latest, gone) = {
+            let shell = shell.read(cx);
+            (
+                shell.screens.get(&self.key).map(|s| s.image.clone()),
+                shell.screen_latest.clone(),
+                shell
+                    .popped_out
+                    .as_ref()
+                    .is_none_or(|(k, _)| *k != self.key),
+            )
+        };
+        // The share ended, or another one took this window's place.
+        if gone {
+            window.remove_window();
+            return div().into_any_element();
+        }
+        if let Some(picture) = &picture
+            && self
+                .shown
+                .as_ref()
+                .is_some_and(|old| !Arc::ptr_eq(old, picture))
+            && let Some(old) = self.shown.replace(picture.clone())
+        {
+            let _ = window.drop_image(old);
+        } else if self.shown.is_none() {
+            self.shown.clone_from(&picture);
+        }
+        // The decoder makes pictures as large as this window shows them.
+        if let Some(latest) = latest {
+            let area = window.viewport_size();
+            let scale = window.scale_factor();
+            latest.set_shown_size(
+                (area.width.as_f32() * scale) as u32,
+                (area.height.as_f32() * scale) as u32,
+            );
+        }
+        // New pictures arrive without anything here changing: look again next frame.
+        window.request_animation_frame();
+        div()
+            .id("popout")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::rgb(0))
+            .text_color(theme::text_secondary())
+            .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
+                match event.keystroke.key.as_str() {
+                    "f11" => Self::toggle_fullscreen(window),
+                    "escape" if window.is_fullscreen() => Self::toggle_fullscreen(window),
+                    "escape" => window.remove_window(),
+                    _ => {}
+                }
+            }))
+            .on_click(cx.listener(|_, event: &gpui_kit::ClickEvent, window, _| {
+                if event.click_count() >= 2 {
+                    Self::toggle_fullscreen(window);
+                }
+            }))
+            .child(match picture {
+                Some(picture) => img(picture)
+                    .size_full()
+                    .object_fit(gpui_kit::ObjectFit::Contain)
+                    .into_any_element(),
+                None => "Waiting for a picture…".into_any_element(),
+            })
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    /// Opens `key`'s share in a window of its own (or brings it there instead of another one).
+    pub fn pop_out_share(&mut self, key: ChannelKey, title: String, cx: &mut Context<Self>) {
+        if let Some((_, handle)) = self.popped_out.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.watch_share(key.clone(), true);
+        let shell = cx.entity().downgrade();
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1280.), px(760.)),
+                cx,
+            ))),
+            window_min_size: Some(size(px(320.), px(200.))),
+            titlebar: Some(TitlebarOptions {
+                title: Some(title.into()),
+                appears_transparent: false,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let popped = key.clone();
+        let opened = gpui_kit::open_window(options, cx, move |window, cx| {
+            cx.new(|cx| {
+                let focus = cx.focus_handle();
+                focus.focus(window, cx);
+                // Closed by the user: the main window watches the share again only on its page.
+                let released = shell.clone();
+                cx.on_release(move |this: &mut PopOut, cx| {
+                    let key = this.key.clone();
+                    let _ = released.update(cx, |shell, cx| {
+                        if shell.popped_out.as_ref().is_some_and(|(k, _)| *k == key) {
+                            shell.popped_out = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+                PopOut {
+                    shell,
+                    key: popped,
+                    shown: None,
+                    focus,
+                }
+            })
+        });
+        match opened {
+            Ok((handle, _)) => self.popped_out = Some((key, handle)),
+            Err(err) => self.error(format!("could not open a window: {err}"), cx),
+        }
+        cx.notify();
+    }
+}
+
+/// The pop-out window of a share, if open.
+pub type PoppedOut = Option<(ChannelKey, AnyWindowHandle)>;

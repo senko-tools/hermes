@@ -7,12 +7,69 @@ use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
 
+/// When `user` was last online, as `viewer` sees it, once a write has had the time to land.
+async fn last_online(server: &TestServer, viewer: &str, user: &str) -> Value {
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    server
+        .get(&format!("/users/{user}"), Some(viewer))
+        .await
+        .ok()["last_online_at"]
+        .clone()
+}
+
+#[tokio::test]
+async fn last_online_counts_being_visible_and_server_activity_only() {
+    use hermes_server::gateway::last_online::MIN_VISIBLE_MS;
+
+    let server = start("users-last-online", RegistrationMode::InviteOnly).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let id = alice_id.parse().unwrap();
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // Connecting and going invisible at once leaves nothing.
+    let (mut ws, _) = server.identify(&alice).await;
+    ws.send(json!({ "op": "presence_update", "d": { "status": "invisible" } }))
+        .await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // While invisible, a DM does not count.
+    let dm = server
+        .post("/dms", Some(&alice), json!({ "recipient_ids": [owner_id] }))
+        .await
+        .ok();
+    send(&server, &alice, dm["id"].as_str().unwrap(), "psst").await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, Value::Null);
+
+    // Writing in a server does.
+    send(&server, &alice, &general, "hello").await;
+    let written = last_online(&server, &owner, &alice_id).await;
+    assert!(written.is_i64(), "{written}");
+
+    // Idle after being visible long enough: the moment it ended counts, and idling adds nothing.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    ws.send(json!({ "op": "presence_update", "d": { "status": "online" } }))
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    server.state.last_online.backdate(id, MIN_VISIBLE_MS);
+    ws.send(json!({ "op": "presence_update", "d": { "status": "idle" } }))
+        .await;
+    let idle_at = last_online(&server, &owner, &alice_id).await;
+    assert!(
+        idle_at.as_i64() > written.as_i64(),
+        "{idle_at} after {written}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(last_online(&server, &owner, &alice_id).await, idle_at);
+}
+
 async fn send(server: &TestServer, token: &str, channel: &str, content: &str) -> Value {
     server
         .post(
             &format!("/channels/{channel}/messages"),
             Some(token),
-            json!({ "content": content, "nonce": "n" }),
+            json!({ "content": content, "nonce": common::nonce() }),
         )
         .await
         .ok()
@@ -218,6 +275,129 @@ async fn search_finds_only_what_i_may_read() {
 }
 
 #[tokio::test]
+async fn about_me_shows_on_the_profile() {
+    let server = start("users-bio", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(profile.get("bio"), None, "none yet");
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "  Fox fan.
+Writes Rust.  " }),
+        )
+        .await
+        .ok();
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(
+        profile["bio"],
+        "Fox fan.
+Writes Rust."
+    );
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "x".repeat(191) }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+    server
+        .patch(
+            "/users/@me",
+            Some(&owner),
+            json!({ "bio": "a
+b
+c
+d
+e
+f
+g" }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+    server
+        .patch("/users/@me", Some(&owner), json!({ "bio": null }))
+        .await
+        .ok();
+    let profile = server
+        .get(&format!("/users/{owner_id}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(profile.get("bio"), None, "cleared");
+}
+
+#[tokio::test]
+async fn search_filters_without_words() {
+    let server = start("users-search-filters", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let general = server.channel_id(&space_id, "general");
+    let first = send(
+        &server,
+        &owner,
+        &general,
+        "see https://example.org for pizza",
+    )
+    .await;
+    let aid = server
+        .upload(&owner, "menu.txt", "text/plain", b"pizza".to_vec())
+        .await
+        .ok()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    server
+        .post(
+            &format!("/channels/{general}/messages"),
+            Some(&owner),
+            json!({ "content": "the menu", "nonce": common::nonce(), "attachment_ids": [aid] }),
+        )
+        .await
+        .ok();
+    send(&server, &owner, &general, "plain words").await;
+    let total = |found: Value| found["total"].as_u64().unwrap();
+
+    let instance = server.get("/instance", None).await.ok();
+    assert!(
+        instance["features"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("search_filters"))
+    );
+    let found = server.get("/search?has=link", Some(&owner)).await.ok();
+    assert_eq!(total(found), 1, "no words, only a filter");
+    let found = server.get("/search?has=file", Some(&owner)).await.ok();
+    assert_eq!(found["messages"][0]["content"], "the menu");
+    assert_eq!(total(found), 1);
+    let found = server
+        .get("/search?q=pizza&has=image", Some(&owner))
+        .await
+        .ok();
+    assert_eq!(total(found), 0);
+    let after = first["id"].as_str().unwrap();
+    let found = server
+        .get(
+            &format!("/search?after={after}&author_id={owner_id}"),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(total(found), 2, "newer than the first message");
+    server
+        .get("/search?has=smells", Some(&owner))
+        .await
+        .err(400, "BAD_REQUEST");
+}
+
+#[tokio::test]
 async fn mentions_inbox_lists_messages_that_ping_me() {
     let server = start("users-mentions", RegistrationMode::Open).await;
     let (owner, owner_id, space_id) = server.owner().await;
@@ -337,4 +517,128 @@ async fn the_server_applies_changes_made_by_the_user_commands() {
         hermes_server::users::refresh(&server.state).await.unwrap(),
         (0, 0)
     );
+}
+
+#[tokio::test]
+async fn two_factor_login_needs_a_code() {
+    let server = start("users-2fa", RegistrationMode::Open).await;
+    server.owner().await;
+    let (token, _) = server.register("alice", None).await;
+    let begun = server
+        .post(
+            "/users/@me/2fa/begin",
+            Some(&token),
+            json!({ "password": common::PASSWORD }),
+        )
+        .await
+        .ok();
+    let secret = begun["secret"].as_str().unwrap().to_owned();
+    assert_eq!(
+        server.get("/users/@me/2fa", Some(&token)).await.ok()["enabled"],
+        false,
+        "not until a code is confirmed"
+    );
+    server
+        .post(
+            "/users/@me/2fa/confirm",
+            Some(&token),
+            json!({ "code": "000000" }),
+        )
+        .await
+        .err(401, "INVALID_CREDENTIALS");
+    server
+        .sql(&format!(
+            "UPDATE users SET totp_secret = '{secret}', totp_pending = NULL"
+        ))
+        .await;
+    server
+        .login("alice", common::PASSWORD)
+        .await
+        .err(401, "TWO_FACTOR_REQUIRED");
+}
+
+#[tokio::test]
+async fn deleting_an_account_leaves_no_name_behind() {
+    let server = start("users-delete", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let path = format!("/channels/{general}/messages");
+    let sent = server
+        .post(
+            &path,
+            Some(&alice),
+            json!({ "content": "bye", "nonce": common::nonce() }),
+        )
+        .await
+        .ok();
+    let export = server.get("/users/@me/export", Some(&alice)).await.ok();
+    assert_eq!(export["messages"][0]["content"], "bye");
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&alice),
+            json!({ "password": "wrong", "delete_messages": true }),
+        )
+        .await
+        .err(401, "INVALID_CREDENTIALS");
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&alice),
+            json!({ "password": common::PASSWORD, "delete_messages": true }),
+        )
+        .await
+        .ok();
+    server
+        .get("/users/@me", Some(&alice))
+        .await
+        .err(401, "UNAUTHORIZED");
+    let history = server.get(&path, Some(&owner)).await.ok();
+    let gone = history
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == sent["id"])
+        .unwrap();
+    assert_eq!(gone["content"], "");
+    assert!(
+        gone["author"]["username"]
+            .as_str()
+            .unwrap()
+            .contains("deleted")
+    );
+    // A server is not left without an owner.
+    server
+        .post(
+            "/users/@me/delete",
+            Some(&owner),
+            json!({ "password": common::PASSWORD }),
+        )
+        .await
+        .err(400, "BAD_REQUEST");
+}
+
+#[tokio::test]
+async fn someone_blocked_cannot_start_a_dm() {
+    let server = start("users-block", RegistrationMode::Open).await;
+    server.owner().await;
+    let (alice, alice_id) = server.register("alice", None).await;
+    let (bob, bob_id) = server.register("bob", None).await;
+    server
+        .put(
+            &format!("/users/@me/blocks/{bob_id}"),
+            Some(&alice),
+            json!(null),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        server.get("/users/@me/blocks", Some(&alice)).await.ok(),
+        json!([bob_id])
+    );
+    server
+        .post("/dms", Some(&bob), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .err(403, "MISSING_PERMISSION");
 }

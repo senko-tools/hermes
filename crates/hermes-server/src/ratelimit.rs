@@ -27,13 +27,27 @@ use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::KeyExtractor;
 
 use crate::api::{Error, PeerAddr};
+use crate::config::ProxyRange;
 use crate::state::client_ip;
 
-/// Gateway ops a connection may send per [`GATEWAY_OPS_PERIOD`].
-pub const GATEWAY_OPS: u32 = 120;
 pub const GATEWAY_OPS_PERIOD: Duration = Duration::from_secs(60);
 /// The window of `limits.messages_per_5s`.
 pub const MESSAGES_PERIOD: Duration = Duration::from_secs(5);
+/// What a person can do too often. The value divides `limits.actions_per_minute`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Action {
+    Edit = 1,
+    React = 2,
+    Typing = 3,
+    Search = 4,
+    Upload = 5,
+    Friend = 6,
+    Ring = 12,
+    Password = 24,
+}
+
+/// One address may make this many times the REST requests of one session.
+const REST_IP_FACTOR: u32 = 10;
 /// How often idle REST limiter entries are dropped.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -142,16 +156,16 @@ pub enum RestKey {
 /// Keys requests by session token, falling back to the client IP.
 #[derive(Debug, Clone)]
 pub struct SessionOrIp {
-    trusted_proxies: Arc<[IpAddr]>,
+    trusted_proxies: Arc<[ProxyRange]>,
 }
 
 /// Keys requests by client IP (`network.trusted_proxies` aware).
 #[derive(Debug, Clone)]
 pub struct ClientIp {
-    trusted_proxies: Arc<[IpAddr]>,
+    trusted_proxies: Arc<[ProxyRange]>,
 }
 
-fn request_ip<T>(trusted: &[IpAddr], req: &Request<T>) -> IpAddr {
+fn request_ip<T>(trusted: &[ProxyRange], req: &Request<T>) -> IpAddr {
     match req.extensions().get::<ConnectInfo<PeerAddr>>() {
         Some(ConnectInfo(peer)) => client_ip(trusted, peer.0, req.headers()),
         // Only when serving without connect info (never in the real server).
@@ -229,24 +243,45 @@ fn governor_error(err: GovernorError) -> Response<Body> {
 /// Must run inside a tokio runtime.
 pub fn limit_rest<S: Clone + Send + Sync + 'static>(
     router: Router<S>,
-    trusted_proxies: &[IpAddr],
+    trusted_proxies: &[ProxyRange],
     per_second: u32,
 ) -> Router<S> {
     let extractor = SessionOrIp {
         trusted_proxies: trusted_proxies.into(),
     };
-    router.layer(governor_layer!(
-        extractor,
-        per_second,
-        Duration::from_secs(1)
-    ))
+    let by_ip = ClientIp {
+        trusted_proxies: trusted_proxies.into(),
+    };
+    router
+        .layer(governor_layer!(
+            extractor,
+            per_second,
+            Duration::from_secs(1)
+        ))
+        // The session's limit trusts any token it is shown, verified or not; made-up ones
+        // would each get a bucket of their own. Several people may share an address.
+        .layer(governor_layer!(
+            by_ip,
+            per_second.saturating_mul(REST_IP_FACTOR),
+            Duration::from_secs(1)
+        ))
+}
+
+impl crate::state::AppState {
+    /// One more `action` of `user`, unless they have done too many this minute.
+    pub fn throttle(&self, user: hermes_proto::id::Id, action: Action) -> Result<(), Error> {
+        let burst = (self.config.limits.actions_per_minute / action as u32).max(1);
+        self.action_limiter
+            .check(&(user, action), burst, Duration::from_secs(60))
+            .map_err(|wait| Error(ApiError::rate_limited(retry_ms(wait))))
+    }
 }
 
 /// Applies `limits.login_attempts_per_minute` per IP to one route.
 /// Must run inside a tokio runtime.
 pub fn limit_login<S: Clone + Send + Sync + 'static>(
     route: MethodRouter<S>,
-    trusted_proxies: &[IpAddr],
+    trusted_proxies: &[ProxyRange],
     per_minute: u32,
 ) -> MethodRouter<S> {
     let extractor = ClientIp {

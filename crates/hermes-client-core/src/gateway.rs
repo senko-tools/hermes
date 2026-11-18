@@ -104,6 +104,9 @@ impl Drop for Gateway {
     }
 }
 
+/// How far apart clients spread out when an established connection ends.
+const RECONNECT_SPREAD_MS: u64 = 5_000;
+
 /// Backoff before reconnect attempt `attempt` (1-based): 1 s, 2 s, 4 s, … capped at 30 s,
 /// with ±20 % jitter.
 pub fn backoff(attempt: u32) -> Duration {
@@ -152,13 +155,20 @@ impl Task {
 
     async fn run(mut self) {
         let mut attempt = 0u32;
+        let mut lost_session = false;
         let mut min_wait = Duration::ZERO;
         loop {
             if attempt > 0 {
                 if !self.emit(GatewayEvent::Status(ConnStatus::Reconnecting { attempt })) {
                     return;
                 }
-                let wait = backoff(attempt).max(min_wait);
+                // After a server restart everyone comes back: not all in the same second.
+                let spread = if lost_session {
+                    Duration::from_millis(rand::random_range(0..RECONNECT_SPREAD_MS))
+                } else {
+                    Duration::ZERO
+                };
+                let wait = backoff(attempt).max(min_wait) + spread;
                 if self.wait(wait).await {
                     return;
                 }
@@ -189,6 +199,7 @@ impl Task {
                 }
                 End::Shutdown => return,
             }
+            lost_session = connected;
             attempt = if connected { 1 } else { attempt + 1 };
         }
     }

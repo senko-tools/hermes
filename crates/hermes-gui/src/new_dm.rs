@@ -5,13 +5,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, div, px};
+use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::store::InstanceStore;
 
 use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
+use crate::theme::px;
 
 pub struct NewDm {
     pub inst: InstanceId,
@@ -30,6 +31,7 @@ impl Shell {
             }
         });
         input.update(cx, |input, cx| input.focus(window, cx));
+        self.cancel_closing("new-dm");
         self.new_dm = Some(NewDm {
             inst,
             input,
@@ -76,7 +78,7 @@ impl Shell {
             },
             move |this, result, window, cx| match result {
                 Ok(channel) => {
-                    this.new_dm = None;
+                    this.close_later("new-dm", |s| s.new_dm = None, cx);
                     this.select(inst, channel, window, cx);
                 }
                 Err(err) => {
@@ -101,7 +103,7 @@ impl Shell {
                 .gap(px(14.))
                 .child(heading("New message"))
                 .child(paragraph(
-                    "Names of your friends and people you share a space with, separated by commas (name or name#1234).",
+                    "Names of your friends and people you share a server with, separated by commas (name or name#1234).",
                 ))
                 .child(Input::new(&state.input).large())
                 .children(state.error.clone().map(error_line))
@@ -116,7 +118,7 @@ impl Shell {
                                 .large()
                                 .label("Cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.new_dm = None;
+                                    this.close_later("new-dm", |s| s.new_dm = None, cx);
                                     cx.notify();
                                 })),
                         )
@@ -125,6 +127,7 @@ impl Shell {
                                 .cursor_pointer()
                                 .large()
                                 .primary()
+                                .loading(state.busy)
                                 .label(if state.busy { "Please wait…" } else { "Open" })
                                 .disabled(state.busy)
                                 .when(state.busy, |b| b.cursor_default())

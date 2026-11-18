@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessageRequest};
+use hermes_proto::api::{
+    AckRequest, BulkDeleteRequest, EditMessageRequest, HistoryQuery, SendMessageRequest,
+};
 use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
-use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadState};
+use hermes_proto::models::{AuditAction, ChannelKind, Mentions, Message, MessageKind, ReadState};
 use hermes_proto::permissions::Permissions;
 use hermes_proto::{ApiError, ErrorCode};
 use serde_json::json;
@@ -21,7 +23,7 @@ use crate::db;
 use crate::db::messages::MessageRow;
 use crate::gateway::bus::Audience;
 use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
-use crate::ratelimit;
+use crate::ratelimit::{self, Action};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -166,7 +168,68 @@ fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<Strin
     Ok(Some(json))
 }
 
-/// DMs must be encrypted (`privacy.require_dm_encryption`); spaces are not.
+/// A sealed reaction: `e2-` and hex, long enough to hold one and short enough to store.
+fn is_sealed_reaction(emoji: &str) -> bool {
+    emoji.strip_prefix("e2-").is_some_and(|hex| {
+        (48..=256).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
+/// A reaction has to be an emoji, or one sealed by a client.
+fn check_emoji(emoji: &str) -> ApiResult<()> {
+    if emojis::get(emoji).is_none() && !is_sealed_reaction(emoji) {
+        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
+    }
+    Ok(())
+}
+
+/// Mentions of people, and of roles, one encrypted message may claim.
+const MAX_TOLD_MENTIONS: usize = 100;
+
+/// What a message mentions: read from its text, or as told for an encrypted one.
+fn mentions_of(content: &str, encrypted: bool, told: Option<&Mentions>) -> Mentions {
+    if encrypted {
+        let mut told = told.cloned().unwrap_or_default();
+        for list in [&mut told.users, &mut told.roles] {
+            list.sort();
+            list.dedup();
+            list.truncate(MAX_TOLD_MENTIONS);
+        }
+        told
+    } else {
+        hermes_proto::markup::extract_mentions(content)
+    }
+}
+
+/// An encrypted message in a server channel has to use the channel's current key, and one in a
+/// DM none of them.
+async fn check_epoch(
+    state: &AppState,
+    channel_id: Id,
+    kind: ChannelKind,
+    e2ee: Option<&Envelope>,
+) -> ApiResult<()> {
+    let Some(envelope) = e2ee else {
+        return Ok(());
+    };
+    if kind.is_private() {
+        return match envelope.epoch {
+            None => Ok(()),
+            Some(_) => Err(validate::field_error("e2ee", "must not name a channel key")),
+        };
+    }
+    let current = db::channel_keys::current_epoch(&state.db.read, channel_id).await?;
+    if envelope.epoch != Some(current) || current == 0 {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "This channel has a newer key",
+        ));
+    }
+    Ok(())
+}
+
+/// DMs must be encrypted (`privacy.require_dm_encryption`), and so must server channels
+/// (`privacy.require_channel_encryption`).
 fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) -> ApiResult<()> {
     if kind.is_private() {
         if e2ee.is_none() && state.config.privacy.require_dm_encryption {
@@ -175,10 +238,10 @@ fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) 
                 "Direct messages are end-to-end encrypted here: update Hermes to send them",
             ));
         }
-    } else if e2ee.is_some() {
-        return Err(validate::field_error(
-            "e2ee",
-            "only direct messages are encrypted",
+    } else if e2ee.is_none() && state.config.privacy.require_channel_encryption {
+        return Err(Error::new(
+            ErrorCode::BadRequest,
+            "Channels are end-to-end encrypted here: update Hermes to write in them",
         ));
     }
     Ok(())
@@ -186,6 +249,22 @@ fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) 
 
 /// `SEND_MESSAGES` (+ `ATTACH_FILES` with attachments); slowmode unless `BYPASS_SLOWMODE`.
 /// Mentions are stored and raise the mentioned users' mention counts.
+/// The reply to a send whose nonce already made message `id`.
+async fn send_again(
+    state: &Arc<AppState>,
+    channel_id: Id,
+    id: Id,
+    nonce: String,
+    viewer: Id,
+) -> ApiResult<Json<Message>> {
+    let row = db::messages::get(&state.db.read, channel_id, id)
+        .await?
+        .ok_or_else(|| Error::not_found("message"))?;
+    let mut message = one_to_wire(state, row, viewer).await?;
+    message.nonce = Some(nonce);
+    Ok(Json(message))
+}
+
 pub async fn send(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -232,12 +311,35 @@ pub async fn send(
         if !attachment_ids.is_empty() {
             t.require(Permissions::ATTACH_FILES)?;
         }
-        let resolved =
-            messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, &req.content);
+        let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+        let max_mentions = state.config.limits.max_mentions_per_message as usize;
+        if max_mentions > 0 && raw.users.len() + raw.roles.len() > max_mentions {
+            return Err(validate::field_error("content", "mentions too many people"));
+        }
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                c.recipient_ids
+                    .iter()
+                    .any(|id| *id != auth.user_id && cache.blocked(*id, auth.user_id))
+            })
+        {
+            return Err(Error::new(
+                ErrorCode::MissingPermission,
+                "This user does not accept direct messages from you",
+            ));
+        }
+        let resolved = messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, raw);
         let slowmode = Some(t.slowmode_secs)
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
         (resolved, slowmode, t.kind)
     };
+    // A retry after a lost reply gets the message it already made, whatever has changed since.
+    if let Some(id) =
+        db::messages::by_nonce(&state.db.read, channel_id, auth.user_id, &req.nonce).await?
+    {
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
+    check_epoch(&state, channel_id, kind, req.e2ee.as_ref()).await?;
     if let Some(reply_id) = req.reply_to_id
         && db::messages::get(&state.db.read, channel_id, reply_id)
             .await?
@@ -277,7 +379,14 @@ pub async fn send(
         e2ee,
     };
     let mut tx = state.db.write.begin().await?;
+    // Checked again here: the single writer settles two copies arriving together.
+    if let Some(id) = db::messages::by_nonce(&mut *tx, channel_id, auth.user_id, &req.nonce).await?
+    {
+        drop(tx);
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
     db::messages::insert(&mut tx, &row).await?;
+    db::messages::remember_nonce(&mut *tx, &row, &req.nonce, now).await?;
     for &attachment_id in &attachment_ids {
         if !db::messages::link_attachment(&mut tx, row.id, attachment_id, auth.user_id).await? {
             return Err(validate::field_error(
@@ -293,6 +402,9 @@ pub async fn send(
     if let Some(cached) = state.cache_mut().channels.get_mut(&channel_id) {
         let last = &mut cached.channel.last_message_id;
         *last = (*last).max(Some(row.id));
+    }
+    if !kind.is_private() {
+        crate::gateway::last_online::active(&state, auth.user_id);
     }
     if kind.is_private() {
         // Answering a message request accepts it.
@@ -324,6 +436,7 @@ pub async fn edit(
     Path((channel_id, message_id)): Path<(Id, Id)>,
     Json(req): Json<EditMessageRequest>,
 ) -> ApiResult<Json<Message>> {
+    state.throttle(auth.user_id, Action::Edit)?;
     let max = state.config.limits.max_message_length as usize;
     validate::message_content(&req.content, max)
         .map_err(|problem| validate::field_error("content", problem))?;
@@ -332,9 +445,10 @@ pub async fn edit(
         &state.cache(),
         channel_id,
         auth.user_id,
-        Permissions::VIEW_CHANNEL,
+        Permissions::SEND_MESSAGES,
     )?;
     check_encryption(&state, t.kind, e2ee.as_ref())?;
+    check_epoch(&state, channel_id, t.kind, req.e2ee.as_ref()).await?;
     let mut tx = checking_tx(&state).await?;
     let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
@@ -349,13 +463,9 @@ pub async fn edit(
     {
         return Err(validate::field_error("content", "must not be empty"));
     }
-    let resolved = messages::resolve_mentions(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        t.perms,
-        &req.content,
-    );
+    let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+    let resolved =
+        messages::resolve_mentions(&state.cache(), channel_id, auth.user_id, t.perms, raw);
 
     let now = now_ms();
     db::messages::edit_content(&mut tx, message_id, &req.content, e2ee.as_deref(), now).await?;
@@ -390,6 +500,7 @@ pub async fn delete(
     if !own {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
+    let stored = db::attachments::stored_of_message(&mut *tx, message_id).await?;
     db::messages::soft_delete(&mut tx, message_id).await?;
     if let Some(space_id) = t.space_id.filter(|_| !own) {
         audit::record(
@@ -404,6 +515,7 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
+    crate::files::purge(&state, stored).await;
     state.publish(
         ServerEvent::MessageDelete {
             id: message_id,
@@ -430,6 +542,54 @@ pub async fn unpin(
     set_pinned(&state, auth, channel_id, message_id, false).await
 }
 
+/// Deletes several messages at once: one's own, or anyone's with `MANAGE_MESSAGES`.
+pub async fn bulk_delete(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(channel_id): Path<Id>,
+    Json(req): Json<BulkDeleteRequest>,
+) -> ApiResult<StatusCode> {
+    if req.ids.len() > BulkDeleteRequest::MAX_IDS {
+        return Err(validate::field_error("ids", "are too many"));
+    }
+    let t = target(
+        &state.cache(),
+        channel_id,
+        auth.user_id,
+        Permissions::VIEW_CHANNEL,
+    )?;
+    let moderator = t.perms.contains(Permissions::MANAGE_MESSAGES);
+    let mut stored = Vec::new();
+    for id in &req.ids {
+        stored.extend(db::attachments::stored_of_message(&state.db.read, *id).await?);
+    }
+    let author = (!moderator).then_some(auth.user_id);
+    let mut tx = state.db.write.begin().await?;
+    let mut ids = db::messages::soft_delete_many(&mut tx, channel_id, &req.ids, author).await?;
+    if let (Some(space_id), true) = (t.space_id, moderator && !ids.is_empty()) {
+        audit::record(
+            &mut tx,
+            &state,
+            space_id,
+            auth.user_id,
+            AuditAction::MessageDeleteBulk,
+            None,
+            json!({ "channel_id": channel_id, "count": ids.len() }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    crate::files::purge(&state, stored).await;
+    if !ids.is_empty() {
+        ids.sort();
+        state.publish(
+            ServerEvent::MessageDeleteBulk { ids, channel_id },
+            Audience::Channel(channel_id),
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `MANAGE_MESSAGES`; in DMs any recipient. Pinning twice is not an error.
 async fn set_pinned(
     state: &AppState,
@@ -453,6 +613,22 @@ async fn set_pinned(
         return Ok(StatusCode::NO_CONTENT);
     }
     db::messages::set_pinned(&mut *tx, message_id, pinned).await?;
+    if let Some(space_id) = t.space_id {
+        audit::record(
+            &mut tx,
+            state,
+            space_id,
+            auth.user_id,
+            if pinned {
+                AuditAction::MessagePin
+            } else {
+                AuditAction::MessageUnpin
+            },
+            Some(message_id),
+            json!({ "channel_id": channel_id }),
+        )
+        .await?;
+    }
     tx.commit().await?;
     row.pinned = pinned;
     let message = one_to_wire(state, row, auth.user_id).await?;
@@ -486,9 +662,8 @@ pub async fn add_reaction(
     auth: Auth,
     Path((channel_id, message_id, emoji)): Path<(Id, Id, String)>,
 ) -> ApiResult<StatusCode> {
-    if emojis::get(&emoji).is_none() {
-        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
-    }
+    state.throttle(auth.user_id, Action::React)?;
+    check_emoji(&emoji)?;
     let t = target(
         &state.cache(),
         channel_id,
@@ -584,12 +759,20 @@ pub async fn typing(
     auth: Auth,
     Path(channel_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
-    target(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        Permissions::SEND_MESSAGES,
-    )?;
+    state.throttle(auth.user_id, Action::Typing)?;
+    {
+        let cache = state.cache();
+        let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        // Whoever has not accepted a message request does not see presence, or typing either.
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                let audience = cache.presence_audience(auth.user_id);
+                c.recipient_ids.iter().any(|id| !audience.contains(id))
+            })
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
     state.publish_except(
         ServerEvent::TypingStart {
             channel_id,

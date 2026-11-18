@@ -15,6 +15,8 @@ base64.workspace = true
 chacha20poly1305.workspace = true
 ed25519-dalek.workspace = true
 hkdf.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp"] }
+zstd.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
 directories.workspace = true
@@ -24,7 +26,7 @@ keyring.workspace = true
 notify.workspace = true
 quinn.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["stream", "gzip"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE channels SET key_handover = ?, new_members_read_history = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2729c4f3c3ca8fd20a7158df01650d5505dbe19317c737f8e3c9d05df7f3f9b1"
+}

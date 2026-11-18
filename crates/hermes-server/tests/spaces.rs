@@ -117,10 +117,10 @@ async fn update_transfer_delete() {
     // Icons must be images the caller uploaded.
     server
         .sql(&format!(
-            "INSERT INTO attachments (id, uploader_id, filename, content_type, size, sha256, created_at)
-             VALUES (77, {owner_id}, 'cat.png', 'image/png', 3, x'00', 0),
-                    (78, {alice_id}, 'dog.png', 'image/png', 3, x'00', 0),
-                    (79, {owner_id}, 'notes.txt', 'text/plain', 3, x'00', 0)"
+            "INSERT INTO attachments (id, uploader_id, filename, content_type, size, sha256, created_at, width)
+             VALUES (77, {owner_id}, 'cat.png', 'image/png', 3, zeroblob(32), 0, 16),
+                    (78, {alice_id}, 'dog.png', 'image/png', 3, zeroblob(32), 0, 16),
+                    (79, {owner_id}, 'notes.txt', 'text/plain', 3, zeroblob(32), 0, NULL)"
         ))
         .await;
     let space = server
@@ -222,7 +222,11 @@ async fn audit_log_permission_and_pagination() {
 
     let all = server.get(&log, Some(&alice)).await.ok();
     let all = all.as_array().unwrap();
-    assert_eq!(all.len(), 7);
+    assert_eq!(
+        all.len(),
+        8,
+        "the five changes, the role, its assignment and the invite"
+    );
     assert_eq!(all[0]["action"], "member_update");
     assert_eq!(all[0]["target_id"], alice_id);
     assert_eq!(all[1]["action"], "role_create");

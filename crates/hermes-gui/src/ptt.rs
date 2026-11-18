@@ -82,7 +82,9 @@ pub fn poll(
                         break;
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                // Without a key there is nothing to catch quickly.
+                let idle = if held.is_empty() { 250 } else { 10 };
+                std::thread::sleep(std::time::Duration::from_millis(idle));
             }
         });
     if let Err(err) = spawned {

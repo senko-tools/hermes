@@ -23,8 +23,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.menu = None;
+        self.close_later("menu", |s| s.menu = None, cx);
         if action.is_destructive() {
+            self.cancel_closing("confirm");
             self.confirm = Some((target, action));
             cx.notify();
         } else {
@@ -134,13 +135,13 @@ impl Shell {
                 );
             }
             (Target::Space(_, space), Action::CopySpaceId) => {
-                self.copy(space.to_string(), "Space ID", cx);
+                self.copy(space.to_string(), "Server ID", cx);
             }
             (Target::Space(inst, space), Action::LeaveSpace) => {
                 self.leave_space(&inst, space, cx);
                 self.call_status(
                     &inst,
-                    "Left the space",
+                    "Left the server",
                     move |r| async move { r.leave_space(space).await },
                     cx,
                 );
@@ -149,7 +150,7 @@ impl Shell {
                 self.leave_space(&inst, space, cx);
                 self.call_status(
                     &inst,
-                    "Space deleted",
+                    "Server deleted",
                     move |r| async move { r.delete_space(space).await },
                     cx,
                 );
@@ -185,6 +186,10 @@ impl Shell {
                 | Action::NotifyMentions
                 | Action::NotifyNothing
                 | Action::NotifyDefault
+                | Action::MuteFor15Minutes
+                | Action::MuteForHour
+                | Action::MuteFor8Hours
+                | Action::MuteForDay
                 | Action::Mute
                 | Action::Unmute),
             ) => self.set_notifications(inst, id, a, cx),
@@ -247,6 +252,38 @@ impl Shell {
                 );
             }
 
+            (Target::Space(inst, space), Action::MoveServerUp) => {
+                self.move_server(&inst, space, true, cx);
+            }
+            (Target::Space(inst, space), Action::MoveServerDown) => {
+                self.move_server(&inst, space, false, cx);
+            }
+            (Target::Member(inst, _, user), Action::EditNote) => {
+                self.open_form_note(inst, user, window, cx);
+            }
+            (Target::Member(inst, _, user), Action::EditLocalName) => {
+                self.open_form_local_name(inst, user, window, cx);
+            }
+            (Target::Member(inst, _, user), Action::Block) => {
+                let core = self.core.clone();
+                self.run_status(cx, async move {
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    // Someone blocked is no longer a friend either.
+                    let _ = rest.remove_friend(user).await;
+                    rest.block(user).await.map_err(|e| e.to_string())?;
+                    core.set_blocked(&inst, user, true);
+                    Ok("Blocked".to_owned())
+                });
+            }
+            (Target::Member(inst, _, user), Action::Unblock) => {
+                let core = self.core.clone();
+                self.run_status(cx, async move {
+                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    rest.unblock(user).await.map_err(|e| e.to_string())?;
+                    core.set_blocked(&inst, user, false);
+                    Ok("Unblocked".to_owned())
+                });
+            }
             (Target::Member(inst, _, user), Action::AddFriend) => {
                 let handle = {
                     let store = core.store();
@@ -328,6 +365,26 @@ impl Shell {
             (Target::Member(inst, Some(space), user), Action::ChangeNickname) => {
                 self.open_form_nickname(inst, space, user, window, cx);
             }
+            (
+                Target::Member(inst, Some(space), user),
+                action @ (Action::Timeout10Minutes
+                | Action::Timeout1Hour
+                | Action::Timeout1Day
+                | Action::EndTimeout),
+            ) => {
+                let (seconds, done) = match action {
+                    Action::Timeout10Minutes => (10 * 60, "Timed out for 10 minutes"),
+                    Action::Timeout1Hour => (60 * 60, "Timed out for 1 hour"),
+                    Action::Timeout1Day => (24 * 60 * 60, "Timed out for 1 day"),
+                    _ => (0, "Timeout ended"),
+                };
+                self.call_status(
+                    &inst,
+                    done,
+                    move |r| async move { r.timeout(space, user, seconds).await },
+                    cx,
+                );
+            }
             (Target::Member(inst, Some(space), user), Action::Kick) => {
                 self.call_status(
                     &inst,
@@ -364,6 +421,7 @@ impl Shell {
     ) {
         if self.run_message_action(&target, action, window, cx)
             || self.run_space_action(&target, action, window, cx)
+            || self.run_member_action(&target, action, window, cx)
         {
             return;
         }
@@ -427,11 +485,17 @@ impl Shell {
             Action::NotifyMentions => Some((NotificationLevel::Mentions, muted_until)),
             Action::NotifyNothing => Some((NotificationLevel::None, muted_until)),
             Action::Mute => Some((level, Some(NotificationSetting::MUTED_FOREVER))),
+            a if a.mute_minutes().is_some() => Some((
+                level,
+                a.mute_minutes()
+                    .map(|m| hermes_client_core::now_ms() + m * 60_000),
+            )),
             Action::Unmute => Some((level, None)),
             _ => None,
         };
         let text = match action {
             Action::Mute => "Muted",
+            a if a.mute_minutes().is_some() => "Muted for a while",
             Action::Unmute => "Unmuted",
             _ => "Notifications changed",
         };

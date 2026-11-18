@@ -6,10 +6,11 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use gpui_kit::AnimationExt as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, Context, MouseButton, Pixels, Point, Size, Subscription, Window,
-    div, px,
+    div,
 };
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::id::Id;
@@ -36,6 +37,7 @@ use crate::screen::{Latest, Share, capture::Capture};
 use crate::settings::SettingsPage;
 use crate::single_instance::{self, Endpoint};
 use crate::space_settings::SpacePage;
+use crate::theme::px;
 use crate::voice::{Call, NetHistory, VolumeMenu};
 use crate::{theme, watchdog};
 
@@ -90,8 +92,18 @@ pub enum Level {
     Error,
 }
 
-/// How long an info line stays.
-const INFO_FOR: Duration = Duration::from_secs(5);
+/// How long a copy button says "Copied".
+const COPIED_FOR: Duration = Duration::from_millis(1200);
+
+/// How many recently open channels each server remembers.
+const RECENT_CHANNELS: usize = 10;
+
+/// How long an info line stays: `general.status_seconds`.
+static INFO_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
+
+type MemberGroupsCache = std::cell::RefCell<
+    HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
+>;
 
 pub struct Shell {
     pub core: Core,
@@ -101,16 +113,53 @@ pub struct Shell {
     pub config: ClientConfig,
     pub page: Page,
     pub selected: Selected,
-    /// The channel last open in each space, reopened when the space is selected again.
-    pub last_channel: HashMap<(InstanceId, Id), Id>,
+    /// The channels last open in each space, the latest last: the latest is reopened when the
+    /// space is selected again, and the one before when it is deleted.
+    pub recent_channels: HashMap<(InstanceId, Id), Vec<Id>>,
     pub collapsed: Collapsed,
+    /// How many times each category was opened by a click: its rows fade in under a new key.
+    pub category_opened: HashMap<(InstanceId, Id), u32>,
     pub chats: HashMap<ChannelKey, ChatView>,
     pub images: Images,
     pub status: Option<Status>,
     status_serial: u64,
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
+    /// The page drawn in the last frame, and the one fading out after a change (with a serial
+    /// for its animation).
+    shown_page: Option<Page>,
+    leaving: Option<(Page, u64)>,
+    page_serial: u64,
+    /// The message whose file the mouse is over: its highlight stays off.
+    pub hovered_file: Option<hermes_client_core::proto::id::Id>,
+    /// What the pointer is over, of the things that change on a spring under it (`hover.rs`).
+    pub hovered: HashSet<gpui_kit::SharedString>,
+    /// The copy button used a moment ago: it says "Copied".
+    pub copied: Option<String>,
+    /// What is playing its way out, with the serial of its close (`modal.rs`).
+    pub closing_serials: HashMap<&'static str, u64>,
+    pub closing_serial: u64,
+    /// Messages and reaction chips drawn before (`channel.rs`).
+    pub reactions_seen: std::cell::RefCell<crate::channel::ReactionsSeen>,
+    /// Instances whose connection banner showed: `None` while it does, then when the
+    /// connection came back (the banner says so for a moment).
+    pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
+    /// Each sidebar row's place in the list as last drawn, and whether it is a category.
+    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, (usize, bool)>>>,
+    /// The voice panel's height as last painted, in window pixels.
+    pub voice_panel_height: std::rc::Rc<std::cell::Cell<f32>>,
+    /// Chat text selected with the mouse.
+    pub selection: crate::selection::TextSelection,
     pub menu: Option<OpenMenu>,
+    /// Where the last menu opened: what its entries open goes there too.
+    pub menu_at: Point<Pixels>,
+    /// The same, with what was clicked: popups its entries open hug it.
+    pub menu_from: crate::modal::PopupFrom,
+    /// What popups can hug, as last painted: every element with a menu, and the buttons that
+    /// open popups. Filled while painting, emptied at the start of each frame.
+    pub popup_triggers: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
+    /// The profile card that is open.
+    pub profile: Option<crate::user_menu::ProfileCard>,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
     pub add_instance: Option<AddInstance>,
@@ -133,6 +182,7 @@ pub struct Shell {
     /// What a results page goes back to.
     pub previous_page: Option<Page>,
     pub command_bar: Option<CommandBar>,
+    pub emoji_picker: Option<crate::emoji_picker::EmojiPicker>,
     pub keybinds: Keybinds,
     /// What the Friends page lists.
     pub friends_tab: crate::friends::FriendsTab,
@@ -141,13 +191,50 @@ pub struct Shell {
     pub sidebar_visible: bool,
     /// The sidebar's edge is being dragged: where the drag started, and the width then.
     pub resizing: Option<(f32, f32)>,
+    /// What is being resized is the member list, not the sidebar.
+    pub resizing_members: bool,
+    /// The status went idle by itself, so it comes back by itself.
+    pub auto_idle: bool,
+    /// What the system asked for, under the setting.
+    pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
     pub update: Option<hermes_client_core::update::Update>,
+    /// The updater's window, while it is open.
+    pub updater: Option<crate::updater_window::Updater>,
+    /// "Not now" on the newer-server banner, for this run.
+    pub newer_server_dismissed: bool,
     pub new_dm: Option<NewDm>,
     /// The full-size image viewer.
     pub viewer: Option<Viewer>,
     /// The safety number of a conversation.
     pub keys_dialog: Option<crate::encryption::KeysDialog>,
+    /// The popup over an unencrypted chat that was just opened.
+    pub unencrypted_popup: Option<(InstanceId, Id)>,
+    /// How far the rail's servers are scrolled.
+    pub rail_scroll: gpui_kit::ScrollHandle,
+    /// The rail slot last selected: the pill springs on from there.
+    pub rail_pill_slot: std::cell::Cell<f32>,
+    /// Per highlighted sidebar row: the state it changed from and the one it shows, so a change
+    /// between two highlighted states crossfades instead of growing the bar again.
+    /// How tall each row growing into the chat turned out, by its animation key (see
+    /// `channel::grow_in`).
+    pub grow_heights: crate::channel::GrowHeights,
+    /// Colours of code blocks already worked out.
+    pub syntax_cache: std::cell::RefCell<crate::syntax::Cache>,
+    pub row_tints: std::cell::RefCell<
+        std::collections::HashMap<String, (crate::sidebar::RowState, crate::sidebar::RowState)>,
+    >,
+    /// Message text parsed already, by what it depends on. Parsing and resolving mentions per
+    /// visible row per frame was the biggest cost of drawing a chat.
+    pub markup_cache: std::cell::RefCell<HashMap<u64, std::rc::Rc<Vec<crate::markup::Block>>>>,
+    /// The member list, grouped and sorted, per server.
+    pub member_groups_cache: MemberGroupsCache,
+    /// Plays mouse-wheel notches back smoothly.
+    pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
+    /// Sound and video files that were clicked: loading, playing or paused.
+    pub media: crate::media::cards::Media,
+    /// A picked picture being cropped before it is uploaded.
+    pub crop: Option<crate::crop::Crop>,
     /// Local UTC offset for timestamps, read once at startup.
     pub utc_offset: i64,
     pub next_upload: u64,
@@ -170,20 +257,26 @@ pub struct Shell {
     pub net: NetHistory,
     /// How many seconds the network graphs show.
     pub net_range: usize,
+    /// Which measure the network popup graphs (its tiles' order).
+    pub net_graph: usize,
     /// Where the pointer is along the network graphs, 0 to 1.
     pub net_hover: Option<f32>,
     /// The window's size, as last drawn.
     pub viewport: Size<Pixels>,
     /// The network details are open, where they were asked for.
-    pub network_open: Option<Point<Pixels>>,
+    pub network_open: Option<crate::modal::PopupFrom>,
     /// The size of the voice room's tile area, as last drawn.
     pub room_area: Size<Pixels>,
-    /// The share menu is open, where it was asked for.
-    pub share_menu: Option<Point<Pixels>>,
+    /// The share picker, while it is open.
+    pub share_menu: Option<crate::share_picker::SharePicker>,
+    /// Counts the picker's openings, so an old refresh loop stops.
+    pub share_generation: u64,
     /// The screens that can be shared, primary first.
     pub screen_names: Vec<String>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
+    /// My share's sound, while it is sent.
+    pub share_sound: Option<crate::screen::sound::ShareSound>,
     /// The latest picture of each screen share I watch.
     pub screens: HashMap<ChannelKey, Share>,
     /// The screen share shown alone in the voice room (clicked to enlarge).
@@ -194,6 +287,8 @@ pub struct Shell {
     /// What the core was last told to receive.
     pub watched_now: Vec<Id>,
     pub screen_latest: Option<Arc<Latest>>,
+    /// A share shown in a window of its own.
+    pub popped_out: crate::screen::popout::PoppedOut,
     pub tray: Option<Tray>,
     pub global_keys: Option<GlobalKeys>,
     /// The window is shown (not hidden in the tray).
@@ -206,6 +301,8 @@ pub struct Shell {
     title: String,
     /// The colour last given to the title bar.
     title_bar: Option<gpui_kit::Rgba>,
+    /// The unread count shown on the taskbar button.
+    taskbar_count: Option<u32>,
     /// Give the keyboard to the open chat's message box at the next draw.
     pub focus_composer: bool,
     /// The window has the keyboard focus.
@@ -248,14 +345,32 @@ impl Shell {
             config,
             page: Page::Friends,
             selected: Selected::Home,
-            last_channel: HashMap::new(),
+            recent_channels: HashMap::new(),
             collapsed,
+            category_opened: HashMap::new(),
             chats: HashMap::new(),
             images: Images::default(),
             status: None,
             status_serial: 0,
             right_pressed: None,
+            hovered_file: None,
+            hovered: HashSet::new(),
+            copied: None,
+            closing_serials: HashMap::new(),
+            closing_serial: 0,
+            reactions_seen: Default::default(),
+            reconnect_banner: Default::default(),
+            sidebar_order: Default::default(),
+            voice_panel_height: Default::default(),
+            shown_page: None,
+            leaving: None,
+            page_serial: 0,
+            selection: Default::default(),
             menu: None,
+            menu_at: Point::default(),
+            menu_from: crate::modal::PopupFrom::point(Point::default()),
+            popup_triggers: Default::default(),
+            profile: None,
             confirm: None,
             add_instance: None,
             form: None,
@@ -269,15 +384,32 @@ impl Shell {
             results: HashMap::new(),
             previous_page: None,
             command_bar: None,
+            emoji_picker: None,
             keybinds,
             friends_tab: crate::friends::FriendsTab::default(),
             show_members: true,
             sidebar_visible: true,
             resizing: None,
+            resizing_members: false,
+            auto_idle: false,
+            system_reduce_motion: false,
             update: None,
+            newer_server_dismissed: false,
+            updater: None,
             new_dm: None,
             viewer: None,
             keys_dialog: None,
+            unencrypted_popup: None,
+            rail_scroll: gpui_kit::ScrollHandle::new(),
+            rail_pill_slot: std::cell::Cell::new(0.),
+            row_tints: Default::default(),
+            grow_heights: Default::default(),
+            syntax_cache: Default::default(),
+            markup_cache: Default::default(),
+            member_groups_cache: Default::default(),
+            smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
+            crop: None,
+            media: Default::default(),
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,
@@ -291,18 +423,22 @@ impl Shell {
             volume_menu: None,
             net: NetHistory::default(),
             net_range: crate::voice::NET_RANGES[0],
+            net_graph: 0,
             net_hover: None,
             viewport: window.viewport_size(),
             network_open: None,
             room_area: crate::voice::no_area(),
             share_menu: None,
+            share_generation: 0,
             screen_names: Vec::new(),
             capture: None,
+            share_sound: None,
             screens: HashMap::new(),
             enlarged_share: None,
             watching_shares: HashSet::new(),
             watched_now: Vec::new(),
             screen_latest: None,
+            popped_out: None,
             tray,
             global_keys,
             window_visible: !start_hidden,
@@ -310,14 +446,21 @@ impl Shell {
             restore: None,
             title: String::new(),
             title_bar: None,
+            taskbar_count: None,
             focus_composer: false,
             focused: true,
             _subscriptions: subscriptions,
         };
         this.restore_layout();
+        crate::open::clear_pasted();
         this.reload_theme(cx);
+        this.system_reduce_motion = cx.reduce_motion();
+        this.show_members = this.config.sidebar.show_members;
+        this.sidebar_visible = this.config.sidebar.visible;
+        this.apply_motion(cx);
         window.set_rem_size(gpui_kit::px(16. * crate::theme::scale()));
         this.start_theme_watcher(cx);
+        this.start_idle_watch(cx);
         this.check_for_update(cx);
         if let Some(warning) = key_warnings.into_iter().next() {
             this.warn(warning, cx);
@@ -327,6 +470,7 @@ impl Shell {
         this.start_heartbeat(cx);
         this.start_meter_timer(cx);
         this.start_call_clock(cx);
+        this.start_media_sweep(cx);
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);
@@ -431,7 +575,8 @@ impl Shell {
                             "another launch handed over {}",
                             if link.is_empty() { "nothing" } else { "a link" }
                         );
-                        window.activate_window();
+                        // Also out of the tray: a second launch means "show me".
+                        this.show_window(window, cx);
                         if !link.is_empty() {
                             this.open_link(link, window, cx);
                         }
@@ -443,13 +588,20 @@ impl Shell {
         .detach();
     }
 
-    /// Redraws once a second during a call, for the time on the voice channel's row.
+    /// Redraws once a second during a call, for the time on the voice channel's row, and while an
+    /// instance has just lost its connection, so the connection icon and the chat's banner change
+    /// once the outage has lasted long enough to show.
     fn start_call_clock(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.core.voice_channel().is_some() {
+                    let just_lost = this.core.instance_ids().iter().any(|inst| {
+                        this.core.down_for(inst).is_some_and(|d| {
+                            d <= crate::sidebar::BANNER_AFTER + Duration::from_secs(1)
+                        })
+                    });
+                    if this.core.voice_channel().is_some() || just_lost {
                         cx.notify();
                     }
                 });
@@ -484,6 +636,7 @@ impl Shell {
                 }
             }
             CoreEvent::Error(text) => self.error(text, cx),
+            CoreEvent::Info(text) => self.info(text, cx),
             CoreEvent::Notification { inst, notification } => {
                 self.notify(inst, notification, window, cx);
             }
@@ -504,17 +657,20 @@ impl Shell {
                 return;
             }
             CoreEvent::StoreChanged { inst, what } => {
-                // Messages show names, role colours and channel names, which these never change
-                // (any other change may, messages too: they bring the users they mention).
-                if !matches!(
+                let people_changed = matches!(
                     what,
-                    Changed::Presence(_)
-                        | Changed::ReadState(_)
-                        | Changed::Typing(_)
-                        | Changed::VoiceStates
-                        | Changed::NotificationSettings
-                ) {
-                    self.forget_markup(&inst);
+                    Changed::All
+                        | Changed::Me
+                        | Changed::Spaces
+                        | Changed::Space(_)
+                        | Changed::Members(_)
+                        | Changed::Users
+                );
+                if people_changed || matches!(what, Changed::Channel(_) | Changed::Dms) {
+                    self.markup_cache.borrow_mut().clear();
+                }
+                if people_changed || matches!(what, Changed::Presence(_)) {
+                    self.member_groups_cache.borrow_mut().clear();
                 }
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
@@ -527,11 +683,13 @@ impl Shell {
                         }
                     }
                     Changed::Spaces | Changed::Dms | Changed::Channel(_) => {
-                        self.check_page_exists(cx);
+                        self.check_page_exists(window, cx);
                     }
                     _ => {}
                 }
-                self.load_avatars(cx);
+                if people_changed {
+                    self.load_avatars(cx);
+                }
             }
             // The views read the store directly; the other events only trigger a redraw.
             CoreEvent::InstanceStatus { .. }
@@ -553,7 +711,7 @@ impl Shell {
 
     /// A new `ready`: the open chat's window was dropped, so it loads again.
     fn everything_changed(&mut self, inst: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.check_page_exists(cx);
+        self.check_page_exists(window, cx);
         if let Page::Chat(i, channel) = &self.page
             && i == inst
         {
@@ -563,7 +721,7 @@ impl Shell {
     }
 
     /// Leaves a channel or space that is gone (deleted, or I left it).
-    fn check_page_exists(&mut self, cx: &mut Context<Self>) {
+    fn check_page_exists(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.core.store();
         let selected_gone = match &self.selected {
             Selected::Home => false,
@@ -581,9 +739,40 @@ impl Shell {
         if selected_gone {
             self.selected = Selected::Home;
         }
+        // A deleted channel: back to the one open before it in its server (a voice channel's
+        // room, without joining it).
+        if page_gone
+            && !selected_gone
+            && let Selected::Space(inst, space) = self.selected.clone()
+            && let Some(channel) = self.fallback_channel(&inst, space)
+        {
+            self.select(inst, channel, window, cx);
+            return;
+        }
         if page_gone || selected_gone {
             self.open_friends(cx);
         }
+    }
+
+    /// What a server opens: its latest channel that still exists, else its first text channel.
+    fn fallback_channel(&self, inst: &InstanceId, space: Id) -> Option<Id> {
+        let store = self.core.store();
+        let s = store.instance(inst)?;
+        self.recent_channels
+            .get(&(inst.clone(), space))
+            .and_then(|recent| {
+                recent
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|c| s.channel(*c).is_some())
+            })
+            .or_else(|| {
+                hermes_client_core::view::channel_tree(s, space)
+                    .into_iter()
+                    .find(|c| c.kind == ChannelKind::Text)
+                    .map(|c| c.id)
+            })
     }
 
     // ---- status line --------------------------------------------------------------------------
@@ -591,6 +780,7 @@ impl Shell {
     pub fn show_status(&mut self, text: String, level: Level, cx: &mut Context<Self>) {
         self.status_serial += 1;
         let serial = self.status_serial;
+        self.cancel_closing("status");
         self.status = Some(Status {
             text,
             level,
@@ -598,11 +788,13 @@ impl Shell {
         });
         if level == Level::Info {
             cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(INFO_FOR).await;
+                let seconds = INFO_SECONDS.load(std::sync::atomic::Ordering::Relaxed);
+                cx.background_executor()
+                    .timer(Duration::from_secs(seconds))
+                    .await;
                 let _ = this.update(cx, |this, cx| {
                     if this.status.as_ref().is_some_and(|s| s.serial == serial) {
-                        this.status = None;
-                        cx.notify();
+                        this.close_later("status", |s| s.status = None, cx);
                     }
                 });
             })
@@ -635,7 +827,11 @@ impl Shell {
 
     /// The config changed: everything that follows it.
     pub fn apply_config(&mut self, cx: &mut Context<Self>) {
+        let old_buffer = self.config.buffer.clone();
         self.config = self.core.config();
+        if self.config.buffer != old_buffer {
+            self.refresh_chats();
+        }
         let (keybinds, warnings) = Keybinds::from_config(&self.config.keys);
         self.keybinds = keybinds;
         if let Some(warning) = warnings.into_iter().next() {
@@ -643,13 +839,83 @@ impl Shell {
         }
         self.update_ptt_keys();
         self.register_global_keys(cx);
+        self.apply_motion(cx);
         cx.notify();
+    }
+
+    fn apply_motion(&self, cx: &mut Context<Self>) {
+        let general = &self.config.general;
+        theme::set_motion_speed(&general.motion_speed);
+        cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
+        INFO_SECONDS.store(
+            u64::from(general.status_seconds.max(1)),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        theme::HEADING_EXTRA.store(
+            self.config.font.heading_extra.clamp(0, 16),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::channel::MEDIA_SCALE.store(
+            self.config.buffer.media_scale.clamp(25, 300),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.smooth_scroll
+            .configure(general.smooth_scroll, general.scroll_speed as f32);
+    }
+
+    /// Whether animated pictures move right now.
+    pub fn animating(&self) -> bool {
+        self.focused && self.config.general.animate_pictures
+    }
+
+    pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
+        let shown = !self.show_members;
+        self.show_members = shown;
+        self.persist("sidebar.show_members", &shown.to_string(), cx);
+    }
+
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        let shown = !self.sidebar_visible;
+        self.sidebar_visible = shown;
+        self.persist("sidebar.visible", &shown.to_string(), cx);
     }
 
     /// Puts text on the clipboard; `what` names it for the status line.
     pub fn copy(&mut self, text: String, what: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         self.info(format!("{what} copied"), cx);
+    }
+
+    /// The same from a copy button named `button`: it says "Copied" for a moment.
+    pub fn copy_from(
+        &mut self,
+        button: impl Into<String>,
+        text: String,
+        what: &str,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy(text, what, cx);
+        let button = button.into();
+        self.copied = Some(button.clone());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.copied.as_deref() == Some(button.as_str()) {
+                    this.copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A copy button's label: `label`, or "Copied" just after it was used.
+    pub fn copy_label(&self, button: &str, label: &'static str) -> &'static str {
+        if self.copied.as_deref() == Some(button) {
+            "Copied"
+        } else {
+            label
+        }
     }
 
     // ---- navigation ---------------------------------------------------------------------------
@@ -671,23 +937,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.selected = Selected::Space(inst.clone(), space);
-        let channel = {
-            let store = self.core.store();
-            let s = store.instance(&inst);
-            self.last_channel
-                .get(&(inst.clone(), space))
-                .copied()
-                .filter(|c| s.is_some_and(|s| s.channel(*c).is_some()))
-                .or_else(|| {
-                    s.and_then(|s| {
-                        hermes_client_core::view::channel_tree(s, space)
-                            .into_iter()
-                            .find(|c| c.kind == ChannelKind::Text)
-                            .map(|c| c.id)
-                    })
-                })
-        };
-        if let Some(channel) = channel {
+        if let Some(channel) = self.fallback_channel(&inst, space) {
             self.select(inst, channel, window, cx);
         }
         cx.notify();
@@ -712,7 +962,15 @@ impl Shell {
         };
         self.selected = match space {
             Some(space) => {
-                self.last_channel.insert((inst.clone(), space), channel);
+                let recent = self
+                    .recent_channels
+                    .entry((inst.clone(), space))
+                    .or_default();
+                recent.retain(|c| *c != channel);
+                recent.push(channel);
+                if recent.len() > RECENT_CHANNELS {
+                    recent.remove(0);
+                }
                 Selected::Space(inst.clone(), space)
             }
             None => Selected::Home,
@@ -751,7 +1009,7 @@ impl Shell {
                 .instance(inst)
                 .and_then(|s| s.spaces.get(space))
                 .map_or("", |s| s.space.name.as_str());
-            title_parts("Space settings", Some(name))
+            title_parts("Server settings", Some(name))
         } else if self.settings.is_some() {
             "Settings".to_owned()
         } else {
@@ -817,7 +1075,7 @@ impl Shell {
             .h(px(28.))
             .px(px(8.))
             .mr(px(8.))
-            .rounded(px(4.))
+            .rounded(theme::radius_small())
             .cursor_pointer()
             .bg(crate::theme::raised())
             .text_size(crate::theme::caption_size())
@@ -873,9 +1131,17 @@ impl Shell {
             controls.push(
                 crate::channel::tip_button("header-members", assets::USERS, "Member list")
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_members = !this.show_members;
-                        cx.notify();
+                        this.toggle_members(cx);
                     }))
+                    // Pressed in while the list shows; the press flows in and out.
+                    .with_spring(
+                        "header-members-on",
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(self.show_members),
+                        |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
+                    )
                     .into_any_element(),
             );
             controls.push(
@@ -905,15 +1171,36 @@ impl Shell {
     }
 
     fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use gpui_kit::AnimationExt as _;
         let status = self.status.as_ref()?;
-        let color = match status.level {
-            Level::Info => theme::text_secondary(),
-            Level::Warning => theme::accent(),
-            Level::Error => theme::danger(),
+        let (color, glyph) = match status.level {
+            Level::Info => (theme::text_secondary(), assets::INFO),
+            Level::Warning => (theme::accent(), assets::INFO),
+            Level::Error => (theme::danger(), assets::BAN),
         };
+        let serial = status.serial;
+        let leaving = crate::modal::closing("status");
+        // An info line goes by itself: a thin bar runs out until it does.
+        let countdown = (status.level == Level::Info).then(|| {
+            let seconds = INFO_SECONDS
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(1);
+            div()
+                .absolute()
+                .left_0()
+                .bottom_0()
+                .h(px(2.))
+                .bg(theme::alpha(theme::accent(), 0.5))
+                .with_animation(
+                    gpui_kit::SharedString::from(format!("status-countdown-{serial}")),
+                    gpui_kit::Animation::new(Duration::from_secs(seconds)),
+                    |d, t| d.w(gpui_kit::relative(1. - t)),
+                )
+        });
         Some(
             div()
                 .id("status-line")
+                .relative()
                 .flex()
                 .flex_shrink_0()
                 .items_center()
@@ -925,16 +1212,28 @@ impl Shell {
                 .border_color(theme::border())
                 .text_size(theme::secondary_size())
                 .text_color(color)
+                .child(icon(glyph, 16., color))
                 .child(div().flex_1().min_w_0().child(status.text.clone()))
                 .child(
-                    div()
-                        .id("status-dismiss")
-                        .cursor_pointer()
-                        .child(icon(assets::CLOSE, 16., theme::text_tertiary()))
+                    crate::channel::tip_button("status-dismiss", assets::CLOSE, "Dismiss")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.status = None;
-                            cx.notify();
+                            this.close_later("status", |s| s.status = None, cx);
                         })),
+                )
+                .children(countdown)
+                // Each new line fades in, and out when it goes.
+                .with_animation(
+                    gpui_kit::SharedString::from(format!(
+                        "status-{}-{serial}",
+                        if leaving { "out" } else { "in" }
+                    )),
+                    gpui_kit::Animation::new(if leaving {
+                        crate::modal::pop()
+                    } else {
+                        theme::fade() * 2
+                    })
+                    .with_easing(gpui_kit::ease_out_quint()),
+                    move |d, t| d.opacity(if leaving { 1. - t } else { t }),
                 )
                 .into_any_element(),
         )
@@ -958,14 +1257,17 @@ impl Shell {
                 .unwrap_or(true);
             Some((inst, channel, members))
         });
-        if let Some((inst, channel, members)) = restored {
+        if let Some((inst, channel, _)) = restored {
             self.restore = Some((inst, channel));
-            self.show_members = members;
         }
     }
 
     /// Writes what is open to `[[layout]]` in `config.toml`.
-    pub fn save_layout(&mut self) {
+    pub fn save_layout(&mut self, cx: &Context<Self>) {
+        if let Some(open) = self.open_channel() {
+            self.remember_draft(&open, cx);
+        }
+        self.core.save_outbox();
         let mut table = toml::Table::new();
         match &self.page {
             Page::Chat(inst, channel) => {
@@ -993,6 +1295,22 @@ impl Shell {
     }
 
     /// Asks GitHub for a newer release (`general.check_for_updates`).
+    /// Asks now, and says what came of it.
+    pub fn check_for_update_now(&mut self, cx: &mut Context<Self>) {
+        self.run(
+            cx,
+            hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
+            |this, result, _, cx| match result {
+                Ok(Some(update)) => {
+                    this.update = Some(update);
+                    cx.notify();
+                }
+                Ok(None) => this.info("Hermes is up to date", cx),
+                Err(err) => this.error(format!("could not check for updates: {err}"), cx),
+            },
+        );
+    }
+
     fn check_for_update(&mut self, cx: &mut Context<Self>) {
         if !self.config.general.check_for_updates {
             return;
@@ -1000,8 +1318,17 @@ impl Shell {
         self.run(
             cx,
             hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
-            |this, result, _, _| match result {
-                Ok(update) => this.update = update,
+            |this, result, _, cx| match result {
+                Ok(update) => {
+                    // Installed right away when that is wanted and this build can.
+                    if let Some(found) = &update
+                        && this.config.general.auto_update
+                        && hermes_client_core::updater::available()
+                    {
+                        this.start_update(found.version.clone(), found.url.clone(), cx);
+                    }
+                    this.update = update;
+                }
                 Err(err) => tracing::info!("update check failed: {err}"),
             },
         );
@@ -1010,6 +1337,9 @@ impl Shell {
     fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let update = self.update.as_ref()?;
         let url = update.url.clone();
+        let version = update.version.clone();
+        // This build updates itself: the banner starts it, else it opens the release page.
+        let self_update = hermes_client_core::updater::available();
         Some(
             div()
                 .id("update-banner")
@@ -1020,17 +1350,69 @@ impl Shell {
                 .px(px(16.))
                 .py(px(6.))
                 .bg(theme::accent_soft())
+                .child(
+                    crate::channel::tip_button("update-dismiss", assets::CLOSE, "Not now")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.update = None;
+                            cx.notify();
+                        })),
+                )
                 .cursor_pointer()
                 .text_size(crate::theme::secondary_size())
-                .child(div().flex_1().child(format!(
-                    "Hermes {} is available: click to open it",
-                    update.version
-                )))
+                .child(div().flex_1().child(if self_update {
+                    format!("Hermes {} is available: click to update", update.version)
+                } else {
+                    format!("Hermes {} is available: click to open it", update.version)
+                }))
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    if self_update {
+                        this.start_update(version.clone(), url.clone(), cx);
+                        return;
+                    }
                     if let Err(err) = crate::open::url(&url) {
                         this.error(format!("could not open the browser: {err}"), cx);
                     }
                 }))
+                .into_any_element(),
+        )
+    }
+
+    /// A server can do things this build doesn't know: some of it doesn't show until Hermes is
+    /// updated.
+    fn render_newer_server_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.newer_server_dismissed {
+            return None;
+        }
+        let newer = {
+            let store = self.core.store();
+            store.instances.values().any(|s| s.server_is_newer())
+        };
+        if !newer {
+            return None;
+        }
+        Some(
+            div()
+                .id("newer-server-banner")
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .px(px(16.))
+                .py(px(6.))
+                .bg(theme::accent_soft())
+                .child(
+                    crate::channel::tip_button("newer-server-dismiss", assets::CLOSE, "Not now")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.newer_server_dismissed = true;
+                            cx.notify();
+                        })),
+                )
+                .cursor_pointer()
+                .text_size(crate::theme::secondary_size())
+                .child(div().flex_1().child(
+                    "A server you use is newer than this Hermes: some things won't show until                      you update. Click to check for an update",
+                ))
+                .on_click(cx.listener(|this, _, _, cx| this.check_for_update_now(cx)))
                 .into_any_element(),
         )
     }
@@ -1065,6 +1447,11 @@ impl Shell {
             return;
         };
         let moved = (x - start) / crate::theme::scale();
+        if self.resizing_members {
+            self.config.sidebar.member_list_width = (width - moved).clamp(180., 420.) as u16;
+            cx.notify();
+            return;
+        }
         let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
         let new = if on_right {
             width - moved
@@ -1077,8 +1464,13 @@ impl Shell {
 
     fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
-            let width = self.config.sidebar.width.to_string();
-            self.persist("sidebar.width", &width, cx);
+            if std::mem::take(&mut self.resizing_members) {
+                let width = self.config.sidebar.member_list_width.to_string();
+                self.persist("sidebar.member_list_width", &width, cx);
+            } else {
+                let width = self.config.sidebar.width.to_string();
+                self.persist("sidebar.width", &width, cx);
+            }
         }
     }
 
@@ -1108,12 +1500,68 @@ pub fn presence_status(presence: PresenceStatus) -> UserStatus {
     }
 }
 
+impl Shell {
+    /// The main panel for `page`.
+    fn render_page(&mut self, page: Page, cx: &mut Context<Self>) -> AnyElement {
+        match page {
+            Page::Friends if self.core.instance_ids().is_empty() => {
+                self.render_welcome(cx).into_any_element()
+            }
+            Page::Friends => self.render_friends(cx).into_any_element(),
+            Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
+            Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
+            Page::Results(key) => self.render_results(key, cx).into_any_element(),
+        }
+    }
+
+    /// When the page changed since the last frame, the old one fades out under the new one
+    /// fading in, for `theme::fade()`. A voice page is never drawn twice (it holds share video), and
+    /// result pages share one search field, so those only fade in.
+    fn note_page_change(&mut self, cx: &mut Context<Self>) {
+        if self.shown_page.as_ref() == Some(&self.page) {
+            return;
+        }
+        let Some(previous) = self.shown_page.replace(self.page.clone()) else {
+            return;
+        };
+        let voice = |p: &Page| matches!(p, Page::Voice(..));
+        let both_results = matches!(
+            (&previous, &self.page),
+            (Page::Results(_), Page::Results(_))
+        );
+        if voice(&previous) || voice(&self.page) || both_results {
+            self.leaving = None;
+            return;
+        }
+        self.page_serial += 1;
+        let serial = self.page_serial;
+        self.leaving = Some((previous, serial));
+        // Gone once faded, so nothing invisible is left under the mouse.
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(theme::fade() + std::time::Duration::from_millis(20))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.leaving.as_ref().is_some_and(|(_, s)| *s == serial) {
+                    this.leaving = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        self.images
+            .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
         self.scale = window.scale_factor();
         self.viewport = window.viewport_size();
+        // This frame paints them again.
+        self.popup_triggers.borrow_mut().clear();
         let title = self.page_title();
         if title != self.title {
             window.set_window_title(&title);
@@ -1124,20 +1572,41 @@ impl Render for Shell {
             crate::desktop::window::set_title_bar(window, bar);
             self.title_bar = Some(bar);
         }
+        let count = crate::desktop::badge_count(&self.core.store(), &self.core.instance_ids());
+        if self.taskbar_count != Some(count) {
+            crate::desktop::taskbar::set_count(window, count);
+            self.taskbar_count = Some(count);
+        }
+        self.advance_media(window);
+        self.advance_selection(window);
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
-        self.images
-            .new_frame(self.viewer.as_ref().map(|v| &v.image), window);
-
         let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
-        let main = match self.page.clone() {
-            Page::Friends => self.render_friends(cx).into_any_element(),
-            Page::Chat(inst, channel) => self.render_chat(inst, channel, cx).into_any_element(),
-            Page::Voice(inst, channel) => self.render_voice(inst, channel, cx).into_any_element(),
-            Page::Results(key) => self.render_results(key, cx).into_any_element(),
-        };
+        self.note_page_change(cx);
+        // The page that is leaving goes first, so the new one is drawn over it.
+        let leaving = self
+            .leaving
+            .as_ref()
+            .map(|(page, serial)| (page.clone(), *serial));
+        let leaving = leaving.map(|(page, serial)| {
+            use gpui_kit::AnimationExt as _;
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .child(self.render_page(page, cx))
+                .with_animation(
+                    gpui_kit::SharedString::from(format!("page-leave-{serial}")),
+                    // It holds on while the new page comes in over it, and goes at the end,
+                    // so the two never both show faint.
+                    gpui_kit::Animation::new(theme::fade()),
+                    |d, t| d.opacity(1. - t * t * t),
+                )
+        });
+        let main = self.render_page(self.page.clone(), cx);
         // In a small window the chat needs the room more than the member list does.
         let room = window.viewport_size().width.as_f32() / crate::theme::scale();
         let sidebar_room = if self.sidebar_visible {
@@ -1163,14 +1632,33 @@ impl Render for Shell {
             .h_full()
             .child(header)
             .children(self.render_call_banner(cx))
-            .children(self.render_update_banner(cx))
+            .children(
+                self.render_update_banner(cx)
+                    .or_else(|| self.render_newer_server_banner(cx)),
+            )
             .children(self.render_status(cx))
             .child(
                 div()
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().min_w_0().h_full().child(main))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .children(leaving)
+                            .child({
+                                let id =
+                                    gpui_kit::SharedString::from(format!("page-{:?}", self.page));
+                                if matches!(self.page, Page::Chat(..)) {
+                                    theme::enter_rising(id, main)
+                                } else {
+                                    theme::enter(id, main)
+                                }
+                            }),
+                    )
                     .children(members),
             );
         let full_page = self
@@ -1186,7 +1674,14 @@ impl Render for Shell {
                 .min_w_0()
                 .h_full()
                 .children(self.render_status(cx))
-                .child(div().flex_1().min_h_0().child(page))
+                .child(div().flex_1().min_h_0().child(theme::enter(
+                    if self.open_space_page.is_some() {
+                        "space-settings"
+                    } else {
+                        "settings"
+                    },
+                    page,
+                )))
                 .into_any_element(),
             None => main_column.into_any_element(),
         };
@@ -1253,6 +1748,10 @@ impl Render for Shell {
                         cx.listener(|this, _, _, cx| this.end_resize(cx)),
                     )
             })
+            .child(self.smooth_scroll.catcher())
+            .children(self.media_scrub_catcher(cx))
+            .children(self.selection_catcher(cx))
+            .when(self.selection.dragging(), |d| d.cursor_text())
             .when(on_right, |d| d.flex_row_reverse())
             .child(left)
             .child(body)

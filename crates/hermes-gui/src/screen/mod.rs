@@ -20,7 +20,9 @@ mod gpu_convert;
 mod mf_decode;
 #[cfg(windows)]
 mod mf_encode;
+pub mod popout;
 mod scale;
+pub mod sound;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -34,8 +36,9 @@ use image::Frame;
 
 use crate::shell::Shell;
 
-/// Frames waiting for the decoder; more are dropped (the decoder then asks for a keyframe).
-const DECODE_QUEUE: usize = 8;
+/// Frames waiting for the decoder (about a quarter of a second at 60 fps); past that the frame is
+/// lost, and `hermes-client-core` holds that share back until a keyframe it asks for.
+const DECODE_QUEUE: usize = 16;
 
 /// A sharer is asked for a keyframe at most this often by this window (the server limits it too,
 /// but each request is a control message).
@@ -61,7 +64,8 @@ pub struct Share {
 struct DecodeStats {
     frames: u32,
     pictures: u32,
-    /// Decoded, but the window was still busy with the picture before.
+    /// Decoded, but never shown: a newer frame was already waiting, or the window was still busy
+    /// with the picture before.
     unshown: u32,
     errors: u32,
     /// Time frames waited between arriving and being decoded, decoding took, and turning the
@@ -77,7 +81,7 @@ impl DecodeStats {
         let per = |us: u64, n: u32| us as f64 / 1000.0 / f64::from(n.max(1));
         tracing::info!(
             "screen share of {user} (decoding): {:.1} fps in, {:.1} pictures/s out, {} not shown \
-             (window busy), {} errors, {:.1} ms waiting, {:.1} ms to decode (slowest {:.1} ms), \
+             (too late), {} errors, {:.1} ms waiting, {:.1} ms to decode (slowest {:.1} ms), \
              {:.1} ms to convert",
             f64::from(self.frames) / secs,
             f64::from(self.pictures) / secs,
@@ -330,19 +334,34 @@ impl Shell {
         // A share that ended (or a call I left) is no longer chosen.
         let sharers = self.core.screen_sharers();
         self.watching_shares.retain(|share| sharers.contains(share));
-        let watched: Vec<Id> = match self.core.voice_channel() {
+        // A share in its own window stays watched whatever this window shows.
+        if self
+            .popped_out
+            .as_ref()
+            .is_some_and(|(key, _)| !sharers.contains(key))
+        {
+            self.popped_out = None;
+        }
+        let popped = self.popped_out.as_ref().map(|(key, _)| key.clone());
+        let mut watched: Vec<Id> = match self.core.voice_channel() {
             Some((inst, channel))
                 if self.window_visible
                     && self.page == crate::shell::Page::Voice(inst.clone(), channel) =>
             {
                 sharers
-                    .into_iter()
+                    .iter()
                     .filter(|share| share.0 == inst && self.watching_shares.contains(share))
-                    .map(|(_, user)| user)
+                    .map(|(_, user)| *user)
                     .collect()
             }
             _ => Vec::new(),
         };
+        if let (Some((inst, user)), Some((call, _))) = (&popped, self.core.voice_channel())
+            && *inst == call
+            && !watched.contains(user)
+        {
+            watched.push(*user);
+        }
         if watched != self.watched_now {
             self.core.watch_screens(&watched);
             self.watched_now.clone_from(&watched);
@@ -367,6 +386,7 @@ impl Shell {
         }
         if self.capture.is_some() && !self.core.sharing_screen() {
             self.capture = None;
+            self.share_sound = None;
         }
     }
 
@@ -395,7 +415,10 @@ impl Shell {
         let quality = capture::Quality::from_config(&v.share_resolution, v.share_fps);
         let preference = capture::Preference::from_config(&v.share_preference);
         match capture::Capture::start(self.core.clone(), &screen, quality, preference) {
-            Ok(capture) => self.capture = Some(capture),
+            Ok(capture) => {
+                self.capture = Some(capture);
+                self.start_share_sound(cx);
+            }
             Err(err) => {
                 self.core.stop_screen_share();
                 self.error(format!("Could not share the screen: {err}"), cx);
@@ -404,7 +427,22 @@ impl Shell {
         cx.notify();
     }
 
+    /// Sends what the computer plays along with the share, when that is wanted and the voice
+    /// server forwards it. Without it the share goes on silently.
+    fn start_share_sound(&mut self, cx: &mut Context<Self>) {
+        if !self.config.voice.share_sound || !self.core.share_audio_supported() {
+            return;
+        }
+        let core = self.core.clone();
+        let send: sound::Send = Box::new(move |opus, level| core.send_share_sound(opus, level));
+        match sound::ShareSound::start(send) {
+            Ok(sound) => self.share_sound = Some(sound),
+            Err(err) => self.info(format!("Sharing without sound: {err}"), cx),
+        }
+    }
+
     pub fn stop_share(&mut self, cx: &mut Context<Self>) {
+        self.share_sound = None;
         if self.capture.take().is_some() {
             self.core.stop_screen_share();
         }
@@ -477,6 +515,12 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
         s.decode_us += took;
         s.slowest_decode_us = s.slowest_decode_us.max(took);
         match decoded {
+            // Every frame is decoded, for the frames after it, but colours are worked out only
+            // for the newest: falling behind then costs pictures, never frames.
+            Ok(Some(_)) if !frames.is_empty() => {
+                s.pictures += 1;
+                s.unshown += 1;
+            }
             Ok(Some(picture)) => {
                 s.pictures += 1;
                 let convert = std::time::Instant::now();

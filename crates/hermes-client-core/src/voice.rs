@@ -44,6 +44,9 @@ const SCREEN_QUEUE: usize = 8;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often the screen share transport's numbers are logged.
 const SCREEN_STATS_EVERY: Duration = Duration::from_secs(10);
+/// While a share waits for a keyframe here, how often to ask again (the server may have dropped
+/// a request that came too soon after another).
+const KEYFRAME_ASK_GAP: Duration = Duration::from_millis(500);
 /// How often who is in the room is compared with who has my sender key.
 const REKEY_CHECK: Duration = Duration::from_millis(250);
 /// A new sender key goes around this long before it is used, so nobody misses packets.
@@ -122,6 +125,9 @@ pub(crate) struct Voice {
     link: Arc<Mutex<Option<quinn::Connection>>>,
     /// The end-to-end encryption of the session's audio and video.
     crypto: Arc<Mutex<VoiceCrypto>>,
+    /// Someone else is in the room. Alone, my audio is not sent: nobody would hear it (like a
+    /// screen share nobody watches).
+    listeners: Arc<AtomicBool>,
     /// Where own screen share frames go (the current connection's writer).
     screen_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     /// Where others' screen share frames go (set by the UI).
@@ -134,6 +140,8 @@ pub(crate) struct Voice {
     volumes_writer: Arc<Mutex<()>>,
     /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
     rest_state: Arc<tokio::sync::Mutex<()>>,
+    /// The sequence number and timestamp of my screen share's next sound frame.
+    share_sound: Mutex<(u16, u32)>,
 }
 
 #[derive(Default)]
@@ -194,11 +202,16 @@ impl Voice {
     ) -> Self {
         let link: Arc<Mutex<Option<quinn::Connection>>> = Arc::default();
         let crypto: Arc<Mutex<VoiceCrypto>> = Arc::default();
+        let listeners: Arc<AtomicBool> = Arc::default();
         let engine = {
             let link = link.clone();
             let crypto = crypto.clone();
+            let listeners = listeners.clone();
             Engine::start(io, settings, move |event| match event {
                 AudioEvent::Packet(datagram) => {
+                    if !listeners.load(Ordering::Relaxed) {
+                        return;
+                    }
                     let conn = lock(&link).clone();
                     if let Some(conn) = conn {
                         // Nothing leaves in clear: without a key yet, the packet is dropped.
@@ -218,6 +231,7 @@ impl Voice {
             engine,
             link,
             crypto,
+            listeners,
             screen_out: Mutex::default(),
             screen_sink: Arc::default(),
             state: Mutex::default(),
@@ -225,6 +239,7 @@ impl Voice {
             volumes_queued: Arc::default(),
             volumes_writer: Arc::default(),
             rest_state: Arc::default(),
+            share_sound: Mutex::default(),
         }
     }
 
@@ -281,8 +296,16 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         },
         ptt_release_delay: Duration::from_millis(u64::from(v.ptt_release_delay_ms)),
         vad_sensitivity_db: v.vad_sensitivity as f32,
+        vad_hold: Duration::from_millis(u64::from(v.vad_hold_ms.clamp(50, 2000))),
+        vad_level_only: v.vad_level_only,
+        agc_target_db: v.agc_target_db.clamp(-40, -3) as f32,
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
+        ducking_db: v.ducking.then(|| v.ducking_db.clamp(3, 30) as f32),
+        echo_cancellation: v.echo_cancellation,
+        close_mic_when_muted: v.close_mic_when_muted,
+        opus_fec: v.opus_fec,
+        opus_dtx: v.opus_dtx,
         sounds: v.sounds,
         sounds_volume: v.sounds_volume as f32,
     }
@@ -301,8 +324,19 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     .into();
     v.ptt_release_delay_ms = u32::try_from(s.ptt_release_delay.as_millis()).unwrap_or(u32::MAX);
     v.vad_sensitivity = s.vad_sensitivity_db.round() as i32;
+    v.vad_hold_ms = u32::try_from(s.vad_hold.as_millis()).unwrap_or(u32::MAX);
+    v.vad_level_only = s.vad_level_only;
+    v.agc_target_db = s.agc_target_db.round() as i32;
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
+    v.echo_cancellation = s.echo_cancellation;
+    v.ducking = s.ducking_db.is_some();
+    if let Some(db) = s.ducking_db {
+        v.ducking_db = db.round() as u32;
+    }
+    v.close_mic_when_muted = s.close_mic_when_muted;
+    v.opus_fec = s.opus_fec;
+    v.opus_dtx = s.opus_dtx;
     v.sounds = s.sounds;
     v.sounds_volume = f64::from(s.sounds_volume);
 }
@@ -726,6 +760,7 @@ impl Core {
     /// Stops a session's audio and tells the UI. The driver task ends on its own when the
     /// control sender is dropped.
     fn close_session(&self, session: Session, sound: bool) {
+        self.set_listeners(false);
         let engine = &self.voice().engine;
         engine.set_transmitting(false);
         engine.clear_participants();
@@ -838,11 +873,14 @@ impl Core {
         generation: u64,
         mut control: mpsc::UnboundedReceiver<ClientControl>,
     ) {
+        // Rejoins that never got a connection in a row: REST may work while QUIC does not.
+        let mut failed_in_a_row = 0;
         loop {
             let end = self
                 .connection(&mut channel, &join, generation, &mut control)
                 .await;
             let connected_once = self.with_session(generation, |s| s.connected_once);
+            let never_connected = matches!(end, End::Failed(_));
             match end {
                 End::Left => return,
                 End::Kicked(reason) => {
@@ -855,6 +893,18 @@ impl Core {
                 }
                 End::Failed(message) | End::Lost(message) => {
                     tracing::info!("voice connection lost: {message}");
+                    if never_connected {
+                        failed_in_a_row += 1;
+                    } else {
+                        failed_in_a_row = 0;
+                    }
+                    if failed_in_a_row > RECONNECT_ATTEMPTS {
+                        self.session_ended(
+                            generation,
+                            Some("Voice connection lost (is UDP blocked?)".into()),
+                        );
+                        return;
+                    }
                     match self.rejoin(&inst, channel, generation).await {
                         Some(next) => join = next,
                         None => {
@@ -870,12 +920,14 @@ impl Core {
         }
     }
 
-    /// Fresh `/voice/join` tokens for `channel`, with backoff. `None` when giving up.
+    /// Fresh `/voice/join` tokens for `channel`, with backoff (spread out so that a whole room
+    /// does not come back at the same moment). `None` when giving up.
     async fn rejoin(&self, inst: &str, channel: Id, generation: u64) -> Option<VoiceJoinResponse> {
         *lock(&self.voice().link) = None;
         for attempt in 1..=RECONNECT_ATTEMPTS {
             self.set_status(generation, VoiceStatus::Reconnecting { attempt })?;
-            let delay = Duration::from_millis(500 * (1 << (attempt - 1)));
+            let delay = Duration::from_millis(500 * (1 << (attempt - 1)))
+                .mul_f64(rand::random_range(0.75..1.25));
             tokio::time::sleep(delay).await;
             self.with_session(generation, |_| ())?;
             let Ok(rest) = self.rest(inst) else {
@@ -1110,6 +1162,7 @@ impl Core {
                 .iter()
                 .map(|p| (p.participant_id, p.user_id))
                 .collect();
+            self.set_listeners(!s.participants.is_empty());
             s.connected_once = true;
             // A new room or connection: new participant IDs and new keys.
             s.keyed_for = None;
@@ -1149,6 +1202,15 @@ impl Core {
         );
     }
 
+    fn set_listeners(&self, any: bool) {
+        self.voice().listeners.store(any, Ordering::Relaxed);
+    }
+
+    /// Whether my audio goes out: only while someone else is in the room.
+    pub fn voice_has_listeners(&self) -> bool {
+        self.voice().listeners.load(Ordering::Relaxed)
+    }
+
     fn configure_participant(&self, inst: &str, p: &Participant) {
         let engine = &self.voice().engine;
         engine.set_volume(p.participant_id, self.user_volume(inst, p.user_id));
@@ -1158,6 +1220,7 @@ impl Core {
     fn on_joined(&self, generation: u64, p: Participant) {
         let Some(inst) = self.with_session(generation, |s| {
             s.participants.insert(p.participant_id, p.user_id);
+            self.set_listeners(true);
             s.inst.clone()
         }) else {
             return;
@@ -1170,12 +1233,9 @@ impl Core {
         let left = self.with_session(generation, |s| {
             let shared = s.sharing.remove(&participant_id);
             s.watching.remove(&participant_id);
-            (
-                shared,
-                s.participants
-                    .remove(&participant_id)
-                    .map(|user| (s.inst.clone(), user)),
-            )
+            let user = s.participants.remove(&participant_id);
+            self.set_listeners(!s.participants.is_empty());
+            (shared, user.map(|user| (s.inst.clone(), user)))
         });
         let left = left.map(|(shared, left)| {
             if shared {
@@ -1618,6 +1678,43 @@ impl Core {
         }
     }
 
+    /// Sends one 20 ms frame of my screen share's sound (already Opus, stereo). Dropped while not
+    /// sharing, when the server does not forward share sound, or before there is a key.
+    pub fn send_share_sound(&self, opus: &[u8], level: f32) {
+        if !self.sharing_screen() || !self.share_audio_supported() {
+            return;
+        }
+        let Some(conn) = lock(&self.voice().link).clone() else {
+            return;
+        };
+        let (sequence, timestamp) = {
+            let mut next = lock(&self.voice().share_sound);
+            let now = *next;
+            *next = (
+                now.0.wrapping_add(1),
+                now.1.wrapping_add(voice::FRAME_SAMPLES),
+            );
+            now
+        };
+        let header = hermes_proto::voice::AudioHeader {
+            voice_active: true,
+            sender_id: 0,
+            timestamp,
+            sequence,
+            audio_level: voice::audio_level(level),
+        };
+        let datagram = header.encode_as(AudioKind::Share, opus);
+        let sealed = self
+            .voice()
+            .crypto
+            .lock()
+            .expect("voice crypto")
+            .seal_audio(&datagram);
+        if let Some(sealed) = sealed {
+            let _ = conn.send_datagram(sealed.into());
+        }
+    }
+
     /// Queues one frame of my screen share. `false` when it was dropped (no share, or the
     /// connection is behind): the next frame should be a keyframe.
     pub fn send_screen_frame(&self, frame: ScreenFrame) -> bool {
@@ -1662,6 +1759,7 @@ impl Core {
     /// those of watched sharers to the sink.
     async fn read_screen(self, conn: quinn::Connection, generation: u64) {
         let mut stats = TransportStats::new("received");
+        let mut holes: HashMap<u16, Instant> = HashMap::new();
         loop {
             let Ok(mut stream) = conn.accept_uni().await else {
                 return;
@@ -1672,6 +1770,17 @@ impl Core {
                     .await;
             let Ok(Ok(data)) = read else {
                 stats.failed += 1;
+                // Whose frame it was is unknown: every watched share may have a hole now.
+                let watched = self.with_session(generation, |s| {
+                    s.watching
+                        .iter()
+                        .filter_map(|id| Some((*id, *s.participants.get(id)?)))
+                        .collect::<Vec<_>>()
+                });
+                for (sender, user) in watched.unwrap_or_default() {
+                    holes.insert(sender, Instant::now());
+                    self.request_keyframe(user);
+                }
                 continue;
             };
             let Ok(header) = VideoHeader::decode(&data) else {
@@ -1704,6 +1813,23 @@ impl Core {
                 stats.skipped += 1;
                 continue;
             };
+            match past_hole(
+                &mut holes,
+                header.sender_id,
+                header.keyframe,
+                Instant::now(),
+            ) {
+                PastHole::Pass => {}
+                PastHole::Skip => {
+                    stats.skipped += 1;
+                    continue;
+                }
+                PastHole::SkipAndAsk => {
+                    stats.skipped += 1;
+                    self.request_keyframe(user);
+                    continue;
+                }
+            }
             let sink = lock(&self.voice().screen_sink).clone();
             if let Some(sink) = sink {
                 let frame = RemoteFrame {
@@ -1715,10 +1841,46 @@ impl Core {
                 };
                 if sink.try_send(frame).is_err() {
                     stats.skipped += 1;
+                    holes.insert(header.sender_id, Instant::now());
+                    self.request_keyframe(user);
                 }
             }
             stats.maybe_log();
         }
+    }
+}
+
+/// What to do with a frame of a share that may have lost frames here.
+#[derive(Debug, PartialEq, Eq)]
+enum PastHole {
+    /// Hand it to the decoder.
+    Pass,
+    /// A frame is missing before it, so it would only draw garbage.
+    Skip,
+    /// The same, and it is time to ask for a keyframe again.
+    SkipAndAsk,
+}
+
+/// Decides for one frame of `sender`. `holes` holds the sharers who lost a frame here and when a
+/// keyframe was last asked of them; their pictures wait for that keyframe, as the server's
+/// `resync` does for frames lost before they get here.
+fn past_hole(
+    holes: &mut HashMap<u16, Instant>,
+    sender: u16,
+    keyframe: bool,
+    now: Instant,
+) -> PastHole {
+    if keyframe {
+        holes.remove(&sender);
+        return PastHole::Pass;
+    }
+    match holes.get_mut(&sender) {
+        None => PastHole::Pass,
+        Some(asked) if now.duration_since(*asked) >= KEYFRAME_ASK_GAP => {
+            *asked = now;
+            PastHole::SkipAndAsk
+        }
+        Some(_) => PastHole::Skip,
     }
 }
 
@@ -1850,7 +2012,7 @@ fn transport_config() -> quinn::TransportConfig {
     transport.max_concurrent_uni_streams(32u32.into());
     transport.stream_receive_window(voice::VIDEO_STREAM_WINDOW.into());
     transport.receive_window(voice::VIDEO_CONNECTION_WINDOW.into());
-    transport.send_window(u64::from(voice::VIDEO_CONNECTION_WINDOW));
+    transport.send_window(u64::from(voice::VIDEO_SEND_WINDOW));
     transport
 }
 
@@ -1886,6 +2048,29 @@ async fn read_frames(mut recv: quinn::RecvStream, frames: mpsc::Sender<ServerCon
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_share_that_lost_a_frame_waits_for_a_keyframe() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut holes = HashMap::new();
+        // Nothing lost: everything passes.
+        assert_eq!(past_hole(&mut holes, 1, false, at(0)), PastHole::Pass);
+
+        holes.insert(1, at(0));
+        assert_eq!(past_hole(&mut holes, 1, false, at(100)), PastHole::Skip);
+        // Other sharers are not affected.
+        assert_eq!(past_hole(&mut holes, 2, false, at(100)), PastHole::Pass);
+        // Asks again now and then, not for every frame.
+        assert_eq!(
+            past_hole(&mut holes, 1, false, at(500)),
+            PastHole::SkipAndAsk
+        );
+        assert_eq!(past_hole(&mut holes, 1, false, at(600)), PastHole::Skip);
+        // The keyframe ends the wait.
+        assert_eq!(past_hole(&mut holes, 1, true, at(700)), PastHole::Pass);
+        assert_eq!(past_hole(&mut holes, 1, false, at(720)), PastHole::Pass);
+    }
 
     #[test]
     fn settings_map_both_ways() {

@@ -96,16 +96,19 @@ pub async fn add(
     auth: Auth,
     Json(req): Json<AddFriendRequest>,
 ) -> ApiResult<Json<Relationship>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Friend)?;
     let _writes = state.writes.lock().await;
     let me = auth.user_id;
     let (other, existing) = {
         let cache = state.cache();
-        let other = find_by_handle(&cache, &req.handle).ok_or_else(|| {
-            Error::new(
-                ErrorCode::NotFound,
-                "Nobody has that name. Check the name and the # number.",
-            )
-        })?;
+        let other = find_by_handle(&cache, &req.handle)
+            .filter(|other| !cache.blocked(*other, me))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    "Nobody has that name. Check the name and the # number.",
+                )
+            })?;
         (other, cache.relationship(me, other))
     };
     if other == me {

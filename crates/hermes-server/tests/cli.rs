@@ -229,11 +229,14 @@ fn invite_create_prints_links() {
 
 /// A free local TCP port (freed again before returning).
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    // Voice listens on UDP at the same number, and Windows reserves ranges for one but not the other.
+    loop {
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        if std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 /// `GET path` over plain HTTP/1.1; returns the whole response.

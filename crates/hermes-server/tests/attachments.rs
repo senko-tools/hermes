@@ -5,6 +5,7 @@ mod common;
 use std::io::Cursor;
 
 use common::{Res, TestServer, start, start_with};
+use hermes_proto::api::PICTURE_MAX_BYTES;
 use hermes_server::config::RegistrationMode;
 use hermes_server::files;
 use hermes_server::time::now_ms;
@@ -181,7 +182,7 @@ async fn access_follows_the_message_channel() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&alice),
-            json!({ "content": "x", "nonce": "n", "attachment_ids": [aid] }),
+            json!({ "content": "x", "nonce": common::nonce(), "attachment_ids": [aid] }),
         )
         .await
         .err(400, "VALIDATION_FAILED");
@@ -190,7 +191,7 @@ async fn access_follows_the_message_channel() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "file", "nonce": "n", "attachment_ids": [aid] }),
+            json!({ "content": "file", "nonce": common::nonce(), "attachment_ids": [aid] }),
         )
         .await
         .ok();
@@ -210,7 +211,7 @@ async fn access_follows_the_message_channel() {
     assert_eq!(status(&server, &path, Some(&alice)).await, 404);
     assert_eq!(status(&server, &path, Some(&owner)).await, 200);
 
-    // A deleted message unlinks its files: only the uploader keeps access until cleanup.
+    // A deleted message takes its files with it, for everyone.
     server
         .delete(
             &format!("/channels/{general}/messages/{}", id(&message)),
@@ -218,7 +219,7 @@ async fn access_follows_the_message_channel() {
         )
         .await
         .ok();
-    assert_eq!(status(&server, &path, Some(&owner)).await, 200);
+    assert_eq!(status(&server, &path, Some(&owner)).await, 404);
 
     // Avatars are visible to every user.
     let avatar = id(&server
@@ -311,6 +312,57 @@ async fn storage_quota() {
 }
 
 #[tokio::test]
+async fn one_person_cannot_pass_their_storage() {
+    let server = start_with("attachments-user-quota", RegistrationMode::Open, |state| {
+        state.config.storage.max_user_storage_mb = 1;
+    })
+    .await;
+    const MIB: usize = 1024 * 1024;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    server
+        .upload(&alice, "a", "text/plain", vec![1; MIB - 10])
+        .await
+        .ok();
+    let used = server.state.files.used();
+    server
+        .upload(&alice, "b", "text/plain", vec![1; 11])
+        .await
+        .err(507, "STORAGE_FULL");
+    assert_eq!(
+        server.state.files.used(),
+        used,
+        "a refused upload is not counted"
+    );
+    server
+        .upload(&alice, "c", "text/plain", vec![1; 10])
+        .await
+        .ok();
+    // Someone else has their own allowance.
+    server
+        .upload(&owner, "d", "text/plain", vec![1; 11])
+        .await
+        .ok();
+}
+
+#[tokio::test]
+async fn text_counts_towards_the_limit_only_when_asked_to() {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let server = start_with("attachments-text-quota", RegistrationMode::Open, |state| {
+        state.config.storage.max_total_storage_gb = 1;
+        state.config.storage.limit_includes_messages = true;
+        assert!(state.files.reserve(GIB - 10, 0));
+    })
+    .await;
+    let (owner, _, _) = server.owner().await;
+    // The database is far larger than the 10 bytes left, so nothing fits.
+    server
+        .upload(&owner, "a", "text/plain", vec![1; 5])
+        .await
+        .err(507, "STORAGE_FULL");
+}
+
+#[tokio::test]
 async fn thumbnails_can_be_disabled() {
     let server = start_with("attachments-nothumbs", RegistrationMode::Open, |state| {
         state.config.storage.thumbnails = false;
@@ -351,7 +403,7 @@ async fn cleanup_deletes_only_old_unattached_uploads() {
         .post(
             &format!("/channels/{general}/messages"),
             Some(&owner),
-            json!({ "content": "", "nonce": "n", "attachment_ids": [attached] }),
+            json!({ "content": "", "nonce": common::nonce(), "attachment_ids": [attached] }),
         )
         .await
         .ok();
@@ -393,4 +445,162 @@ async fn cleanup_deletes_only_old_unattached_uploads() {
         );
     }
     assert_eq!(files::cleanup(&server.state, now_ms()).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn profile_banners_are_my_images_and_visible_to_everyone() {
+    let server = start("attachments-banner", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (outsider, _) = server.register("outsider", None).await;
+    let (mut ws, _) = server.identify(&owner).await;
+
+    let banner = id(&server
+        .upload(&alice, "wide.png", "image/png", png(50, 20))
+        .await
+        .ok());
+    let me = server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": banner }))
+        .await
+        .ok();
+    assert_eq!(
+        me["banner"],
+        json!({ "id": banner, "filename": "wide.png" })
+    );
+    let event = ws.recv_op("user_update").await;
+    assert_eq!(event["d"]["id"], alice_id);
+    assert_eq!(event["d"]["banner"]["id"], banner.as_str());
+    let path = format!("/attachments/{banner}/wide.png");
+    assert_eq!(status(&server, &path, Some(&outsider)).await, 200);
+
+    // Only an image I uploaded.
+    let theirs = id(&server
+        .upload(&owner, "theirs.png", "image/png", png(50, 20))
+        .await
+        .ok());
+    server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": theirs }))
+        .await
+        .err(400, "VALIDATION_FAILED");
+    let text = id(&server
+        .upload(&alice, "notes.txt", "text/plain", b"hi".to_vec())
+        .await
+        .ok());
+    server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": text }))
+        .await
+        .err(400, "VALIDATION_FAILED");
+
+    // Cleared with null; the avatar is untouched.
+    let me = server
+        .patch("/users/@me", Some(&alice), json!({ "banner_id": null }))
+        .await
+        .ok();
+    assert_eq!(me.get("banner"), None);
+}
+
+#[tokio::test]
+async fn avatars_banners_and_icons_are_limited_but_chat_images_are_not() {
+    let server = start("attachments-picture-limit", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    // A real picture, padded past its end to the wanted size.
+    let sized = |len: usize| {
+        let mut bytes = png(50, 20);
+        bytes.resize(len, 0);
+        bytes
+    };
+    let limit = PICTURE_MAX_BYTES as usize;
+    let too_big = id(&server
+        .upload(&owner, "big.png", "image/png", sized(limit + 1))
+        .await
+        .ok());
+    let fits = id(&server
+        .upload(&owner, "fits.png", "image/png", sized(limit))
+        .await
+        .ok());
+
+    let space = format!("/spaces/{space_id}");
+    for (path, field) in [
+        ("/users/@me", "avatar_id"),
+        ("/users/@me", "banner_id"),
+        (space.as_str(), "icon_id"),
+    ] {
+        let res: Res = server
+            .patch(path, Some(&owner), json!({ field: too_big }))
+            .await;
+        res.err(400, "VALIDATION_FAILED");
+        assert!(
+            res.body["error"]["fields"][field].is_string(),
+            "{}",
+            res.body
+        );
+        server
+            .patch(path, Some(&owner), json!({ field: fits }))
+            .await
+            .ok();
+    }
+}
+
+#[tokio::test]
+async fn sounds_keep_the_waveform_and_length_their_uploader_measured() {
+    let server = start("attachments-measured", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let general = server.channel_id(&space_id, "general");
+    let measured = [("x-waveform", "00ff7f"), ("x-duration-ms", "61500")];
+
+    let sound = server
+        .upload_with(
+            &owner,
+            "song.mp3",
+            "audio/mpeg",
+            b"ID3 not really".to_vec(),
+            &measured,
+        )
+        .await
+        .ok();
+    assert_eq!(sound["waveform"], json!([0, 255, 127]));
+    assert_eq!(sound["duration_ms"], 61500);
+
+    // In the message too.
+    let message = server
+        .post(
+            &format!("/channels/{general}/messages"),
+            Some(&owner),
+            json!({ "content": "", "attachment_ids": [id(&sound)], "nonce": common::nonce() }),
+        )
+        .await
+        .ok();
+    assert_eq!(message["attachments"][0]["waveform"], json!([0, 255, 127]));
+    assert_eq!(message["attachments"][0]["duration_ms"], 61500);
+
+    // A picture has neither, whatever is claimed.
+    let picture = server
+        .upload_with(&owner, "a.png", "image/png", png(4, 4), &measured)
+        .await
+        .ok();
+    assert_eq!(picture.get("waveform"), None);
+    assert_eq!(picture.get("duration_ms"), None);
+
+    // Nonsense is refused.
+    for bad in [
+        ("x-waveform", "0"),
+        ("x-waveform", "zz"),
+        ("x-duration-ms", "-5"),
+    ] {
+        server
+            .upload_with(&owner, "s.mp3", "audio/mpeg", b"x".to_vec(), &[bad])
+            .await
+            .err(400, "VALIDATION_FAILED");
+    }
+    let long = "ab".repeat(257);
+    server
+        .upload_with(
+            &owner,
+            "s.mp3",
+            "audio/mpeg",
+            b"x".to_vec(),
+            &[("x-waveform", &long)],
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
 }

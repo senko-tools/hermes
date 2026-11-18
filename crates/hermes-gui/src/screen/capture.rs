@@ -344,6 +344,145 @@ pub fn fit(width: u32, height: u32, quality: Quality) -> (u32, u32) {
     )
 }
 
+/// What `voice.share_screen` names when it is one window: `window:<id>`.
+pub const WINDOW_PREFIX: &str = "window:";
+
+/// Something the share picker offers: a screen or a window.
+pub struct Shareable {
+    /// Its `voice.share_screen` value: `""` for the primary screen, another screen's name, or
+    /// `window:<id>`.
+    pub value: String,
+    /// "Screen 2", or the window's title.
+    pub title: String,
+    /// "Primary" or the screen's device name, or the window's app.
+    pub detail: String,
+    pub window: bool,
+    /// A minimized window cannot be captured: it has no picture.
+    pub minimized: bool,
+    /// A small picture, BGRA, at most [`THUMB_WIDTH`] wide; `None` when it could not be taken.
+    pub picture: Option<image::RgbaImage>,
+}
+
+/// How wide the share picker's pictures are made.
+pub const THUMB_WIDTH: u32 = 240;
+
+/// The screens (the primary one first) and the windows (largest first, minimized ones last)
+/// that can be shared, with a small picture of each when `pictures`. Hermes' own windows and
+/// untitled or tiny ones are left out. Slow (a few ms per picture): call it off the UI thread.
+pub fn sources(pictures: bool) -> Vec<Shareable> {
+    #[cfg(windows)]
+    {
+        let mut out = Vec::new();
+        if let Ok(monitors) = xcap::Monitor::all() {
+            let mut monitors: Vec<_> = monitors
+                .into_iter()
+                .filter_map(|m| Some((!m.is_primary().unwrap_or(false), m.name().ok()?, m)))
+                .collect();
+            monitors.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+            for (n, (secondary, name, monitor)) in monitors.into_iter().enumerate() {
+                out.push(Shareable {
+                    value: if secondary {
+                        name.clone()
+                    } else {
+                        String::new()
+                    },
+                    title: format!("Screen {}", n + 1),
+                    detail: if secondary {
+                        name.trim_start_matches(['\\', '.']).to_owned()
+                    } else {
+                        "Primary".into()
+                    },
+                    window: false,
+                    minimized: false,
+                    picture: pictures
+                        .then(|| monitor.capture_image().ok().map(thumbnail))
+                        .flatten(),
+                });
+            }
+        }
+        let Ok(all) = xcap::Window::all() else {
+            return out;
+        };
+        let me = std::process::id();
+        let mut windows: Vec<(bool, u64, Shareable, xcap::Window)> = all
+            .into_iter()
+            .filter(|w| w.pid().is_ok_and(|pid| pid != me))
+            .filter_map(|w| {
+                let title = w.title().ok().filter(|t| !t.trim().is_empty())?;
+                let minimized = w.is_minimized().unwrap_or(false);
+                let area = u64::from(w.width().ok()?) * u64::from(w.height().ok()?);
+                if !minimized && area < 64 * 64 {
+                    return None;
+                }
+                let source = Shareable {
+                    value: format!("{WINDOW_PREFIX}{}", w.id().ok()?),
+                    title,
+                    detail: w.app_name().unwrap_or_default(),
+                    window: true,
+                    minimized,
+                    picture: None,
+                };
+                Some((minimized, area, source, w))
+            })
+            .collect();
+        windows.sort_by_key(|w| (w.0, std::cmp::Reverse(w.1)));
+        for (minimized, _, mut source, window) in windows {
+            if pictures && !minimized {
+                source.picture = window.capture_image().ok().map(thumbnail);
+            }
+            out.push(source);
+        }
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pictures;
+        Vec::new()
+    }
+}
+
+/// `picture` made at most [`THUMB_WIDTH`] wide (and as tall as a 4:3 picture would be), in BGRA.
+/// Each pixel averages a 4x4 grid of samples from its patch of the original: far cheaper than
+/// filtering every pixel of a 4K screen, and smooth enough for a picture this small.
+#[cfg(windows)]
+fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
+    const SAMPLES: u32 = 4;
+    let (w, h) = picture.dimensions();
+    let scale = (THUMB_WIDTH as f32 / w.max(1) as f32)
+        .min(THUMB_WIDTH as f32 * 0.75 / h.max(1) as f32)
+        .min(1.);
+    let (tw, th) = (
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+    );
+    let src = picture.as_raw();
+    let mut out = image::RgbaImage::new(tw, th);
+    for (x, y, pixel) in out.enumerate_pixels_mut() {
+        let mut sum = [0u32; 4];
+        for sy in 0..SAMPLES {
+            let py = ((u64::from(y) * u64::from(SAMPLES) + u64::from(sy)) * u64::from(h)
+                / (u64::from(th) * u64::from(SAMPLES))) as usize;
+            for sx in 0..SAMPLES {
+                let px = ((u64::from(x) * u64::from(SAMPLES) + u64::from(sx)) * u64::from(w)
+                    / (u64::from(tw) * u64::from(SAMPLES))) as usize;
+                let i = (py * w as usize + px) * 4;
+                for (c, total) in sum.iter_mut().enumerate() {
+                    *total += u32::from(src[i + c]);
+                }
+            }
+        }
+        let n = SAMPLES * SAMPLES;
+        // BGRA for gpui.
+        *pixel = image::Rgba([
+            (sum[2] / n) as u8,
+            (sum[1] / n) as u8,
+            (sum[0] / n) as u8,
+            (sum[3] / n) as u8,
+        ]);
+    }
+    out
+}
+
 /// The names of the screens, the primary one first (empty where capture is unavailable).
 pub fn screens() -> Vec<String> {
     #[cfg(windows)]
@@ -383,6 +522,10 @@ fn start_thread(
     keyframe: Arc<AtomicBool>,
     tuning: Arc<Tuning>,
 ) -> Result<(), String> {
+    if let Some(id) = screen.strip_prefix(WINDOW_PREFIX) {
+        let id: u32 = id.parse().map_err(|_| "no such window".to_owned())?;
+        return start_window_thread(core, id, quality, stop, keyframe);
+    }
     // A monitor cannot move between threads: the capture thread finds it and reports back.
     let screen = screen.to_owned();
     let (found, result) = std::sync::mpsc::channel();
@@ -401,6 +544,127 @@ fn start_thread(
     result
         .recv()
         .map_err(|_| "the capture thread stopped".to_owned())?
+}
+
+/// Shares one window: captured on its own (covered parts too, where the app allows it), on the
+/// CPU path. A resized window restarts the encoder at its new size.
+#[cfg(windows)]
+fn start_window_thread(
+    core: Core,
+    id: u32,
+    quality: Quality,
+    stop: Arc<AtomicBool>,
+    keyframe: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let (found, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("hermes-window-capture".into())
+        .spawn(move || {
+            let window = xcap::Window::all()
+                .ok()
+                .and_then(|all| all.into_iter().find(|w| w.id().ok() == Some(id)));
+            match window {
+                Some(window) => {
+                    let _ = found.send(Ok(()));
+                    run_window(&core, &window, quality, &stop, &keyframe);
+                }
+                None => {
+                    let _ = found.send(Err("that window is gone".to_owned()));
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    result
+        .recv()
+        .map_err(|_| "the capture thread stopped".to_owned())?
+}
+
+#[cfg(windows)]
+fn run_window(
+    core: &Core,
+    window: &xcap::Window,
+    quality: Quality,
+    stop: &AtomicBool,
+    keyframe: &Arc<AtomicBool>,
+) {
+    let stats = Arc::new(Stats::default());
+    let (frames, encoder_frames) = std::sync::mpsc::sync_channel::<Arc<Frame>>(1);
+    let spawned = {
+        let core = core.clone();
+        let keyframe = keyframe.clone();
+        let stats = stats.clone();
+        std::thread::Builder::new()
+            .name("hermes-screen-encode".into())
+            .spawn(move || encode_loop(&core, quality, &encoder_frames, &keyframe, &stats))
+    };
+    if let Err(err) = spawned {
+        tracing::warn!("window share encoder thread: {err}");
+        core.stop_screen_share();
+        return;
+    }
+    let interval = Duration::from_millis(1000 / u64::from(quality.fps));
+    let mut stats_since = Instant::now();
+    while !stop.load(Ordering::Relaxed) && core.sharing_screen() {
+        if core.share_watchers() == Some(0) {
+            std::thread::sleep(IDLE_POLL);
+            keyframe.store(true, Ordering::Relaxed);
+            continue;
+        }
+        let begin = Instant::now();
+        // Minimized, it has nothing to show: the last picture stays on the watchers' screens.
+        if window.is_minimized().unwrap_or(false) {
+            std::thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        match window.capture_image() {
+            Ok(image) => {
+                let frame = scale(
+                    Frame {
+                        width: image.width(),
+                        height: image.height(),
+                        bgra: false,
+                        pixels: image.into_raw(),
+                    },
+                    quality,
+                );
+                let size = (frame.width, frame.height);
+                if stats_since.elapsed() >= STATS_EVERY {
+                    let over = stats_since.elapsed();
+                    log_stats(&stats, over, size, quality.fps, "window, OpenH264");
+                    stats_since = Instant::now();
+                }
+                stats.captured.fetch_add(1, Ordering::Relaxed);
+                stats
+                    .capture_us
+                    .fetch_add(micros(begin.elapsed()), Ordering::Relaxed);
+                match frames.try_send(Arc::new(frame)) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return,
+                }
+            }
+            // Closed: the share ends.
+            Err(err) => {
+                tracing::info!("window share: the window is gone ({err})");
+                core.stop_screen_share();
+                return;
+            }
+        }
+        std::thread::sleep(interval.saturating_sub(begin.elapsed()));
+    }
+}
+
+#[cfg(not(windows))]
+fn start_window_thread(
+    _core: Core,
+    _id: u32,
+    _quality: Quality,
+    _stop: Arc<AtomicBool>,
+    _keyframe: Arc<AtomicBool>,
+) -> Result<(), String> {
+    Err("window sharing is only available on Windows for now".into())
 }
 
 /// The screen named `screen`, else the primary one, else the first.
@@ -612,6 +876,7 @@ fn run_hardware(
                         want.bitrate / 1000,
                         created.name
                     );
+                    tracing::info!("screen share encoder: {}", created.settings());
                     encoder = Some(created);
                     keyframe.store(true, Ordering::Relaxed);
                 } else if current.is_some_and(|t| t.bitrate != want.bitrate)
@@ -921,6 +1186,14 @@ fn encode_loop(
             stats.dropped.fetch_add(1, Ordering::Relaxed);
             continue;
         }
+        // A shared window changed size: a new encoder at the new size, from a keyframe.
+        let resized = encoder
+            .as_ref()
+            .is_some_and(|e| e.size() != (frame.width, frame.height));
+        if resized {
+            encoder = None;
+        }
+        let key = key || resized;
         if encoder.is_none() {
             match super::codec::Encoder::new(frame.width, frame.height, quality.fps as f32) {
                 Ok(e) => encoder = Some(e),
@@ -990,6 +1263,25 @@ fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), fps: u32, what: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs a desktop: `cargo test -p hermes-gui windows_are_listed -- --ignored`.
+    #[test]
+    #[ignore = "needs a desktop"]
+    #[cfg(windows)]
+    fn windows_are_listed_and_captured() {
+        let list = sources(true);
+        let window = list
+            .iter()
+            .find(|s| s.window && !s.minimized)
+            .expect("no windows");
+        let picture = window.picture.as_ref().expect("no picture");
+        eprintln!("{}: {}x{}", window.title, picture.width(), picture.height());
+        assert!(picture.width() <= THUMB_WIDTH);
+        assert!(
+            list.iter().any(|s| !s.window && s.value.is_empty()),
+            "no primary screen"
+        );
+    }
 
     #[test]
     fn shares_fit_their_resolution_and_stay_even() {
@@ -1152,6 +1444,178 @@ mod tests {
         let picture = decoder.decode(&key).unwrap().unwrap();
         println!("dxgi decoded in {:?}", begin.elapsed());
         assert_eq!((picture.width, picture.height), (frame.width, frame.height));
+    }
+
+    /// Whether the GPU's encoder spends the bitrate it is given and how close the pictures come
+    /// out: moving, detailed pictures at 1440p and 60 fps. Needs a screen (for its GPU), not
+    /// its content. The picture is noisy on purpose, so the PSNR is low and only comparable with
+    /// other runs of this test:
+    /// `cargo test -p hermes-gui encoder_spends -- --ignored --nocapture`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs a GPU with an H.264 encoder"]
+    #[allow(unsafe_code)]
+    fn encoder_spends_its_bitrate() {
+        use super::super::gpu_convert::GpuConvert;
+        use super::super::mf_encode::MfEncoder;
+        use windows::Win32::Graphics::Direct3D11::{
+            D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_TEXTURE2D_DESC,
+            D3D11_USAGE_DEFAULT,
+        };
+        use windows::Win32::Graphics::Dxgi::Common::{
+            DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
+        };
+
+        const FRAMES: usize = 300;
+        const SCROLL: usize = 11;
+        let (w, h) = (2560usize, 1440usize);
+        let monitor = pick_monitor("").unwrap();
+        let duplicator = super::super::dxgi::Duplicator::open(&monitor.name().unwrap()).unwrap();
+        let device = duplicator.device().clone();
+        let context = unsafe { device.GetImmediateContext().unwrap() };
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: w as u32,
+            Height: h as u32,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture = None;
+        unsafe { device.CreateTexture2D(&desc, None, Some(&mut texture)) }.unwrap();
+        let texture = texture.unwrap();
+
+        // A wide, detailed picture that scrolls under the frame, like a game panning; a band of
+        // it changes completely every frame.
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut source = vec![255u8; 2 * w * h * 4];
+        for y in 0..h {
+            for x in 0..2 * w {
+                let shade = ((x as f32 * 0.021).sin() * (y as f32 * 0.017).cos() * 70.
+                    + (x as f32 * 0.13 + y as f32 * 0.07).sin() * 25.
+                    + 128.) as i32
+                    + (random() % 33) as i32
+                    - 16;
+                let at = (y * 2 * w + x) * 4;
+                source[at] = shade.clamp(0, 255) as u8;
+                source[at + 1] = (shade + 18).clamp(0, 255) as u8;
+                source[at + 2] = (255 - shade).clamp(0, 255) as u8;
+            }
+        }
+
+        let bitrate = hardware_bitrate(w as u32, h as u32, 60);
+        let mut convert =
+            GpuConvert::new(&device, (w as u32, h as u32), (w as u32, h as u32), 60).unwrap();
+        let mut encoder = MfEncoder::new(
+            &device,
+            duplicator.luid(),
+            (w as u32, h as u32),
+            60,
+            bitrate,
+        )
+        .unwrap();
+        let mut sizes = Vec::new();
+        let mut times = Vec::new();
+        let mut stream = Vec::new();
+        let mut references = std::collections::HashMap::new();
+        for n in 0..FRAMES {
+            let offset = (n * SCROLL) % w;
+            // The band is inside the part shown this frame.
+            for y in h / 2..h / 2 + h / 8 {
+                let row = (y * 2 * w + offset) * 4;
+                for chunk in source[row..row + w * 4].as_chunks_mut::<8>().0 {
+                    chunk.copy_from_slice(&(random() | 0xFF00_0000_FF00_0000).to_le_bytes());
+                }
+            }
+            let start = offset * 4;
+            unsafe {
+                context.UpdateSubresource(
+                    &texture,
+                    0,
+                    None,
+                    source[start..].as_ptr().cast(),
+                    (2 * w * 4) as u32,
+                    0,
+                );
+            }
+            // What the picture should look like, for the frames compared afterwards.
+            if (200..215).contains(&n) {
+                let mut luma = vec![0u8; w * h];
+                for (y, line) in luma.chunks_exact_mut(w).enumerate() {
+                    let row = (y * 2 * w + offset) * 4;
+                    for (out, px) in line.iter_mut().zip(source[row..].as_chunks::<4>().0) {
+                        let (b, g, r) = (f32::from(px[0]), f32::from(px[1]), f32::from(px[2]));
+                        *out = (16.5 + 0.257 * r + 0.504 * g + 0.098 * b) as u8;
+                    }
+                }
+                references.insert(n, luma);
+            }
+            let nv12 = convert.convert(&texture).unwrap();
+            let begin = Instant::now();
+            for (data, is_key) in encoder.encode(&nv12, n == 0).unwrap() {
+                if !is_key {
+                    sizes.push(data.len());
+                }
+                stream.push(data);
+            }
+            times.push(begin.elapsed());
+        }
+        times.sort();
+        // How close the picture came out, without the band that changes completely.
+        let mut decoder = super::super::codec::Decoder::software().unwrap();
+        let mut decoded = 0;
+        let (mut error, mut samples) = (0f64, 0f64);
+        for data in &stream {
+            let Some(picture) = decoder.decode(data).unwrap() else {
+                continue;
+            };
+            if let Some(reference) = references.get(&decoded) {
+                for (y, (got, want)) in picture
+                    .y()
+                    .chunks_exact(w)
+                    .zip(reference.chunks_exact(w))
+                    .enumerate()
+                {
+                    if (h / 2..h / 2 + h / 8).contains(&y) {
+                        continue;
+                    }
+                    for (a, b) in got.iter().zip(want) {
+                        let d = f64::from(*a) - f64::from(*b);
+                        error += d * d;
+                    }
+                    samples += w as f64;
+                }
+            }
+            decoded += 1;
+        }
+        let psnr = 10. * (255f64 * 255. / (error / samples.max(1.))).log10();
+        let worst = times[times.len() * 99 / 100];
+        println!("PSNR {psnr:.2} dB, encode p99 {worst:?}");
+        let total: usize = sizes.iter().sum();
+        let delivered = total as f64 * 8. * 60. / sizes.len().max(1) as f64 / 1000.;
+        println!(
+            "asked {} kbit/s, delivered {delivered:.0} kbit/s ({:.0} %), {} frames, \
+                 largest {} kB, encode median {:?}\n    {}",
+            bitrate / 1000,
+            delivered / f64::from(bitrate / 1000) * 100.,
+            sizes.len(),
+            sizes.iter().max().copied().unwrap_or(0) / 1000,
+            times[times.len() / 2],
+            encoder.settings(),
+        );
     }
 
     /// The hardware path on this machine's primary screen: capture on the GPU, convert to NV12

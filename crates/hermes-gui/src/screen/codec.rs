@@ -41,6 +41,11 @@ pub struct Encoder {
 }
 
 impl Encoder {
+    /// The picture size it encodes.
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
     pub fn new(width: u32, height: u32, fps: f32) -> Result<Encoder, String> {
         // H.264 4:2:0 needs even sizes (the YUV buffer would panic on odd ones).
         if width < 2 || height < 2 || width % 2 + height % 2 != 0 {

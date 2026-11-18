@@ -15,7 +15,12 @@ use hermes_proto::api::{
     UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
     VoiceStatePatchRequest,
 };
-use hermes_proto::e2ee::{DeviceQuery, RegisterDeviceRequest, UserDevices};
+use hermes_proto::compat::Lenient;
+use hermes_proto::e2ee::{
+    ChannelKeysResponse, DeliverKeysRequest, DeviceQuery, KeyMembers, KeyPolicy, KeyPolicyOverride,
+    KeyRequest, RegisterDeviceRequest, RequestKeysRequest, SealedChannelKey, StartEpochRequest,
+    UserDevices,
+};
 use hermes_proto::gateway::SpaceSnapshot;
 use hermes_proto::id::Id;
 use hermes_proto::models::Relationship;
@@ -34,6 +39,29 @@ use crate::tls::{self, Trust};
 /// Requests that take longer fail (uploads have their own, longer limit).
 const TIMEOUT: Duration = Duration::from_secs(30);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+/// The most a server may send in answer: a hostile one must not be able to fill the memory.
+const MAX_JSON_BYTES: usize = 64 << 20;
+const MAX_ERROR_BYTES: usize = 64 << 10;
+const MAX_THUMBNAIL_BYTES: usize = 32 << 20;
+const MAX_FILE_BYTES: usize = 8 << 30;
+const MAX_MEMBER_PAGES: usize = 2000;
+
+/// The body of `res`, or an error once it goes past `max` bytes.
+async fn read_capped(mut res: reqwest::Response, max: usize) -> Result<Vec<u8>> {
+    let too_large = || Error::Decode("the answer is too large".to_owned());
+    let declared = res.content_length().unwrap_or(0);
+    if declared > max as u64 {
+        return Err(too_large());
+    }
+    let mut out = Vec::with_capacity(declared as usize);
+    while let Some(chunk) = res.chunk().await.map_err(network)? {
+        if out.len() + chunk.len() > max {
+            return Err(too_large());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -180,7 +208,7 @@ impl Rest {
             return Ok(res);
         }
         let status = res.status();
-        let bytes = res.bytes().await.map_err(network)?;
+        let bytes = read_capped(res, MAX_ERROR_BYTES).await?;
         match serde_json::from_slice::<ErrorBody>(&bytes) {
             Ok(body) => Err(Error::Api(body.error)),
             Err(_) => Err(unexpected(status, &bytes)),
@@ -189,7 +217,7 @@ impl Rest {
 
     async fn json<T: DeserializeOwned>(req: reqwest::RequestBuilder) -> Result<T> {
         let res = Self::send(req).await?;
-        let bytes = res.bytes().await.map_err(network)?;
+        let bytes = read_capped(res, MAX_JSON_BYTES).await?;
         serde_json::from_slice(&bytes).map_err(|e| Error::Decode(e.to_string()))
     }
 
@@ -274,6 +302,93 @@ impl Rest {
         self.call(Method::POST, "/users/devices", Some(&req)).await
     }
 
+    pub async fn channel_keys(&self, channel: Id, device: &str) -> Result<ChannelKeysResponse> {
+        self.get(&format!(
+            "/channels/{channel}/keys?device={}",
+            encode(device)
+        ))
+        .await
+    }
+
+    pub async fn channel_key_members(&self, channel: Id) -> Result<KeyMembers> {
+        self.get(&format!("/channels/{channel}/keys/members")).await
+    }
+
+    pub async fn start_channel_epoch(
+        &self,
+        channel: Id,
+        epoch: u32,
+        keys: Vec<SealedChannelKey>,
+    ) -> Result<()> {
+        let req = StartEpochRequest { epoch, keys };
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/keys/epochs"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn deliver_channel_keys(
+        &self,
+        channel: Id,
+        keys: Vec<SealedChannelKey>,
+    ) -> Result<()> {
+        let req = DeliverKeysRequest { keys };
+        self.empty(
+            Method::PUT,
+            &format!("/channels/{channel}/keys"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn request_channel_keys(&self, channel: Id, device: &str) -> Result<()> {
+        let req = RequestKeysRequest {
+            device: device.to_owned(),
+        };
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/keys/requests"),
+            Some(&req),
+        )
+        .await
+    }
+
+    pub async fn waiting_key_requests(&self) -> Result<Vec<KeyRequest>> {
+        self.get("/users/@me/key-requests").await
+    }
+
+    pub async fn space_key_policy(&self, space: Id) -> Result<KeyPolicy> {
+        self.get(&format!("/spaces/{space}/key-policy")).await
+    }
+
+    pub async fn set_space_key_policy(&self, space: Id, policy: KeyPolicy) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/spaces/{space}/key-policy"),
+            Some(&policy),
+        )
+        .await
+    }
+
+    pub async fn channel_key_policy(&self, channel: Id) -> Result<KeyPolicyOverride> {
+        self.get(&format!("/channels/{channel}/key-policy")).await
+    }
+
+    pub async fn set_channel_key_policy(
+        &self,
+        channel: Id,
+        policy: KeyPolicyOverride,
+    ) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/channels/{channel}/key-policy"),
+            Some(&policy),
+        )
+        .await
+    }
+
     /// Changes my username (not my display name); needs my password.
     pub async fn change_username(&self, req: &ChangeUsernameRequest) -> Result<CurrentUser> {
         self.call(Method::POST, "/users/@me/username", Some(req))
@@ -311,8 +426,9 @@ impl Rest {
     /// Messages mentioning me, newest first.
     pub async fn mentions(&self, before: Option<Id>, limit: u32) -> Result<Vec<Message>> {
         let before = before.map_or_else(String::new, |id| format!("&before={id}"));
-        self.get(&format!("/users/@me/mentions?limit={limit}{before}"))
+        self.get::<Lenient<Message>>(&format!("/users/@me/mentions?limit={limit}{before}"))
             .await
+            .map(|l| l.0)
     }
 
     pub async fn set_notification_setting(
@@ -345,10 +461,14 @@ impl Rest {
             ("channel_id", query.channel_id),
             ("author_id", query.author_id),
             ("before", query.before),
+            ("after", query.after),
         ] {
             if let Some(id) = value {
                 params.push(format!("{name}={id}"));
             }
+        }
+        if let Some(has) = query.has {
+            params.push(format!("has={}", has.as_str()));
         }
         if let Some(limit) = query.limit {
             params.push(format!("limit={limit}"));
@@ -402,23 +522,26 @@ impl Rest {
     /// One page of members, ordered by user ID.
     pub async fn members(&self, space: Id, after: Option<Id>, limit: u32) -> Result<Vec<Member>> {
         let after = after.map_or_else(String::new, |id| format!("&after={id}"));
-        self.get(&format!("/spaces/{space}/members?limit={limit}{after}"))
+        self.get::<Lenient<Member>>(&format!("/spaces/{space}/members?limit={limit}{after}"))
             .await
+            .map(|l| l.0)
     }
 
     /// All members, page by page.
     pub async fn all_members(&self, space: Id) -> Result<Vec<Member>> {
         let mut all = Vec::new();
         let mut after = None;
-        loop {
+        // A server that never stops answering must not keep this going for ever.
+        for _ in 0..MAX_MEMBER_PAGES {
             let page = self.members(space, after, 100).await?;
             let done = page.len() < 100;
             after = page.last().map(|m| m.user.id);
             all.extend(page);
             if done || after.is_none() {
-                return Ok(all);
+                break;
             }
         }
+        Ok(all)
     }
 
     /// `user` may be `None` for `@me`.
@@ -433,6 +556,139 @@ impl Rest {
             Method::PATCH,
             &format!("/spaces/{space}/members/{user}"),
             Some(req),
+        )
+        .await
+    }
+
+    pub async fn two_factor(&self) -> Result<hermes_proto::api::TwoFactorStatus> {
+        self.get("/users/@me/2fa").await
+    }
+
+    pub async fn two_factor_begin(
+        &self,
+        password: String,
+    ) -> Result<hermes_proto::api::TwoFactorSecret> {
+        self.call(
+            Method::POST,
+            "/users/@me/2fa/begin",
+            Some(&hermes_proto::api::TwoFactorPassword { password }),
+        )
+        .await
+    }
+
+    pub async fn two_factor_confirm(&self, code: String) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/2fa/confirm",
+            Some(&hermes_proto::api::TwoFactorCode { code }),
+        )
+        .await
+    }
+
+    pub async fn two_factor_disable(&self, password: String, code: String) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/2fa/disable",
+            Some(&hermes_proto::api::TwoFactorDisable { password, code }),
+        )
+        .await
+    }
+
+    pub async fn blocks(&self) -> Result<Vec<Id>> {
+        self.get("/users/@me/blocks").await
+    }
+
+    pub async fn block(&self, user: Id) -> Result<()> {
+        self.empty::<()>(Method::PUT, &format!("/users/@me/blocks/{user}"), None)
+            .await
+    }
+
+    pub async fn unblock(&self, user: Id) -> Result<()> {
+        self.empty::<()>(Method::DELETE, &format!("/users/@me/blocks/{user}"), None)
+            .await
+    }
+
+    /// Everything the server holds about me, as readable JSON.
+    pub async fn export_account(&self) -> Result<Vec<u8>> {
+        let data: serde_json::Value = self.get("/users/@me/export").await?;
+        serde_json::to_vec_pretty(&data).map_err(|e| Error::Decode(e.to_string()))
+    }
+
+    pub async fn delete_account(&self, password: String, delete_messages: bool) -> Result<()> {
+        self.empty(
+            Method::POST,
+            "/users/@me/delete",
+            Some(&hermes_proto::api::DeleteAccountRequest {
+                password,
+                delete_messages,
+            }),
+        )
+        .await
+    }
+
+    pub async fn report(
+        &self,
+        channel: Id,
+        message: Id,
+        reason: String,
+        excerpt: String,
+    ) -> Result<()> {
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/messages/{message}/report"),
+            Some(&hermes_proto::api::ReportRequest { reason, excerpt }),
+        )
+        .await
+    }
+
+    pub async fn reports(&self, space: Id) -> Result<Vec<hermes_proto::models::Report>> {
+        self.get(&format!("/spaces/{space}/reports")).await
+    }
+
+    pub async fn resolve_report(&self, space: Id, report: Id) -> Result<()> {
+        self.empty::<()>(
+            Method::DELETE,
+            &format!("/spaces/{space}/reports/{report}"),
+            None,
+        )
+        .await
+    }
+
+    pub async fn bulk_delete(&self, channel: Id, ids: Vec<Id>) -> Result<()> {
+        self.empty(
+            Method::POST,
+            &format!("/channels/{channel}/messages/bulk-delete"),
+            Some(&hermes_proto::api::BulkDeleteRequest { ids }),
+        )
+        .await
+    }
+
+    pub async fn admin_log(&self) -> Result<Vec<hermes_proto::api::AdminLogEntry>> {
+        self.get("/admin/log").await
+    }
+
+    pub async fn admin_settings(&self) -> Result<hermes_proto::api::AdminSettings> {
+        self.get("/admin/settings").await
+    }
+
+    pub async fn set_admin_settings(
+        &self,
+        settings: &hermes_proto::api::AdminSettings,
+    ) -> Result<hermes_proto::api::AdminSettings> {
+        self.call(Method::PATCH, "/admin/settings", Some(settings))
+            .await
+    }
+
+    pub async fn admin_user_detail(&self, user: Id) -> Result<hermes_proto::api::AdminUserDetail> {
+        self.get(&format!("/admin/users/{user}/detail")).await
+    }
+
+    /// `seconds` of only being able to read; 0 ends it.
+    pub async fn timeout(&self, space: Id, user: Id, seconds: u32) -> Result<()> {
+        self.empty(
+            Method::PUT,
+            &format!("/spaces/{space}/members/{user}/timeout"),
+            Some(&hermes_proto::api::TimeoutRequest { seconds }),
         )
         .await
     }
@@ -484,8 +740,9 @@ impl Rest {
         limit: u32,
     ) -> Result<Vec<AuditEntry>> {
         let before = before.map_or_else(String::new, |id| format!("&before={id}"));
-        self.get(&format!("/spaces/{space}/audit-log?limit={limit}{before}"))
+        self.get::<Lenient<AuditEntry>>(&format!("/spaces/{space}/audit-log?limit={limit}{before}"))
             .await
+            .map(|l| l.0)
     }
 
     // ---- roles ----------------------------------------------------------------------------
@@ -589,11 +846,12 @@ impl Rest {
                 params.push(format!("{name}={id}"));
             }
         }
-        self.get(&format!(
+        self.get::<Lenient<Message>>(&format!(
             "/channels/{channel}/messages?{}",
             params.join("&")
         ))
         .await
+        .map(|l| l.0)
     }
 
     pub async fn message(&self, channel: Id, message: Id) -> Result<Message> {
@@ -652,7 +910,9 @@ impl Rest {
     }
 
     pub async fn pins(&self, channel: Id) -> Result<Vec<Message>> {
-        self.get(&format!("/channels/{channel}/pins")).await
+        self.get::<Lenient<Message>>(&format!("/channels/{channel}/pins"))
+            .await
+            .map(|l| l.0)
     }
 
     pub async fn react(&self, channel: Id, message: Id, emoji: &str) -> Result<()> {
@@ -709,13 +969,32 @@ impl Rest {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Result<Attachment> {
-        let req = self
+        self.upload_measured(filename, content_type, bytes, None, None)
+            .await
+    }
+
+    /// An upload with what was measured of a sound or video: its waveform and length.
+    pub async fn upload_measured(
+        &self,
+        filename: &str,
+        content_type: &str,
+        bytes: Vec<u8>,
+        waveform: Option<&[u8]>,
+        duration_ms: Option<u64>,
+    ) -> Result<Attachment> {
+        let mut req = self
             .request(Method::POST, "/attachments")
             .timeout(UPLOAD_TIMEOUT)
             .header("content-type", content_type)
-            .header("x-filename", encode(filename))
-            .body(bytes);
-        Self::json(req).await
+            .header("x-filename", encode(filename));
+        if let Some(waveform) = waveform.filter(|w| !w.is_empty()) {
+            let hex: String = waveform.iter().map(|b| format!("{b:02x}")).collect();
+            req = req.header("x-waveform", hex);
+        }
+        if let Some(ms) = duration_ms {
+            req = req.header("x-duration-ms", ms.to_string());
+        }
+        Self::json(req.body(bytes)).await
     }
 
     pub async fn download(&self, attachment: Id, filename: &str) -> Result<Vec<u8>> {
@@ -726,20 +1005,45 @@ impl Rest {
             )
             .timeout(UPLOAD_TIMEOUT);
         let res = Self::send(req).await?;
-        Ok(res.bytes().await.map_err(network)?.to_vec())
+        read_capped(res, MAX_FILE_BYTES).await
+    }
+
+    /// Bytes `start..=end` of a stored file: media reads what it plays, not the whole file.
+    pub async fn download_range(
+        &self,
+        attachment: Id,
+        filename: &str,
+        start: u64,
+        end: u64,
+    ) -> Result<Vec<u8>> {
+        let req = self
+            .request(
+                Method::GET,
+                &format!("/attachments/{attachment}/{}", encode(filename)),
+            )
+            .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+            .timeout(UPLOAD_TIMEOUT);
+        let res = Self::send(req).await?;
+        if res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(Error::Decode(format!(
+                "the server sent HTTP {} for a part of a file",
+                res.status()
+            )));
+        }
+        read_capped(res, (end - start + 1) as usize).await
     }
 
     pub async fn thumbnail(&self, attachment: Id) -> Result<Vec<u8>> {
         let res =
             Self::send(self.request(Method::GET, &format!("/attachments/{attachment}/thumb")))
                 .await?;
-        Ok(res.bytes().await.map_err(network)?.to_vec())
+        read_capped(res, MAX_THUMBNAIL_BYTES).await
     }
 
     // ---- DMs ------------------------------------------------------------------------------
 
     pub async fn dms(&self) -> Result<Vec<Channel>> {
-        self.get("/dms").await
+        self.get::<Lenient<Channel>>("/dms").await.map(|l| l.0)
     }
 
     /// One recipient reuses the 1:1 DM; more create a group DM.

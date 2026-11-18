@@ -4,13 +4,12 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div};
+use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, SharedString, div};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{RelationshipKind, Status};
 use hermes_client_core::{InstanceId, view};
 
 use crate::assets;
-use crate::channel::icon_button;
 use crate::menu_entries::{Action, Target};
 use crate::shell::Shell;
 use crate::theme::{self, px};
@@ -204,6 +203,36 @@ impl Shell {
         (lines, waiting)
     }
 
+    /// What someone sees before they have added a server.
+    pub fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .text_size(theme::heading_size())
+                    .child("Welcome to Hermes"),
+            )
+            .child(
+                div()
+                    .text_size(theme::body_size())
+                    .text_color(theme::text_secondary())
+                    .child("Add a server by its address, or paste an invite link."),
+            )
+            .child(
+                gpui_kit::component::button::Button::new("welcome-add")
+                    .cursor_pointer()
+                    .label("Add an instance")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_add_instance(String::new(), window, cx);
+                    })),
+            )
+    }
+
     pub fn render_friends(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let tab = self.friends_tab;
         let (lines, pending_count) = self.friends_lines(tab);
@@ -232,21 +261,30 @@ impl Shell {
             .collect();
         let mut content: Vec<AnyElement> = Vec::new();
         if shown.is_empty() {
-            content.push(
-                div()
-                    .mt(px(20.))
-                    .text_size(theme::body_size())
-                    .text_color(theme::text_tertiary())
-                    .child(match tab {
-                        FriendsTab::Online => "No friends online right now.",
-                        FriendsTab::All => {
-                            "No friends yet. Add someone with the button above: you need their name and # number."
-                        }
-                        FriendsTab::Pending => "No requests waiting.",
-                        FriendsTab::People => "Nobody here yet. Add an instance to get started.",
-                    })
-                    .into_any_element(),
-            );
+            let (glyph, title, hint) = match tab {
+                FriendsTab::Online => (
+                    assets::USERS,
+                    "Nobody is online",
+                    "No friends online right now.",
+                ),
+                FriendsTab::All => (
+                    assets::ACCOUNT_PLUS,
+                    "No friends yet",
+                    "Add someone with the button above: you need their name and # number.",
+                ),
+                FriendsTab::Pending => (assets::BELL, "All caught up", "No requests waiting."),
+                FriendsTab::People => (
+                    assets::SERVER,
+                    "Nobody here yet",
+                    "Add an instance to get started.",
+                ),
+            };
+            content.push(theme::empty_state(
+                format!("friends-{}", tab.label()),
+                glyph,
+                title,
+                hint,
+            ));
         } else {
             content.push(heading(format!(
                 "{} — {}",
@@ -291,7 +329,12 @@ impl Shell {
                             })),
                     ),
             )
-            .children(content)
+            // Another tab's list fades in where the last one was.
+            .child(div().flex().flex_col().children(content).with_animation(
+                SharedString::from(format!("friends-tab-{}", tab.label())),
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(t),
+            ))
     }
 
     fn person_row(&self, line: Line, cx: &mut Context<Self>) -> AnyElement {
@@ -307,21 +350,35 @@ impl Shell {
         let avatar = {
             let store = self.core.store();
             let user = store.instance(&inst).and_then(|s| s.user(id));
-            self.avatar_with_status(&inst, user, &name, theme::AVATAR, status)
+            self.avatar_with_status_on(
+                &inst,
+                user,
+                &name,
+                theme::AVATAR,
+                status,
+                theme::background(),
+            )
         };
         let element_id = SharedString::from(format!("person-{inst}-{id}-{}", kind_key(kind)));
         let target = Target::Member(inst.clone(), None, id);
         let mut buttons: Vec<AnyElement> = Vec::new();
-        let action_button =
-            |key: &str, glyph: &'static str, action: Action, cx: &mut Context<Self>| {
-                let inst = inst.clone();
-                icon_button(SharedString::from(format!("friend-{key}-{id}")), glyph)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.run_action(Target::Member(inst.clone(), None, id), action, window, cx);
-                    }))
-                    .into_any_element()
+        let action_button = |key: &str,
+                             glyph: &'static str,
+                             action: Action,
+                             cx: &mut Context<Self>| {
+            let inst = inst.clone();
+            let tip = match key {
+                "accept" => "Accept",
+                "decline" => "Decline",
+                _ => "Cancel",
             };
+            crate::channel::tip_button(SharedString::from(format!("friend-{key}-{id}")), glyph, tip)
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.run_action(Target::Member(inst.clone(), None, id), action, window, cx);
+                }))
+                .into_any_element()
+        };
         match kind {
             LineKind::Incoming => {
                 buttons.push(action_button(
@@ -356,7 +413,7 @@ impl Shell {
             .gap(px(12.))
             .h(px(62.))
             .px(px(10.))
-            .rounded(px(6.))
+            .rounded(theme::row_radius())
             .cursor_pointer()
             .hover(|d| d.bg(theme::hover()))
             .on_click(cx.listener(move |this, _, window, cx| match kind {
@@ -377,7 +434,13 @@ impl Shell {
                             .flex()
                             .gap(px(8.))
                             .items_baseline()
-                            .child(div().text_size(theme::body_size()).child(name))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(theme::body_size())
+                                    .child(name),
+                            )
                             .child(
                                 div()
                                     .truncate()

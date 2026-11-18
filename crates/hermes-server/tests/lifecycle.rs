@@ -49,6 +49,16 @@ async fn rest_requests_are_limited_per_session_and_ip() {
         .get("/invites/AAAAAAAAAA", None)
         .await
         .err(429, "RATE_LIMITED");
+    // Made-up tokens do not each get a bucket: the address has a limit too.
+    let mut limited = false;
+    for i in 0..200 {
+        let token = format!("made-up-{i}");
+        if server.get("/users/@me", Some(&token)).await.code() == "RATE_LIMITED" {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "made-up tokens got past every limit");
     // /healthz is not limited.
     for _ in 0..5 {
         let res = server
@@ -96,7 +106,7 @@ async fn messages_are_limited_per_user_per_channel() {
                 .post(
                     &format!("/channels/{channel}/messages"),
                     Some(&token),
-                    json!({ "content": "hi", "nonce": "n" }),
+                    json!({ "content": "hi", "nonce": common::nonce() }),
                 )
                 .await
         }
@@ -182,4 +192,27 @@ async fn shutdown_closes_gateways_with_4100_and_stops_serving() {
             .is_err(),
         "still accepting connections"
     );
+}
+
+#[tokio::test]
+async fn maintenance_ends_what_has_gone_unused() {
+    let server = start_with("lifecycle-maintenance", RegistrationMode::Open, |_| {}).await;
+    let (owner, _, _) = server.owner().await;
+    let (idle, _) = server.register("idle", None).await;
+    let now = hermes_server::time::now_ms();
+    let long_ago = now - 200 * 24 * 60 * 60 * 1000;
+    server
+        .sql(&format!(
+            "UPDATE sessions SET last_seen_at = {long_ago} WHERE user_id =
+               (SELECT id FROM users WHERE username LIKE 'idle%')"
+        ))
+        .await;
+    hermes_server::maintenance::run(&server.state, now)
+        .await
+        .unwrap();
+    server
+        .get("/users/@me", Some(&idle))
+        .await
+        .err(401, "UNAUTHORIZED");
+    server.get("/users/@me", Some(&owner)).await.ok();
 }

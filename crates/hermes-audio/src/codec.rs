@@ -33,6 +33,12 @@ impl Encoder {
         encoder
     }
 
+    /// Whether lost packets can be rebuilt, and whether silence is sent at all.
+    pub fn set_options(&mut self, fec: bool, dtx: bool) {
+        let _ = self.inner.set_inband_fec(fec);
+        let _ = self.inner.set_dtx(dtx);
+    }
+
     pub fn set_bitrate(&mut self, bitrate: u32) {
         let bits = i32::try_from(bitrate.clamp(6_000, 510_000)).unwrap_or(64_000);
         let _ = self.inner.set_bitrate(Bitrate::Bits(bits));

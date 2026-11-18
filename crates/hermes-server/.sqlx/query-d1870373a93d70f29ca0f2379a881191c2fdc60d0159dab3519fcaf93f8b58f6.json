@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE space_members SET timeout_until = ? WHERE space_id = ? AND user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d1870373a93d70f29ca0f2379a881191c2fdc60d0159dab3519fcaf93f8b58f6"
+}

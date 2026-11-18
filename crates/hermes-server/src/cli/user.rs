@@ -26,6 +26,8 @@ pub enum UserCommand {
     Disable { username: String },
     /// Enable a disabled account again.
     Enable { username: String },
+    /// Turn off two-factor login, for someone who lost their authenticator.
+    Disable2fa { username: String },
     /// Let an account go without a `#1234` tag (`true`), or give it one again (`false`).
     SetTagless {
         username: String,
@@ -115,6 +117,15 @@ async fn execute(db: &Db, command: UserCommand) -> Result<(), String> {
                     crate::time::format_date(created_at)
                 );
             }
+        }
+        UserCommand::Disable2fa { username } => {
+            let (id, handle, ..) = find(db, &username).await?;
+            sqlx::query("UPDATE users SET totp_secret = NULL, totp_pending = NULL WHERE id = ?")
+                .bind(id.to_i64())
+                .execute(&db.write)
+                .await
+                .map_err(dberr)?;
+            println!("Two-factor login is off for {handle}.");
         }
         UserCommand::SetTagless { username, tagless } => {
             let (id, handle, ..) = find(db, &username).await?;

@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT space_id, user_id, nickname, joined_at, timeout_until FROM space_members",
+  "describe": {
+    "columns": [
+      {
+        "name": "space_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "space_id"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "nickname",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "nickname"
+          }
+        }
+      },
+      {
+        "name": "joined_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "joined_at"
+          }
+        }
+      },
+      {
+        "name": "timeout_until",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "space_members",
+            "name": "timeout_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "dfe040e3d9f04e35469433cdecdec6fcd7b63284a619d2feeec5b346b76cddc9"
+}

@@ -15,8 +15,9 @@ use std::time::Duration;
 use hermes_proto::api::{HistoryQuery, InstanceResponse, LoginRequest, RegisterRequest};
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
+use hermes_proto::markup;
 use hermes_proto::models::{Attachment, Invite, Message, PresenceStatus};
-use hermes_proto::{ErrorCode, PROTOCOL_VERSION};
+use hermes_proto::{ErrorCode, MIN_SERVER_PROTOCOL};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
@@ -74,6 +75,8 @@ pub enum CoreEvent {
     },
     /// Something the user should see (failed background action).
     Error(String),
+    /// Something the user should know, that went fine.
+    Info(String),
     VoiceStatus(VoiceStatus),
     /// Someone in your voice room (you included) started or stopped speaking.
     Speaking {
@@ -121,13 +124,8 @@ impl fmt::Display for CoreError {
             CoreError::UnknownInstance(id) => write!(f, "no instance {id}"),
             CoreError::UnsupportedProtocol { server } => write!(
                 f,
-                "this server uses protocol version {server}, this client supports {PROTOCOL_VERSION}; \
-                 update the {} side",
-                if *server > PROTOCOL_VERSION {
-                    "client"
-                } else {
-                    "server"
-                }
+                "this server uses protocol version {server}, older than this client can talk to \
+                 ({MIN_SERVER_PROTOCOL}); the server needs an update"
             ),
             CoreError::UntrustedCertificate(fp) => write!(
                 f,
@@ -373,6 +371,8 @@ struct InstanceHandle {
     rest: Rest,
     gateway: Gateway,
     status: Mutex<ConnStatus>,
+    /// Since when the status has not been `Connected`; `None` while connected.
+    down_since: Mutex<Option<std::time::Instant>>,
     connected: tokio::sync::watch::Sender<bool>,
     outbox: Outbox,
     /// channel → newest message to ack, waiting for the debounce.
@@ -428,6 +428,24 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
+const fn presence_name(status: PresenceStatus) -> &'static str {
+    match status {
+        PresenceStatus::Online => "online",
+        PresenceStatus::Idle => "idle",
+        PresenceStatus::Dnd => "dnd",
+        PresenceStatus::Invisible => "invisible",
+    }
+}
+
+fn parse_presence(name: &str) -> PresenceStatus {
+    match name {
+        "idle" => PresenceStatus::Idle,
+        "dnd" => PresenceStatus::Dnd,
+        "invisible" => PresenceStatus::Invisible,
+        _ => PresenceStatus::Online,
+    }
+}
+
 /// A random UUID v4 string, used as the message nonce.
 pub fn uuid_v4() -> String {
     let mut b: [u8; 16] = rand::random();
@@ -449,6 +467,7 @@ pub fn uuid_v4() -> String {
 
 impl Core {
     pub fn new(config: ClientConfig, options: CoreOptions) -> (Core, CoreEvents) {
+        let presence = parse_presence(&config.general.presence);
         // rustls needs a process-wide provider for reqwest's internals.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -476,7 +495,7 @@ impl Core {
                     app_focused: true,
                     visible: HashSet::new(),
                 }),
-                presence: Mutex::new(PresenceStatus::Online),
+                presence: Mutex::new(presence),
                 watcher: Mutex::new(None),
                 voice,
                 accounts: Mutex::default(),
@@ -574,7 +593,11 @@ impl Core {
         )
     }
 
-    fn with_store<T>(&self, inst: &str, f: impl FnOnce(&mut InstanceStore) -> T) -> Option<T> {
+    pub(crate) fn with_store<T>(
+        &self,
+        inst: &str,
+        f: impl FnOnce(&mut InstanceStore) -> T,
+    ) -> Option<T> {
         StoreRef::check_unlocked();
         let mut store = self
             .inner
@@ -665,6 +688,17 @@ impl Core {
         })
     }
 
+    /// How long `inst` has not been connected; `None` while it is (or when it is unknown). A
+    /// short blip, such as resuming, can be told apart from a real outage with it.
+    pub fn down_for(&self, inst: &str) -> Option<std::time::Duration> {
+        let handle = self.handle(inst)?;
+        let since = *handle
+            .down_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        since.map(|at| at.elapsed())
+    }
+
     fn handle(&self, inst: &str) -> Option<Arc<InstanceHandle>> {
         self.inner
             .instances
@@ -741,7 +775,8 @@ impl Core {
             None if seen.ca_valid => CertStatus::Trusted,
             None => CertStatus::Unknown,
         };
-        if info.protocol_version != PROTOCOL_VERSION {
+        // A newer server is fine: what it adds is announced in `features` and skipped here.
+        if info.protocol_version < MIN_SERVER_PROTOCOL {
             return Err(CoreError::UnsupportedProtocol {
                 server: info.protocol_version,
             });
@@ -815,6 +850,17 @@ impl Core {
         username: &str,
         password: &str,
     ) -> Result<InstanceId> {
+        self.login_with_code(host, username, password, None).await
+    }
+
+    /// [`Core::login`] with the code of an account that has two-factor login.
+    pub async fn login_with_code(
+        &self,
+        host: &HostPort,
+        username: &str,
+        password: &str,
+        totp: Option<&str>,
+    ) -> Result<InstanceId> {
         self.check_trusted(host).await?;
         let rest = Rest::new(host, self.trust(host))?;
         let res = rest
@@ -822,6 +868,7 @@ impl Core {
                 username: username.into(),
                 password: password.into(),
                 device_name: self.device_name(),
+                totp: totp.map(str::to_owned),
             })
             .await?;
         self.signed_in(host, &res.user.user.username, &res.token)
@@ -907,6 +954,7 @@ impl Core {
             rest,
             gateway,
             status: Mutex::new(ConnStatus::Connecting),
+            down_since: Mutex::new(Some(std::time::Instant::now())),
             connected,
             outbox: Outbox::default(),
             read_marks: Mutex::new(HashMap::new()),
@@ -933,7 +981,12 @@ impl Core {
     /// instance stays in the config so signing in again is quick.
     pub async fn logout(&self, inst: &str) -> Result<()> {
         let handle = self.handle_or_err(inst)?;
-        let _ = handle.rest.logout().await;
+        if let Err(err) = handle.rest.logout().await {
+            self.emit(CoreEvent::Error(format!(
+                "Signed out here, but the server could not be told ({err}). End this session \
+                 from another device if it matters."
+            )));
+        }
         self.disconnect(inst, &handle);
         Ok(())
     }
@@ -964,6 +1017,7 @@ impl Core {
         if self.handle(inst).is_some() {
             self.logout(inst).await?;
         }
+        self.wipe_local_keys(inst);
         self.inner
             .config
             .write()
@@ -971,6 +1025,34 @@ impl Core {
             .instances
             .retain(|i| i.id != inst);
         self.save_config()
+    }
+
+    /// Asks who I have blocked: the server does not put that in `ready`.
+    fn spawn_blocks(&self, inst: &str) {
+        let core = self.clone();
+        let inst = inst.to_owned();
+        tokio::spawn(async move {
+            if let Ok(rest) = core.rest(&inst)
+                && let Ok(list) = rest.blocks().await
+            {
+                core.with_store(&inst, |s| s.blocked = list.into_iter().collect());
+                core.changed(&inst, [Changed::Users]);
+            }
+            core.load_local_names(&inst);
+            core.resend_outbox(&inst);
+        });
+    }
+
+    /// I blocked or unblocked someone: their messages show accordingly at once.
+    pub fn set_blocked(&self, inst: &str, user: Id, blocked: bool) {
+        self.with_store(inst, |s| {
+            if blocked {
+                s.blocked.insert(user);
+            } else {
+                s.blocked.remove(&user);
+            }
+        });
+        self.changed(inst, [Changed::Users]);
     }
 
     /// Goes offline (keeping the session to resume) or back online.
@@ -986,6 +1068,15 @@ impl Core {
 
     /// Changes my presence on every instance.
     pub fn set_presence(&self, status: PresenceStatus) {
+        self.set_presence_for_now(status);
+        // Whoever goes invisible stays invisible after a restart.
+        if let Err(err) = self.set_setting("general.presence", presence_name(status)) {
+            tracing::warn!("presence not saved: {err}");
+        }
+    }
+
+    /// Changes my presence without making it the status chosen: going idle by itself.
+    pub fn set_presence_for_now(&self, status: PresenceStatus) {
         *self
             .inner
             .presence
@@ -1059,6 +1150,17 @@ impl Core {
             match event {
                 GatewayEvent::Status(status) => {
                     *handle.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
+                    {
+                        let mut since = handle
+                            .down_since
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if status == ConnStatus::Connected {
+                            *since = None;
+                        } else if since.is_none() {
+                            *since = Some(std::time::Instant::now());
+                        }
+                    }
                     let _ = handle.connected.send(status == ConnStatus::Connected);
                     if status == ConnStatus::Connected {
                         handle.outbox.wake.notify_one();
@@ -1081,6 +1183,7 @@ impl Core {
                     self.with_store(&inst, |s| s.apply_ready(*ready));
                     self.changed(&inst, [Changed::All]);
                     self.publish_device(&inst);
+                    self.spawn_blocks(&inst);
                     for space in spaces {
                         self.spawn_members(&inst, space);
                     }
@@ -1105,6 +1208,29 @@ impl Core {
                         }
                         ServerEvent::DevicesUpdate { user_id, devices } => {
                             self.devices_changed(&inst, *user_id, std::mem::take(devices));
+                        }
+                        ServerEvent::MessageDelete { id, .. } => {
+                            self.index_remove(&inst, *id);
+                        }
+                        ServerEvent::MessageDeleteBulk { ids, .. } => {
+                            for id in ids.iter() {
+                                self.index_remove(&inst, *id);
+                            }
+                        }
+                        ServerEvent::ChannelKeyRequest(request) => {
+                            self.key_requested(&inst, request.clone());
+                        }
+                        ServerEvent::ChannelKeysDelivered { channel_id } => {
+                            self.keys_delivered(&inst, *channel_id);
+                        }
+                        ServerEvent::ChannelKeyEpoch { channel_id, .. } => {
+                            self.key_epoch_changed(&inst, *channel_id);
+                        }
+                        ServerEvent::ReactionAdd(reaction)
+                        | ServerEvent::ReactionRemove(reaction) => {
+                            if !self.open_reaction_event(&inst, reaction) {
+                                continue;
+                            }
                         }
                         _ => {}
                     }
@@ -1193,7 +1319,15 @@ impl Core {
         let Some(s) = store.instance(inst) else {
             return;
         };
-        if let Some(notification) = notify::check(s, message, focused, presence, now) {
+        let rules = self.config().notifications;
+        let offset = crate::time::local_offset_secs();
+        let minute = ((now / 1000 + offset).rem_euclid(86_400) / 60) as u32;
+        if notify::quiet(&rules.quiet_from, &rules.quiet_to, minute) {
+            return;
+        }
+        let keyword = notify::has_keyword(&rules.keywords, &message.content);
+        if let Some(notification) = notify::check_with(s, message, focused, presence, now, keyword)
+        {
             drop(store);
             self.emit(CoreEvent::Notification {
                 inst: inst.to_owned(),
@@ -1392,6 +1526,8 @@ impl Core {
     /// Sends queued messages one at a time, in order, while connected.
     async fn outbox(self, inst: InstanceId, handle: Arc<InstanceHandle>) {
         let mut connected = handle.connected.subscribe();
+        // Times in a row the channel had a newer key than the message was sealed with.
+        let mut conflicts = 0u8;
         loop {
             // Stop when the instance was removed or replaced.
             if !self.handle(&inst).is_some_and(|h| Arc::ptr_eq(&h, &handle)) {
@@ -1425,8 +1561,16 @@ impl Core {
                             content: p.content.clone(),
                             nonce: p.nonce.clone(),
                             reply_to_id: p.reply_to,
-                            attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
+                            attachment_ids: p
+                                .attachments
+                                .iter()
+                                .flat_map(|a| {
+                                    let thumb = a.sealed.as_ref().and_then(|s| s.thumb.as_ref());
+                                    std::iter::once(a.id).chain(thumb.map(|t| t.id))
+                                })
+                                .collect(),
                             e2ee: None,
+                            mentions: None,
                         },
                         p.attachments.clone(),
                     )
@@ -1436,8 +1580,8 @@ impl Core {
                 continue; // discarded meanwhile
             };
             self.changed(&inst, [Changed::Messages(channel)]);
-            // What goes to a DM leaves this device sealed, or not at all.
-            if self.channel_is_private(&inst, channel) {
+            // What is encrypted here leaves this device sealed, or not at all.
+            if self.channel_is_encrypted(&inst, channel) {
                 match self
                     .seal(
                         &inst,
@@ -1445,10 +1589,14 @@ impl Core {
                         &request.content,
                         &attachments,
                         request.reply_to_id,
+                        None,
                     )
                     .await
                 {
                     Ok(envelope) => {
+                        if !self.channel_is_private(&inst, channel) {
+                            request.mentions = Some(markup::extract_mentions(&request.content));
+                        }
                         request.content.clear();
                         request.e2ee = Some(envelope);
                     }
@@ -1476,6 +1624,7 @@ impl Core {
             }
             match handle.rest.send_message(channel, &request).await {
                 Ok(mut message) => {
+                    conflicts = 0;
                     self.open_message(&inst, &mut message).await;
                     let id = message.id;
                     self.with_store(&inst, |s| s.resolve_pending(local_id, message));
@@ -1484,6 +1633,22 @@ impl Core {
                         [Changed::Messages(channel), Changed::ReadState(channel)],
                     );
                     self.mark_read(&inst, channel, id);
+                }
+                // The channel moved to a newer key meanwhile: sealed again under that one.
+                Err(rest::Error::Api(err))
+                    if err.code == ErrorCode::Conflict
+                        && request.e2ee.is_some()
+                        && conflicts < 3 =>
+                {
+                    conflicts += 1;
+                    self.key_epoch_changed(&inst, channel);
+                    handle
+                        .outbox
+                        .queue
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push_front((channel, local_id));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 }
                 Err(rest::Error::Api(err)) if err.code == ErrorCode::RateLimited => {
                     handle
@@ -1524,7 +1689,7 @@ impl Core {
         message: Id,
         content: &str,
     ) -> Result<()> {
-        let request = if self.channel_is_private(inst, channel) {
+        let request = if self.channel_is_encrypted(inst, channel) {
             let (attachments, reply_to) = {
                 let store = self.store();
                 let found = store
@@ -1537,16 +1702,26 @@ impl Core {
                 )
             };
             let envelope = self
-                .seal(inst, channel, content, &attachments, reply_to)
+                .seal(
+                    inst,
+                    channel,
+                    content,
+                    &attachments,
+                    reply_to,
+                    Some(message),
+                )
                 .await?;
             hermes_proto::api::EditMessageRequest {
                 content: String::new(),
                 e2ee: Some(envelope),
+                mentions: (!self.channel_is_private(inst, channel))
+                    .then(|| markup::extract_mentions(content)),
             }
         } else {
             hermes_proto::api::EditMessageRequest {
                 content: content.to_owned(),
                 e2ee: None,
+                mentions: None,
             }
         };
         let mut updated = self
@@ -1563,6 +1738,7 @@ impl Core {
 
     pub async fn delete_message(&self, inst: &str, channel: Id, message: Id) -> Result<()> {
         self.rest(inst)?.delete_message(channel, message).await?;
+        self.index_remove(inst, message);
         let changed = self.with_store(inst, |s| {
             s.apply(
                 ServerEvent::MessageDelete {
@@ -1577,11 +1753,52 @@ impl Core {
     }
 
     pub async fn react(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.react(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.react(channel, message, &emoji).await?)
     }
 
     pub async fn unreact(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.unreact(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.unreact(channel, message, &emoji).await?)
+    }
+
+    /// An emoji as the server gets it on this message: sealed if the message is.
+    fn reaction_form(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> String {
+        let store = self.store();
+        let key = store
+            .instance(inst)
+            .and_then(|s| s.window(channel)?.get(message)?.message_key.clone());
+        match key {
+            Some(key) => crate::e2ee::seal_reaction(&key, emoji).unwrap_or_else(|err| {
+                tracing::warn!("could not seal a reaction: {err}");
+                emoji.to_owned()
+            }),
+            None => emoji.to_owned(),
+        }
+    }
+
+    /// Opens a reaction from the gateway. `false` if this client cannot show it.
+    fn open_reaction_event(
+        &self,
+        inst: &str,
+        reaction: &mut hermes_proto::gateway::ReactionEvent,
+    ) -> bool {
+        if !reaction.emoji.starts_with(crate::e2ee::REACTION_PREFIX) {
+            return true;
+        }
+        let store = self.store();
+        let opened = store
+            .instance(inst)
+            .and_then(|s| s.window(reaction.channel_id)?.get(reaction.message_id))
+            .and_then(|m| m.message_key.as_deref())
+            .and_then(|key| crate::e2ee::open_reaction(key, &reaction.emoji));
+        match opened {
+            Some(emoji) => {
+                reaction.emoji = emoji;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Marks a channel read up to `message`: shown at once, sent to the server after 1 s
@@ -1611,6 +1828,9 @@ impl Core {
             return;
         }
         self.changed(inst, [Changed::ReadState(channel)]);
+        if !self.config().privacy.send_read_marks {
+            return;
+        }
         let first = handle
             .read_marks
             .lock()
@@ -1634,6 +1854,48 @@ impl Core {
         }
     }
 
+    /// Puts a channel back to unread from `message` on.
+    pub fn mark_unread(&self, inst: &str, channel: Id, message: Id) {
+        let Some(handle) = self.handle(inst) else {
+            return;
+        };
+        let before = Id(message.0.saturating_sub(1));
+        self.with_store(inst, |s| {
+            let mention_count = s.read_states.get(&channel).map_or(0, |r| r.mention_count);
+            s.read_states.insert(
+                channel,
+                hermes_proto::models::ReadState {
+                    channel_id: channel,
+                    last_read_id: before,
+                    mention_count,
+                },
+            );
+        });
+        self.changed(inst, [Changed::ReadState(channel)]);
+        if self.config().privacy.send_read_marks {
+            tokio::spawn(async move {
+                if let Err(err) = handle.rest.ack(channel, before).await {
+                    tracing::info!("ack {channel}: {err}");
+                }
+            });
+        }
+    }
+
+    /// Whether this instance connects when Hermes starts.
+    pub fn set_autoconnect(&self, inst: &str, autoconnect: bool) -> Result<()> {
+        {
+            let mut config = self
+                .inner
+                .config
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
+            for entry in config.instances.iter_mut().filter(|e| e.id == inst) {
+                entry.autoconnect = autoconnect;
+            }
+        }
+        self.save_config()
+    }
+
     /// Tells others I am typing (at most every 8 s per channel).
     pub fn typing(&self, inst: &str, channel: Id) {
         let Some(handle) = self.handle(inst) else {
@@ -1653,6 +1915,10 @@ impl Core {
             }
             sent.insert(channel, now);
         }
+        let invisible = self.presence() == PresenceStatus::Invisible;
+        if invisible || !self.config().privacy.send_typing {
+            return;
+        }
         tokio::spawn(async move {
             let _ = handle.rest.typing(channel).await;
         });
@@ -1660,6 +1926,17 @@ impl Core {
 
     /// Uploads a file; attach the result to a [`Draft`].
     pub async fn upload(&self, inst: &str, path: &Path) -> Result<Attachment> {
+        self.upload_measured(inst, path, None, None).await
+    }
+
+    /// [`Core::upload`] with what was measured of a sound or video.
+    pub async fn upload_measured(
+        &self,
+        inst: &str,
+        path: &Path,
+        waveform: Option<&[u8]>,
+        duration_ms: Option<u64>,
+    ) -> Result<Attachment> {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
@@ -1669,7 +1946,7 @@ impl Core {
         let content_type = content_type(&filename);
         Ok(self
             .rest(inst)?
-            .upload(&filename, content_type, bytes)
+            .upload_measured(&filename, content_type, bytes, waveform, duration_ms)
             .await?)
     }
 
@@ -1738,13 +2015,21 @@ pub fn content_type(filename: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "apng" => "image/apng",
         "txt" | "log" | "md" => "text/plain",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
         "mp3" => "audio/mpeg",
-        "ogg" | "opus" => "audio/ogg",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
         "json" => "application/json",
         _ => "application/octet-stream",
@@ -1768,6 +2053,9 @@ mod tests {
     fn content_types() {
         assert_eq!(content_type("Cat.PNG"), "image/png");
         assert_eq!(content_type("notes"), "application/octet-stream");
+        assert_eq!(content_type("clip.MKV"), "video/x-matroska");
+        assert_eq!(content_type("clip.mov"), "video/quicktime");
+        assert_eq!(content_type("song.flac"), "audio/flac");
     }
 
     #[tokio::test]

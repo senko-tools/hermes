@@ -23,7 +23,6 @@ use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{CoreError, InstanceId, now_ms, time, view};
 
 use crate::assets::{self, icon};
-use crate::channel::icon_button;
 use crate::drag::{Ghost, Item, Kind};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
@@ -50,8 +49,10 @@ pub enum Tab {
     Roles,
     Channels,
     Members,
+    Encryption,
     Invites,
     Bans,
+    Reports,
     Audit,
 }
 
@@ -62,8 +63,10 @@ impl Tab {
             Tab::Roles => "Roles",
             Tab::Channels => "Channels",
             Tab::Members => "Members",
+            Tab::Encryption => "Encryption",
             Tab::Invites => "Invites",
             Tab::Bans => "Bans",
+            Tab::Reports => "Reports",
             Tab::Audit => "Audit log",
         }
     }
@@ -74,8 +77,10 @@ impl Tab {
             Tab::Roles => assets::SHIELD,
             Tab::Channels => assets::POUND,
             Tab::Members => assets::USERS,
+            Tab::Encryption => assets::LOCK,
             Tab::Invites => assets::LINK,
             Tab::Bans => assets::BAN,
+            Tab::Reports => assets::BELL,
             Tab::Audit => assets::FILE,
         }
     }
@@ -83,6 +88,12 @@ impl Tab {
     /// The tabs I can use in a space.
     pub fn available(s: &InstanceStore, space: Id) -> Vec<Tab> {
         let mut tabs = vec![Tab::Overview, Tab::Roles, Tab::Channels, Tab::Members];
+        if s.instance
+            .as_ref()
+            .is_some_and(|i| i.limits.channels_encrypted)
+        {
+            tabs.push(Tab::Encryption);
+        }
         if view::can_in_space(s, space, Permissions::CREATE_INVITES)
             || view::can_in_space(s, space, Permissions::MANAGE_INVITES)
         {
@@ -90,6 +101,9 @@ impl Tab {
         }
         if view::can_in_space(s, space, Permissions::BAN_MEMBERS) {
             tabs.push(Tab::Bans);
+        }
+        if view::can_in_space(s, space, Permissions::MANAGE_MESSAGES) {
+            tabs.push(Tab::Reports);
         }
         if view::can_in_space(s, space, Permissions::VIEW_AUDIT_LOG) {
             tabs.push(Tab::Audit);
@@ -198,9 +212,12 @@ pub struct SpacePage {
     pub member: Option<Id>,
     pub invites: Remote<Vec<Invite>>,
     pub bans: Remote<Vec<Ban>>,
+    pub reports: Remote<Vec<hermes_client_core::proto::models::Report>>,
     pub audit: Remote<Vec<AuditEntry>>,
     /// The audit log has older entries to load.
     pub audit_more: bool,
+    /// The Encryption tab.
+    pub keys: crate::key_settings::KeySettings,
     _inputs: Vec<Subscription>,
 }
 
@@ -301,8 +318,8 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
     let t = target.unwrap_or_default();
     use AuditAction as A;
     let what = match entry.action {
-        A::SpaceUpdate => "changed the space settings".to_owned(),
-        A::SpaceTransfer => format!("gave the space to {t}"),
+        A::SpaceUpdate => "changed the server settings".to_owned(),
+        A::SpaceTransfer => format!("gave the server to {t}"),
         A::MemberUpdate => format!("updated {t}"),
         A::MemberKick => format!("kicked {t}"),
         A::MemberBan => format!("banned {t}"),
@@ -327,6 +344,14 @@ pub fn describe(s: &InstanceStore, space: Id, entry: &AuditEntry) -> (String, St
         A::MemberVoiceUpdate => format!("changed the voice mute / deafen of {t}"),
         A::MemberMove => format!("moved {t} to another voice channel"),
         A::MemberDisconnect => format!("disconnected {t} from voice"),
+        A::MemberTimeout => format!("changed the timeout of {t}"),
+        A::MessagePin => "pinned a message".to_owned(),
+        A::MessageUnpin => "unpinned a message".to_owned(),
+        A::InviteCreate => "created an invite".to_owned(),
+        A::InviteRevoke => "revoked an invite".to_owned(),
+        A::KeyPolicyUpdate => "changed the encryption rules".to_owned(),
+        A::MessageDeleteBulk => "deleted several messages".to_owned(),
+        A::Unknown => format!("did something this version of Hermes doesn't know ({t})"),
     };
     let details = match entry.details.as_object() {
         Some(map) if !map.is_empty() => {
@@ -390,7 +415,7 @@ impl Shell {
             };
             let overview_loaded = (name.clone(), description.clone());
             let name = field(name, "Name", window, cx);
-            let description = field(description, "What is this space about?", window, cx);
+            let description = field(description, "What is this server about?", window, cx);
             let member_query = field(String::new(), "Search members", window, cx);
             let page_key = key.clone();
             let notify_key = key.clone();
@@ -440,8 +465,10 @@ impl Shell {
                     member: None,
                     invites: Remote::Idle,
                     bans: Remote::Idle,
+                    reports: Remote::Idle,
                     audit: Remote::Idle,
                     audit_more: false,
+                    keys: Default::default(),
                     _inputs: inputs,
                 },
             );
@@ -505,6 +532,7 @@ impl Shell {
         };
         page.tab = tab;
         match tab {
+            Tab::Encryption => self.load_key_settings(done, cx),
             Tab::Invites => {
                 if !manage_invites
                     || (!force && matches!(page.invites, Remote::Ready(_) | Remote::Loading))
@@ -542,6 +570,27 @@ impl Shell {
                     move |this, result, _, _| {
                         if let Some(page) = this.space_pages.get_mut(&done) {
                             page.bans = match result {
+                                Ok(list) => Remote::Ready(list),
+                                Err(err) => Remote::Failed(err),
+                            };
+                        }
+                    },
+                );
+            }
+            Tab::Reports => {
+                if !force && matches!(page.reports, Remote::Ready(_) | Remote::Loading) {
+                    return;
+                }
+                page.reports = Remote::Loading;
+                self.run(
+                    cx,
+                    async move {
+                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        rest.reports(space).await.map_err(|e| e.to_string())
+                    },
+                    move |this, result, _, _| {
+                        if let Some(page) = this.space_pages.get_mut(&done) {
+                            page.reports = match result {
                                 Ok(list) => Remote::Ready(list),
                                 Err(err) => Remote::Failed(err),
                             };
@@ -649,7 +698,7 @@ impl Shell {
                         page.overview_dirty = false;
                         page.overview_loaded = (name, description);
                     }
-                    this.info("Space saved", cx);
+                    this.info("Server saved", cx);
                 }
                 Err(err) => this.error(format!("could not save: {err}"), cx),
             },
@@ -657,36 +706,7 @@ impl Shell {
     }
 
     fn pick_space_icon(&mut self, inst: InstanceId, space: Id, cx: &mut Context<Self>) {
-        let core = self.core.clone();
-        self.run(
-            cx,
-            async move {
-                let Some(file) = rfd::AsyncFileDialog::new()
-                    .set_title("Choose a space icon")
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
-                    .pick_file()
-                    .await
-                else {
-                    return Ok(None);
-                };
-                let icon = core.upload(&inst, file.path()).await?;
-                core.rest(&inst)?
-                    .update_space(
-                        space,
-                        &UpdateSpaceRequest {
-                            icon_id: Some(Some(icon.id)),
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                Ok::<_, CoreError>(Some(()))
-            },
-            |this, result, _, cx| match result {
-                Ok(Some(())) => this.info("Icon changed", cx),
-                Ok(None) => {}
-                Err(err) => this.error(format!("could not change the icon: {err}"), cx),
-            },
-        );
+        self.pick_picture(crate::crop::CropFor::SpaceIcon(inst, space), cx);
     }
 
     // ---- roles --------------------------------------------------------------------------------
@@ -1126,14 +1146,19 @@ impl Shell {
             Tab::Roles => self.tab_roles(page, s, cx),
             Tab::Channels => self.tab_channels(page, s, cx),
             Tab::Members => self.tab_members(page, s, cx),
+            Tab::Encryption => self.tab_encryption(page, s, cx),
             Tab::Invites => self.tab_invites(page, s, cx),
             Tab::Bans => self.tab_bans(page, s, cx),
+            Tab::Reports => self.tab_reports(page, s, cx),
             Tab::Audit => self.tab_audit(page, s, cx),
         };
         Some(frame(
             st.space.name.clone(),
             nav,
-            content,
+            crate::theme::enter(
+                gpui_kit::SharedString::from(format!("space-settings-{:?}", page.tab)),
+                content,
+            ),
             cx.listener(|this, _, _, cx| this.close_space_settings(cx)),
         ))
     }
@@ -1149,7 +1174,11 @@ impl Shell {
         let editable = view::can_in_space(s, space, Permissions::MANAGE_SPACE);
         let is_owner = Some(st.space.owner_id) == s.me_id();
         let mut rows = vec![
-            setting("Space name", "", Input::new(&page.name).disabled(!editable)),
+            setting(
+                "Server name",
+                "",
+                Input::new(&page.name).disabled(!editable),
+            ),
             setting(
                 "Description",
                 "Shown on invite pages.",
@@ -1158,13 +1187,28 @@ impl Shell {
         ];
         if editable {
             let has_icon = st.space.icon.is_some();
+            // Read from the image cache, not through the store again (it is held here).
+            let picture = st.space.icon.as_ref().and_then(|icon| {
+                match self.images.avatars.get(&(inst.clone(), icon.id)) {
+                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
+                    _ => None,
+                }
+            });
             let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
             rows.push(setting(
                 "Icon",
                 "A square PNG or JPEG works best.",
                 div()
                     .flex()
+                    .items_center()
                     .gap(px(8.))
+                    .children(picture.map(|picture| {
+                        gpui_kit::img(picture)
+                            .size(px(40.))
+                            .rounded(theme::radius_large())
+                            .object_fit(gpui_kit::ObjectFit::Cover)
+                            .id("space-icon-picture")
+                    }))
                     .child(
                         Button::new("space-icon")
                             .cursor_pointer()
@@ -1225,7 +1269,7 @@ impl Shell {
             }
         } else {
             rows.push(muted(
-                "You need the Manage space permission to change these.",
+                "You need the Manage server permission to change these.",
             ));
         }
         let members = st.members.len();
@@ -1244,10 +1288,10 @@ impl Shell {
             ),
             Button::new("space-copy-id")
                 .cursor_pointer()
-                .label("Copy space ID")
-                .on_click(
-                    cx.listener(move |this, _, _, cx| this.copy(space.to_string(), "Space ID", cx)),
-                ),
+                .label(self.copy_label("space-copy-id", "Copy server ID"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
+                })),
         )];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             let invite_inst = inst.clone();
@@ -1271,14 +1315,15 @@ impl Shell {
         let danger_inst = inst.clone();
         let danger = if is_owner {
             setting(
-                "Delete space",
+                "Delete server",
                 "Deletes every channel and message for everyone. This cannot be undone. To keep \
                  the space, give it to someone else from the Members tab first.",
                 Button::new("space-delete")
                     .cursor_pointer()
                     .danger()
-                    .label("Delete space")
+                    .label("Delete server")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::DeleteSpace,
@@ -1288,13 +1333,14 @@ impl Shell {
             )
         } else {
             setting(
-                "Leave space",
+                "Leave server",
                 "You will need a new invite to come back.",
                 Button::new("space-leave")
                     .cursor_pointer()
                     .danger()
-                    .label("Leave space")
+                    .label("Leave server")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::LeaveSpace,
@@ -1307,7 +1353,7 @@ impl Shell {
             "Overview",
             None,
             vec![
-                group("Space", rows),
+                group("Server", rows),
                 group("About", about),
                 group("Danger zone", vec![danger]),
             ],
@@ -1363,7 +1409,7 @@ impl Shell {
             })
             .collect();
         let create = can_manage.then(|| {
-            icon_button("role-create", assets::PLUS)
+            crate::channel::tip_button("role-create", assets::PLUS, "Create a role")
                 .on_click(cx.listener(|this, _, _, cx| this.create_role(cx)))
                 .into_any_element()
         });
@@ -1625,8 +1671,8 @@ impl Shell {
                 .flex()
                 .gap(px(2.))
                 .child(
-                    icon_button("channel-create", assets::PLUS).on_click(cx.listener(
-                        move |this, _, window, cx| {
+                    crate::channel::tip_button("channel-create", assets::PLUS, "Create a channel")
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_form_create_channel(
                                 channel_inst.clone(),
                                 space,
@@ -1634,20 +1680,17 @@ impl Shell {
                                 window,
                                 cx,
                             );
-                        },
-                    )),
+                        })),
                 )
                 .child(
-                    icon_button("category-create", assets::FOLDER_PLUS).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.open_form_create_category(
-                                category_inst.clone(),
-                                space,
-                                window,
-                                cx,
-                            );
-                        },
-                    )),
+                    crate::channel::tip_button(
+                        "category-create",
+                        assets::FOLDER_PLUS,
+                        "Create a category",
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_form_create_category(category_inst.clone(), space, window, cx);
+                    })),
                 )
                 .into_any_element()
         });
@@ -1758,6 +1801,7 @@ impl Shell {
                                     "Delete channel"
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_closing("confirm");
                                     this.confirm = Some((
                                         Target::Channel(delete_inst.clone(), id),
                                         Action::DeleteChannel,
@@ -2060,7 +2104,7 @@ impl Shell {
             group(
                 "Roles",
                 vec![muted(
-                    "This space has no roles yet. Create them in the Roles tab.",
+                    "This server has no roles yet. Create them in the Roles tab.",
                 )],
             )
         } else {
@@ -2166,12 +2210,13 @@ impl Shell {
             let kick = target.clone();
             danger.push(setting(
                 "Kick",
-                "Removes them from the space; they can come back with a new invite.",
+                "Removes them from the server; they can come back with a new invite.",
                 Button::new("member-kick")
                     .cursor_pointer()
                     .danger()
                     .label("Kick")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((kick.clone(), Action::Kick));
                         cx.notify();
                     })),
@@ -2201,6 +2246,7 @@ impl Shell {
                     .danger()
                     .label("Transfer…")
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        this.cancel_closing("confirm");
                         this.confirm = Some((target.clone(), Action::TransferOwnership));
                         cx.notify();
                     })),
@@ -2221,7 +2267,7 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let text = match remote {
-            Remote::Idle | Remote::Loading => "Loading…".to_owned(),
+            Remote::Idle | Remote::Loading => return Some(theme::skeleton("list", 4)),
             Remote::Failed(err) => format!("Could not load: {err}"),
             Remote::Ready(_) if empty => empty_text.to_owned(),
             Remote::Ready(_) => return None,
@@ -2256,9 +2302,7 @@ impl Shell {
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_INVITES);
         let create_inst = inst.clone();
-        let mut rows: Vec<AnyElement> = vec![muted(
-            "Anyone with a link can join while it is valid. Revoke a link to stop it working.",
-        )];
+        let mut rows: Vec<AnyElement> = vec![muted("Anyone with a valid link can join.")];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             rows.push(
                 Button::new("invite-create")
@@ -2333,10 +2377,20 @@ impl Shell {
                     .child(
                         Button::new(("invite-copy", n))
                             .cursor_pointer()
-                            .label("Copy link")
+                            .label(
+                                self.copy_label(
+                                    &format!("invite-copy-{}", invite.code),
+                                    "Copy link",
+                                ),
+                            )
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
-                                    this.copy(link, "Invite link", cx);
+                                    this.copy_from(
+                                        format!("invite-copy-{copy_code}"),
+                                        link,
+                                        "Invite link",
+                                        cx,
+                                    );
                                 }
                             })),
                     )
@@ -2346,6 +2400,7 @@ impl Shell {
                             .danger()
                             .label("Revoke")
                             .on_click(cx.listener(move |this, _, _, cx| {
+                                this.cancel_closing("confirm");
                                 this.confirm = Some((
                                     Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
                                     Action::RevokeInvite,
@@ -2357,6 +2412,92 @@ impl Shell {
             );
         }
         page_body("Invites", None, rows)
+    }
+
+    fn tab_reports(
+        &self,
+        page: &SpacePage,
+        s: &InstanceStore,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut rows: Vec<AnyElement> = vec![muted(
+            "Messages people reported. A report shows what the reporter chose to share: the server \
+             cannot read encrypted messages.",
+        )];
+        let list = page.reports.ready();
+        if let Some(p) = self.list_placeholder(
+            &page.reports,
+            list.is_some_and(Vec::is_empty),
+            "Nothing has been reported.",
+            cx,
+        ) {
+            rows.push(p);
+            return page_body("Reports", None, rows);
+        }
+        for report in list.into_iter().flatten() {
+            let (inst, space, id) = (page.inst.clone(), page.space, report.id);
+            let jump_inst = page.inst.clone();
+            let (channel, message) = (report.channel_id, report.message_id);
+            let who = |user: Id| s.display_name(Some(space), user);
+            rows.push(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .gap(px(8.))
+                    .py(px(6.))
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_size(theme::secondary_size()).child(format!(
+                                "{} about {}: {}",
+                                who(report.reporter_id),
+                                who(report.author_id),
+                                report.reason
+                            )))
+                            .child(muted(report.excerpt.clone())),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("report-open-{id}")))
+                            .cursor_pointer()
+                            .label("Go to it")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_pages(cx);
+                                this.jump_to(jump_inst.clone(), channel, message, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("report-done-{id}")))
+                            .cursor_pointer()
+                            .label("Dealt with")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                let core = this.core.clone();
+                                let inst = inst.clone();
+                                this.run(
+                                    cx,
+                                    async move {
+                                        core.rest(&inst)
+                                            .map_err(|e| e.to_string())?
+                                            .resolve_report(space, id)
+                                            .await
+                                            .map_err(|e| e.to_string())
+                                    },
+                                    |this, result, _, cx| match result {
+                                        Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
+                                        Err(err) => this.error(err, cx),
+                                    },
+                                );
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        page_body("Reports", None, rows)
     }
 
     fn tab_bans(&self, page: &SpacePage, _s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
@@ -2523,8 +2664,9 @@ impl Shell {
         element
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
             .drag_over::<Item>(move |style, dragged, _, _| {
+                // Where it would land: tinted with the accent.
                 if dragged.can_drop_on(&over) {
-                    style.bg(theme::selected())
+                    style.bg(theme::alpha(theme::accent(), 0.18))
                 } else {
                     style
                 }
@@ -2554,7 +2696,7 @@ fn list_row(id: String, selected: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
         .gap(px(8.))
         .h(px(32.))
         .px(px(8.))
-        .rounded(px(4.))
+        .rounded(theme::radius_small())
         .cursor_pointer()
         .text_size(theme::secondary_size())
         .when(selected, |d| d.bg(theme::selected()))

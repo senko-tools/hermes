@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::FromRequestParts;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use base64::Engine;
@@ -13,20 +13,35 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hermes_proto::ErrorCode;
 use hermes_proto::id::Id;
 use sha2::{Digest, Sha256};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::api::{ApiResult, Error, PeerAddr};
+use crate::api::{ApiResult, Error};
 use crate::db;
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
 
+pub mod totp;
+
 /// Prefix of every session token, so leaked tokens are easy to recognize.
 pub const TOKEN_PREFIX: &str = "hms_";
 
-/// `last_seen_at` / `last_ip` are written at most this often per session.
+/// `last_seen_at` is written at most this often per session.
 const TOUCH_INTERVAL_MS: i64 = 60 * SECOND_MS;
+
+/// Password hashes computed at once. Each takes 19 MiB, so a burst of logins or registrations
+/// waits its turn instead of running the server out of memory.
+static HASHING: Semaphore = Semaphore::const_new(4);
+
+async fn hashing_turn() -> ApiResult<SemaphorePermit<'static>> {
+    HASHING
+        .acquire()
+        .await
+        .map_err(|err| Error::internal(format!("password hashing stopped: {err}")))
+}
 
 /// Hashes a password with argon2id (default parameters) on the blocking pool.
 pub async fn hash_password(password: String) -> ApiResult<String> {
+    let _turn = hashing_turn().await?;
     tokio::task::spawn_blocking(move || hash_password_blocking(&password))
         .await
         .map_err(|err| Error::internal(format!("password hashing task failed: {err}")))?
@@ -43,6 +58,7 @@ fn hash_password_blocking(password: &str) -> ApiResult<String> {
 /// user) a dummy hash is checked instead, so the response time does not reveal whether the
 /// user exists; the result is then always `false`.
 pub async fn verify_password(password: String, hash: Option<String>) -> ApiResult<bool> {
+    let _turn = hashing_turn().await?;
     tokio::task::spawn_blocking(move || {
         let (hash, known) = match hash {
             Some(hash) => (hash, true),
@@ -121,11 +137,7 @@ impl FromRequestParts<Arc<AppState>> for Auth {
 
         let now = now_ms();
         if now - session.last_seen_at >= TOUCH_INTERVAL_MS {
-            let ip = parts
-                .extensions
-                .get::<ConnectInfo<PeerAddr>>()
-                .map(|ConnectInfo(peer)| state.client_ip(peer.0, &parts.headers).to_string());
-            db::auth::touch_session(&state.db.write, session.id, now, ip.as_deref()).await?;
+            db::auth::touch_session(&state.db.write, session.id, now).await?;
         }
         Ok(Auth {
             user_id: session.user_id,

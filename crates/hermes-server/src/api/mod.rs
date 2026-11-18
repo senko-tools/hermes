@@ -1,20 +1,24 @@
 //! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
 //! mapping of errors to HTTP responses.
 
+mod account;
 mod admin;
 mod attachments;
 mod audit;
 mod auth;
+mod channel_keys;
 mod channels;
+pub mod conn_limit;
 pub mod devices;
 mod dms;
 mod friends;
-mod instance;
+pub(crate) mod instance;
 mod invites;
 mod members;
 mod messages;
 pub mod pages;
 mod perms;
+mod reports;
 mod roles;
 mod search;
 mod spaces;
@@ -31,8 +35,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::extract::connect_info::Connected;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::serve::IncomingStream;
@@ -41,10 +46,16 @@ use hermes_proto::{ApiError, ErrorBody, ErrorCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutBody;
 
+use self::conn_limit::{Capped, Caps};
 use crate::ratelimit;
 use crate::state::AppState;
 use crate::tls::{Tls, TlsListener};
+
+/// How long a request body may pause between pieces.
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Largest JSON request body; uploads (`POST /attachments`) stream and have their own limit.
 pub const JSON_BODY_LIMIT: usize = 256 * 1024;
@@ -57,7 +68,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/gateway", get(crate::gateway::handler))
         .route("/instance", get(instance::get))
-        .route("/auth/register", post(auth::register))
+        .route(
+            "/auth/register",
+            ratelimit::limit_login(
+                post(auth::register),
+                trusted,
+                limits.login_attempts_per_minute,
+            ),
+        )
         .route(
             "/auth/login",
             ratelimit::limit_login(post(auth::login), trusted, limits.login_attempts_per_minute),
@@ -70,6 +88,25 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/users/@me/username", post(users::change_username))
         .route("/users/@me/devices", put(devices::register))
         .route("/users/devices", post(devices::query))
+        .route("/users/@me/key-requests", get(channel_keys::requests))
+        .route(
+            "/channels/{id}/keys",
+            get(channel_keys::get).put(channel_keys::deliver),
+        )
+        .route("/channels/{id}/keys/members", get(channel_keys::members))
+        .route(
+            "/channels/{id}/keys/epochs",
+            post(channel_keys::start_epoch),
+        )
+        .route("/channels/{id}/keys/requests", post(channel_keys::request))
+        .route(
+            "/channels/{id}/key-policy",
+            get(channel_keys::channel_policy).put(channel_keys::set_channel_policy),
+        )
+        .route(
+            "/spaces/{id}/key-policy",
+            get(channel_keys::space_policy).put(channel_keys::set_space_policy),
+        )
         .route("/users/@me/friends", get(friends::list).post(friends::add))
         .route(
             "/users/@me/friends/{id}",
@@ -84,6 +121,35 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/users/@me/notification-settings/{target_id}",
             put(users::put_notification_setting).delete(users::delete_notification_setting),
         )
+        .route("/users/@me/2fa", get(account::two_factor))
+        .route("/users/@me/2fa/begin", post(account::two_factor_begin))
+        .route("/users/@me/2fa/confirm", post(account::two_factor_confirm))
+        .route("/users/@me/2fa/disable", post(account::two_factor_disable))
+        .route("/users/@me/blocks", get(account::blocks))
+        .route(
+            "/users/@me/blocks/{id}",
+            put(account::block).delete(account::unblock),
+        )
+        .route("/users/@me/export", get(account::export))
+        .route("/users/@me/delete", post(account::delete))
+        .route(
+            "/channels/{id}/messages/bulk-delete",
+            post(messages::bulk_delete),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}/report",
+            post(reports::create),
+        )
+        .route("/spaces/{id}/reports", get(reports::list))
+        .route("/spaces/{id}/reports/{rid}", delete(reports::resolve))
+        .route("/admin/users/{id}/detail", get(admin::user_detail))
+        .route("/admin/log", get(admin::log))
+        .route(
+            "/admin/settings",
+            get(admin::settings).patch(admin::update_settings),
+        )
+        .route("/admin/reports", get(admin::reports))
+        .route("/admin/reports/{id}", delete(admin::resolve_report))
         .route("/users/{id}", get(users::get))
         .route("/search", get(search::search))
         .route("/admin/users", get(admin::list_users))
@@ -96,6 +162,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/spaces/{id}/members/{uid}",
             patch(members::update).delete(members::remove),
         )
+        .route("/spaces/{id}/members/{uid}/timeout", put(members::timeout))
         .route("/spaces/{id}/bans", get(members::list_bans))
         .route(
             "/spaces/{id}/bans/{uid}",
@@ -172,7 +239,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/channels/{id}/call/ring", post(voice::ring))
         .fallback(not_found)
-        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(CompressionLayer::new().gzip(true).compress_when(
+            |_: StatusCode, _: Version, headers: &HeaderMap, _: &Extensions| {
+                headers
+                    .get(CONTENT_TYPE)
+                    .is_some_and(|t| t.as_bytes().starts_with(b"application/json"))
+            },
+        ))
+        .layer(axum::middleware::map_request(limit_body_idle));
     let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);
     Router::new()
         .nest("/api/v1", api)
@@ -182,9 +257,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// A request body that stops arriving ends the request, instead of holding it open.
+async fn limit_body_idle(request: axum::extract::Request) -> axum::extract::Request {
+    request.map(|body| axum::body::Body::new(TimeoutBody::new(BODY_IDLE_TIMEOUT, body)))
+}
+
 /// `GET /healthz`, for Docker and uptime checks.
-async fn healthz() -> &'static str {
-    "ok"
+async fn healthz(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<&'static str, StatusCode> {
+    match sqlx::query("SELECT 1").execute(&state.db.read).await {
+        Ok(_) => Ok("ok"),
+        Err(err) => {
+            tracing::error!("health check: {err}");
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+    }
 }
 
 async fn not_found() -> Error {
@@ -197,19 +285,23 @@ pub async fn serve(
     tcp: TcpListener,
     tls: &Tls,
     app: Router,
+    caps: Caps,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     let service = app.into_make_service_with_connect_info::<PeerAddr>();
     match tls {
         Tls::Off => {
-            axum::serve(tcp, service)
+            axum::serve(Capped::new(tcp, caps), service)
                 .with_graceful_shutdown(shutdown)
                 .await
         }
         Tls::Rustls { config, .. } => {
-            axum::serve(TlsListener::new(tcp, config.clone())?, service)
-                .with_graceful_shutdown(shutdown)
-                .await
+            axum::serve(
+                Capped::new(TlsListener::new(tcp, config.clone())?, caps),
+                service,
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
         }
     }
 }
@@ -218,14 +310,14 @@ pub async fn serve(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerAddr(pub SocketAddr);
 
-impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TcpListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TcpListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }
 
-impl Connected<IncomingStream<'_, TlsListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TlsListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TlsListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }

@@ -5,13 +5,16 @@
 //! - [`capture`] / [`playback`]: the pipelines themselves, usable without devices
 //! - [`dsp`], [`codec`], [`jitter`], [`mixer`], [`sounds`]: building blocks
 //! - [`devices`]: listing and opening cpal devices
+//! - [`media`]: playing a decoded media file outside calls
 
 pub mod capture;
 pub mod codec;
 pub mod devices;
 pub mod dsp;
+pub mod echo;
 pub mod engine;
 pub mod jitter;
+pub mod media;
 pub mod mixer;
 pub mod playback;
 pub mod sounds;
@@ -125,8 +128,23 @@ pub struct AudioSettings {
     pub ptt_release_delay: Duration,
     /// Voice activity threshold, dBFS.
     pub vad_sensitivity_db: f32,
+    /// How long voice activity stays open after the last voiced frame.
+    pub vad_hold: Duration,
+    /// Only the level opens voice activity: noise suppression's voice detection can't open it
+    /// below the threshold.
+    pub vad_level_only: bool,
+    /// What automatic gain aims for, dBFS.
+    pub agc_target_db: f32,
     pub noise_suppression: bool,
+    /// Closes the microphone while muted, at the price of a moment's delay on unmuting.
+    pub close_mic_when_muted: bool,
+    pub opus_fec: bool,
+    pub opus_dtx: bool,
     pub auto_gain: bool,
+    /// Takes what the speakers play out of the microphone (for speakers or laptop microphones).
+    pub echo_cancellation: bool,
+    /// Screen share and media sound go this many dB down while someone speaks; `None`: off.
+    pub ducking_db: Option<f32>,
     /// Join/leave/mute sounds.
     pub sounds: bool,
     /// 0–1.
@@ -143,8 +161,16 @@ impl Default for AudioSettings {
             mode: InputMode::VoiceActivity,
             ptt_release_delay: Duration::from_millis(150),
             vad_sensitivity_db: -50.0,
+            vad_hold: dsp::Gate::HANGOVER,
+            vad_level_only: false,
+            agc_target_db: dsp::Agc::TARGET_DB,
             noise_suppression: true,
+            close_mic_when_muted: false,
+            opus_fec: true,
+            opus_dtx: true,
             auto_gain: false,
+            echo_cancellation: false,
+            ducking_db: None,
             sounds: true,
             sounds_volume: 0.6,
         }

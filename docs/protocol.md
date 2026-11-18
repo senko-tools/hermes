@@ -2,8 +2,8 @@ Who shares is told only on the control stream, never on the gateway: only people
 know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
 **unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
 have at most 32 such streams open at once, and both sides read them one at a time in the order
-they were opened, so frames stay in order. Both ends allow 4 MiB in flight per stream and 16 MiB
-per connection.
+they were opened, so frames stay in order. Both ends accept 4 MiB in flight per stream and 16 MiB
+per connection, and buffer at most 4 MiB to send.
 
 # Hermes protocol reference
 
@@ -26,6 +26,30 @@ crate; this file is kept in sync with it. Protocol version: **1**.
   bits).
 - JSON field names are `snake_case`; enum values are `snake_case` strings.
 - Default port **7700**: TCP for HTTPS/WSS, UDP for QUIC voice.
+
+### Versions and compatibility
+
+A server update must not break the clients people already have, and a new client must still
+work on a server that hasn't been updated yet (`hermes_proto::compat`).
+
+- `protocol_version` (now 2) changes only for a change that breaks older peers. A server accepts
+  any client `>= MIN_CLIENT_PROTOCOL`, and a client accepts any server `>= MIN_SERVER_PROTOCOL`.
+  Close code 4010 means the client is older than that floor.
+- Everything else is additive: new fields (always optional, with a default), new ops (peers that
+  don't know them skip the frame), and new enum values. Enums only a server sends fall back to a
+  known value: an unknown status reads as `offline`, a message kind as `default` (its content is
+  shown), an error code as `BAD_REQUEST` (its `message` still explains), a voice kick reason as
+  `disconnected`. Channel kinds and audit actions get `unknown`, and clients hide unknown
+  channels. Enums a client sends too stay strict, so a server refuses what it doesn't know. Where
+  a client reads one, the field falls back instead: `ready.privacy` to the defaults and
+  `registration_mode` to `invite_only`.
+- Lists in `ready` and in REST answers are read item by item: an item a client can't read is
+  dropped, and the rest of the list is kept.
+- `GET /instance` and `ready.instance` carry `features: [string]`, what the server can do beyond
+  protocol 2. A client only offers what the server lists. A server from before the list sends
+  none, so a client treats it as having none of them.
+- `crates/hermes-proto/tests/compat/<version>/` holds what each release's server sent, and the
+  tests read every folder with the current types. Each release adds its own folder.
 
 ## REST
 
@@ -104,7 +128,7 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 ### Lifecycle
 
 1. Server: `hello {heartbeat_interval_ms: 30000}`.
-2. Client: `identify {token, protocol_version: 1, client: {name, version, os}}` or
+2. Client: `identify {token, protocol_version: 2, client: {name, version, os}}` or
    `resume {token, session_id, last_seq}`.
 3. Server: `ready {…}` after identify; after resume, every missed event and then `resumed {}`, or
    `invalid_session {resumable: false}` (identify again and replace your state).
@@ -292,3 +316,23 @@ server, `key` opaque). Audio and video are packet version 2.
 `PUT` and `DELETE /users/@me/friends/{id}`; `ready.relationships`, `relationship_update`, `relationship_remove`.
 Users have `discriminator` next to `username`, absent for accounts without a tag. `PATCH /admin/users/{id}` takes
 `tagless`.
+
+## Channel keys
+
+Encrypted server channels, see `docs/e2ee.md`. The types are in `hermes_proto::e2ee`.
+
+| Call | What it does |
+| --- | --- |
+| `GET /channels/{id}/keys?device=` | current epoch, whether it must be replaced, the rules, this device's sealed keys |
+| `PUT /channels/{id}/keys` | hands keys of existing epochs to devices (`MANAGE_SPACE` if the channel is approved) |
+| `GET /channels/{id}/keys/members` | who can read the channel, who holds its current key |
+| `POST /channels/{id}/keys/epochs` | starts the next epoch; `409 CONFLICT` if someone else got there first |
+| `POST /channels/{id}/keys/requests` | this device lacks the channel's keys |
+| `GET /users/@me/key-requests` | devices waiting for keys of channels I can read |
+| `GET`/`PUT /spaces/{id}/key-policy` | a server's rules; only its owner can change them |
+| `GET`/`PUT /channels/{id}/key-policy` | what a channel changes of them; the owner or an administrator |
+
+Gateway events: `channel_key_request`, `channel_keys_delivered`, `channel_key_epoch`. A message in a channel carries
+`e2ee` with an `epoch`, which must be the current one (else `409 CONFLICT`), and `mentions`, since the server cannot
+read them from the text. A reaction on an encrypted message is sealed (`e2-` and hex). `GET /users/{id}` has
+`last_online_at`. `ready.instance.limits.channels_encrypted` says whether channels have to be encrypted.

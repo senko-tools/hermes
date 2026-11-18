@@ -1,6 +1,7 @@
 //! The rows of a channel's message list (PLAN.md section 15.2), built from the store without any
 //! widgets: day separators, the "New messages" divider, grouped messages with reply previews,
-//! and pending messages at the end. Deleted messages are left out.
+//! and pending messages at the end. Deleted messages are left out, except a just-deleted one
+//! closing its gap (`Options::gone`).
 
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::{Message, MessageKind};
@@ -17,6 +18,7 @@ pub enum RowKey {
     NewMessages,
     Message(Id),
     Pending(LocalId),
+    Gone(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +32,8 @@ pub enum Row {
     NewMessages,
     Message(MessageRow),
     Pending(PendingRow),
+    /// A message just deleted: its gap closes instead of the rows below jumping up.
+    Gone(Id),
 }
 
 impl Row {
@@ -40,6 +44,7 @@ impl Row {
             Row::NewMessages => RowKey::NewMessages,
             Row::Message(m) => RowKey::Message(m.id),
             Row::Pending(p) => RowKey::Pending(p.local_id),
+            Row::Gone(id) => RowKey::Gone(*id),
         }
     }
 }
@@ -51,6 +56,10 @@ pub struct MessageRow {
     pub grouped: bool,
     /// The next row does not continue this message's group.
     pub ends_group: bool,
+    /// A file is the first thing in it: no author line, reply or text before it.
+    pub starts_with_file: bool,
+    /// The next row continues the group and starts with a file.
+    pub next_starts_with_file: bool,
     pub system: bool,
     pub mentions_me: bool,
     pub reply: Option<Reply>,
@@ -77,6 +86,8 @@ pub struct Options {
     /// My read marker when the channel was opened: the divider goes before the first newer
     /// message by someone else. `None`: no divider.
     pub read_marker: Option<Id>,
+    /// Deleted messages whose gap is still closing.
+    pub gone: std::collections::HashSet<Id>,
 }
 
 pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -> Vec<Row> {
@@ -92,7 +103,16 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
     let mut divider_done = options.read_marker.is_none();
     let mut prev: Option<&Message> = None;
     let mut last_day: Option<i64> = None;
-    for m in window.messages.iter().filter(|m| !m.deleted) {
+    for m in window
+        .messages
+        .iter()
+        .filter(|m| !m.deleted || options.gone.contains(&m.id))
+    {
+        if m.deleted {
+            // Neither a group nor a day of its own: only its closing gap.
+            rows.push(Row::Gone(m.id));
+            continue;
+        }
         let created = m.created_at() as i64;
         let day = time::day(created, options.utc_offset);
         let new_day = last_day != Some(day);
@@ -113,10 +133,18 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
         let grouped = !new_day
             && !divider
             && prev.is_some_and(|p| view::is_grouped(p, m, options.group_minutes));
+        let starts_with_file = grouped
+            && m.reply_to.is_none()
+            && m.content.is_empty()
+            && m.edited_at.is_none()
+            && !m.attachments.is_empty()
+            && !store.blocked.contains(&m.author.id);
         rows.push(Row::Message(MessageRow {
             id: m.id,
             grouped,
             ends_group: true,
+            starts_with_file,
+            next_starts_with_file: false,
             system: m.kind == MessageKind::System,
             mentions_me: store.mentions_me(m),
             reply: m.reply_to.as_ref().map(|r| Reply {
@@ -159,17 +187,70 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
 /// A message ends its group unless the next row continues it.
 fn mark_group_ends(rows: &mut [Row]) {
     for i in 0..rows.len() {
-        let next_grouped = match rows.get(i + 1) {
-            Some(Row::Message(m)) => m.grouped,
-            Some(Row::Pending(p)) => p.grouped,
-            _ => false,
+        let (next_grouped, next_file) = match rows.get(i + 1) {
+            Some(Row::Message(m)) => (m.grouped, m.starts_with_file),
+            Some(Row::Pending(p)) => (p.grouped, false),
+            _ => (false, false),
         };
         match &mut rows[i] {
-            Row::Message(m) => m.ends_group = !next_grouped,
+            Row::Message(m) => {
+                m.ends_group = !next_grouped;
+                m.next_starts_with_file = next_file;
+            }
             Row::Pending(p) => p.ends_group = !next_grouped,
             _ => {}
         }
     }
+}
+
+/// Space above a group's first message and below its last.
+pub const GROUP_SPACE: f32 = 8.;
+/// Space between two messages of a group, and the extra before a file that starts one.
+const BETWEEN: f32 = 2.;
+const COMPACT_BETWEEN: f32 = 1.;
+const COMPACT_HEADER: f32 = 3.;
+pub const FILE_SPACE: f32 = 4.;
+
+/// The space above and below a message row. Inside a group, the space between two messages is
+/// split evenly between them, so a hovered message's highlight has as much room under it as over
+/// it, while what is shown keeps its spacing: a file that starts a message stays as far from the
+/// file above it as from text.
+pub fn padding(m: &MessageRow, compact: bool) -> (f32, f32) {
+    let (header, between) = if compact {
+        (COMPACT_HEADER, COMPACT_BETWEEN)
+    } else {
+        (GROUP_SPACE, BETWEEN)
+    };
+    let gap = |file: bool| between + if file { FILE_SPACE } else { 0. };
+    let top = if m.grouped {
+        gap(m.starts_with_file) / 2.
+    } else {
+        header
+    };
+    let bottom = if m.ends_group {
+        GROUP_SPACE
+    } else {
+        gap(m.next_starts_with_file) / 2.
+    };
+    (top, bottom)
+}
+
+/// A message still being sent: spaced like the message it becomes (text, no files), so
+/// nothing moves when the server confirms it.
+pub fn pending_padding(p: &PendingRow, compact: bool) -> (f32, f32) {
+    padding(
+        &MessageRow {
+            id: hermes_client_core::proto::id::Id(0),
+            grouped: p.grouped,
+            ends_group: p.ends_group,
+            starts_with_file: false,
+            next_starts_with_file: false,
+            system: false,
+            mentions_me: false,
+            reply: None,
+        },
+        compact,
+    )
 }
 
 /// A pending message right after another pending one is grouped with it.
@@ -183,23 +264,68 @@ mod tests {
 
     #[test]
     fn the_last_message_of_a_group_ends_it() {
-        let message = |id: u64, grouped: bool| {
-            Row::Message(MessageRow {
-                id: Id(id),
-                grouped,
-                ends_group: false,
-                system: false,
-                mentions_me: false,
-                reply: None,
-            })
-        };
-        let mut rows = vec![message(1, false), message(2, true), message(3, false)];
+        let mut rows = vec![
+            row(1, false, false),
+            row(2, true, false),
+            row(3, false, false),
+        ];
         mark_group_ends(&mut rows);
         let ends: Vec<bool> = rows
             .iter()
             .map(|r| matches!(r, Row::Message(m) if m.ends_group))
             .collect();
         assert_eq!(ends, [false, true, true]);
+    }
+
+    fn row(id: u64, grouped: bool, starts_with_file: bool) -> Row {
+        Row::Message(MessageRow {
+            id: Id(id),
+            grouped,
+            ends_group: false,
+            starts_with_file,
+            next_starts_with_file: false,
+            system: false,
+            mentions_me: false,
+            reply: None,
+        })
+    }
+
+    /// A video+audio message, then two follow-ups with sounds, then one with text.
+    #[test]
+    fn the_space_between_grouped_messages_is_split_evenly() {
+        let mut rows = vec![
+            row(1, false, false),
+            row(2, true, true),
+            row(3, true, true),
+            row(4, true, false),
+        ];
+        mark_group_ends(&mut rows);
+        for compact in [false, true] {
+            let pads: Vec<(f32, f32)> = rows
+                .iter()
+                .map(|r| match r {
+                    Row::Message(m) => padding(m, compact),
+                    _ => unreachable!(),
+                })
+                .collect();
+            let between = if compact { 1. } else { 2. };
+            // Each gap keeps what it was: the rows' space plus a file's own.
+            assert_eq!(pads[0].1 + pads[1].0, between + FILE_SPACE);
+            assert_eq!(pads[1].1 + pads[2].0, between + FILE_SPACE);
+            assert_eq!(pads[2].1 + pads[3].0, between);
+            // ...split evenly between the two.
+            for pair in pads.windows(2) {
+                assert_eq!(pair[0].1, pair[1].0);
+            }
+            assert_eq!(pads[3].1, GROUP_SPACE, "the last one ends its group");
+        }
+        assert_eq!(
+            match &rows[0] {
+                Row::Message(m) => padding(m, false).0,
+                _ => unreachable!(),
+            },
+            GROUP_SPACE
+        );
     }
     use crate::fixtures;
     use hermes_client_core::proto::models::{MessageRef, User};
@@ -230,6 +356,7 @@ mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         }
     }
 
@@ -239,6 +366,7 @@ mod tests {
                 Row::Older => "older".into(),
                 Row::Day { label, .. } => format!("day {label}"),
                 Row::NewMessages => "new".into(),
+                Row::Gone(id) => format!("gone {}", id.0 & 0xff),
                 Row::Message(m) => format!(
                     "{}{}{}{}",
                     if m.grouped { "  " } else { "" },
@@ -317,6 +445,7 @@ mod tests {
             &Options {
                 group_minutes: 7,
                 utc_offset: 0,
+                gone: Default::default(),
                 read_marker: Some(id_at(t + 10 * 60_000, 5)),
             },
         );
@@ -343,6 +472,21 @@ mod tests {
                 .all(|r| r.key() != RowKey::Message(id_at(t + 9 * 60_000 + 1, 4)))
         );
 
+        // Just deleted: its gap is a row of its own, and the rows around it are as before.
+        let closing = build(
+            &store,
+            &window,
+            &Options {
+                group_minutes: 7,
+                utc_offset: 0,
+                gone: [id_at(t + 9 * 60_000 + 1, 4)].into_iter().collect(),
+                read_marker: Some(id_at(t + 10 * 60_000, 5)),
+            },
+        );
+        let mut expected = keys(&rows);
+        expected.insert(5, "gone 4".into());
+        assert_eq!(keys(&closing), expected);
+
         // My own newer messages never get the divider; without a marker there is none.
         let rows = build(
             &store,
@@ -351,6 +495,7 @@ mod tests {
                 group_minutes: 7,
                 utc_offset: 0,
                 read_marker: None,
+                gone: Default::default(),
             },
         );
         assert!(!rows.contains(&Row::NewMessages));
@@ -387,6 +532,7 @@ mod tests {
                 group_minutes: 7,
                 utc_offset: 0,
                 read_marker: None,
+                gone: Default::default(),
             },
         );
         assert_eq!(
@@ -424,6 +570,7 @@ mod tests {
                     group_minutes: 7,
                     utc_offset: offset,
                     read_marker: None,
+                    gone: Default::default(),
                 },
             )
             .iter()

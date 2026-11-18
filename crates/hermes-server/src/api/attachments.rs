@@ -13,8 +13,10 @@ use axum::http::header::{
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hermes_proto::ErrorCode;
+use hermes_proto::api::PICTURE_MAX_BYTES;
 use hermes_proto::id::Id;
-use hermes_proto::models::Attachment;
+use hermes_proto::models::{Attachment, AttachmentRef};
+use hermes_proto::permissions::Permissions;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tower::ServiceExt;
@@ -37,7 +39,8 @@ const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
 /// Raw body with `Content-Type` and `X-Filename` (URL-encoded) → `Attachment`, unattached until
-/// a message (or avatar/icon) uses it.
+/// a message (or avatar/icon) uses it. A sound or video may come with what its uploader
+/// measured: `X-Waveform` (hex, a byte per bar) and `X-Duration-Ms`.
 pub async fn upload(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -56,6 +59,7 @@ pub async fn upload(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map_or_else(|| DEFAULT_CONTENT_TYPE.to_owned(), content_type);
+    let measured = measured(&headers)?;
 
     let storage = &state.config.storage;
     let max = u64::from(storage.max_upload_mb) * MIB;
@@ -72,6 +76,15 @@ pub async fn upload(
     if declared_len.is_some_and(|len| len > max) {
         return Err(too_large());
     }
+    state.throttle(auth.user_id, crate::ratelimit::Action::Upload)?;
+    // Refused before the body is read, if it is known already.
+    check_user_quota(&state, auth.user_id, declared_len.unwrap_or(0)).await?;
+    let _upload = state.files.upload_slot(auth.user_id).ok_or_else(|| {
+        Error::new(
+            ErrorCode::RateLimited,
+            "Too many uploads at once; wait for one to finish",
+        )
+    })?;
 
     let id = state.ids.next();
     let part = state.files.tmp_path(id, ".part");
@@ -88,8 +101,11 @@ pub async fn upload(
             return Err(err);
         }
     };
-    let quota = u64::from(storage.max_total_storage_gb) * GIB;
-    if !state.files.reserve(size, quota) {
+    if let Err(err) = check_user_quota(&state, auth.user_id, size).await {
+        remove(&part).await;
+        return Err(err);
+    }
+    if !state.files.reserve(size, total_quota(&state)) {
         remove(&part).await;
         return Err(Error::new(
             ErrorCode::StorageFull,
@@ -107,6 +123,7 @@ pub async fn upload(
         &thumb_part,
         sha256,
         size,
+        measured,
     )
     .await;
     remove(&part).await;
@@ -119,6 +136,58 @@ pub async fn upload(
             Err(err)
         }
     }
+}
+
+/// What uploads may take up in all (0 = no limit), leaving room for the database if it counts.
+fn total_quota(state: &AppState) -> u64 {
+    let storage = &state.config.storage;
+    let quota = u64::from(storage.max_total_storage_gb) * GIB;
+    if quota == 0 || !storage.limit_includes_messages {
+        return quota;
+    }
+    // Never 0, which would mean no limit.
+    quota
+        .saturating_sub(db::database_size(&storage.data_dir))
+        .max(1)
+}
+
+/// Refuses an upload of `size` bytes that takes `user` past `storage.max_user_storage_mb`.
+async fn check_user_quota(state: &AppState, user: Id, size: u64) -> ApiResult<()> {
+    let limit_mb = state.config.storage.max_user_storage_mb;
+    if limit_mb == 0 {
+        return Ok(());
+    }
+    let used = db::attachments::total_size_of(&state.db.read, user).await?;
+    if used.saturating_add(size) > u64::from(limit_mb) * MIB {
+        return Err(Error::new(
+            ErrorCode::StorageFull,
+            format!("You have used all of your {limit_mb} MB of storage on this server"),
+        ));
+    }
+    Ok(())
+}
+
+/// The image `id` as an avatar, banner or server icon: `user_id` uploaded it and it is at most
+/// [`PICTURE_MAX_BYTES`]. A refusal names `field`.
+pub async fn own_picture(
+    state: &AppState,
+    id: Id,
+    user_id: Id,
+    field: &str,
+) -> ApiResult<AttachmentRef> {
+    let picture = db::spaces::own_image(&state.db.read, id, user_id)
+        .await?
+        .ok_or_else(|| validate::field_error(field, "must be an image you uploaded"))?;
+    let size = db::attachments::get(&state.db.read, id)
+        .await?
+        .map_or(0, |row| row.size);
+    if size > PICTURE_MAX_BYTES {
+        return Err(validate::field_error(
+            field,
+            format!("must be at most {} MB", PICTURE_MAX_BYTES / MIB),
+        ));
+    }
+    Ok(picture)
 }
 
 /// Streams `body` into `path`. `None` when it is larger than `max` bytes.
@@ -161,6 +230,7 @@ async fn store(
     thumb_part: &FsPath,
     sha256: [u8; 32],
     size: u64,
+    measured: Measured,
 ) -> ApiResult<AttachmentRow> {
     let thumb = state
         .config
@@ -193,6 +263,12 @@ async fn store(
     let content_type = image
         .as_ref()
         .map_or(declared_type, |i| i.content_type.to_owned());
+    // Only a sound or a video has a waveform or a length.
+    let media = content_type.starts_with("audio/") || content_type.starts_with("video/");
+    let Measured {
+        waveform,
+        duration_ms,
+    } = if media { measured } else { Measured::default() };
     let row = AttachmentRow {
         id,
         uploader_id: auth.user_id,
@@ -205,9 +281,54 @@ async fn store(
         has_thumb,
         sha256,
         created_at: now_ms(),
+        waveform,
+        duration_ms,
     };
     db::attachments::insert(&state.db.write, &row).await?;
     Ok(row)
+}
+
+/// What an uploader measured of a sound or video.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Measured {
+    waveform: Option<Vec<u8>>,
+    duration_ms: Option<u64>,
+}
+
+/// Reads `X-Waveform` and `X-Duration-Ms`; either may be missing.
+fn measured(headers: &HeaderMap) -> ApiResult<Measured> {
+    let text = |name: &str| headers.get(name).map(|v| v.to_str().unwrap_or("?").trim());
+    let waveform = text("x-waveform")
+        .map(|hex| {
+            let bytes = (hex.len() % 2 == 0)
+                .then(|| {
+                    (0..hex.len())
+                        .step_by(2)
+                        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                        .collect::<Option<Vec<u8>>>()
+                })
+                .flatten()
+                .filter(|b| !b.is_empty() && b.len() <= Attachment::WAVEFORM_MAX);
+            bytes.ok_or_else(|| {
+                validate::field_error(
+                    "X-Waveform",
+                    format!("must be 1 to {} bytes in hex", Attachment::WAVEFORM_MAX),
+                )
+            })
+        })
+        .transpose()?;
+    let duration_ms = text("x-duration-ms")
+        .map(|ms| {
+            ms.parse::<u64>()
+                .ok()
+                .filter(|ms| *ms <= Attachment::DURATION_MAX_MS)
+                .ok_or_else(|| validate::field_error("X-Duration-Ms", "must be milliseconds"))
+        })
+        .transpose()?;
+    Ok(Measured {
+        waveform,
+        duration_ms,
+    })
 }
 
 /// Deletes a temporary file if it exists, without blocking the runtime.
@@ -271,8 +392,19 @@ async fn readable(state: &AppState, id: Id, user_id: Id) -> ApiResult<Attachment
     let allowed = match row.message_id {
         Some(message_id) => {
             match db::attachments::message_channel(&state.db.read, message_id).await? {
-                // `perms::channel` requires VIEW_CHANNEL.
-                Some(channel_id) => perms::channel(&state.cache(), channel_id, user_id).is_ok(),
+                // `perms::channel` requires VIEW_CHANNEL. Without READ_HISTORY, only what was
+                // posted since joining: that is what arrives live.
+                Some(channel_id) => {
+                    let cache = state.cache();
+                    perms::channel(&cache, channel_id, user_id).is_ok_and(|access| {
+                        access.perms.contains(Permissions::READ_HISTORY)
+                            || access.channel.space_id.is_some_and(|space| {
+                                cache.member(space, user_id).is_some_and(|member| {
+                                    message_id.timestamp_ms() as i64 >= member.joined_at
+                                })
+                            })
+                    })
+                }
                 None => false,
             }
         }

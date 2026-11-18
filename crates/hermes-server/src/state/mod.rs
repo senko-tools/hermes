@@ -17,7 +17,7 @@ use hermes_proto::models::{
 };
 use hermes_proto::permissions::{self, Permissions};
 
-use crate::config::Config;
+use crate::config::{Config, ProxyRange};
 use crate::db::Db;
 use crate::db::state::Snapshot;
 use crate::files::Files;
@@ -41,8 +41,16 @@ pub struct AppState {
     pub slowmode: Slowmode,
     /// `limits.messages_per_5s`, keyed by `(channel_id, user_id)`.
     pub message_limiter: KeyedLimiter<(Id, Id)>,
+    /// `limits.actions_per_minute`.
+    pub action_limiter: KeyedLimiter<(Id, crate::ratelimit::Action)>,
+    /// Guesses at one account's password, wherever they come from.
+    pub account_limiter: KeyedLimiter<String>,
+    /// Who may register: the config, unless an admin changed it while the server runs.
+    registration: std::sync::RwLock<crate::config::RegistrationMode>,
     /// Uploaded files on disk.
     pub files: Files,
+    /// Who has been visibly online since when.
+    pub last_online: crate::gateway::last_online::LastOnline,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
     /// Voice rooms, join tokens and the QUIC endpoint's address.
@@ -57,9 +65,13 @@ impl AppState {
     pub async fn load(config: Config) -> Result<Self, sqlx::Error> {
         let db = Db::open(&config.storage.data_dir).await?;
         let cache = load_from_db(&db).await?;
+        let registration = crate::db::state::registration_override(&db.read)
+            .await?
+            .unwrap_or(config.registration.mode);
         let used = crate::db::attachments::total_size(&db.read).await?;
         let files = Files::open(&config.storage.data_dir, used)?;
         let voice = crate::voice::Voice::new(config.voice.enabled);
+        let config_limits = config.limits.clone();
         Ok(Self {
             config,
             db,
@@ -68,8 +80,18 @@ impl AppState {
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
             message_limiter: KeyedLimiter::default(),
+            action_limiter: KeyedLimiter::default(),
+            account_limiter: KeyedLimiter::default(),
+            registration: std::sync::RwLock::new(registration),
             files,
-            gateway: Gateway::default(),
+            last_online: Default::default(),
+            gateway: Gateway::new(crate::gateway::bus::Timings {
+                resume_window: std::time::Duration::from_secs(u64::from(
+                    config_limits.resume_window_secs,
+                )),
+                resume_buffer: config_limits.resume_buffer_events as usize,
+                ..Default::default()
+            }),
             voice,
             fingerprint: None,
         })
@@ -102,6 +124,14 @@ impl AppState {
     }
 
     /// The client's IP; see [`client_ip`].
+    pub fn registration_mode(&self) -> crate::config::RegistrationMode {
+        *self.registration.read().expect("registration")
+    }
+
+    pub fn set_registration_mode(&self, mode: crate::config::RegistrationMode) {
+        *self.registration.write().expect("registration") = mode;
+    }
+
     pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
         client_ip(&self.config.network.trusted_proxies, peer, headers)
     }
@@ -110,8 +140,8 @@ impl AppState {
 /// The client's IP: the TCP peer, or, when the peer is one of `trusted` (proxies), the last
 /// `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
 /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
-pub fn client_ip(trusted: &[IpAddr], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+pub fn client_ip(trusted: &[ProxyRange], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.contains(*ip));
     let mut ip = peer.ip().to_canonical();
     if !is_trusted(&ip) {
         return ip;
@@ -173,7 +203,15 @@ pub struct MemberState {
     /// Explicitly assigned roles, sorted; `@everyone` is implicit.
     pub role_ids: Vec<Id>,
     pub joined_at: i64,
+    /// Until when they may only read (Unix milliseconds).
+    pub timeout_until: Option<i64>,
 }
+
+/// What a member in a timeout cannot do.
+const TIMED_OUT_LOSES: Permissions = Permissions::SEND_MESSAGES
+    .union(Permissions::ADD_REACTIONS)
+    .union(Permissions::SPEAK)
+    .union(Permissions::STREAM);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelState {
@@ -199,6 +237,8 @@ pub struct Cache {
     pub voice_states: HashMap<Id, VoiceState>,
     /// Friends and friend requests, under both people.
     pub relationships: HashMap<Id, HashMap<Id, CachedRelationship>>,
+    /// Who each person has blocked.
+    pub blocks: HashMap<Id, HashSet<Id>>,
 }
 
 impl CachedUser {
@@ -271,6 +311,9 @@ impl Cache {
             };
             cache.spaces.insert(state.space.id, state);
         }
+        for (user, blocked) in s.blocks {
+            cache.blocks.entry(user).or_default().insert(blocked);
+        }
         for role in s.roles {
             if let Some(space) = cache.spaces.get_mut(&role.space_id) {
                 space.roles.push(role);
@@ -282,6 +325,7 @@ impl Cache {
                     nickname: m.nickname,
                     role_ids: Vec::new(),
                     joined_at: m.joined_at,
+                    timeout_until: m.timeout_until,
                 };
                 space.members.insert(m.user_id, member);
             }
@@ -370,6 +414,7 @@ impl Cache {
                     nickname: None,
                     role_ids: Vec::new(),
                     joined_at,
+                    timeout_until: None,
                 },
             );
         }
@@ -458,6 +503,20 @@ impl Cache {
     }
 
     /// The wire `Member` of `user_id` in `space_id`, if they are a member.
+    /// Whether `by` has blocked `who`.
+    pub fn blocked(&self, by: Id, who: Id) -> bool {
+        self.blocks.get(&by).is_some_and(|list| list.contains(&who))
+    }
+
+    /// The instance's oldest admin.
+    pub fn first_admin(&self) -> Option<Id> {
+        self.users
+            .iter()
+            .filter(|(_, u)| u.instance_admin)
+            .map(|(id, _)| *id)
+            .min()
+    }
+
     pub fn member(&self, space_id: Id, user_id: Id) -> Option<Member> {
         let member = self.spaces.get(&space_id)?.members.get(&user_id)?;
         Some(Member {
@@ -686,39 +745,15 @@ impl Cache {
         }
     }
 
-    /// The [`Member`] that [`permissions::compute`] needs: like [`Cache::member`] (`None` under
-    /// the same conditions), but only the user ID and roles are filled in. Permission checks run
-    /// for every member on every broadcast, so they skip cloning names and avatars.
-    fn permission_member(&self, space: &SpaceState, user_id: Id) -> Option<Member> {
-        let member = space.members.get(&user_id)?;
-        if !self.users.contains_key(&user_id) {
-            return None;
-        }
-        Some(Member {
-            space_id: space.space.id,
-            user: User {
-                id: user_id,
-                username: String::new(),
-                discriminator: None,
-                display_name: None,
-                avatar: None,
-                status_text: None,
-            },
-            nickname: None,
-            role_ids: member.role_ids.clone(),
-            joined_at: member.joined_at,
-        })
-    }
-
     /// A user's space-level permissions; empty if they are not a member.
     pub fn space_permissions(&self, space_id: Id, user_id: Id) -> Permissions {
         let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        let Some(member) = self.permission_member(space, user_id) else {
+        let Some(member) = space.members.get(&user_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, None)
+        permissions::compute_for(&space.space, &space.roles, user_id, &member.role_ids, None)
     }
 
     /// A user's permissions in a channel; empty if they cannot see it.
@@ -736,10 +771,26 @@ impl Cache {
         let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        let Some(member) = self.permission_member(space, user_id) else {
+        let Some(member) = space.members.get(&user_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, Some(&state.channel))
+        let perms = permissions::compute_for(
+            &space.space,
+            &space.roles,
+            user_id,
+            &member.role_ids,
+            Some(&state.channel),
+        );
+        // Owners and administrators cannot be silenced.
+        if member
+            .timeout_until
+            .is_some_and(|until| until > crate::time::now_ms())
+            && !perms.contains(Permissions::ADMINISTRATOR)
+        {
+            perms - TIMED_OUT_LOSES
+        } else {
+            perms
+        }
     }
 }
 

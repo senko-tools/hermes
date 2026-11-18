@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\" FROM (\n             SELECT id, last_seen_at,\n                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY last_seen_at DESC) AS place\n             FROM sessions\n           ) WHERE last_seen_at < ? OR place > ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2701beef4e48c9c7c85d10835479f839c8164948e8253a6e55d0f65fbc4e8336"
+}

@@ -110,6 +110,8 @@ fn channel_kind_name(kind: ChannelKind) -> &'static str {
         ChannelKind::Category => "category",
         ChannelKind::Dm => "dm",
         ChannelKind::GroupDm => "group_dm",
+        // Refused in every request before it gets here.
+        ChannelKind::Unknown => "unknown",
     }
 }
 
@@ -163,7 +165,8 @@ pub async fn own_image(
     let (id, uploader_id) = (attachment_id.to_i64(), uploader_id.to_i64());
     let filename = sqlx::query_scalar!(
         "SELECT filename FROM attachments
-         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'",
+         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'
+           AND width IS NOT NULL",
         id,
         uploader_id
     )
@@ -181,10 +184,13 @@ pub async fn is_banned(
     user_id: Id,
 ) -> Result<bool, sqlx::Error> {
     let (space_id, user_id) = (space_id.to_i64(), user_id.to_i64());
+    let now = crate::time::now_ms();
     let found = sqlx::query_scalar!(
-        "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?",
+        "SELECT user_id FROM bans WHERE space_id = ? AND user_id = ?
+           AND (expires_at IS NULL OR expires_at > ?)",
         space_id,
-        user_id
+        user_id,
+        now
     )
     .fetch_optional(e)
     .await?;

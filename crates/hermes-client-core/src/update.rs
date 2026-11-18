@@ -111,8 +111,12 @@ fn newest(current: &str, releases: Vec<Release>) -> Option<Update> {
         })
 }
 
-/// Asks GitHub; `Ok(None)` when this is the newest version.
+/// Asks GitHub (or the update test server, see `updater::TESTING`); `Ok(None)` when this is the
+/// newest version.
 pub async fn check(current: &str) -> Result<Option<Update>, String> {
+    if let Some(result) = crate::updater::test_check(current).await {
+        return result;
+    }
     let config =
         crate::tls::client_config(crate::tls::Trust::Ca, true).map_err(|e| e.to_string())?;
     let http = reqwest::Client::builder()

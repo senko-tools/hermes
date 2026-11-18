@@ -1,6 +1,5 @@
 //! Avatars and attachment images, loaded from the server once and decoded off the UI thread.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,206 +16,151 @@ use crate::theme::{self, px};
 
 /// The largest size an avatar is drawn at, in pixels on a 2x display.
 const AVATAR_PIXELS: u32 = 192;
-/// The size encrypted pictures are made into previews at, here on the device.
-const SEALED_PREVIEW: u32 = 800;
-/// Decoded thumbnails kept, in bytes: a few hundred of the server's (400 px), so scrolling back
-/// rarely loads one again, while a long session in picture-heavy channels stays bounded.
-const THUMB_BUDGET: usize = 128 << 20;
+/// The same for a profile banner (300 by 120 on the card).
+const BANNER_PIXELS: u32 = 640;
 
 #[derive(Clone)]
 pub enum Img {
     Loading,
-    Ready(Arc<RenderImage>),
+    Ready(Picture),
     Failed,
 }
 
-struct Entry {
-    img: Img,
-    /// Decoded size (0 unless ready).
-    bytes: usize,
-    /// The frame it was last drawn in (or stored). Drawing only has `&self`, hence the cell.
-    used: Cell<u64>,
+/// A decoded picture: its first frame, and all of them when it is animated.
+#[derive(Clone)]
+pub struct Picture {
+    pub still: Arc<RenderImage>,
+    pub moving: Option<Arc<RenderImage>>,
 }
 
-/// Images by instance and attachment, optionally bounded: past its budget the least recently
-/// drawn pictures are dropped, and load again the next time they are shown.
-pub struct ImageCache {
-    /// By instance first, so a lookup needs no owned key.
-    entries: HashMap<InstanceId, HashMap<Id, Entry>>,
-    bytes: usize,
-    budget: Option<usize>,
-    /// Counts the window's draws. Whatever the last one drew is on screen: gpui draws every
-    /// visible picture each time, and nothing while the window is idle.
-    frame: u64,
-    /// The frame in which dropping found nothing to drop: no use trying again before the next.
-    stuck: Option<u64>,
-    /// Dropped pictures, still to be freed from the GPU.
-    retired: Vec<Arc<RenderImage>>,
+impl Picture {
+    /// What to draw: the animation only while `animate` (the window has the focus).
+    pub fn shown(&self, animate: bool) -> Arc<RenderImage> {
+        match (&self.moving, animate) {
+            (Some(moving), true) => moving.clone(),
+            _ => self.still.clone(),
+        }
+    }
 }
 
-impl ImageCache {
-    /// Keeps everything.
-    pub fn unbounded() -> ImageCache {
-        ImageCache {
-            entries: HashMap::new(),
-            bytes: 0,
-            budget: None,
-            frame: 0,
-            stuck: None,
-            retired: Vec::new(),
-        }
-    }
+/// How many bytes of decoded frames one animation may hold; a longer one is made smaller.
+const ANIMATION_BUDGET: usize = 96 << 20;
+/// The same for one in the chat, an avatar, icon or banner: many of these stay loaded at once.
+const PREVIEW_ANIMATION_BUDGET: usize = 24 << 20;
+/// The long side an animated picture in the chat is decoded at (it is shown at most 400 wide).
+const ANIMATED_PREVIEW: u32 = 480;
+/// Below this many pixels on its long side an animation stays still instead.
+const ANIMATION_MIN_SIDE: u32 = 48;
 
-    /// Keeps about `budget` bytes of decoded pictures.
-    pub fn bounded(budget: usize) -> ImageCache {
-        ImageCache {
-            budget: Some(budget),
-            ..ImageCache::unbounded()
-        }
-    }
-
-    /// The image of attachment `id` on `inst`; counts as drawing it.
-    pub fn get(&self, inst: &str, id: Id) -> Option<&Img> {
-        let entry = self.entries.get(inst)?.get(&id)?;
-        entry.used.set(self.frame);
-        Some(&entry.img)
-    }
-
-    /// Whether the image is loaded or loading.
-    pub fn contains(&self, inst: &str, id: Id) -> bool {
-        self.entries.get(inst).is_some_and(|m| m.contains_key(&id))
-    }
-
-    /// A new frame is being drawn.
-    fn next_frame(&mut self) {
-        self.frame += 1;
-    }
-
-    pub fn insert(&mut self, inst: &str, id: Id, img: Img) {
-        let bytes = match &img {
-            Img::Ready(image) => image_bytes(image),
-            _ => 0,
-        };
-        let entry = Entry {
-            img,
-            bytes,
-            used: Cell::new(self.frame),
-        };
-        let map = match self.entries.get_mut(inst) {
-            Some(map) => map,
-            None => self.entries.entry(inst.to_owned()).or_default(),
-        };
-        self.bytes += bytes;
-        if let Some(old) = map.insert(id, entry) {
-            self.bytes -= old.bytes;
-            if let Img::Ready(image) = old.img {
-                self.retired.push(image);
-            }
-        }
-        if self.budget.is_some_and(|budget| self.bytes > budget) && self.stuck != Some(self.frame) {
-            self.evict();
-        }
-    }
-
-    /// Drops the least recently drawn pictures until a little under the budget, never one that
-    /// the last two frames drew (on screen). Loading and failed entries cost nothing and stay.
-    fn evict(&mut self) {
-        let Some(budget) = self.budget else {
-            return;
-        };
-        let target = budget - budget / 8;
-        let recent = self.frame.saturating_sub(1);
-        let mut old: Vec<(u64, &InstanceId, Id, usize)> = self
-            .entries
+/// Whether an attachment may be animated: its original is loaded instead of the still thumbnail.
+pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
+    let lower = filename.to_ascii_lowercase();
+    matches!(content_type, "image/gif" | "image/webp" | "image/apng")
+        || [".gif", ".webp", ".apng"]
             .iter()
-            .flat_map(|(inst, m)| m.iter().map(move |(id, e)| (inst, *id, e)))
-            .filter(|(.., e)| e.bytes > 0 && e.used.get() < recent)
-            .map(|(inst, id, e)| (e.used.get(), inst, id, e.bytes))
-            .collect();
-        if old.is_empty() {
-            self.stuck = Some(self.frame);
-            return;
-        }
-        old.sort_unstable_by_key(|(used, ..)| *used);
-        let mut left = self.bytes;
-        let mut gone = Vec::new();
-        for (_, inst, id, bytes) in old {
-            if left <= target {
-                break;
-            }
-            left -= bytes;
-            gone.push((inst.clone(), id));
-        }
-        for (inst, id) in gone {
-            let Some(map) = self.entries.get_mut(&inst) else {
-                continue;
-            };
-            if let Some(entry) = map.remove(&id) {
-                self.bytes -= entry.bytes;
-                if let Img::Ready(image) = entry.img {
-                    self.retired.push(image);
-                }
-            }
-            if map.is_empty() {
-                self.entries.remove(&inst);
-            }
-        }
-    }
+            .any(|e| lower.ends_with(e))
 }
 
-/// The decoded size of a picture.
-fn image_bytes(image: &RenderImage) -> usize {
-    (0..image.frame_count())
-        .map(|frame| image.as_bytes(frame).map_or(0, <[u8]>::len))
-        .sum()
-}
-
+#[derive(Default)]
 pub struct Images {
-    /// Attachment thumbnails: bounded, since every picture scrolled past is one more.
-    pub thumbs: ImageCache,
-    /// Avatars: one per person the store knows, each fetched only once, so they all stay.
-    pub avatars: ImageCache,
+    pub thumbs: HashMap<(InstanceId, Id), Img>,
+    /// When each thumbnail arrived: one that just did fades in, one shown again does not.
+    pub thumb_arrived: HashMap<(InstanceId, Id), std::time::Instant>,
+    pub avatars: HashMap<(InstanceId, Id), Img>,
+    /// The thumbnails in the order they were asked for: the oldest go first.
+    thumb_order: std::collections::VecDeque<(InstanceId, Id)>,
+    /// Pictures no longer used, to be freed the next time the window draws.
+    pub retired: Vec<Arc<RenderImage>>,
     /// The viewer's picture as last drawn, freed from the GPU once the viewer lets go of it.
-    viewer_drawn: Option<Arc<RenderImage>>,
+    viewer_drawn: Option<Picture>,
 }
 
-impl Default for Images {
-    fn default() -> Self {
-        Images {
-            thumbs: ImageCache::bounded(THUMB_BUDGET),
-            avatars: ImageCache::unbounded(),
-            viewer_drawn: None,
-        }
-    }
-}
+/// Thumbnails kept in memory.
+const MAX_THUMBNAILS: usize = 400;
 
 impl Images {
     /// At the start of each draw: frees the GPU copies of pictures nothing draws any more
     /// (dropped or replaced ones, and the full-size picture of a closed viewer; gpui keeps every
-    /// drawn image until told), and starts a new frame.
-    pub fn new_frame(&mut self, viewer: Option<&Img>, window: &mut Window) {
-        self.thumbs.next_frame();
-        self.avatars.next_frame();
-        let retired = self.thumbs.retired.drain(..);
-        for image in retired.chain(self.avatars.retired.drain(..)) {
+    /// drawn image until told).
+    pub fn free_unused(&mut self, viewer: Option<&Img>, window: &mut Window) {
+        for image in self.retired.drain(..) {
             let _ = window.drop_image(image);
         }
         let shown = match viewer {
-            Some(Img::Ready(image)) => Some(image),
+            Some(Img::Ready(picture)) => Some(picture),
             _ => None,
         };
-        if let Some(old) = self
-            .viewer_drawn
-            .take_if(|old| shown.is_none_or(|shown| !Arc::ptr_eq(old, shown)))
-        {
-            let _ = window.drop_image(old);
+        if let Some(old) = self.viewer_drawn.take() {
+            let same = |a: &Arc<RenderImage>, b: Option<&Arc<RenderImage>>| {
+                b.is_some_and(|b| Arc::ptr_eq(a, b))
+            };
+            if !same(&old.still, shown.map(|s| &s.still)) {
+                let _ = window.drop_image(old.still);
+            }
+            if let Some(moving) = old.moving
+                && !same(&moving, shown.and_then(|s| s.moving.as_ref()))
+            {
+                let _ = window.drop_image(moving);
+            }
         }
         self.viewer_drawn = shown.cloned();
+    }
+
+    fn retire(&mut self, picture: Img) {
+        if let Img::Ready(picture) = picture {
+            self.retired.push(picture.still);
+            self.retired.extend(picture.moving);
+        }
+    }
+
+    /// Makes room for one more thumbnail.
+    fn evict_thumbnails(&mut self) {
+        while self.thumb_order.len() >= MAX_THUMBNAILS {
+            let Some(oldest) = self.thumb_order.pop_front() else {
+                break;
+            };
+            self.thumb_arrived.remove(&oldest);
+            if let Some(picture) = self.thumbs.remove(&oldest) {
+                self.retire(picture);
+            }
+        }
     }
 }
 
 /// Decodes image bytes for drawing. gpui wants BGRA.
-pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Arc<RenderImage>, String> {
+/// The size encrypted pictures are made into previews at, here on the device.
+const SEALED_PREVIEW: u32 = 800;
+
+pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
+    decode_within(bytes, max, ANIMATION_BUDGET)
+}
+
+/// [`decode`] for a picture that stays loaded: an animation gets a smaller budget.
+fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
+    decode_within(bytes, max, PREVIEW_ANIMATION_BUDGET)
+}
+
+fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Picture, String> {
+    let moving = match frames_within(bytes, max, budget) {
+        Ok(Some(frames)) => Some(frames),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::debug!("not animated: {err}");
+            None
+        }
+    };
+    if let Some(frames) = moving {
+        let still = Frame::from_parts(
+            frames[0].buffer().clone(),
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(0, 1),
+        );
+        return Ok(Picture {
+            still: Arc::new(RenderImage::new(vec![still])),
+            moving: Some(Arc::new(RenderImage::new(frames))),
+        });
+    }
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let image = match max {
         Some(max) if image.width() > max || image.height() > max => {
@@ -225,45 +169,171 @@ pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Arc<RenderImage>, String
         _ => image,
     };
     let mut pixels = image.to_rgba8();
+    to_bgra(&mut pixels);
+    Ok(Picture {
+        still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+        moving: None,
+    })
+}
+
+/// Only a picture's first frame, at most `max` pixels on a side, decoded and shrunk quickly: what
+/// is shown right after picking a file. See [`decode_animation`] for the rest of it.
+pub fn decode_first_frame(bytes: &[u8], max: u32) -> Result<Picture, String> {
+    let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    let image = if image.width() > max || image.height() > max {
+        image.thumbnail(max, max)
+    } else {
+        image
+    };
+    let mut pixels = image.to_rgba8();
+    to_bgra(&mut pixels);
+    Ok(Picture {
+        still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+        moving: None,
+    })
+}
+
+/// All frames of an animated picture at preview size; `None` for a still one.
+pub fn decode_animation(bytes: &[u8]) -> Result<Option<Arc<RenderImage>>, String> {
+    let frames = frames_within(bytes, Some(ANIMATED_PREVIEW), PREVIEW_ANIMATION_BUDGET)?;
+    Ok(frames.map(|frames| Arc::new(RenderImage::new(frames))))
+}
+
+/// gpui wants BGRA.
+fn to_bgra(pixels: &mut image::RgbaImage) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Ok(Arc::new(RenderImage::new(vec![Frame::new(pixels)])))
+}
+
+/// The frames of a GIF, an animated WebP or an APNG, undecoded until asked for; `None` for any
+/// other picture. A GIF of one frame counts too.
+pub fn animation_decoder(bytes: &[u8]) -> Result<Option<image::Frames<'_>>, String> {
+    use image::AnimationDecoder as _;
+    use std::io::Cursor;
+    let err = |e: image::ImageError| e.to_string();
+    Ok(Some(match image::guess_format(bytes).map_err(err)? {
+        image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+            .map_err(err)?
+            .into_frames(),
+        image::ImageFormat::WebP => {
+            let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).map_err(err)?;
+            if !decoder.has_animation() {
+                return Ok(None);
+            }
+            decoder.into_frames()
+        }
+        image::ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).map_err(err)?;
+            if !decoder.is_apng().map_err(err)? {
+                return Ok(None);
+            }
+            decoder.apng().map_err(err)?.into_frames()
+        }
+        _ => return Ok(None),
+    }))
+}
+
+/// The frames of an animated GIF, WebP or PNG, at most `max` pixels on a side and within
+/// `budget` bytes, in BGRA. `None`: one frame only, or too long to keep moving.
+fn frames_within(
+    bytes: &[u8],
+    max: Option<u32>,
+    budget: usize,
+) -> Result<Option<Vec<Frame>>, String> {
+    let err = |e: image::ImageError| e.to_string();
+    let Some(frames) = animation_decoder(bytes)? else {
+        return Ok(None);
+    };
+    let mut side = max.unwrap_or(u32::MAX);
+    let mut out: Vec<Frame> = Vec::new();
+    let mut bytes_used = 0usize;
+    for frame in frames {
+        let frame = frame.map_err(err)?;
+        let delay = frame.delay();
+        let mut pixels = fit(frame.into_buffer(), side);
+        bytes_used += pixels.as_raw().len();
+        // Over the budget: everything so far and everything after at half the size.
+        while bytes_used > budget {
+            side = pixels.width().max(pixels.height()) / 2;
+            if side < ANIMATION_MIN_SIDE {
+                return Ok(None);
+            }
+            for f in &mut out {
+                let smaller = fit(f.buffer().clone(), side);
+                *f = Frame::from_parts(smaller, 0, 0, f.delay());
+            }
+            pixels = fit(pixels, side);
+            bytes_used = out.iter().map(|f| f.buffer().as_raw().len()).sum::<usize>()
+                + pixels.as_raw().len();
+        }
+        to_bgra(&mut pixels);
+        out.push(Frame::from_parts(pixels, 0, 0, delay));
+    }
+    Ok((out.len() > 1).then_some(out))
+}
+
+/// `pixels` made to fit `side` on its long side, keeping its shape.
+fn fit(pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
+    let (w, h) = pixels.dimensions();
+    if w <= side && h <= side {
+        return pixels;
+    }
+    let scale = side as f32 / w.max(h) as f32;
+    let (nw, nh) = (
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+    );
+    image::imageops::resize(&pixels, nw, nh, image::imageops::FilterType::Triangle)
 }
 
 impl Shell {
     /// Starts loading the avatar of everyone the store knows whose avatar is not loaded (or
     /// loading) yet. A changed avatar is a new attachment, so each is fetched once.
     pub fn load_avatars(&mut self, cx: &mut Context<Self>) {
-        let wanted: Vec<(InstanceId, Id)> = {
+        let wanted: Vec<(InstanceId, Id, String, u32)> = {
             let store = self.core.store();
-            let avatars = &self.images.avatars;
             store
                 .instances
                 .iter()
                 .flat_map(|(inst, s)| {
-                    s.users
-                        .values()
-                        .chain(s.me.as_ref().map(|me| &me.user))
+                    let users = || s.users.values().chain(s.me.as_ref().map(|me| &me.user));
+                    users()
                         .filter_map(|u| u.avatar.as_ref())
-                        .filter(|a| !avatars.contains(inst, a.id))
-                        .map(move |a| (inst.clone(), a.id))
+                        // Server icons load the same way.
+                        .chain(s.spaces.values().filter_map(|st| st.space.icon.as_ref()))
+                        .map(|a| (a, AVATAR_PIXELS))
+                        .chain(
+                            users()
+                                .filter_map(|u| u.banner.as_ref())
+                                .map(|a| (a, BANNER_PIXELS)),
+                        )
+                        .map(move |(a, max)| (inst.clone(), a.id, a.filename.clone(), max))
+                        .collect::<Vec<_>>()
                 })
+                .filter(|(inst, id, ..)| !self.images.avatars.contains_key(&(inst.clone(), *id)))
                 .collect()
         };
-        for key in wanted {
-            if self.images.avatars.contains(&key.0, key.1) {
+        for (inst, id, filename, max) in wanted {
+            let key = (inst, id);
+            if self.images.avatars.contains_key(&key) {
                 continue; // two users with the same avatar
             }
-            self.images.avatars.insert(&key.0, key.1, Img::Loading);
+            self.images.avatars.insert(key.clone(), Img::Loading);
             let core = self.core.clone();
             let (inst, id) = key.clone();
             self.run(
                 cx,
                 async move {
                     let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    let bytes = rest.thumbnail(id).await.map_err(|e| e.to_string())?;
-                    tokio::task::spawn_blocking(move || decode(&bytes, Some(AVATAR_PIXELS)))
+                    // The thumbnail of an animated picture is still: its original moves.
+                    let bytes = if maybe_animated("", &filename) {
+                        rest.download(id, &filename).await
+                    } else {
+                        rest.thumbnail(id).await
+                    }
+                    .map_err(|e| e.to_string())?;
+                    tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(max)))
                         .await
                         .map_err(|e| e.to_string())?
                 },
@@ -275,9 +345,44 @@ impl Shell {
                             Img::Failed
                         }
                     };
-                    this.images.avatars.insert(&key.0, key.1, img);
+                    this.images.avatars.insert(key, img);
                 },
             );
+        }
+    }
+
+    /// Someone's profile banner, once loaded.
+    pub fn banner_picture(&self, inst: &str, user: Option<&User>) -> Option<Arc<RenderImage>> {
+        let banner = user?.banner.as_ref()?;
+        match self.images.avatars.get(&(inst.to_owned(), banner.id)) {
+            Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
+            _ => None,
+        }
+    }
+
+    /// A server's icon, once loaded.
+    pub fn space_picture(&self, inst: &str, space: Id) -> Option<Arc<RenderImage>> {
+        let store = self.core.store();
+        let icon = store
+            .instance(inst)?
+            .spaces
+            .get(&space)?
+            .space
+            .icon
+            .as_ref()?
+            .id;
+        match self.images.avatars.get(&(inst.to_owned(), icon)) {
+            Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
+            _ => None,
+        }
+    }
+
+    /// Frees every thumbnail; those on screen load again.
+    pub fn clear_pictures(&mut self) {
+        let pictures: Vec<Img> = self.images.thumbs.drain().map(|(_, p)| p).collect();
+        self.images.thumb_order.clear();
+        for picture in pictures {
+            self.images.retire(picture);
         }
     }
 
@@ -290,24 +395,38 @@ impl Shell {
     ) {
         let id = attachment.id;
         let attachment = attachment.clone();
-        if self.images.thumbs.contains(inst, id) {
+        let key = (inst.clone(), id);
+        if self.images.thumbs.contains_key(&key) {
             return;
         }
-        self.images.thumbs.insert(inst, id, Img::Loading);
+        self.images.evict_thumbnails();
+        self.images.thumb_order.push_back(key.clone());
+        self.images.thumbs.insert(key.clone(), Img::Loading);
         let core = self.core.clone();
-        let (inst, done_inst) = (inst.clone(), inst.clone());
+        let inst = inst.clone();
         self.run(
             cx,
             async move {
-                // An encrypted picture has no thumbnail on the server: the server cannot see it.
-                let (bytes, max) = if attachment.sealed.is_some() {
+                // An encrypted picture may have a preview of its own; the server cannot make one.
+                // The thumbnail of an animated one is still, so its original is loaded too.
+                let animated = maybe_animated(&attachment.content_type, &attachment.filename);
+                let no_preview = attachment
+                    .sealed
+                    .as_ref()
+                    .is_some_and(|sealed| sealed.thumb.is_none());
+                let (bytes, max) = if no_preview || animated {
                     let bytes = core.download(&inst, &attachment).await;
-                    (bytes.map_err(|e| e.to_string())?, Some(SEALED_PREVIEW))
+                    let max = if animated {
+                        ANIMATED_PREVIEW
+                    } else {
+                        SEALED_PREVIEW
+                    };
+                    (bytes.map_err(|e| e.to_string())?, Some(max))
                 } else {
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    (rest.thumbnail(id).await.map_err(|e| e.to_string())?, None)
+                    let bytes = core.thumbnail(&inst, &attachment).await;
+                    (bytes.map_err(|e| e.to_string())?, None)
                 };
-                tokio::task::spawn_blocking(move || decode(&bytes, max))
+                tokio::task::spawn_blocking(move || decode_preview(&bytes, max))
                     .await
                     .map_err(|e| e.to_string())?
             },
@@ -319,7 +438,12 @@ impl Shell {
                         Img::Failed
                     }
                 };
-                this.images.thumbs.insert(&done_inst, id, img);
+                if matches!(img, Img::Ready(_)) {
+                    this.images
+                        .thumb_arrived
+                        .insert(key.clone(), std::time::Instant::now());
+                }
+                this.images.thumbs.insert(key, img);
             },
         );
     }
@@ -328,12 +452,18 @@ impl Shell {
     pub fn avatar(&self, inst: &str, user: Option<&User>, name: &str, size: f32) -> AnyElement {
         let picture = user
             .and_then(|u| u.avatar.as_ref())
-            .and_then(|a| self.images.avatars.get(inst, a.id));
-        if let Some(Img::Ready(image)) = picture {
-            return img(image.clone())
+            .and_then(|a| self.images.avatars.get(&(inst.to_owned(), a.id)));
+        if let Some(Img::Ready(picture)) = picture {
+            return img(picture.shown(self.animating()))
                 .flex_shrink_0()
                 .size(px(size))
                 .rounded(px(size / 2.))
+                .object_fit(gpui_kit::ObjectFit::Cover)
+                // An id lets gpui step through an animation's frames.
+                .id(SharedString::from(format!(
+                    "pic-{:p}",
+                    Arc::as_ptr(&picture.still)
+                )))
                 .into_any_element();
         }
         div()
@@ -350,7 +480,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// An avatar with the presence dot on its corner.
+    /// An avatar with the presence dot on its corner, on the sidebar's colour.
     pub fn avatar_with_status(
         &self,
         inst: &str,
@@ -359,24 +489,88 @@ impl Shell {
         size: f32,
         status: Status,
     ) -> AnyElement {
+        self.avatar_with_status_on(inst, user, name, size, status, theme::sidebar())
+    }
+
+    /// The same on another surface: `ground` is the colour around the avatar, which the dot's
+    /// ring and cut-outs take so they read as holes. A new status pops the dot.
+    pub fn avatar_with_status_on(
+        &self,
+        inst: &str,
+        user: Option<&User>,
+        name: &str,
+        size: f32,
+        status: Status,
+        ground: gpui_kit::Rgba,
+    ) -> AnyElement {
+        use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
         let dot = (size / 3.).max(10.);
+        let who = user.map_or_else(|| name.to_owned(), |u| u.id.to_string());
         div()
             .relative()
             .flex_shrink_0()
             .size(px(size))
             .child(self.avatar(inst, user, name, size))
             .child(
+                // A box of the dot's size, so the dot grows from its middle.
                 div()
                     .absolute()
                     .bottom(px(-1.))
                     .right(px(-1.))
                     .size(px(dot))
-                    .rounded(px(dot / 2.))
-                    .border_2()
-                    .border_color(theme::sidebar())
-                    .bg(theme::status(status)),
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .with_spring(
+                        SharedString::from(format!("presence-{inst}-{who}-{status:?}")),
+                        SpringAnimation::new(crate::theme::paced(SpringConfig::new(520., 22., 1.)))
+                            .to(true)
+                            .from(false),
+                        move |d, phase| {
+                            let grown = dot * (0.55 + 0.45 * phase.0.max(0.));
+                            d.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .size(px(grown))
+                                    .rounded(px(grown / 2.))
+                                    .border_2()
+                                    .border_color(ground)
+                                    .bg(theme::status(status))
+                                    .overflow_hidden()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .children(presence_shape(status, grown, ground)),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
+    }
+}
+
+/// What is cut out of a presence dot, so that a status never depends on its colour alone:
+/// a bar for do-not-disturb, a crescent for idle, a ring for offline.
+fn presence_shape(status: Status, dot: f32, ground: gpui_kit::Rgba) -> Option<gpui_kit::Div> {
+    let cut = move || div().bg(ground);
+    let inner = dot - 4.;
+    match status {
+        Status::Online => None,
+        Status::Dnd => Some(
+            cut()
+                .w(px(inner * 0.7))
+                .h(px((inner * 0.25).max(1.5)))
+                .rounded(px(1.)),
+        ),
+        Status::Offline => Some(cut().size(px(inner * 0.5)).rounded(px(inner * 0.25))),
+        Status::Idle => Some(
+            cut()
+                .absolute()
+                .top(px(-inner * 0.1))
+                .left(px(-inner * 0.1))
+                .size(px(inner * 0.7))
+                .rounded(px(inner * 0.35)),
+        ),
     }
 }
 
@@ -389,71 +583,72 @@ fn initial(name: &str) -> SharedString {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// A ready picture of `kib` KiB.
-    fn picture(kib: u32) -> Img {
-        let pixels = image::RgbaImage::new(16, kib * 16);
-        Img::Ready(Arc::new(RenderImage::new(vec![Frame::new(pixels)])))
+    /// A GIF of `frames` frames, `side` pixels square, each a different grey.
+    pub fn gif(frames: u8, side: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut bytes);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Infinite)
+                .unwrap();
+            let frames = (0..frames).map(|n| {
+                let pixels = image::RgbaImage::from_pixel(
+                    side,
+                    side,
+                    image::Rgba([n.wrapping_mul(20), 0, 0, 255]),
+                );
+                Frame::from_parts(pixels, 0, 0, image::Delay::from_numer_denom_ms(50, 1))
+            });
+            encoder.encode_frames(frames).unwrap();
+        }
+        bytes
     }
 
     #[test]
-    fn the_least_recently_drawn_pictures_go_first() {
-        // Room for 10 KiB, trimmed to 8.75 KiB when over.
-        let mut cache = ImageCache::bounded(10 << 10);
-        for id in 0..10 {
-            cache.insert("h", Id(id), picture(1));
-            cache.next_frame();
-        }
-        cache.insert("h", Id(100), Img::Loading);
-        cache.insert("h", Id(101), Img::Failed);
-        assert_eq!(cache.bytes, 10 << 10);
-        assert!(cache.retired.is_empty());
+    fn an_animated_gif_keeps_its_frames_and_a_still_first_one() {
+        let picture = decode(&gif(3, 16), None).unwrap();
+        assert_eq!(picture.moving.as_ref().unwrap().frame_count(), 3);
+        assert_eq!(picture.still.frame_count(), 1);
+    }
 
-        // Picture 1 is drawn again, then one more comes.
-        assert!(cache.get("h", Id(1)).is_some());
-        for _ in 0..5 {
-            cache.next_frame();
-        }
-        cache.insert("other", Id(1), picture(1));
-        assert_eq!(cache.bytes, 8 << 10);
-        assert!(cache.contains("h", Id(1)), "drawn recently");
+    #[test]
+    fn a_one_frame_gif_is_still() {
+        assert!(decode(&gif(1, 16), None).unwrap().moving.is_none());
+    }
+
+    #[test]
+    fn a_long_animation_is_made_smaller_to_fit_the_budget() {
+        // 30 frames of 200 px: 4.8 MB at full size, against a 1 MB budget.
+        let frames = frames_within(&gif(30, 200), None, 1 << 20)
+            .unwrap()
+            .unwrap();
+        let total: usize = frames.iter().map(|f| f.buffer().as_raw().len()).sum();
+        assert!(total <= 1 << 20, "{total}");
+        assert_eq!(frames.len(), 30);
         assert!(
-            [0, 2, 3].iter().all(|id| !cache.contains("h", Id(*id))),
-            "the least recently drawn"
+            frames
+                .iter()
+                .all(|f| f.buffer().width() == frames[0].buffer().width())
         );
-        assert!(cache.contains("h", Id(4)));
-        assert!(cache.contains("h", Id(100)) && cache.contains("h", Id(101)));
-        assert!(cache.get("other", Id(1)).is_some());
-        assert_eq!(cache.retired.len(), 3, "to be freed from the GPU");
     }
 
     #[test]
-    fn pictures_on_screen_stay_even_over_budget() {
-        let mut cache = ImageCache::bounded(2 << 10);
-        for id in 0..4 {
-            cache.insert("h", Id(id), picture(1));
-        }
-        // All were stored (or drawn) in this frame, so they are on screen however long the
-        // window stays idle.
-        assert_eq!(cache.bytes, 4 << 10);
-        assert_eq!(cache.stuck, Some(0));
+    fn the_first_frame_comes_alone_and_the_animation_after_it() {
+        let moving = gif(3, 64);
+        let first = decode_first_frame(&moving, 32).unwrap();
+        assert!(first.moving.is_none());
+        assert_eq!(first.still.size(0).width.0, 32);
+        assert!(decode_animation(&moving).unwrap().is_some());
+        assert!(decode_animation(&gif(1, 64)).unwrap().is_none());
+    }
 
-        // Two frames later only picture 0 is still drawn; replacing it frees its old copy, and
-        // the others are trimmed.
-        cache.next_frame();
-        cache.next_frame();
-        assert!(cache.get("h", Id(0)).is_some());
-        cache.insert("h", Id(0), picture(2));
-        assert_eq!(cache.retired.len(), 4);
-        assert_eq!(cache.bytes, 2 << 10);
-        assert!(cache.contains("h", Id(0)));
-
-        let mut avatars = ImageCache::unbounded();
-        for id in 0..100 {
-            avatars.insert("h", Id(id), picture(1));
-        }
-        assert_eq!(avatars.bytes, 100 << 10);
+    #[test]
+    fn gifs_and_webps_may_be_animated() {
+        assert!(maybe_animated("image/gif", "a"));
+        assert!(maybe_animated("application/octet-stream", "Party.GIF"));
+        assert!(!maybe_animated("image/png", "a.png"));
     }
 }

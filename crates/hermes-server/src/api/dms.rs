@@ -65,6 +65,12 @@ fn as_request(cache: &Cache, sender: Id, other: Id) -> ApiResult<bool> {
         .get(&other)
         .map(|u| u.privacy)
         .unwrap_or_default();
+    if cache.blocked(other, sender) {
+        return Err(Error::new(
+            ErrorCode::MissingPermission,
+            "This user does not accept direct messages from you",
+        ));
+    }
     let allowed = cache.are_friends(sender, other)
         || match privacy.dm_from {
             DmFrom::Everyone => true,

@@ -73,6 +73,9 @@ pub struct Timings {
     /// Announced in `hello`; a connection that sends no heartbeat (or, before that, no identify)
     /// for two intervals is closed with 4009.
     pub heartbeat_interval: Duration,
+    /// A new connection that has not identified or resumed by then is closed with 4009. Once
+    /// it has, only heartbeats count.
+    pub identify_within: Duration,
     /// How long a disconnected session stays resumable, and the age limit of buffered events.
     pub resume_window: Duration,
     /// Events kept per session for resuming.
@@ -85,12 +88,19 @@ impl Default for Timings {
     fn default() -> Self {
         Timings {
             heartbeat_interval: Duration::from_millis(HEARTBEAT_INTERVAL_MS),
+            identify_within: Duration::from_secs(15),
             resume_window: Duration::from_secs(5 * 60),
             resume_buffer: 2000,
             queue_capacity: 1024,
         }
     }
 }
+
+/// Gateway sessions one person may have at once.
+const MAX_SESSIONS_PER_USER: usize = 32;
+
+/// What one session may hold for resuming, however few events that is.
+const RESUME_BUFFER_BYTES: usize = 32 << 20;
 
 /// All gateway sessions, connected or waiting to be resumed.
 #[derive(Debug, Default)]
@@ -179,6 +189,8 @@ struct SessionInner {
     /// Last sequence number used; 0 = none yet.
     seq: u64,
     buffer: VecDeque<Buffered>,
+    /// What `buffer` holds, in bytes.
+    buffered_bytes: usize,
     conn: Option<Conn>,
     /// Set while no connection is attached.
     disconnected_at: Option<Instant>,
@@ -274,6 +286,7 @@ impl Gateway {
             inner: Mutex::new(SessionInner {
                 seq: 0,
                 buffer: VecDeque::new(),
+                buffered_bytes: 0,
                 conn: None,
                 disconnected_at: Some(now),
                 next_conn_id: 0,
@@ -283,6 +296,19 @@ impl Gateway {
         let mut sessions = lock(&self.sessions);
         let window = self.timings.resume_window;
         sessions.remove_where(|s| s.expired(now, window));
+        // One person's sockets stay few: the oldest one goes to make room (`by_user` keeps
+        // creation order).
+        let oldest = sessions
+            .by_user
+            .get(&user_id)
+            .filter(|mine| mine.len() >= MAX_SESSIONS_PER_USER)
+            .and_then(|mine| mine.first())
+            .map(|s| s.id.clone());
+        if let Some(oldest) = oldest.and_then(|id| sessions.remove(&id))
+            && let Some(conn) = lock(&oldest.inner).conn.take()
+        {
+            conn.close.send_replace(Some(CloseCode::SessionTimedOut));
+        }
         sessions.insert(session);
         attached
     }
@@ -429,6 +455,7 @@ impl Session {
         inner.seq += 1;
         let frame: Arc<str> = format!("{{\"s\":{},{body}", inner.seq).into();
         let seq = inner.seq;
+        inner.buffered_bytes += frame.len();
         inner.buffer.push_back(Buffered {
             seq,
             frame: frame.clone(),
@@ -476,12 +503,16 @@ impl SessionInner {
     /// Keeps at most `resume_buffer` events, none older than `resume_window`.
     fn prune(&mut self, now: Instant, timings: &Timings) {
         while self.buffer.len() > timings.resume_buffer
+            || self.buffered_bytes > RESUME_BUFFER_BYTES
             || self
                 .buffer
                 .front()
                 .is_some_and(|b| now.duration_since(b.at) >= timings.resume_window)
         {
-            self.buffer.pop_front();
+            let Some(dropped) = self.buffer.pop_front() else {
+                break;
+            };
+            self.buffered_bytes -= dropped.frame.len();
         }
     }
 }

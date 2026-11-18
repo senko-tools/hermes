@@ -348,6 +348,39 @@ async fn two_clients_talk() {
 }
 
 #[tokio::test]
+async fn alone_in_a_room_sends_no_audio() {
+    let mut p = pair("alone").await;
+    let (inst, general) = (p.inst.clone(), p.general);
+    let sent = |core: &Core| core.voice_link().map_or(0, |l| l.sent_bytes);
+
+    p.alice.join_voice(&inst, general).await.unwrap();
+    p.alice_dev.talk(true);
+    assert!(!p.alice.voice_has_listeners());
+    let before = sent(&p.alice);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Pings and control only: talking would be about 16 kB in two seconds.
+    let alone = sent(&p.alice) - before;
+    assert!(alone < 4_000, "sent {alone} bytes alone");
+
+    p.bob.join_voice(&inst, general).await.unwrap();
+    eventually("alice hears of bob", || p.alice.voice_has_listeners()).await;
+    eventually("bob hears alice", || p.bob_dev.level(300) > 0.1).await;
+    let before = sent(&p.alice);
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let together = sent(&p.alice) - before;
+    assert!(
+        together > 8_000,
+        "sent only {together} bytes with bob there"
+    );
+
+    // Bob leaves: silent again.
+    p.bob.leave_voice().await;
+    eventually("alone again", || !p.alice.voice_has_listeners()).await;
+    let _ = &mut p.alice_events;
+    drop(p.server);
+}
+
+#[tokio::test]
 async fn dm_call_rings_until_the_caller_leaves() {
     let mut p = pair("ring").await;
     let inst = p.inst.clone();

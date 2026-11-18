@@ -3,16 +3,32 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use hermes_proto::e2ee::{DeviceKeys, MessageLock, SealedFile};
+use hermes_proto::e2ee::{DeviceKeys, MessageLock, SealedFile, SealedThumb};
 use hermes_proto::id::Id;
 use hermes_proto::models::{Attachment, ChannelKind, Message, MessageKind};
 
-use crate::core::{Core, CoreError, InstanceId, Result, content_type, now_ms};
+use crate::core::{Core, CoreError, CoreEvent, InstanceId, Result, content_type, now_ms};
 use crate::e2ee::{self, Directory, E2eeError, Identity, Inner, InnerAttachment};
 use crate::store::Changed;
-use crate::tokens::Lookup;
+use crate::tokens::TokenStore;
+
+/// A secret kept in `slot`, or `None` if there is none to keep yet. An unreadable credential store
+/// is an error on a device that has had keys here: making new ones would lose the old for good.
+/// On one that never had any, this system simply has no store, and the file takes over.
+fn kept_secret(
+    tokens: &TokenStore,
+    inst: &str,
+    slot: &str,
+    had_keys: bool,
+) -> std::result::Result<Option<String>, String> {
+    match tokens.read(inst, slot) {
+        Err(_) if !had_keys => Ok(None),
+        kept => kept,
+    }
+}
 
 /// Devices asked for longer ago than this are asked for again before sending to them. Changes are
 /// announced too, so this only matters for an announcement that got lost.
@@ -23,12 +39,22 @@ const STORED_NAME: &str = "encrypted.bin";
 pub const NOT_FOR_THIS_DEVICE: &str =
     "Encrypted before this device was signed in, so it cannot be read here.";
 pub const TAMPERED: &str = "This encrypted message could not be verified, so it is not shown.";
+/// How soon someone's devices are asked for again when a message names an unknown one.
+const UNKNOWN_DEVICE_RETRY_MS: i64 = 5_000;
+pub const UNSEALED: &str = "This message was not encrypted although this conversation is, so it may not be from who it says. It is not shown.";
+const REPLAYED: &str =
+    "This encrypted message does not match where the server put it, so it is not shown.";
 
 /// This account's keys on one instance.
 pub(crate) struct AccountKeys {
     pub(crate) me: Id,
     pub(crate) identity: Identity,
     pub(crate) directory: Mutex<Directory>,
+    /// The keys of encrypted server channels.
+    pub(crate) ring: Mutex<crate::channel_keys::KeyRing>,
+    pub(crate) channels: Mutex<crate::channel_keys::ChannelKeyCache>,
+    /// The words of the encrypted messages, for searching.
+    pub(crate) index: Arc<Mutex<crate::search_index::SearchIndex>>,
 }
 
 /// The keys of each instance's account, from its first `ready` on.
@@ -65,20 +91,30 @@ impl Core {
         }
         let slot = Self::secret_slot(me);
         let tokens = self.tokens();
-        let identity = match tokens.lookup(inst, &slot) {
-            Lookup::Found(secret) => Identity::from_secret(&secret).ok_or(Lookup::Missing),
-            other => Err(other),
+        let had_keys = self.paths().is_some_and(|paths| {
+            let dir = paths.dir.join("e2ee");
+            let name = safe_file_name(inst);
+            dir.join(format!("{name}-{me}.json")).exists()
+                || dir.join(format!("{name}-{me}-channels.bin")).exists()
+        });
+        let keep = |slot: &str| match kept_secret(tokens, inst, slot, had_keys) {
+            Ok(secret) => Some(secret),
+            Err(err) => {
+                static TOLD: AtomicBool = AtomicBool::new(false);
+                if !TOLD.swap(true, Ordering::Relaxed) {
+                    tracing::error!("the credential store cannot be read: {err}");
+                    self.emit(CoreEvent::Error(format!(
+                        "Your encryption keys cannot be read right now ({err}). Unlock your \
+                         credential store and restart Hermes; nothing has been changed."
+                    )));
+                }
+                None
+            }
         };
-        let identity = identity.unwrap_or_else(|lookup| {
+        let identity = keep(&slot)?.and_then(|secret| Identity::from_secret(&secret));
+        let identity = identity.unwrap_or_else(|| {
             let identity = Identity::generate();
-            // A credential store that did not answer may still hold this device's key: the new
-            // one goes to the file, so that key is not replaced and is used again next time.
-            let kept = if lookup == Lookup::Unavailable {
-                tokens.set_in_file(inst, &slot, &identity.to_secret())
-            } else {
-                tokens.set(inst, &slot, &identity.to_secret())
-            };
-            if let Err(err) = kept {
+            if let Err(err) = tokens.set(inst, &slot, &identity.to_secret()) {
                 tracing::error!("could not keep this device's encryption key: {err}");
             }
             identity
@@ -89,10 +125,62 @@ impl Core {
                 .join("e2ee")
                 .join(format!("{}-{me}.json", safe_file_name(inst)))
         });
+        let ring_slot = format!("e2ee-ring-{me}");
+        let wrap = keep(&ring_slot)?
+            .and_then(|secret| e2ee::decode_key(&secret).ok())
+            .unwrap_or_else(|| {
+                let wrap = e2ee::new_channel_key();
+                if let Err(err) = tokens.set(inst, &ring_slot, &e2ee::encode_key(&wrap)) {
+                    tracing::error!("could not keep this device's channel key ring: {err}");
+                }
+                wrap
+            });
+        let ring_path = self.paths().map(|paths| {
+            paths
+                .dir
+                .join("e2ee")
+                .join(format!("{}-{me}-channels.bin", safe_file_name(inst)))
+        });
+        let index_slot = format!("e2ee-index-{me}");
+        let index_key = keep(&index_slot)?
+            .and_then(|secret| e2ee::decode_key(&secret).ok())
+            .unwrap_or_else(|| {
+                let key = e2ee::new_channel_key();
+                if let Err(err) = tokens.set(inst, &index_slot, &e2ee::encode_key(&key)) {
+                    tracing::error!("could not keep this device's search index key: {err}");
+                }
+                key
+            });
+        let index_path = self.paths().map(|paths| {
+            paths
+                .dir
+                .join("e2ee")
+                .join(format!("{}-{me}-search.bin", safe_file_name(inst)))
+        });
+        let directory = Directory::load_sealed(path, wrap.clone());
+        let ring = crate::channel_keys::KeyRing::load(ring_path, wrap);
+        if directory.damaged() || ring.damaged() {
+            self.emit(CoreEvent::Error(
+                "A file holding this device's encryption records was damaged and has been set \
+                 aside. Compare numbers with the people you write to."
+                    .to_owned(),
+            ));
+        }
+        if crate::tokens::take_fallback_warning() {
+            self.emit(CoreEvent::Error(
+                "No credential store is available, so your keys are kept in a file on this device."
+                    .to_owned(),
+            ));
+        }
         let keys = Arc::new(AccountKeys {
             me,
             identity,
-            directory: Mutex::new(Directory::load(path)),
+            directory: Mutex::new(directory),
+            ring: Mutex::new(ring),
+            channels: Mutex::default(),
+            index: Arc::new(Mutex::new(crate::search_index::SearchIndex::new(
+                index_path, index_key,
+            ))),
         });
         accounts.insert(inst.to_owned(), keys.clone());
         Some(keys)
@@ -111,9 +199,16 @@ impl Core {
             let request = keys.identity.registration(keys.me);
             if let Err(err) = rest.register_device(&request).await {
                 tracing::warn!("could not publish this device's encryption keys: {err}");
+                core.emit(CoreEvent::Error(
+                    "This device's encryption keys could not be published; others may not be able \
+                     to write to it yet."
+                        .to_owned(),
+                ));
             }
             // My own other devices get a copy of what I send.
             let _ = core.fetch_devices(&inst, &keys, &[keys.me], 0).await;
+            core.serve_waiting_requests(&inst, &keys).await;
+            core.start_index_sync(&inst, &keys);
         });
     }
 
@@ -201,6 +296,16 @@ impl Core {
         let directory = keys.directory.lock().expect("directory");
         for user in users {
             let live = directory.live_devices(user);
+            if directory.is_verified(user) && directory.unseen(user) > 0 {
+                let name = self
+                    .store()
+                    .instance(inst)
+                    .map_or_else(|| user.to_string(), |s| s.display_name(None, user));
+                return Err(CoreError::Voice(format!(
+                    "{name} has a new device. Compare numbers or press OK on the notice before \
+                     sending."
+                )));
+            }
             if live.is_empty() && user != keys.me {
                 let name = self
                     .store()
@@ -228,11 +333,11 @@ impl Core {
         content: &str,
         attachments: &[Attachment],
         reply_to: Option<Id>,
+        edits: Option<Id>,
     ) -> Result<hermes_proto::e2ee::Envelope> {
         let keys = self
             .account_keys(inst)
             .ok_or_else(|| CoreError::Voice("Not signed in yet".into()))?;
-        let devices = self.devices_for(inst, &keys, channel).await?;
         let reply_excerpt = reply_to.and_then(|id| {
             let store = self.store();
             let window = store.instance(inst)?.window(channel)?;
@@ -244,16 +349,46 @@ impl Core {
             attachments: attachments.iter().filter_map(inner_attachment).collect(),
             reply_to,
             reply_excerpt,
+            sent_at: Some(now_ms()),
+            edits,
         };
-        e2ee::seal_message(&keys.identity, keys.me, channel, &devices, &inner)
-            .map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
+        let sealed = if self.channel_is_private(inst, channel) {
+            let devices = self.devices_for(inst, &keys, channel).await?;
+            e2ee::seal_message(&keys.identity, keys.me, channel, &devices, &inner)
+        } else {
+            let (epoch, key) = self.key_for_sending(inst, &keys, channel).await?;
+            e2ee::seal_channel_message(&keys.identity, keys.me, channel, epoch, &key, &inner)
+        };
+        sealed.map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
+    }
+
+    /// A plain message after the first sealed one of its conversation did not come from a client
+    /// that encrypts, and all of them do: the server can write anything in clear under any name.
+    fn check_plain(&self, inst: &str, message: &mut Message) {
+        if message.deleted || message.kind != MessageKind::Default {
+            return;
+        }
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let since = keys
+            .ring
+            .lock()
+            .expect("ring")
+            .sealed_since(message.channel_id);
+        if since.is_some_and(|first| message.id > first) {
+            refuse(message, MessageLock::Unsealed, UNSEALED);
+        }
     }
 
     /// Opens a message from the server in place: `content` and the attachments become what the
     /// author wrote, or say why it cannot be shown. The server's copy is dropped either way.
     pub async fn open_message(&self, inst: &str, message: &mut Message) {
         let Some(envelope) = message.e2ee.take() else {
-            message.lock = MessageLock::Plain;
+            // Opened before, when it is not plain any more.
+            if message.lock == MessageLock::Plain {
+                self.check_plain(inst, message);
+            }
             return;
         };
         let Some(keys) = self.account_keys(inst) else {
@@ -270,7 +405,10 @@ impl Core {
         let sender = match known {
             Some(sender) => Some(sender),
             None => {
-                if let Err(err) = self.fetch_devices(inst, &keys, &[author], 0).await {
+                // A page of messages from a device nobody lists asks only once.
+                let asked = keys.directory.lock().expect("directory").fetched_at(author);
+                let recently = asked.is_some_and(|at| now_ms() - at < UNKNOWN_DEVICE_RETRY_MS);
+                if !recently && let Err(err) = self.fetch_devices(inst, &keys, &[author], 0).await {
                     tracing::warn!("could not ask for {author}'s encryption keys: {err}");
                 }
                 keys.directory
@@ -284,14 +422,55 @@ impl Core {
             refuse(message, MessageLock::Tampered, TAMPERED);
             return;
         };
-        match e2ee::open_message(
-            &keys.identity,
+        // What a device signs after it was removed does not count.
+        let written = message
+            .edited_at
+            .unwrap_or(message.id.timestamp_ms() as i64);
+        if keys.directory.lock().expect("directory").revoked_before(
             author,
-            message.channel_id,
-            &sender,
-            &envelope,
+            &envelope.device,
+            written,
         ) {
-            Ok(inner) => apply_inner(message, inner),
+            refuse(message, MessageLock::Tampered, TAMPERED);
+            return;
+        }
+        let opened = match envelope.epoch {
+            Some(epoch) => {
+                let key = self
+                    .key_for_reading(inst, &keys, message.channel_id, epoch)
+                    .await;
+                let Some(key) = key else {
+                    refuse(
+                        message,
+                        MessageLock::NotForThisDevice,
+                        crate::channel_keys::WAITING_FOR_KEYS,
+                    );
+                    return;
+                };
+                e2ee::open_channel_message(author, message.channel_id, &sender, &envelope, &key)
+            }
+            None => e2ee::open_message_keyed(
+                &keys.identity,
+                author,
+                message.channel_id,
+                &sender,
+                &envelope,
+            ),
+        };
+        match opened {
+            Ok((inner, _)) if e2ee::replayed(&inner, message.id, message.edited_at) => {
+                refuse(message, MessageLock::Tampered, REPLAYED);
+            }
+            Ok((inner, key)) => {
+                keys.ring
+                    .lock()
+                    .expect("ring")
+                    .note_sealed(message.channel_id, message.id);
+                apply_inner(message, inner);
+                open_reactions(message, &key);
+                message.message_key = Some(key.to_string());
+                self.index_message(&keys, message);
+            }
             Err(E2eeError::NotForThisDevice) => {
                 refuse(message, MessageLock::NotForThisDevice, NOT_FOR_THIS_DEVICE);
             }
@@ -310,29 +489,83 @@ impl Core {
     }
 
     /// Uploads a file to attach in `channel`. In a DM it is encrypted first, and the server sees
-    /// neither its name nor its type. `size`: its pixels, if it is a picture.
+    /// neither its name nor its type, nor what `info` says of it.
     pub async fn upload_to(
         &self,
         inst: &str,
         channel: Id,
         path: &Path,
-        size: Option<(u32, u32)>,
+        info: FileInfo,
     ) -> Result<Attachment> {
-        if !self.channel_is_private(inst, channel) {
-            return self.upload(inst, path).await;
+        // The server's limit, checked before anything is sent.
+        let refusal = |size: u64| {
+            self.store()
+                .instance(inst)
+                .and_then(|s| s.upload_refusal(size))
+                .map_or(Ok(()), |why| Err(CoreError::Io(why)))
+        };
+        if !self.channel_is_encrypted(inst, channel) {
+            let size = tokio::fs::metadata(path)
+                .await
+                .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?
+                .len();
+            refusal(size)?;
+            return self
+                .upload_measured(inst, path, info.waveform.as_deref(), info.duration_ms)
+                .await;
         }
+        let size = info.size;
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
-        let plain_size = bytes.len() as u64;
-        let (sealed, key, nonce) = tokio::task::spawn_blocking(move || e2ee::seal_file(&bytes))
+        let (sealed, key, nonce, plain_size, compression, preview, chunk_size) =
+            tokio::task::spawn_blocking(move || {
+                let preview = match crate::compress::preview(&bytes) {
+                    Some(preview) => Some(e2ee::seal_file(&preview)?),
+                    None => None,
+                };
+                let shrunk = crate::compress::shrink(bytes);
+                // What is not compressed (media nearly always) is sealed in pieces, so it can be
+                // played while it downloads.
+                let chunk_size = shrunk.compression.is_none().then_some(e2ee::FILE_CHUNK);
+                let (sealed, key, nonce) = match chunk_size {
+                    Some(chunk) => e2ee::seal_file_chunked(&shrunk.bytes, chunk)?,
+                    None => e2ee::seal_file(&shrunk.bytes)?,
+                };
+                Ok::<_, E2eeError>((
+                    sealed,
+                    key,
+                    nonce,
+                    shrunk.plain_size,
+                    shrunk.compression,
+                    preview,
+                    chunk_size,
+                ))
+            })
             .await
             .map_err(|e| CoreError::Io(e.to_string()))?
             .map_err(|e| CoreError::Io(e.to_string()))?;
+        // Sealed, it is a little larger: that is what the server counts.
+        refusal(sealed.len() as u64)?;
         let stored = self
             .rest(inst)?
             .upload(STORED_NAME, "application/octet-stream", sealed)
             .await?;
+        let thumb = match preview {
+            Some((sealed, key, nonce)) => {
+                let stored = self
+                    .rest(inst)?
+                    .upload(STORED_NAME, "application/octet-stream", sealed)
+                    .await?;
+                Some(SealedThumb {
+                    id: stored.id,
+                    key,
+                    nonce,
+                    stored_name: stored.filename,
+                })
+            }
+            None => None,
+        };
         let filename = path
             .file_name()
             .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
@@ -343,13 +576,45 @@ impl Core {
             size: plain_size,
             width: size.map(|s| s.0),
             height: size.map(|s| s.1),
-            has_thumb: false,
+            has_thumb: thumb.is_some(),
+            waveform: info.waveform,
+            duration_ms: info.duration_ms,
             sealed: Some(SealedFile {
                 key,
                 nonce,
                 stored_name: stored.filename,
+                compression,
+                thumb,
+                chunk_size,
             }),
         })
+    }
+
+    /// The small preview of a picture. Only encrypted ones with a preview of their own, or plain
+    /// ones the server made one of.
+    pub async fn thumbnail(&self, inst: &str, attachment: &Attachment) -> Result<Vec<u8>> {
+        let rest = self.rest(inst)?;
+        let Some(thumb) = attachment.sealed.as_ref().and_then(|s| s.thumb.clone()) else {
+            return Ok(rest.thumbnail(attachment.id).await?);
+        };
+        let bytes = rest.download(thumb.id, &thumb.stored_name).await?;
+        tokio::task::spawn_blocking(move || e2ee::open_file(&bytes, &thumb.key, &thumb.nonce))
+            .await
+            .map_err(|e| CoreError::Io(e.to_string()))?
+            .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
+    }
+
+    /// An attachment that can be read in parts while it downloads (media plays from it). `None`
+    /// when it can only be opened whole: sealed as one block, or compressed.
+    pub fn remote_file(
+        &self,
+        inst: &str,
+        attachment: &Attachment,
+    ) -> Result<Option<crate::remote_file::RemoteFile>> {
+        Ok(crate::remote_file::RemoteFile::new(
+            self.rest(inst)?,
+            attachment,
+        ))
     }
 
     /// Downloads an attachment, decrypting it if it is encrypted.
@@ -360,10 +625,19 @@ impl Core {
         };
         let bytes = rest.download(attachment.id, &sealed.stored_name).await?;
         let (key, nonce) = (sealed.key.clone(), sealed.nonce.clone());
-        tokio::task::spawn_blocking(move || e2ee::open_file(&bytes, &key, &nonce))
-            .await
-            .map_err(|e| CoreError::Io(e.to_string()))?
-            .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
+        let (compression, plain_size) = (sealed.compression, attachment.size);
+        let chunk_size = sealed.chunk_size;
+        tokio::task::spawn_blocking(move || {
+            let opened = match chunk_size {
+                Some(chunk) => e2ee::open_file_chunked(&bytes, &key, &nonce, chunk, plain_size),
+                None => e2ee::open_file(&bytes, &key, &nonce),
+            }
+            .map_err(|e| e.to_string())?;
+            crate::compress::restore(opened, compression, plain_size)
+        })
+        .await
+        .map_err(|e| CoreError::Io(e.to_string()))?
+        .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
     }
 
     /// The safety number and devices of a conversation, asking the server for the latest.
@@ -401,6 +675,71 @@ impl Core {
         }
     }
 
+    /// Whether I have compared numbers with everyone else in this conversation.
+    pub fn conversation_verified(&self, inst: &str, channel: Id) -> bool {
+        let Some(keys) = self.account_keys(inst) else {
+            return false;
+        };
+        let users = self.recipients(inst, channel, keys.me);
+        let directory = keys.directory.lock().expect("directory");
+        let mut others = users.into_iter().filter(|user| *user != keys.me).peekable();
+        others.peek().is_some() && others.all(|user| directory.is_verified(user))
+    }
+
+    /// Remembers that the numbers of this conversation were compared, or forgets it.
+    pub fn set_conversation_verified(&self, inst: &str, channel: Id, verified: bool) {
+        let Some(keys) = self.account_keys(inst) else {
+            return;
+        };
+        let users = self.recipients(inst, channel, keys.me);
+        let mut directory = keys.directory.lock().expect("directory");
+        for user in users.into_iter().filter(|user| *user != keys.me) {
+            directory.set_verified(user, verified);
+        }
+    }
+
+    /// Forgets everything this device keeps for an instance's accounts: its keys, the channels'
+    /// keys, the search index and whom it has seen.
+    pub(crate) fn wipe_local_keys(&self, inst: &str) {
+        let removed = self.inner.accounts.lock().expect("accounts").remove(inst);
+        // Its file is saved on a thread of its own: a write under way would bring it back.
+        if let Some(keys) = removed {
+            keys.directory.lock().expect("directory").flush();
+        }
+        let Some(paths) = self.paths() else {
+            return;
+        };
+        let dir = paths.dir.join("e2ee");
+        let prefix = format!("{}-", safe_file_name(inst));
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let tokens = self.tokens();
+        for file in files.flatten() {
+            let name = file.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            // `<instance>-<me>...`: an instance whose name goes on after a dash has no number here.
+            let number = rest.split(['-', '.']).next().unwrap_or_default();
+            let Ok(me) = number.parse::<u64>().map(Id) else {
+                continue;
+            };
+            for slot in [
+                Self::secret_slot(me),
+                format!("e2ee-ring-{me}"),
+                format!("e2ee-index-{me}"),
+            ] {
+                if let Err(err) = tokens.delete(inst, &slot) {
+                    tracing::warn!("could not delete a key of {inst}: {err}");
+                }
+            }
+            if let Err(err) = std::fs::remove_file(file.path()) {
+                tracing::warn!("could not delete {name}: {err}");
+            }
+        }
+    }
+
     /// This device's ID on `inst`.
     pub fn my_device_id(&self, inst: &str) -> Option<String> {
         Some(self.account_keys(inst)?.identity.device_id().to_owned())
@@ -432,6 +771,16 @@ pub(crate) fn keys_of(keys: &AccountKeys, users: &[Id]) -> ConversationKeys {
     }
 }
 
+/// What the uploader knows of a file beyond its bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileInfo {
+    /// Its pixels, if it is a picture.
+    pub size: Option<(u32, u32)>,
+    /// A sound's loudness, a byte per bar, and how long a sound or video lasts.
+    pub waveform: Option<Vec<u8>>,
+    pub duration_ms: Option<u64>,
+}
+
 fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
     let sealed = attachment.sealed.as_ref()?;
     Some(InnerAttachment {
@@ -441,9 +790,28 @@ fn inner_attachment(attachment: &Attachment) -> Option<InnerAttachment> {
         size: attachment.size,
         width: attachment.width,
         height: attachment.height,
+        waveform: attachment.waveform.clone(),
+        duration_ms: attachment.duration_ms,
         key: sealed.key.clone(),
         nonce: sealed.nonce.clone(),
+        compression: sealed.compression,
+        thumb: sealed.thumb.clone(),
+        chunk_size: sealed.chunk_size,
     })
+}
+
+/// Replaces sealed reactions by their emoji; ones this message's key did not seal are dropped.
+fn open_reactions(message: &mut Message, key: &str) {
+    message.reactions.retain_mut(|reaction| {
+        match e2ee::open_reaction(key, &reaction.emoji) {
+            Some(emoji) => {
+                reaction.emoji = emoji;
+                true
+            }
+            // From before reactions were sealed.
+            None => !reaction.emoji.starts_with(e2ee::REACTION_PREFIX),
+        }
+    });
 }
 
 fn refuse(message: &mut Message, lock: MessageLock, text: &str) {
@@ -473,11 +841,16 @@ fn apply_inner(message: &mut Message, inner: Inner) {
             size: attachment.size,
             width: attachment.width,
             height: attachment.height,
-            has_thumb: false,
+            has_thumb: attachment.thumb.is_some(),
+            waveform: attachment.waveform,
+            duration_ms: attachment.duration_ms,
             sealed: Some(SealedFile {
                 key: attachment.key,
                 nonce: attachment.nonce,
                 stored_name: on_server.filename.clone(),
+                compression: attachment.compression,
+                thumb: attachment.thumb,
+                chunk_size: attachment.chunk_size,
             }),
         });
     }
@@ -488,5 +861,18 @@ fn apply_inner(message: &mut Message, inner: Inner) {
         // The server pointed it at something the author did not answer.
         (reply @ Some(_), _) => *reply = None,
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod kept_secret_tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_never_made_anew_when_the_old_ones_cannot_be_read() {
+        let store = TokenStore::Failing;
+        assert!(kept_secret(&store, "i", "slot", true).is_err());
+        // Nothing to lose yet: a system with no credential store still gets keys.
+        assert_eq!(kept_secret(&store, "i", "slot", false), Ok(None));
     }
 }

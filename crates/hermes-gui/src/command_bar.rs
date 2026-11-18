@@ -3,7 +3,9 @@
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Entity, Subscription, Window, deferred, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Entity, Subscription, Window, deferred, div,
+};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::proto::permissions::Permissions;
@@ -48,6 +50,8 @@ pub struct CommandBar {
     /// Indexes into `entries` matching the input, best first.
     shown: Vec<usize>,
     pub selected: usize,
+    /// Picking where to forward this message (instance, channel, message) to.
+    forward: Option<(InstanceId, Id, Id)>,
     _events: Subscription,
 }
 
@@ -79,6 +83,33 @@ impl CommandBar {
     }
 }
 
+/// Where a message of `inst` can be forwarded: its text channels and DMs I may write in.
+pub fn forward_entries(store: &Store, inst: &InstanceId) -> Vec<Entry> {
+    let Some(s) = store.instance(inst) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (space_id, space) in &s.spaces {
+        for c in view::channel_tree(s, *space_id) {
+            if c.kind == ChannelKind::Text && view::can(s, c.id, Permissions::SEND_MESSAGES) {
+                out.push(Entry {
+                    label: format!("#{}", c.name),
+                    detail: space.space.name.clone(),
+                    command: Command::Open(inst.clone(), c.id),
+                });
+            }
+        }
+    }
+    for dm in view::dm_list(s) {
+        out.push(Entry {
+            label: dm.name,
+            detail: "Direct message".into(),
+            command: Command::Open(inst.clone(), dm.id),
+        });
+    }
+    out
+}
+
 impl Shell {
     pub fn open_command_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entries = {
@@ -90,9 +121,43 @@ impl Shell {
                 &self.config.keys,
             )
         };
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Jump to a channel, a person or an action…")
-        });
+        self.show_command_bar(
+            entries,
+            "Jump to a channel, a person or an action…",
+            None,
+            window,
+            cx,
+        );
+    }
+
+    /// The command bar listing where message `message` of `channel` can be forwarded to.
+    pub fn open_forward(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entries = forward_entries(&self.core.store(), &inst);
+        self.show_command_bar(
+            entries,
+            "Forward to a channel or a DM…",
+            Some((inst, channel, message)),
+            window,
+            cx,
+        );
+    }
+
+    fn show_command_bar(
+        &mut self,
+        entries: Vec<Entry>,
+        placeholder: &'static str,
+        forward: Option<(InstanceId, Id, Id)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let events = cx.subscribe_in(
             &input,
             window,
@@ -117,16 +182,27 @@ impl Shell {
             entries,
             shown: Vec::new(),
             selected: 0,
+            forward,
             _events: events,
         };
         bar.filter("");
+        self.cancel_closing("command-bar");
         self.command_bar = Some(bar);
         cx.notify();
     }
 
     pub fn run_command_bar(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         let command = self.command_bar.as_ref().and_then(|bar| bar.command(n));
-        self.command_bar = None;
+        let forward = self
+            .command_bar
+            .as_ref()
+            .and_then(|bar| bar.forward.clone());
+        self.close_later("command-bar", |s| s.command_bar = None, cx);
+        if let (Some((inst, from, message)), Some(Command::Open(_, to))) = (forward, &command) {
+            self.forward_message(inst, from, message, *to, cx);
+            cx.notify();
+            return;
+        }
         match command {
             Some(Command::Open(inst, channel)) => self.select(inst, channel, window, cx),
             Some(Command::MessageUser(inst, user)) => self.message_user(inst, user, window, cx),
@@ -164,9 +240,8 @@ impl Shell {
                     .gap(px(8.))
                     .px(px(8.))
                     .py(px(6.))
-                    .rounded(px(4.))
+                    .rounded(theme::radius_small())
                     .cursor_pointer()
-                    .when(n == bar.selected, |d| d.bg(theme::selected()))
                     .when(n != bar.selected, |d| d.hover(|d| d.bg(theme::hover())))
                     .child(
                         div()
@@ -180,15 +255,27 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
+                            .max_w(px(240.))
+                            .truncate()
                             .child(entry.detail.clone()),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.run_command_bar(n, window, cx);
                     }))
+                    // The highlight flows from the row left to the one chosen.
+                    .with_spring(
+                        ("command-chosen", n),
+                        gpui_kit::SpringAnimation::new(crate::theme::paced(
+                            crate::hover::HOVER_SPRING,
+                        ))
+                        .to(n == bar.selected),
+                        |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
+                    )
                     .into_any_element()
             })
             .collect();
         let empty = rows.is_empty();
+        let leaving = crate::modal::closing("command-bar");
         Some(
             deferred(
                 div()
@@ -200,12 +287,11 @@ impl Shell {
                     .flex()
                     .justify_center()
                     .pt(px(80.))
-                    .bg(theme::scrim())
                     .occlude()
                     .font_family(theme::font())
                     .text_color(theme::text())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.command_bar = None;
+                        this.close_later("command-bar", |s| s.command_bar = None, cx);
                         cx.notify();
                     }))
                     .child(
@@ -218,10 +304,12 @@ impl Shell {
                             .w(px(560.))
                             .max_h(px(460.))
                             .p(px(12.))
-                            .rounded(px(10.))
+                            .relative()
+                            .rounded(theme::radius_large())
                             .bg(theme::background())
                             .border_1()
                             .border_color(theme::border())
+                            .shadow_lg()
                             .on_click(|_, _, cx| cx.stop_propagation())
                             .child(Input::new(&bar.input))
                             .child(
@@ -235,9 +323,41 @@ impl Shell {
                                     .overflow_y_scroll()
                                     .children(rows)
                                     .when(empty, |d| {
-                                        d.child(crate::settings::muted("Nothing matches"))
+                                        d.child(theme::empty_state(
+                                            "command-bar",
+                                            crate::assets::SEARCH,
+                                            "Nothing matches",
+                                            "Try fewer or other letters.",
+                                        ))
                                     }),
+                            )
+                            // Like a dialog: it fades in, dropping into place.
+                            .with_animation(
+                                if leaving {
+                                    "command-bar-out"
+                                } else {
+                                    "command-bar-in"
+                                },
+                                gpui_kit::Animation::new(crate::modal::pop())
+                                    .with_easing(gpui_kit::ease_out_quint()),
+                                move |d, t| {
+                                    let t = if leaving { 1. - t } else { t };
+                                    d.opacity(t).top(px(-8. * (1. - t)))
+                                },
                             ),
+                    )
+                    .with_animation(
+                        if leaving {
+                            "command-bar-scrim-out"
+                        } else {
+                            "command-bar-scrim"
+                        },
+                        gpui_kit::Animation::new(crate::modal::pop())
+                            .with_easing(gpui_kit::ease_out_quint()),
+                        move |d, t| {
+                            let t = if leaving { 1. - t } else { t };
+                            d.bg(theme::alpha(theme::scrim(), t))
+                        },
                     ),
             )
             .with_priority(gpui_kit::base::POPUP_PRIORITY)
@@ -295,7 +415,7 @@ pub fn entries(
             continue;
         };
         out.push(Entry {
-            label: "Create a space".into(),
+            label: "Create a server".into(),
             detail: inst.clone(),
             command: Command::Menu(Target::Instance(inst.clone()), M::CreateSpace),
         });
@@ -316,7 +436,7 @@ pub fn entries(
                 command: Command::Results(Key::Search(inst.clone(), Some(*space_id))),
             });
             out.push(Entry {
-                label: format!("Space settings: {}", space.space.name),
+                label: format!("Server settings: {}", space.space.name),
                 detail: inst.clone(),
                 command: Command::SpaceSettings(inst.clone(), *space_id),
             });

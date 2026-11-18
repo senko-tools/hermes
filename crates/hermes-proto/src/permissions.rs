@@ -191,8 +191,8 @@ pub const CATALOG: &[PermissionInfo] = {
         ),
         info(
             Permissions::MANAGE_SPACE,
-            "Manage space",
-            "Change the space's name, description and icon.",
+            "Manage server",
+            "Change the server's name, description and icon.",
             General,
             false,
         ),
@@ -227,7 +227,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::CREATE_INVITES,
             "Create invites",
-            "Make invite links to this space.",
+            "Make invite links to this server.",
             General,
             true,
         ),
@@ -241,7 +241,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::CHANGE_NICKNAME,
             "Change nickname",
-            "Set their own nickname in this space.",
+            "Set their own nickname in this server.",
             General,
             false,
         ),
@@ -255,7 +255,7 @@ pub const CATALOG: &[PermissionInfo] = {
         info(
             Permissions::VIEW_AUDIT_LOG,
             "View audit log",
-            "See who changed what in the space settings.",
+            "See who changed what in the server settings.",
             General,
             false,
         ),
@@ -394,14 +394,29 @@ pub fn compute(
     member: &Member,
     channel: Option<&Channel>,
 ) -> Permissions {
-    if member.user.id == space.owner_id {
+    compute_for(space, roles, member.user.id, &member.role_ids, channel)
+}
+
+/// [`compute`] from just what it needs, for callers that check many people at once.
+pub fn compute_for(
+    space: &Space,
+    roles: &[Role],
+    user_id: Id,
+    role_ids: &[Id],
+    channel: Option<&Channel>,
+) -> Permissions {
+    if user_id == space.owner_id {
         return Permissions::all();
     }
 
     let mut base = find_role(roles, space.id)
         .map(|r| r.permissions)
         .unwrap_or_default();
-    for role in member_roles(space, roles, member) {
+    for role in role_ids
+        .iter()
+        .filter(|&&id| id != space.id)
+        .filter_map(|&id| find_role(roles, id))
+    {
         base |= role.permissions;
     }
     if base.contains(Permissions::ADMINISTRATOR) {
@@ -420,7 +435,7 @@ pub fn compute(
     // 2) all member role overrides combined
     let mut allow = Permissions::empty();
     let mut deny = Permissions::empty();
-    for role_id in member.role_ids.iter().filter(|&&id| id != space.id) {
+    for role_id in role_ids.iter().filter(|&&id| id != space.id) {
         if let Some(o) = channel.overrides.iter().find(|o| o.role_id == *role_id) {
             allow |= o.allow;
             deny |= o.deny;

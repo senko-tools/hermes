@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET last_online_at = ?1\n             WHERE id = ?2 AND (last_online_at IS NULL OR last_online_at < ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f0613e506b917768a06dcb364b751a08c193af75344e7d98a58d3d00d9ba5185"
+}

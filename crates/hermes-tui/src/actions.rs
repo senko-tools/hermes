@@ -654,6 +654,7 @@ impl App {
                 let req = BanRequest {
                     reason: (!reason.is_empty()).then_some(reason),
                     delete_messages_hours: None,
+                    duration_hours: None,
                 };
                 self.rest(&inst, &format!("banned {name}"), move |r| async move {
                     r.ban(space, user, &req).await
@@ -808,8 +809,11 @@ impl App {
             limit: Some(50),
             ..SearchQuery::default()
         };
+        let (core, searched) = (self.core.clone(), inst.clone());
         self.results(&inst, title, move |r| async move {
-            r.search(&query).await.map(|res| res.messages)
+            core.search_with(&r, &searched, &query)
+                .await
+                .map(|res| res.messages)
         });
     }
 
@@ -828,13 +832,17 @@ impl App {
         let rest = self.core.rest(inst);
         let tasks = self.tasks.clone();
         let inst = inst.clone();
+        let core = self.core.clone();
         tokio::spawn(async move {
             let msg = match rest {
                 Ok(rest) => match f(rest).await {
-                    Ok(items) => TaskMsg::Results {
-                        title,
-                        items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
-                    },
+                    Ok(mut items) => {
+                        core.open_messages(&inst, &mut items).await;
+                        TaskMsg::Results {
+                            title,
+                            items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
+                        }
+                    }
                     Err(err) => TaskMsg::Error(err.to_string()),
                 },
                 Err(err) => TaskMsg::Error(err.to_string()),

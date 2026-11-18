@@ -10,7 +10,7 @@ use hermes_server::config::RegistrationMode;
 use hermes_server::db::{self, Db};
 use serde_json::{Value, json};
 
-/// The inbox query before migration 0009: every message of the readable channels, newest
+/// The inbox query before migration 0019: every message of the readable channels, newest
 /// first, checked for a matching mention one by one.
 const SCAN_QUERY: &str = "
     SELECT m.id FROM messages m
@@ -173,7 +173,7 @@ async fn send(server: &TestServer, token: &str, channel: &str, content: &str) ->
         .post(
             &format!("/channels/{channel}/messages"),
             Some(token),
-            json!({ "content": content, "nonce": "n" }),
+            json!({ "content": content, "nonce": common::nonce() }),
         )
         .await
         .ok()

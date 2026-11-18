@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use hermes_proto::api::SearchQuery;
 use hermes_proto::gateway::{
     InstanceInfo, ReactionEvent, Ready, ServerEvent, SpaceSnapshot, VoiceInfo, VoiceStateUpdate,
 };
@@ -207,6 +208,10 @@ pub struct InstanceStore {
     pub privacy: PrivacySettings,
     /// My friends and friend requests, by the other person.
     pub relationships: HashMap<Id, Relationship>,
+    /// People I blocked.
+    pub blocked: std::collections::HashSet<Id>,
+    /// Names I gave people, shown only to me.
+    pub local_names: HashMap<Id, String>,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }
@@ -214,6 +219,60 @@ pub struct InstanceStore {
 impl InstanceStore {
     pub fn me_id(&self) -> Option<Id> {
         self.me.as_ref().map(|m| m.user.id)
+    }
+
+    /// The largest file the server takes, in MB (as it counts them: MiB). `None` before it said.
+    /// Whether what is written in this channel is end-to-end encrypted.
+    pub fn channel_encrypted(&self, channel: Id) -> bool {
+        let Some(c) = self.channel(channel) else {
+            return false;
+        };
+        c.kind.is_private()
+            || (c.kind.has_messages()
+                && self
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.limits.channels_encrypted))
+    }
+
+    /// Whether everything a search would look through is encrypted, so that the server can find
+    /// nothing in it. DMs always are.
+    pub fn search_only_sealed(&self, query: &SearchQuery) -> bool {
+        match query.channel_id {
+            Some(channel) => self.channel_encrypted(channel),
+            None => self
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.limits.channels_encrypted),
+        }
+    }
+
+    /// Whether this server can do `feature` ([`hermes_proto::compat::features`]). Servers from
+    /// before the list can do none of them.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(|i| hermes_proto::compat::has_feature(&i.features, feature))
+    }
+
+    /// Whether this server can do things this build doesn't know about: it is newer.
+    pub fn server_is_newer(&self) -> bool {
+        self.instance.as_ref().is_some_and(|i| {
+            i.features
+                .iter()
+                .any(|f| !hermes_proto::compat::features::ALL.contains(&f.as_str()))
+        })
+    }
+
+    pub fn max_upload_mb(&self) -> Option<u32> {
+        self.instance.as_ref().map(|i| i.limits.max_upload_mb)
+    }
+
+    /// Why a file of `size` bytes cannot be uploaded here, if it is larger than the server takes.
+    /// The server refuses it anyway; this says so before it is sent.
+    pub fn upload_refusal(&self, size: u64) -> Option<String> {
+        let mb = self.max_upload_mb()?;
+        (size > u64::from(mb) << 20).then(|| format!("Files on this server may be at most {mb} MB"))
     }
 
     /// Replaces everything with a fresh `ready`. Message windows are stale and get reloaded;
@@ -342,6 +401,9 @@ impl InstanceStore {
 
     /// Display name in a space (nickname, display name, username) or globally.
     pub fn display_name(&self, space: Option<Id>, user: Id) -> String {
+        if let Some(name) = self.local_names.get(&user) {
+            return name.clone();
+        }
         if let Some(member) = space.and_then(|s| self.member(s, user)) {
             if let Some(nick) = &member.nickname {
                 return nick.clone();
@@ -927,7 +989,10 @@ impl InstanceStore {
                 vec![C::Relationships]
             }
             // Handled before this: public keys are not part of the store.
-            ServerEvent::DevicesUpdate { .. } => vec![],
+            ServerEvent::DevicesUpdate { .. }
+            | ServerEvent::ChannelKeyRequest(_)
+            | ServerEvent::ChannelKeysDelivered { .. }
+            | ServerEvent::ChannelKeyEpoch { .. } => vec![],
         }
     }
 
@@ -955,6 +1020,7 @@ pub(crate) mod tests {
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         }
     }
 
@@ -995,6 +1061,7 @@ pub(crate) mod tests {
             nonce: None,
             e2ee: None,
             lock: Default::default(),
+            message_key: None,
         }
     }
 
@@ -1049,7 +1116,9 @@ pub(crate) mod tests {
                 limits: InstanceLimits {
                     max_upload_mb: 25,
                     max_message_length: 4000,
+                    channels_encrypted: false,
                 },
+                features: Vec::new(),
             },
         }
     }
@@ -1062,6 +1131,35 @@ pub(crate) mod tests {
 
     fn live_window(s: &mut InstanceStore, channel: u64) {
         s.merge_history(Id(channel), HistoryAnchor::Latest, vec![], PAGE);
+    }
+
+    #[test]
+    fn search_stays_on_the_device_only_where_everything_is_sealed() {
+        let mut s = store();
+        let query = SearchQuery {
+            q: "soup".into(),
+            space_id: None,
+            channel_id: None,
+            author_id: None,
+            before: None,
+            limit: None,
+            ..SearchQuery::default()
+        };
+        assert!(!s.search_only_sealed(&query));
+        s.instance.as_mut().unwrap().limits.channels_encrypted = true;
+        assert!(s.search_only_sealed(&query));
+    }
+
+    #[test]
+    fn uploads_follow_the_servers_limit() {
+        assert_eq!(InstanceStore::default().upload_refusal(u64::MAX), None);
+        let s = store();
+        assert_eq!(s.max_upload_mb(), Some(25));
+        assert_eq!(s.upload_refusal(25 << 20), None);
+        assert_eq!(
+            s.upload_refusal((25 << 20) + 1).as_deref(),
+            Some("Files on this server may be at most 25 MB")
+        );
     }
 
     #[test]

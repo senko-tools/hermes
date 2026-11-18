@@ -41,6 +41,8 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
         .channels
         .values()
         .filter(|c| c.parent_id.is_none_or(|p| !state.channels.contains_key(&p)))
+        // Kinds from a newer server: nothing here could open them.
+        .filter(|c| c.kind != ChannelKind::Unknown)
         .collect();
     top.sort_by(|a, b| order(a, b));
     let entry = |c: &Channel, depth| {
@@ -62,13 +64,38 @@ pub fn channel_tree(store: &InstanceStore, space: Id) -> Vec<TreeChannel> {
             let mut children: Vec<&Channel> = state
                 .channels
                 .values()
-                .filter(|child| child.parent_id == Some(c.id))
+                .filter(|child| child.parent_id == Some(c.id) && child.kind != ChannelKind::Unknown)
                 .collect();
             children.sort_by(|a, b| order(a, b));
             out.extend(children.into_iter().map(|child| entry(child, 1)));
         }
     }
     out
+}
+
+/// Who is in a voice channel of a space.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VoiceHere {
+    /// People in its voice channels that I can see.
+    pub count: usize,
+    /// I am one of them.
+    pub me: bool,
+}
+
+/// Who is in voice in `space`, counting only channels I can see (others are not in the store).
+pub fn voice_in_space(store: &InstanceStore, space: Id) -> VoiceHere {
+    let Some(state) = store.spaces.get(&space) else {
+        return VoiceHere::default();
+    };
+    let me = store.me.as_ref().map(|m| m.user.id);
+    let mut here = VoiceHere::default();
+    for v in store.voice_states.values() {
+        if state.channels.contains_key(&v.channel_id) {
+            here.count += 1;
+            here.me |= Some(v.user_id) == me;
+        }
+    }
+    here
 }
 
 /// The new positions after dropping channel `moved` onto `onto` in the space's tree (for
@@ -474,12 +501,118 @@ pub fn plain_text(store: &InstanceStore, space: Option<Id>, content: &str, max: 
     }
 }
 
+/// What can be mentioned in a channel, as typed: `@name`, `@name#1234`, `@role`, `#channel`,
+/// with the markup each stands for. A plain `@name` is only there when one person has that name.
+fn mention_names(store: &InstanceStore, channel: Id) -> Vec<(String, String)> {
+    let space = store.space_of(channel);
+    let state = space.and_then(|s| store.spaces.get(&s));
+    let mut users: Vec<hermes_proto::models::User> = match state {
+        Some(state) => state.members.values().map(|m| m.user.clone()).collect(),
+        None => store
+            .channel(channel)
+            .map(|c| c.recipients.clone())
+            .unwrap_or_default(),
+    };
+    if let Some(me) = &store.me
+        && !users.iter().any(|u| u.id == me.user.id)
+    {
+        users.push(me.user.clone());
+    }
+    let mut out = Vec::new();
+    for user in &users {
+        let id = user.id;
+        out.push((format!("@{}", user.handle()), format!("<@{id}>")));
+        let same = users
+            .iter()
+            .filter(|u| u.username.eq_ignore_ascii_case(&user.username))
+            .count();
+        if same == 1 && user.discriminator.is_some() {
+            out.push((format!("@{}", user.username), format!("<@{id}>")));
+        }
+    }
+    if let Some(state) = state {
+        for role in state.roles.iter().filter(|r| !r.is_everyone()) {
+            out.push((format!("@{}", role.name), format!("<@&{}>", role.id)));
+        }
+        for c in state
+            .channels
+            .values()
+            .filter(|c| c.kind == ChannelKind::Text)
+        {
+            if let Some(name) = &c.name {
+                out.push((format!("#{name}"), format!("<#{}>", c.id)));
+            }
+        }
+    }
+    // Longest first: `@bob#1234` before `@bob`, `@Mods team` before `@Mods`.
+    out.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    out
+}
+
+/// Turns typed mentions into markup before sending: `@bob` into `<@3>`, `#general` into
+/// `<#11>`. Not inside code, not in the middle of a word (an email), and only whole names.
+pub fn resolve_mentions(store: &InstanceStore, channel: Id, text: &str) -> String {
+    let names = mention_names(store, channel);
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut previous: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        // Code is copied as it is: ```blocks``` and `spans`.
+        if c == '`' {
+            let fence = if rest.starts_with("```") { "```" } else { "`" };
+            let end = rest[fence.len()..]
+                .find(fence)
+                .map_or(rest.len(), |i| i + 2 * fence.len());
+            out.push_str(&rest[..end]);
+            previous = rest[..end].chars().last();
+            rest = &rest[end..];
+            continue;
+        }
+        let at_start = previous.is_none_or(|p| !p.is_alphanumeric() && p != '_');
+        if (c == '@' || c == '#') && at_start {
+            let found = names.iter().find(|(name, _)| {
+                rest.len() >= name.len()
+                    && rest.is_char_boundary(name.len())
+                    && rest[..name.len()].eq_ignore_ascii_case(name)
+                    && rest[name.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(|n| !n.is_alphanumeric() && n != '_' && n != '#')
+            });
+            if let Some((name, markup)) = found {
+                out.push_str(markup);
+                previous = name.chars().last();
+                rest = &rest[name.len()..];
+                continue;
+            }
+        }
+        out.push(c);
+        previous = Some(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// The other way, for editing a sent message: `<@3>` back into `@bob`.
+pub fn readable_mentions(store: &InstanceStore, channel: Id, text: &str) -> String {
+    let names = mention_names(store, channel);
+    let mut out = text.to_owned();
+    // The shortest name of each markup: `@bob` rather than `@bob#1234` where that is enough.
+    let mut seen = std::collections::HashSet::new();
+    for (name, markup) in names.iter().rev() {
+        if seen.insert(markup) {
+            out = out.replace(markup.as_str(), name);
+        }
+    }
+    out
+}
+
 /// One autocomplete suggestion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Suggestion {
     /// Shown in the popup.
     pub label: String,
-    /// Replaces the typed token (e.g. `<@123> `).
+    /// Replaces the typed token (e.g. `@bob `); [`resolve_mentions`] turns it into markup.
     pub insert: String,
 }
 
@@ -521,12 +654,20 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     })
                     .unwrap_or_default(),
             };
+            let names = mention_names(store, channel);
             for (id, username, display) in users {
                 let key = format!("{username} {display}");
+                // The shortest typed form that stands for them alone.
+                let markup = format!("<@{id}>");
+                let typed = names
+                    .iter()
+                    .rev()
+                    .find(|(_, m)| *m == markup)
+                    .map_or_else(|| format!("@{username}"), |(name, _)| name.clone());
                 push(
                     &key,
                     format!("@{display} ({username})"),
-                    format!("<@{id}> "),
+                    format!("{typed} "),
                 );
             }
             if let Some(state) = space.and_then(|s| store.spaces.get(&s)) {
@@ -534,7 +675,7 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     push(
                         &role.name,
                         format!("@{} (role)", role.name),
-                        format!("<@&{}> ", role.id),
+                        format!("@{} ", role.name),
                     );
                 }
             }
@@ -547,7 +688,7 @@ pub fn complete(store: &InstanceStore, channel: Id, token: &str, max: usize) -> 
                     .filter(|c| c.kind == ChannelKind::Text)
                 {
                     let name = c.name.clone().unwrap_or_default();
-                    push(&name, format!("#{name}"), format!("<#{}> ", c.id));
+                    push(&name, format!("#{name}"), format!("#{name} "));
                 }
             }
         }
@@ -602,10 +743,45 @@ pub fn search_emoji(query: &str, max: usize) -> Vec<(String, String)> {
     out.into_iter().take(max).map(|(_, e, c)| (e, c)).collect()
 }
 
+/// The emoji picker's tabs, in Unicode's order: a name and every emoji of the group.
+pub fn emoji_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+    use emojis::Group;
+    Group::iter()
+        .map(|group| {
+            let name = match group {
+                Group::SmileysAndEmotion => "Smileys",
+                Group::PeopleAndBody => "People",
+                Group::AnimalsAndNature => "Nature",
+                Group::FoodAndDrink => "Food",
+                Group::TravelAndPlaces => "Travel",
+                Group::Activities => "Activities",
+                Group::Objects => "Objects",
+                Group::Symbols => "Symbols",
+                Group::Flags => "Flags",
+            };
+            (name, group.emojis().map(emojis::Emoji::as_str).collect())
+        })
+        .collect()
+}
+
+/// An emoji's first shortcode, for the picker's hint (`thumbsup`).
+pub fn emoji_name(emoji: &str) -> Option<&'static str> {
+    emojis::get(emoji).and_then(emojis::Emoji::shortcode)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::tests::{channel, message, ready, user};
+
+    #[test]
+    fn emoji_groups_cover_the_lot() {
+        let groups = emoji_groups();
+        assert_eq!(groups.len(), 9);
+        assert_eq!(groups[0].0, "Smileys");
+        assert!(groups[0].1.contains(&"😀"));
+        assert_eq!(emoji_name("👍"), Some("+1"));
+    }
     use hermes_proto::gateway::ServerEvent;
     use hermes_proto::models::{Member, Presence, Role};
 
@@ -636,6 +812,41 @@ mod tests {
         );
         assert!(tree[3].unread);
         assert!(!tree[0].unread);
+    }
+
+    #[test]
+    fn voice_counts_only_channels_i_can_see() {
+        use hermes_proto::models::VoiceState;
+        let mut s = store();
+        s.apply(
+            ServerEvent::ChannelCreate(channel(21, Some(10), ChannelKind::Voice, "Lounge")),
+            0,
+        );
+        assert_eq!(voice_in_space(&s, Id(10)), VoiceHere::default());
+        let me = s.me.as_ref().unwrap().user.id;
+        let state = |user, channel| VoiceState {
+            user_id: Id(user),
+            channel_id: Id(channel),
+            self_mute: false,
+            self_deaf: false,
+            server_mute: false,
+            server_deaf: false,
+            joined_at: 0,
+        };
+        // Someone in Lounge, someone in a channel I cannot see.
+        s.voice_states.insert(Id(500), state(500, 21));
+        s.voice_states.insert(Id(501), state(501, 99));
+        assert_eq!(
+            voice_in_space(&s, Id(10)),
+            VoiceHere {
+                count: 1,
+                me: false
+            }
+        );
+        s.voice_states.insert(me, state(me.0, 21));
+        assert_eq!(voice_in_space(&s, Id(10)), VoiceHere { count: 2, me: true });
+        // Another space, or none, has nobody.
+        assert_eq!(voice_in_space(&s, Id(77)), VoiceHere::default());
     }
 
     #[test]
@@ -849,8 +1060,8 @@ mod tests {
             }],
         );
         let at = complete(&s, Id(11), "@al", 5);
-        assert_eq!(at[0].insert, "<@2> ");
-        assert_eq!(complete(&s, Id(11), "#gen", 5)[0].insert, "<#11> ");
+        assert_eq!(at[0].insert, "@alice ");
+        assert_eq!(complete(&s, Id(11), "#gen", 5)[0].insert, "#general ");
         assert!(
             complete(&s, Id(11), ":smi", 5)
                 .iter()
@@ -874,5 +1085,41 @@ mod tests {
         }
         let car = complete(&s, Id(11), ":car", 1);
         assert_eq!(car[0].label, "🚗 :car:", "the best-ranked name is kept");
+    }
+
+    #[test]
+    fn typed_mentions_become_markup_and_back() {
+        let mut s = store();
+        let tagged = |id: u64, name: &str, tag: &str| hermes_proto::models::User {
+            discriminator: Some(tag.into()),
+            ..user(id, name)
+        };
+        let member = |user| Member {
+            space_id: Id(10),
+            user,
+            nickname: None,
+            role_ids: vec![],
+            joined_at: 0,
+        };
+        s.set_members(
+            Id(10),
+            vec![
+                member(user(2, "alice")),
+                member(tagged(3, "bob", "1234")),
+                member(tagged(4, "bob", "5678")),
+                member(tagged(5, "carol", "1111")),
+            ],
+        );
+        let typed = "hi @Alice, mail a@alice.com `@alice` #general @bob#5678 @bob @carol @alicex";
+        let sent = resolve_mentions(&s, Id(11), typed);
+        assert_eq!(
+            sent, "hi <@2>, mail a@alice.com `@alice` <#11> <@4> @bob <@5> @alicex",
+            "two bobs need their tag; a word that only starts with a name stays"
+        );
+        assert_eq!(
+            readable_mentions(&s, Id(11), "<@2> <@4> <@5> <#11>"),
+            "@alice @bob#5678 @carol #general"
+        );
+        assert_eq!(complete(&s, Id(11), "@car", 5)[0].insert, "@carol ");
     }
 }

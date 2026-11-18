@@ -38,7 +38,9 @@ pub async fn run(
     let port = tcp.local_addr()?.port();
     let app = api::router(state.clone());
     let cleanup = tokio::spawn(files::cleanup_task(state.clone()));
+    let maintenance = tokio::spawn(crate::maintenance::task(state.clone()));
     let refresh = tokio::spawn(crate::users::refresh_task(state.clone()));
+    let last_online = tokio::spawn(crate::gateway::last_online::flush_task(state.clone()));
     let (calls_stop, calls_stopped) = oneshot::channel::<()>();
     let calls = state.voice.take_after().map(|rx| {
         let stop = async move {
@@ -58,7 +60,12 @@ pub async fn run(
             state.gateway.shut_down();
         }
     };
-    let mut server = tokio::spawn(async move { api::serve(tcp, &tls, app, graceful).await });
+    let caps = api::conn_limit::Caps {
+        total: state.config.limits.max_connections,
+        per_ip: state.config.limits.max_connections_per_ip,
+        trusted_proxies: state.config.network.trusted_proxies.as_slice().into(),
+    };
+    let mut server = tokio::spawn(async move { api::serve(tcp, &tls, app, caps, graceful).await });
     tracing::info!("Hermes is ready on {}:{port}", state.config.network.bind);
 
     let result = tokio::select! {
@@ -83,7 +90,9 @@ pub async fn run(
         }
     };
     cleanup.abort();
+    maintenance.abort();
     refresh.abort();
+    last_online.abort();
     if let Some(quic) = &quic {
         quic.close(0u32.into(), b"server restarting");
         let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
@@ -105,6 +114,9 @@ pub async fn run(
     }
     if let Some(reload) = reload {
         reload.abort();
+    }
+    if let Err(err) = crate::gateway::last_online::flush(&state).await {
+        tracing::warn!("could not note who was last online: {err}");
     }
     state.db.close().await;
     if result.is_ok() {

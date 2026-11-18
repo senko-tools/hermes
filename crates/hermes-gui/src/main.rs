@@ -13,18 +13,23 @@ mod assets;
 mod channel;
 mod collapsed;
 mod command_bar;
+mod crop;
 mod desktop;
 mod desktop_shell;
 mod drag;
+mod emoji_picker;
 mod encryption;
 #[cfg(test)]
 mod fixtures;
 mod form;
 mod friends;
+mod hover;
 mod images;
+mod key_settings;
 mod keybinds;
 mod keys;
 mod markup;
+mod media;
 mod members;
 mod menu;
 mod menu_entries;
@@ -35,15 +40,22 @@ mod ptt;
 mod results;
 mod rows;
 mod screen;
+mod selection;
 mod settings;
+mod share_picker;
 mod shell;
 mod sidebar;
 mod single_instance;
+mod smooth_scroll;
 mod space_settings;
+mod syntax;
 #[cfg(test)]
 mod tests;
 mod theme;
 mod tree;
+mod unencrypted;
+mod updater_window;
+mod user_menu;
 mod voice;
 mod watchdog;
 
@@ -70,6 +82,9 @@ struct Cli {
     /// An invite link or address to add (also `hermes://` links). If Hermes is already running,
     /// the link is handed to it.
     link: Option<String>,
+    /// Started by the updater: the old version may still be closing.
+    #[arg(long, hide = true)]
+    after_update: bool,
 }
 
 impl Cli {
@@ -90,6 +105,7 @@ impl Cli {
             Some(link) => Cli {
                 config_dir: None,
                 link: Some(link.into_owned()),
+                after_update: false,
             },
             None => Cli::parse_from(args),
         }
@@ -97,6 +113,15 @@ impl Cli {
 }
 
 fn main() -> ExitCode {
+    // The old version, renamed, watching the new one come up after an update.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args
+        .first()
+        .is_some_and(|a| a == hermes_client_core::updater::WATCH_FLAG)
+    {
+        hermes_client_core::updater::watch(&args[1..]);
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::from_args();
     let paths = match cli.config_dir {
         Some(dir) => ConfigPaths::in_dir(dir),
@@ -107,9 +132,37 @@ fn main() -> ExitCode {
     };
     // Single instance (section 15.7): hand the link to a running client and exit.
     let endpoint = Endpoint::for_config_dir(&paths.dir);
-    if forward_to_running(&endpoint, cli.link.as_deref()) {
+    // Just updated: the old version is closing, and must not be handed this start.
+    if cli.after_update {
+        for _ in 0..80 {
+            match single_instance::lock(&paths.dir) {
+                Ok(Some(lock)) => {
+                    drop(lock);
+                    break;
+                }
+                _ => std::thread::sleep(std::time::Duration::from_millis(250)),
+            }
+        }
+    } else if forward_to_running(&endpoint, cli.link.as_deref()) {
         return ExitCode::SUCCESS;
     }
+    // Nobody answered, but one may be starting: the lock tells. It is held until `main` returns.
+    let _lock = match single_instance::lock(&paths.dir) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if forward_to_running(&endpoint, cli.link.as_deref()) {
+                    return ExitCode::SUCCESS;
+                }
+            }
+            return fail("Hermes is already running");
+        }
+        Err(err) => {
+            eprintln!("no single-instance lock: {err}");
+            None
+        }
+    };
     let loaded = match ClientConfig::load(&paths.config()) {
         Ok(loaded) => loaded,
         Err(err) => return fail(&format!("Invalid config: {err}")),
@@ -155,7 +208,6 @@ fn main() -> ExitCode {
             let theme = Theme::global_mut(cx);
             theme.font_family = theme::FONT.into();
             theme.font_size = theme::body_size();
-            cx.on_window_closed(|cx, _| cx.quit()).detach();
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -199,10 +251,20 @@ fn main() -> ExitCode {
                 link,
                 warning,
             };
-            gpui_kit::open_window(options, cx, move |window, cx| {
+            let (main, _) = gpui_kit::open_window(options, cx, move |window, cx| {
                 cx.new(|cx| Shell::new(boot, window, cx))
             })
             .expect("failed to open the window");
+            // Up and running: an update that started this one is done.
+            hermes_client_core::updater::finish_started();
+            // Only the main window ends the app: a popped-out share's window just closes.
+            let main = main.window_id();
+            cx.on_window_closed(move |cx, closed| {
+                if closed == main {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
     ExitCode::SUCCESS

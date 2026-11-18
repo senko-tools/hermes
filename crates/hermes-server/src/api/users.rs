@@ -11,10 +11,13 @@ use hermes_proto::api::{
 };
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
-use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
+use hermes_proto::models::{
+    CurrentUser, Message, NotificationSetting, PrivacySettings, RelationshipKind,
+};
 use hermes_proto::permissions::Permissions;
 use sqlx::SqliteConnection;
 
+use super::attachments::own_picture;
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query};
 use crate::auth::{self, Auth};
@@ -38,6 +41,7 @@ pub async fn change_password(
     auth: Auth,
     Json(req): Json<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
     let mut fields = Fields::new();
     fields.check(
         "new_password",
@@ -76,6 +80,7 @@ pub async fn change_username(
     auth: Auth,
     Json(req): Json<ChangeUsernameRequest>,
 ) -> ApiResult<Json<CurrentUser>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
     let name = validate::username(&req.username)
         .map_err(|problem| validate::field_error("username", problem))?;
     if req.current_password.chars().count() > validate::MAX_PASSWORD_CHARS {
@@ -186,19 +191,39 @@ pub async fn update_me(
             user.status_text = status;
         }
     }
+    let bio = req.bio.as_ref().and_then(|bio| {
+        let checked = match bio {
+            Some(b) if b.lines().count() > UpdateMeRequest::BIO_LINES => Err(format!(
+                "must be at most {} lines",
+                UpdateMeRequest::BIO_LINES
+            )),
+            Some(b) => validate::optional_text(b, UpdateMeRequest::BIO_CHARS),
+            None => Ok(None),
+        };
+        fields.check("bio", checked)
+    });
     fields.finish()?;
     match req.avatar_id {
         None => {}
         Some(None) => user.avatar = None,
         Some(Some(id)) if old.user.avatar.as_ref().is_some_and(|a| a.id == id) => {}
         Some(Some(id)) => {
-            let avatar = db::spaces::own_image(&state.db.read, id, auth.user_id)
-                .await?
-                .ok_or_else(|| {
-                    validate::field_error("avatar_id", "must be an image you uploaded")
-                })?;
-            user.avatar = Some(avatar);
+            user.avatar = Some(own_picture(&state, id, auth.user_id, "avatar_id").await?);
         }
+    }
+    match req.banner_id {
+        None => {}
+        Some(None) => user.banner = None,
+        Some(Some(id)) if old.user.banner.as_ref().is_some_and(|a| a.id == id) => {}
+        Some(Some(id)) => {
+            user.banner = Some(own_picture(&state, id, auth.user_id, "banner_id").await?);
+        }
+    }
+    // Only shown on the profile, which is asked for when opened: nobody needs telling.
+    if let Some(bio) = bio {
+        let mut tx = state.db.write.begin().await?;
+        db::users::set_bio(&mut tx, auth.user_id, bio.as_deref()).await?;
+        tx.commit().await?;
     }
     if user != old.user {
         let mut tx = state.db.write.begin().await?;
@@ -228,24 +253,40 @@ pub async fn get(
     auth: Auth,
     Path(user_id): Path<Id>,
 ) -> ApiResult<Json<UserProfile>> {
-    let cache = state.cache();
-    let visible =
-        user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
-    let user = cache
-        .users
-        .get(&user_id)
-        .filter(|_| visible)
-        .ok_or_else(|| Error::not_found("user"))?;
-    let mut mutual_space_ids: Vec<Id> = cache
-        .spaces
-        .values()
-        .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
-        .map(|s| s.space.id)
-        .collect();
-    mutual_space_ids.sort();
+    let (user, mutual_space_ids, may_see_last_online) = {
+        let cache = state.cache();
+        let visible =
+            user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
+        let user = cache
+            .users
+            .get(&user_id)
+            .filter(|_| visible)
+            .ok_or_else(|| Error::not_found("user"))?;
+        let mut mutual_space_ids: Vec<Id> = cache
+            .spaces
+            .values()
+            .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
+            .map(|s| s.space.id)
+            .collect();
+        mutual_space_ids.sort();
+        // A friend request sent by a stranger is enough to see a profile, but not this.
+        let known = !mutual_space_ids.is_empty()
+            || cache
+                .relationship(auth.user_id, user_id)
+                .is_some_and(|r| r.kind == RelationshipKind::Friend);
+        let may_see = user_id == auth.user_id || (known && user.privacy.show_last_online);
+        (user.user.clone(), mutual_space_ids, may_see)
+    };
+    let last_online_at = if may_see_last_online {
+        db::users::last_online(&state.db.read, user_id).await?
+    } else {
+        None
+    };
     Ok(Json(UserProfile {
-        user: user.user.clone(),
+        user,
         mutual_space_ids,
+        last_online_at,
+        bio: db::users::bio(&state.db.read, user_id).await?,
     }))
 }
 
@@ -289,6 +330,9 @@ pub async fn update_privacy(
     }
     if let Some(on) = req.message_requests {
         privacy.message_requests = on;
+    }
+    if let Some(on) = req.show_last_online {
+        privacy.show_last_online = on;
     }
     let mut conn = state.db.write.acquire().await?;
     db::users::set_privacy(&mut conn, auth.user_id, &privacy).await?;

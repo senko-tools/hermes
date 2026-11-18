@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 use windows::Win32::Media::MediaFoundation::{
-    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMeanBitRate,
+    CODECAPI_AVEncCommonBufferSize, CODECAPI_AVEncCommonMaxBitRate,
+    CODECAPI_AVEncCommonMeanBitRate, CODECAPI_AVEncCommonQualityVsSpeed,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount,
     CODECAPI_AVEncMPVGOPSize, CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode,
     ICodecAPI, IMF2DBuffer, IMFActivate, IMFAttributes, IMFDXGIDeviceManager,
@@ -130,6 +131,29 @@ impl MfEncoder {
         } else {
             errors.join("; ")
         })
+    }
+
+    /// What the encoder says it is set to, for the logs: drivers may refuse or adjust settings.
+    pub fn settings(&self) -> String {
+        let Some(codec) = &self.codec else {
+            return "not readable".to_owned();
+        };
+        let read = |api: &windows::core::GUID| unsafe {
+            codec
+                .GetValue(api)
+                .ok()
+                .and_then(|v| u32::try_from(&v).ok())
+                .map_or("?".to_owned(), |v| v.to_string())
+        };
+        format!(
+            "rate control {}, mean {} bit/s, max {} bit/s, buffer {} bits, quality {}, keyframe every {}",
+            read(&CODECAPI_AVEncCommonRateControlMode),
+            read(&CODECAPI_AVEncCommonMeanBitRate),
+            read(&CODECAPI_AVEncCommonMaxBitRate),
+            read(&CODECAPI_AVEncCommonBufferSize),
+            read(&CODECAPI_AVEncCommonQualityVsSpeed),
+            read(&CODECAPI_AVEncMPVGOPSize),
+        )
     }
 
     /// Changes the bitrate of the next pictures.
@@ -416,24 +440,38 @@ fn configure(
             .map_err(failed("giving the encoder the GPU"))?;
 
         // Low latency, constant bitrate, no B-frames (each would delay the picture), keyframes
-        // only when asked for. Encoders that do not know a setting keep their own.
+        // only when asked for. Encoders that do not know a setting keep their own. These go
+        // before the formats: NVIDIA's ignores the buffer and keyframe interval set after them.
         let codec = transform.cast::<ICodecAPI>().ok();
         if let Some(codec) = &codec {
-            let set = |api, value: VARIANT| {
-                let _ = codec.SetValue(api, &value);
+            let set = |what: &str, api, value: VARIANT| {
+                if let Err(err) = codec.SetValue(api, &value) {
+                    tracing::debug!("the encoder refused its {what} setting: {err}");
+                }
             };
-            set(&CODECAPI_AVLowLatencyMode, VARIANT::from(true));
+            set("latency", &CODECAPI_AVLowLatencyMode, VARIANT::from(true));
             set(
+                "rate control",
                 &CODECAPI_AVEncCommonRateControlMode,
                 VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),
             );
-            set(&CODECAPI_AVEncCommonMeanBitRate, VARIANT::from(bitrate));
             set(
+                "bitrate",
+                &CODECAPI_AVEncCommonMeanBitRate,
+                VARIANT::from(bitrate),
+            );
+            set(
+                "buffer",
                 &CODECAPI_AVEncCommonBufferSize,
                 VARIANT::from(buffer_size(bitrate)),
             );
-            set(&CODECAPI_AVEncMPVDefaultBPictureCount, VARIANT::from(0u32));
             set(
+                "B-frame",
+                &CODECAPI_AVEncMPVDefaultBPictureCount,
+                VARIANT::from(0u32),
+            );
+            set(
+                "keyframe interval",
                 &CODECAPI_AVEncMPVGOPSize,
                 VARIANT::from(fps.saturating_mul(60)),
             );

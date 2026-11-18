@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use hermes_proto::id::Id;
-use hermes_proto::markup;
 use hermes_proto::models::{
     Attachment, Mentions, Message, MessageRef, ReactionSummary, Status, User,
 };
@@ -94,6 +93,7 @@ pub async fn to_wire(
             nonce: None,
             e2ee: e2ee_of(r.e2ee.as_deref()),
             lock: MessageLock::Plain,
+            message_key: None,
         })
         .collect())
 }
@@ -125,6 +125,7 @@ fn author(cache: &Cache, user_id: Id) -> User {
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         },
         |u| u.user.clone(),
     )
@@ -147,12 +148,11 @@ pub fn resolve_mentions(
     channel_id: Id,
     author_id: Id,
     perms: Permissions,
-    content: &str,
+    raw: Mentions,
 ) -> ResolvedMentions {
     let Some(channel) = cache.channels.get(&channel_id) else {
         return ResolvedMentions::default();
     };
-    let raw = markup::extract_mentions(content);
     let can_everyone = perms.contains(Permissions::MENTION_EVERYONE);
     let space = channel
         .channel

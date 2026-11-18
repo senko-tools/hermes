@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT user_id, blocked_id FROM user_blocks",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "user_blocks",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "blocked_id",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "user_blocks",
+            "name": "blocked_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ee014b8c27af9f09e5d962c353d583f52bdaffc83541f2fe97fe7f88c6aded31"
+}
