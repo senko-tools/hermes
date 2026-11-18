@@ -157,14 +157,17 @@ pub fn build(store: &InstanceStore, window: &MessageWindow, options: &Options) -
     }
     for p in &window.pending {
         let day = time::day(p.created_at, options.utc_offset);
-        if last_day != Some(day) {
+        let new_day = last_day != Some(day);
+        if new_day {
             rows.push(Row::Day {
                 day,
                 label: time::format(p.created_at, "%Y-%m-%d", options.utc_offset),
             });
             last_day = Some(day);
         }
-        let grouped = p.reply_to.is_none()
+        // Like a sent message, a pending one never continues a group across a day separator.
+        let grouped = !new_day
+            && p.reply_to.is_none()
             && prev.is_some_and(|m| {
                 Some(m.author.id) == me
                     && m.kind == MessageKind::Default
@@ -574,6 +577,52 @@ mod tests {
             },
         );
         assert!(!rows.contains(&Row::NewMessages));
+    }
+
+    #[test]
+    fn pending_messages_start_a_group_after_midnight() {
+        let store = fixtures::store();
+        let me = fixtures::user(1, "me", None);
+        let t = 1_793_491_200_000 - 60_000; // 2026-10-31 23:59 UTC
+        let pending = |local_id, created_at: u64| PendingMessage {
+            local_id,
+            nonce: format!("n{local_id}"),
+            channel_id: Id(11),
+            content: "later".into(),
+            reply_to: None,
+            attachments: vec![],
+            state: PendingState::Sending,
+            created_at: created_at as i64,
+        };
+        let window = MessageWindow {
+            messages: vec![message(id_at(t, 1), &me, "before midnight")],
+            // Two minutes later, on the next day, and one more right after it.
+            pending: vec![pending(1, t + 120_000), pending(2, t + 121_000)],
+            loaded: true,
+            reached_start: true,
+            reached_end: true,
+            ..Default::default()
+        };
+        let rows = build(
+            &store,
+            &window,
+            &Options {
+                group_minutes: 7,
+                utc_offset: 0,
+                read_marker: None,
+                gone: Default::default(),
+            },
+        );
+        assert_eq!(
+            keys(&rows),
+            [
+                "day 2026-10-31",
+                "1",
+                "day 2026-11-01",
+                "pending 1",
+                "  pending 2"
+            ]
+        );
     }
 
     #[test]

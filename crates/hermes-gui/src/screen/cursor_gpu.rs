@@ -64,6 +64,8 @@ pub struct CursorDrawer {
 fn compile(entry: PCSTR, profile: PCSTR) -> Result<ID3DBlob, String> {
     let mut code = None;
     let mut errors = None;
+    // SAFETY: the source pointer and length are those of `SHADER`, a static string; the entry point
+    // and profile are NUL-terminated literals; the out-pointers are locals living through the call.
     let result = unsafe {
         D3DCompile(
             SHADER.as_ptr().cast(),
@@ -81,6 +83,8 @@ fn compile(entry: PCSTR, profile: PCSTR) -> Result<ID3DBlob, String> {
     };
     if let Err(err) = result {
         let detail = errors
+            // SAFETY: the blob's pointer and size describe its own buffer, which lives as
+            // long as `e`.
             .map(|e: ID3DBlob| unsafe {
                 String::from_utf8_lossy(std::slice::from_raw_parts(
                     e.GetBufferPointer().cast::<u8>(),
@@ -95,6 +99,8 @@ fn compile(entry: PCSTR, profile: PCSTR) -> Result<ID3DBlob, String> {
 }
 
 fn bytes(blob: &ID3DBlob) -> &[u8] {
+    // SAFETY: the blob's pointer and size describe its own buffer; the slice borrows `blob`, which
+    // owns it.
     unsafe {
         std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize())
     }
@@ -118,6 +124,7 @@ fn blend(
         RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
     };
     let mut state = None;
+    // SAFETY: `desc` and `state` live through the call.
     unsafe { device.CreateBlendState(&desc, Some(&mut state)) }
         .map_err(|e| format!("pointer blend state: {e}"))?;
     state.ok_or_else(|| "pointer blend state".into())
@@ -150,6 +157,8 @@ fn upload(
         SysMemSlicePitch: 0,
     };
     let failed = |e: windows::core::Error| format!("pointer texture: {e}");
+    // SAFETY: `pixels` holds `height` rows of `width * 4` bytes (a converted `Shape`), as
+    // `SysMemPitch` says; the out-pointers are locals living through each call.
     unsafe {
         let mut texture = None;
         device
@@ -169,6 +178,8 @@ impl CursorDrawer {
         let vs_code = compile(s!("vs"), s!("vs_4_0"))?;
         let ps_code = compile(s!("ps"), s!("ps_4_0"))?;
         let failed = |what: &str, e: windows::core::Error| format!("pointer {what}: {e}");
+        // SAFETY: COM calls on the live device; the shader code borrows blobs that outlive the
+        // calls, and the out-pointers are locals.
         unsafe {
             let mut vs = None;
             device
@@ -241,6 +252,7 @@ impl CursorDrawer {
         }
         if self.target.as_ref().is_none_or(|(t, _)| t != target) {
             let mut view = None;
+            // SAFETY: `target` is a live texture and `view` a local living through the call.
             unsafe { device.CreateRenderTargetView(target, None, Some(&mut view)) }
                 .map_err(|e| format!("pointer render target: {e}"))?;
             self.target = Some((target.clone(), view.ok_or("pointer render target")?));
@@ -258,6 +270,9 @@ impl CursorDrawer {
         };
         // The encoder uses the same context from its own threads.
         let multithread = context.cast::<ID3D11Multithread>().ok();
+        // SAFETY: state and draw calls on the live context with objects this drawer owns, inside
+        // the device's multithread lock (`Enter` and `Leave` paired); everything bound is unbound
+        // again before leaving.
         unsafe {
             if let Some(m) = &multithread {
                 m.Enter();

@@ -966,6 +966,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn permission_checks_match_compute_on_full_members() {
+        let dir = TempDir::new("cache-perm-member");
+        let db = Db::open(dir.path()).await.unwrap();
+        fixture(&db).await;
+        let cache = load_from_db(&db).await.unwrap();
+        db.close().await;
+
+        let space = &cache.spaces[&SPACE];
+        for user_id in [OWNER, ALICE, BOB, Id(999)] {
+            let full = cache.member(SPACE, user_id);
+            let expected = |channel: Option<&Channel>| {
+                full.as_ref().map_or(Permissions::empty(), |m| {
+                    permissions::compute(&space.space, &space.roles, m, channel)
+                })
+            };
+            assert_eq!(cache.space_permissions(SPACE, user_id), expected(None));
+            for channel_id in [GENERAL, SECRET, VOICE] {
+                let channel = &cache.channels[&channel_id].channel;
+                assert_eq!(
+                    cache.channel_permissions(channel_id, user_id),
+                    expected(Some(channel)),
+                    "user {user_id} in channel {channel_id}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn app_state_opens_data_dir() {
         let dir = TempDir::new("app-state");
         let mut config = Config::default();

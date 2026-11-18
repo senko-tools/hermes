@@ -184,7 +184,9 @@ impl Bot {
             .flat_map(|space| space.channels.values())
             .find(|c| {
                 c.kind.has_voice()
-                    && c.name.as_deref().map(str::to_lowercase) == Some(wanted.clone())
+                    && c.name
+                        .as_deref()
+                        .is_some_and(|n| n.to_lowercase() == wanted)
             })
             .map(|c| c.id)
     }
@@ -195,6 +197,8 @@ impl Bot {
         source.samples = samples;
         source.pos = 0;
         source.looped = looped;
+        // `source_start` is when this playback reaches the microphone, not an earlier one.
+        source.started = None;
     }
 
     /// Whether everything was played (never for a loop).
@@ -228,7 +232,7 @@ impl Bot {
         (recording.samples.clone(), recording.started)
     }
 
-    /// When the bot started sending (its first microphone frame).
+    /// When the current playback started sending (its first microphone frame).
     pub fn source_start(&self) -> Option<Instant> {
         self.source.lock().expect("source").started
     }

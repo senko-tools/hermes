@@ -701,7 +701,11 @@ impl Core {
     /// Forgets everything this device keeps for an instance's accounts: its keys, the channels'
     /// keys, the search index and whom it has seen.
     pub(crate) fn wipe_local_keys(&self, inst: &str) {
-        self.inner.accounts.lock().expect("accounts").remove(inst);
+        let removed = self.inner.accounts.lock().expect("accounts").remove(inst);
+        // Its file is saved on a thread of its own: a write under way would bring it back.
+        if let Some(keys) = removed {
+            keys.directory.lock().expect("directory").flush();
+        }
         let Some(paths) = self.paths() else {
             return;
         };

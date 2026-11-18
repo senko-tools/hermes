@@ -4,7 +4,7 @@ Start here in a new session. Reasons and history are in `docs/DECISIONS.md` (202
 `docs/e2ee.md`.
 
 ## The crate
-`crates/hermes-gui`, binary `hermes`, on gpui through `gpui-kit =0.9.0`. It replaced the iced client in 1.2.0.
+`crates/hermes-gui`, binary `hermes`, on gpui through `gpui-kit =0.10.0`. It replaced the iced client in 1.2.0.
 
 Testing on the developer's PC needs a scratch server and its own config dir; see "How the window was tested".
 
@@ -234,7 +234,8 @@ Full workspace builds can run Windows out of memory (os error 1455): use `-j 4`.
 ## Not yet checked by ear or by a person
 Real mic and speaker quality in a call, push-to-talk and the global mute key, the tray's menu, toasts and the taskbar
 flash, real keyboard modifiers (Ctrl+K, Shift+Enter; the test helper can only send plain keys), file dialogs,
-drag and drop, and how the sizes compare to Discord. Linux CI packages in `.github/workflows/ci.yml` are untested.
+drag and drop, and how the sizes compare to Discord. Linux CI packages in `.github/workflows/ci.yml` and
+`.forgejo/workflows/ci.yml` are untested.
 
 ## How the window was tested
 Run a scratch `hermes-server` copied elsewhere (port 7799, `registration.mode = "open"`, and

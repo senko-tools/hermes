@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use hermes_audio::{AudioEvent, AudioSettings, Engine, InputMode, Io, Sound};
@@ -112,6 +112,13 @@ pub struct VoiceEncryption {
 }
 
 /// The voice part of [`Core`].
+///
+/// Locking: none of these mutexes is held while another one (or the core's config, store or key
+/// directory lock) is taken, and none across an `.await`. The engine's thread takes `link` and
+/// then `crypto`, one after the other, once per packet; keeping every `crypto` guard short keeps
+/// that thread from waiting. `crypto` alone still fails closed on a poisoned lock (a panic halfway
+/// through a key change must not let a nonce be reused); the others hold plain data that stays
+/// valid, so they are taken with [`lock`], and one panic does not take voice down with it.
 pub(crate) struct Voice {
     engine: Engine,
     /// The connection captured packets go to.
@@ -126,7 +133,11 @@ pub(crate) struct Voice {
     /// Where others' screen share frames go (set by the UI).
     screen_sink: Arc<Mutex<Option<mpsc::Sender<RemoteFrame>>>>,
     state: Mutex<State>,
-    volumes: Mutex<UserVolumes>,
+    volumes: Arc<Mutex<UserVolumes>>,
+    /// A background save of `volumes` is queued and has not taken its snapshot yet.
+    volumes_queued: Arc<AtomicBool>,
+    /// Background saves of `volumes` write one at a time, in order.
+    volumes_writer: Arc<Mutex<()>>,
     /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
     rest_state: Arc<tokio::sync::Mutex<()>>,
     /// The sequence number and timestamp of my screen share's next sound frame.
@@ -201,7 +212,7 @@ impl Voice {
                     if !listeners.load(Ordering::Relaxed) {
                         return;
                     }
-                    let conn = link.lock().expect("voice link").clone();
+                    let conn = lock(&link).clone();
                     if let Some(conn) = conn {
                         // Nothing leaves in clear: without a key yet, the packet is dropped.
                         let sealed = crypto.lock().expect("voice crypto").seal_audio(&datagram);
@@ -224,15 +235,50 @@ impl Voice {
             screen_out: Mutex::default(),
             screen_sink: Arc::default(),
             state: Mutex::default(),
-            volumes: Mutex::new(volumes),
+            volumes: Arc::new(Mutex::new(volumes)),
+            volumes_queued: Arc::default(),
+            volumes_writer: Arc::default(),
             rest_state: Arc::default(),
             share_sound: Mutex::default(),
         }
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().expect("voice state")
+    fn state(&self) -> MutexGuard<'_, State> {
+        lock(&self.state)
     }
+
+    /// Writes `user_volumes.toml` without blocking the caller (the UI thread, many times a
+    /// second while a volume slider moves): a burst of changes becomes one or two writes on a
+    /// blocking thread, each with the newest volumes. Outside a tokio runtime it writes at once.
+    fn save_volumes(&self) -> std::result::Result<(), config::ConfigError> {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            let snapshot = lock(&self.volumes).clone();
+            return snapshot.save();
+        };
+        if self.volumes_queued.swap(true, Ordering::AcqRel) {
+            // The queued save has not taken its snapshot yet: it will include this change.
+            return Ok(());
+        }
+        let (volumes, queued, writer) = (
+            self.volumes.clone(),
+            self.volumes_queued.clone(),
+            self.volumes_writer.clone(),
+        );
+        runtime.spawn_blocking(move || {
+            let _turn = lock(&writer);
+            queued.store(false, Ordering::Release);
+            let snapshot = lock(&volumes).clone();
+            if let Err(err) = snapshot.save() {
+                tracing::warn!("user volumes not saved: {err}");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Locks `mutex` even if a thread panicked while holding it (see [`Voice`]).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `[voice]` of the config as engine settings.
@@ -424,24 +470,18 @@ impl Core {
     // ---- per-user volume ----------------------------------------------------------------------
 
     pub fn user_volume(&self, inst: &str, user: Id) -> f32 {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .get(inst, user)
+        lock(&self.voice().volumes).get(inst, user)
     }
 
-    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`.
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`. It
+    /// is heard at once; inside a tokio runtime the file is written in the background (a failure
+    /// is then logged, not returned).
     pub fn set_user_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .set(inst, user, volume)?;
+        let volume = lock(&self.voice().volumes).set_unsaved(inst, user, volume);
         if let Some(pid) = self.participant_of(inst, user) {
             self.voice().engine.set_volume(pid, volume);
         }
-        Ok(())
+        Ok(self.voice().save_volumes()?)
     }
 
     pub fn user_muted(&self, inst: &str, user: Id) -> bool {
@@ -484,7 +524,7 @@ impl Core {
 
     /// The voice connection's numbers, while one is up.
     pub fn voice_link(&self) -> Option<VoiceLink> {
-        let conn = self.voice().link.lock().expect("voice link").clone()?;
+        let conn = lock(&self.voice().link).clone()?;
         let stats = conn.stats();
         Some(VoiceLink {
             rtt_ms: u32::try_from(stats.path.rtt.as_millis()).unwrap_or(u32::MAX),
@@ -769,7 +809,7 @@ impl Core {
     /// Breaks the QUIC connection as if the network dropped (tests of the reconnect logic).
     #[doc(hidden)]
     pub fn drop_voice_connection(&self) {
-        if let Some(conn) = self.voice().link.lock().expect("voice link").as_ref() {
+        if let Some(conn) = lock(&self.voice().link).as_ref() {
             conn.close(1u32.into(), b"test");
         }
     }
@@ -883,7 +923,7 @@ impl Core {
     /// Fresh `/voice/join` tokens for `channel`, with backoff (spread out so that a whole room
     /// does not come back at the same moment). `None` when giving up.
     async fn rejoin(&self, inst: &str, channel: Id, generation: u64) -> Option<VoiceJoinResponse> {
-        *self.voice().link.lock().expect("voice link") = None;
+        *lock(&self.voice().link) = None;
         for attempt in 1..=RECONNECT_ATTEMPTS {
             self.set_status(generation, VoiceStatus::Reconnecting { attempt })?;
             let delay = Duration::from_millis(500 * (1 << (attempt - 1)))
@@ -936,11 +976,11 @@ impl Core {
         if write(&mut send, &auth).await.is_err() {
             return End::Failed("Voice connection failed".into());
         }
-        *self.voice().link.lock().expect("voice link") = Some(conn.clone());
+        *lock(&self.voice().link) = Some(conn.clone());
         let (frames_tx, mut frames) = mpsc::channel(32);
         let reader = tokio::spawn(read_frames(recv, frames_tx));
         let (screen_out, screen_frames) = mpsc::channel(SCREEN_QUEUE);
-        *self.voice().screen_out.lock().expect("screen out") = Some(screen_out);
+        *lock(&self.voice().screen_out) = Some(screen_out);
         let screen_writer = tokio::spawn(write_screen(conn.clone(), screen_frames));
         let screen_reader = tokio::spawn(self.clone().read_screen(conn.clone(), generation));
         let mut ping = tokio::time::interval(PING_INTERVAL);
@@ -1041,7 +1081,11 @@ impl Core {
                 }
                 datagram = conn.read_datagram() => match datagram {
                     // What does not open is not played: no key yet, or not from who it claims.
-                    Ok(data) => match self.voice().crypto.lock().expect("voice crypto").open_audio(&data) {
+                    // The guard is a temporary of this statement alone: not held while the
+                    // packet is handed on below (nor nested with the state lock).
+                    Ok(data) => {
+                        let opened = self.voice().crypto.lock().expect("voice crypto").open_audio(&data);
+                        match opened {
                         Some((AudioKind::Voice, sender, plain)) => {
                             self.voice().engine.receive(sender, plain);
                         }
@@ -1058,7 +1102,8 @@ impl Core {
                             }
                         }
                         None => {}
-                    },
+                        }
+                    }
                     Err(err) => break End::Lost(err.to_string()),
                 },
                 _ = rekey.tick(), if authed => self.check_voice_keys(generation),
@@ -1070,9 +1115,9 @@ impl Core {
         reader.abort();
         screen_writer.abort();
         screen_reader.abort();
-        *self.voice().screen_out.lock().expect("screen out") = None;
+        *lock(&self.voice().screen_out) = None;
         {
-            let mut link = self.voice().link.lock().expect("voice link");
+            let mut link = lock(&self.voice().link);
             if link
                 .as_ref()
                 .is_some_and(|c| c.stable_id() == conn.stable_id())
@@ -1567,15 +1612,15 @@ impl Core {
             .filter(|(pid, user)| users.contains(user) && s.sharing.contains(pid))
             .map(|(&pid, _)| pid)
             .collect();
-        let volumes = self.voice().volumes.lock().expect("volumes");
+        // Their share volumes are looked up after the state lock is released.
+        let mut started = Vec::new();
         for &pid in wanted.difference(&s.watching) {
             let _ = s.control.send(ClientControl::Watch {
                 participant_id: pid,
                 watching: true,
             });
             if let Some(&user) = s.participants.get(&pid) {
-                let volume = volumes.get_share(&s.inst, user);
-                self.voice().engine.set_share_volume(pid, volume);
+                started.push((pid, user));
             }
         }
         for &pid in s.watching.difference(&wanted) {
@@ -1586,6 +1631,14 @@ impl Core {
             self.voice().engine.remove_share(pid);
         }
         s.watching = wanted;
+        let inst = s.inst.clone();
+        drop(state);
+        let volumes = lock(&self.voice().volumes);
+        for (pid, user) in started {
+            self.voice()
+                .engine
+                .set_share_volume(pid, volumes.get_share(&inst, user));
+        }
     }
 
     /// Whether the voice server forwards screen share sound (newer servers do).
@@ -1599,24 +1652,17 @@ impl Core {
 
     /// The volume of `user`'s screen share sound, 0–2.
     pub fn share_volume(&self, inst: &str, user: Id) -> f32 {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .get_share(inst, user)
+        lock(&self.voice().volumes).get_share(inst, user)
     }
 
-    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`.
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml` like
+    /// [`Core::set_user_volume`].
     pub fn set_share_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .set_share(inst, user, volume)?;
+        let volume = lock(&self.voice().volumes).set_share_unsaved(inst, user, volume);
         if let Some(pid) = self.participant_of(inst, user) {
             self.voice().engine.set_share_volume(pid, volume);
         }
-        Ok(())
+        Ok(self.voice().save_volumes()?)
     }
 
     /// The picture of `user`'s share broke (a lost frame): ask them for a keyframe.
@@ -1638,11 +1684,11 @@ impl Core {
         if !self.sharing_screen() || !self.share_audio_supported() {
             return;
         }
-        let Some(conn) = self.voice().link.lock().expect("voice link").clone() else {
+        let Some(conn) = lock(&self.voice().link).clone() else {
             return;
         };
         let (sequence, timestamp) = {
-            let mut next = self.voice().share_sound.lock().expect("share sound");
+            let mut next = lock(&self.voice().share_sound);
             let now = *next;
             *next = (
                 now.0.wrapping_add(1),
@@ -1677,7 +1723,7 @@ impl Core {
         {
             return false;
         }
-        let Some(out) = self.voice().screen_out.lock().expect("screen out").clone() else {
+        let Some(out) = lock(&self.voice().screen_out).clone() else {
             return false;
         };
         let header = VideoHeader {
@@ -1706,7 +1752,7 @@ impl Core {
     /// Where others' screen share frames go (the UI's decoder). Frames are dropped while it is
     /// full.
     pub fn set_screen_sink(&self, sink: mpsc::Sender<RemoteFrame>) {
-        *self.voice().screen_sink.lock().expect("screen sink") = Some(sink);
+        *lock(&self.voice().screen_sink) = Some(sink);
     }
 
     /// Reads screen share frames from the server, one stream at a time (in order), and hands
@@ -1784,12 +1830,7 @@ impl Core {
                     continue;
                 }
             }
-            let sink = self
-                .voice()
-                .screen_sink
-                .lock()
-                .expect("screen sink")
-                .clone();
+            let sink = lock(&self.voice().screen_sink).clone();
             if let Some(sink) = sink {
                 let frame = RemoteFrame {
                     inst,
@@ -2051,5 +2092,48 @@ mod tests {
         assert_eq!(v.mode, "push_to_talk");
         assert_eq!(v.sounds_volume, 0.25);
         assert_eq!(audio_settings(&v), changed);
+    }
+
+    struct Silence;
+
+    impl hermes_audio::VirtualIo for Silence {
+        fn read(&mut self, frame: &mut [f32; hermes_audio::FRAME]) {
+            frame.fill(0.0);
+        }
+        fn write(&mut self, _: &[f32; hermes_audio::FRAME]) {}
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn volume_saves_run_in_the_background_and_keep_the_newest() {
+        let dir = std::env::temp_dir().join(format!("hermes-voice-volumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(crate::volumes::USER_VOLUMES_FILE);
+        let (events, _events) = mpsc::unbounded_channel();
+        let voice = Voice::new(
+            Io::Virtual(Box::new(Silence)),
+            AudioSettings::default(),
+            UserVolumes::load(&path),
+            events,
+        );
+        // A slider being dragged.
+        for step in 0..=20 {
+            lock(&voice.volumes).set_unsaved("a", Id(1), step as f32 / 10.0);
+            voice.save_volumes().unwrap();
+        }
+        lock(&voice.volumes).set_share_unsaved("a", Id(1), 0.5);
+        voice.save_volumes().unwrap();
+        let saved = async {
+            loop {
+                let loaded = UserVolumes::load(&path);
+                if loaded.get("a", Id(1)) == 2.0 && loaded.get_share("a", Id(1)) == 0.5 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), saved)
+            .await
+            .expect("the newest volumes are saved");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

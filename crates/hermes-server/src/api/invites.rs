@@ -181,6 +181,9 @@ pub async fn join(
             "This invite is only for creating an account",
         )
     })?;
+    // Like kicks and bans, which hold it too: otherwise a ban between the check below and the
+    // insert would let the banned user in, and its cache update would hide the membership.
+    let _writes = state.writes.lock().await;
     if let Some(snapshot) = existing_member_snapshot(&state, space_id, auth.user_id) {
         return Ok(Json(snapshot));
     }
@@ -197,7 +200,7 @@ pub async fn join(
         return Err(invite_invalid());
     }
     match db::spaces::insert_member(&mut tx, space_id, auth.user_id, now).await {
-        // Joined concurrently through another request; that one counted the use.
+        // Already a member after all (the cache was behind); the use is not counted.
         Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
             drop(tx);
             return existing_member_snapshot(&state, space_id, auth.user_id)

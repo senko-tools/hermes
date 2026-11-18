@@ -39,6 +39,8 @@ pub struct Version {
 impl Version {
     pub fn parse(text: &str) -> Option<Version> {
         let text = text.trim().trim_start_matches('v');
+        // Build metadata (`+…`) plays no part in the order.
+        let text = text.split_once('+').map_or(text, |(version, _)| version);
         let (core, pre) = match text.split_once('-') {
             Some((core, pre)) => (core, Some(pre.to_owned())),
             None => (text, None),
@@ -60,7 +62,7 @@ impl PartialOrd for Version {
 
 impl Ord for Version {
     /// Semver order: numbers first; a pre-release is older than its release; pre-release parts
-    /// compare numerically when both are numbers.
+    /// compare numerically when both are numbers, and a number comes before a word.
     fn cmp(&self, other: &Self) -> Ordering {
         self.numbers
             .cmp(&other.numbers)
@@ -78,7 +80,9 @@ impl Ord for Version {
                             (Some(x), Some(y)) => {
                                 let o = match (x.parse::<u64>(), y.parse::<u64>()) {
                                     (Ok(x), Ok(y)) => x.cmp(&y),
-                                    _ => x.cmp(y),
+                                    (Ok(_), Err(_)) => Ordering::Less,
+                                    (Err(_), Ok(_)) => Ordering::Greater,
+                                    (Err(_), Err(_)) => x.cmp(y),
                                 };
                                 if o != Ordering::Equal {
                                     return o;
@@ -154,6 +158,11 @@ mod tests {
         assert!(v("1.0.0") > v("1.0.0-rc.1"));
         assert!(v("1.0.0-alpha.10") > v("1.0.0-alpha.9"));
         assert!(v("v0.10.0") > v("0.9.9"));
+        // A number before a word, whatever their characters: `2` < `10a`.
+        assert!(v("1.0.0-rc.2") < v("1.0.0-rc.10a"));
+        assert!(v("1.0.0-alpha.1") < v("1.0.0-alpha.beta"));
+        assert_eq!(v("1.2.3+build.7"), v("1.2.3"));
+        assert!(v("1.2.3-rc.1+abc") < v("1.2.3"));
         assert_eq!(Version::parse("1.0"), None);
         assert_eq!(Version::parse("x.y.z"), None);
     }

@@ -500,18 +500,19 @@ pub fn entries_with(
                 // From a newer server: nothing here can act on it.
                 ChannelKind::Unknown => {}
                 ChannelKind::Category => {
-                    let manage = c
+                    // As the server checks them: creating space-wide, editing and deleting in the
+                    // category itself (an override there can take Manage channels away).
+                    let create = c
                         .space_id
                         .is_some_and(|sp| view::can_in_space(s, sp, Permissions::MANAGE_CHANNELS));
+                    let manage = view::can(s, *channel, Permissions::MANAGE_CHANNELS);
+                    if create {
+                        push(&mut out, [Action::CreateChannel]);
+                    }
                     if manage {
-                        push(
-                            &mut out,
-                            [
-                                Action::CreateChannel,
-                                Action::EditChannel,
-                                Action::ChannelPermissions,
-                            ],
-                        );
+                        push(&mut out, [Action::EditChannel, Action::ChannelPermissions]);
+                    }
+                    if create || manage {
                         out.push(None);
                     }
                     push(&mut out, [Action::CopyChannelId]);
@@ -646,7 +647,8 @@ pub fn entries_with(
                 let can = |p| view::can_in_space(s, *space, p);
                 let above = view::outranks(s, *space, *user);
                 let mut moderation = Vec::new();
-                if (me && can(Permissions::CHANGE_NICKNAME))
+                // My own nickname needs either permission (as on the server).
+                if (me && (can(Permissions::CHANGE_NICKNAME) || can(Permissions::MANAGE_NICKNAMES)))
                     || (above && can(Permissions::MANAGE_NICKNAMES))
                 {
                     moderation.push(Action::ChangeNickname);
@@ -919,6 +921,53 @@ mod tests {
                 Grouped::Entry(Action::EditChannel.into()),
             ],
             "a lone group member stays a plain entry"
+        );
+    }
+
+    #[test]
+    fn channel_and_member_entries_follow_the_server_rules() {
+        use hermes_client_core::proto::models::Override;
+        let mut s = crate::fixtures::store();
+        let (inst, space, games, me) = ("h".to_owned(), Id(10), Id(12), Id(1));
+        let st = s.spaces.get_mut(&space).unwrap();
+        // Bob owns the space; I manage channels and nicknames through @everyone, but the
+        // "Games" category takes Manage channels away from @everyone.
+        st.space.owner_id = Id(3);
+        st.roles[0].permissions = (st.roles[0].permissions
+            | Permissions::MANAGE_CHANNELS
+            | Permissions::MANAGE_NICKNAMES)
+            - Permissions::CHANGE_NICKNAME;
+        st.channels.get_mut(&games).unwrap().overrides = vec![Override {
+            role_id: space,
+            allow: Permissions::empty(),
+            deny: Permissions::MANAGE_CHANNELS,
+        }];
+        let category = actions(&entries(
+            &Target::Channel(inst.clone(), games),
+            &ConnStatus::Connected,
+            Some(&s),
+        ));
+        assert!(!category.contains(&Action::EditChannel), "{category:?}");
+        assert!(!category.contains(&Action::DeleteChannel), "{category:?}");
+        assert!(
+            category.contains(&Action::CreateChannel),
+            "creating is space-wide: {category:?}"
+        );
+        let general = actions(&entries(
+            &Target::Channel(inst.clone(), Id(11)),
+            &ConnStatus::Connected,
+            Some(&s),
+        ));
+        assert!(general.contains(&Action::EditChannel), "{general:?}");
+
+        let mine = actions(&entries(
+            &Target::Member(inst, Some(space), me),
+            &ConnStatus::Connected,
+            Some(&s),
+        ));
+        assert!(
+            mine.contains(&Action::ChangeNickname),
+            "Manage nicknames covers my own: {mine:?}"
         );
     }
 

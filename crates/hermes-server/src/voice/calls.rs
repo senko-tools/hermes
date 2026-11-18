@@ -28,27 +28,49 @@ pub enum After {
     },
 }
 
-/// Runs until the sender ([`super::Voice`]) is dropped.
-pub async fn task(state: Arc<AppState>, mut rx: mpsc::UnboundedReceiver<After>) {
-    while let Some(after) = rx.recv().await {
-        let (channel_id, author_id, content) = match after {
-            After::CallStarted {
-                channel_id,
-                user_id,
-            } => (
-                channel_id,
-                user_id,
-                format!("{} started a call", display_name(&state, user_id)),
-            ),
-            After::CallEnded {
-                channel_id,
-                user_id,
-                started_at,
-            } => (channel_id, user_id, call_ended(now_ms() - started_at)),
+/// Runs until the sender ([`super::Voice`]) is dropped, or until `stop` completes; then it
+/// still posts what is already queued (the server queues every "Call ended" before stopping,
+/// see [`super::Voice::close_all`]) and returns.
+pub async fn task(
+    state: Arc<AppState>,
+    mut rx: mpsc::UnboundedReceiver<After>,
+    stop: impl Future<Output = ()>,
+) {
+    tokio::pin!(stop);
+    loop {
+        let after = tokio::select! {
+            biased;
+            after = rx.recv() => match after {
+                Some(after) => after,
+                None => return,
+            },
+            () = &mut stop => break,
         };
-        if let Err(err) = post_system_message(&state, channel_id, author_id, content).await {
-            tracing::error!("could not post a call message: {err}");
-        }
+        handle(&state, after).await;
+    }
+    while let Ok(after) = rx.try_recv() {
+        handle(&state, after).await;
+    }
+}
+
+async fn handle(state: &AppState, after: After) {
+    let (channel_id, author_id, content) = match after {
+        After::CallStarted {
+            channel_id,
+            user_id,
+        } => (
+            channel_id,
+            user_id,
+            format!("{} started a call", display_name(state, user_id)),
+        ),
+        After::CallEnded {
+            channel_id,
+            user_id,
+            started_at,
+        } => (channel_id, user_id, call_ended(now_ms() - started_at)),
+    };
+    if let Err(err) = post_system_message(state, channel_id, author_id, content).await {
+        tracing::error!("could not post a call message: {err}");
     }
 }
 

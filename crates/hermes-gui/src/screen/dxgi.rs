@@ -91,6 +91,8 @@ impl Duplicator {
     /// Duplicates the screen whose system name (`\\.\DISPLAY1`) is `name`.
     pub fn open(name: &str) -> Result<Duplicator, String> {
         let failed = |what: &str, err: windows::core::Error| format!("{what}: {err}");
+        // SAFETY: COM calls on live DXGI objects with out-pointers that live through each call;
+        // `DeviceName` is a fixed array, read up to its NUL.
         unsafe {
             let factory: IDXGIFactory1 =
                 CreateDXGIFactory1().map_err(|e| failed("DXGI factory", e))?;
@@ -176,6 +178,8 @@ impl Duplicator {
         let Some(texture) = self.acquire(timeout_ms, Target::Staging)? else {
             return Ok(None);
         };
+        // SAFETY: `texture` is the staging texture `acquire` just filled, on this duplicator's
+        // device.
         unsafe { self.read(&texture.texture, texture.width, texture.height) }.map(Some)
     }
 
@@ -190,6 +194,8 @@ impl Duplicator {
     fn acquire(&mut self, timeout_ms: u32, target: Target) -> Result<Option<GpuShot>, Error> {
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
+        // SAFETY: `info` and `resource` are locals living through AcquireNextFrame. The frame is
+        // released whatever the copy did, before the next acquire, as Desktop Duplication requires.
         let (desktop, pointer) = unsafe {
             if let Err(err) =
                 self.duplication
@@ -215,6 +221,7 @@ impl Duplicator {
         let Some((clean, width, height)) = self.clean.clone() else {
             return Ok(None);
         };
+        // SAFETY: copies between this device's own textures, on its own context.
         unsafe {
             let composed = self.texture(Slot::Composed, width, height)?;
             self.context.CopyResource(&composed, &clean);
@@ -284,6 +291,8 @@ impl Duplicator {
             let mut buffer = vec![0u8; size as usize];
             let mut required = 0;
             let mut shape = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+            // SAFETY: `buffer` is `size` bytes long, the length passed, so the shape written stays
+            // inside it.
             let read = unsafe {
                 self.duplication.GetFramePointerShape(
                     size,
@@ -362,6 +371,7 @@ impl Duplicator {
             MiscFlags: 0,
         };
         let mut texture = None;
+        // SAFETY: `desc` and `texture` are locals living through the call.
         unsafe {
             self.device
                 .CreateTexture2D(&desc, None, Some(&mut texture))?;
@@ -380,6 +390,8 @@ impl Duplicator {
     ) -> Result<Frame, Error> {
         let row = width as usize * 4;
         let mut pixels = vec![0u8; row * height as usize];
+        // SAFETY: the mapped staging texture has `height` rows `RowPitch` apart, each at least
+        // `row` (`width * 4`) bytes; they are copied before `Unmap`.
         unsafe {
             let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
             self.context
@@ -424,6 +436,8 @@ fn create_device(
 ) -> windows::core::Result<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device = None;
     let mut context = None;
+    // SAFETY: the out-pointers are locals living through the call; the created device and context
+    // come back owned.
     unsafe {
         D3D11CreateDevice(
             adapter,

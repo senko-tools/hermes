@@ -111,7 +111,20 @@ impl Account {
     }
 }
 
+impl AddInstance {
+    /// Which dialog this is: every opening (and Back) makes new fields, so an answer to an
+    /// earlier one is recognised and dropped.
+    fn token(&self) -> gpui_kit::EntityId {
+        self.address.entity_id()
+    }
+}
+
 impl Shell {
+    /// The add-instance dialog, if it is still the one `token` was taken from.
+    fn add_instance_for(&mut self, token: gpui_kit::EntityId) -> Option<&mut AddInstance> {
+        self.add_instance.as_mut().filter(|d| d.token() == token)
+    }
+
     /// Starts the add-instance flow with an invite link or address (command line, a forwarded
     /// `hermes://` link) and goes on with it.
     pub fn open_link(&mut self, link: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -197,9 +210,10 @@ impl Shell {
         }
         dialog.busy = true;
         dialog.error = None;
+        let token = dialog.token();
         let core = self.core.clone();
-        self.run(cx, probe(core, input), |this, result, window, cx| {
-            let Some(dialog) = &mut this.add_instance else {
+        self.run(cx, probe(core, input), move |this, result, window, cx| {
+            let Some(dialog) = this.add_instance_for(token) else {
                 return;
             };
             dialog.busy = false;
@@ -281,11 +295,12 @@ impl Shell {
         if let Some(code) = invite.clone() {
             let core = self.core.clone();
             let host = probe.host.clone();
-            self.run(cx, preview(core, host, code), |this, invite, _, _| {
+            let token = dialog.token();
+            self.run(cx, preview(core, host, code), move |this, invite, _, _| {
                 if let Some(AddInstance {
                     step: Step::Account(account),
                     ..
-                }) = &mut this.add_instance
+                }) = this.add_instance_for(token)
                 {
                     account.preview = invite;
                 }
@@ -316,32 +331,42 @@ impl Shell {
         let retry = account.clone();
         dialog.busy = true;
         dialog.error = None;
+        let token = dialog.token();
         let core = self.core.clone();
         self.run(
             cx,
             submit(core, account),
             move |this, result, window, cx| {
-                let Some(dialog) = &mut this.add_instance else {
-                    return;
-                };
-                dialog.busy = false;
+                let current = this.add_instance_for(token).is_some();
                 match result {
                     Ok(inst) => {
-                        this.close_later("add-instance", |s| s.add_instance = None, cx);
+                        // Signed in even if the dialog went Back meanwhile: what is left of it is
+                        // done too, unless it is busy with something else.
+                        if current || this.add_instance.as_ref().is_some_and(|d| !d.busy) {
+                            this.close_later("add-instance", |s| s.add_instance = None, cx);
+                        }
                         this.info(format!("Signed in to {inst}"), cx);
                     }
+                    // Only for the dialog that asked: one left with Back dropped this sign-in.
                     Err(err) if err == NEEDS_CODE => {
-                        this.close_later("add-instance", |s| s.add_instance = None, cx);
-                        this.open_form_login_code(
-                            retry.host.clone(),
-                            retry.username.trim().to_owned(),
-                            retry.password.clone(),
-                            retry.invite.clone(),
-                            window,
-                            cx,
-                        );
+                        if current {
+                            this.close_later("add-instance", |s| s.add_instance = None, cx);
+                            this.open_form_login_code(
+                                retry.host.clone(),
+                                retry.username.trim().to_owned(),
+                                retry.password.clone(),
+                                retry.invite.clone(),
+                                window,
+                                cx,
+                            );
+                        }
                     }
-                    Err(err) => dialog.error = Some(err),
+                    Err(err) => {
+                        if let Some(dialog) = this.add_instance_for(token) {
+                            dialog.busy = false;
+                            dialog.error = Some(err);
+                        }
+                    }
                 }
             },
         );

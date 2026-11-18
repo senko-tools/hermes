@@ -79,6 +79,8 @@ pub enum Purpose {
         inst: InstanceId,
         space: Id,
         parent: Option<Id>,
+        /// The roles of the "Allow …" checkboxes, in their order, as the form listed them.
+        roles: Vec<Id>,
     },
     CreateCategory {
         inst: InstanceId,
@@ -87,6 +89,10 @@ pub enum Purpose {
     EditChannel {
         inst: InstanceId,
         channel: Id,
+        /// The categories of the "Category" choice after "None", in their order, and the one
+        /// the channel was in when the form opened.
+        categories: Vec<Id>,
+        parent: Option<Id>,
     },
     Ban {
         inst: InstanceId,
@@ -149,7 +155,8 @@ pub enum Field {
         label: String,
         hint: String,
         options: Vec<String>,
-        selected: String,
+        /// An index into `options` (two options may read the same, like two categories).
+        selected: usize,
     },
     Check {
         label: String,
@@ -212,8 +219,18 @@ impl Form {
     /// The selected option of choice field `i`.
     fn selected(&self, i: usize) -> &str {
         match self.fields.get(i) {
-            Some(Field::Choice { selected, .. }) => selected,
+            Some(Field::Choice {
+                options, selected, ..
+            }) => options.get(*selected).map_or("", String::as_str),
             _ => "",
+        }
+    }
+
+    /// Which option of choice field `i` is selected.
+    fn selected_index(&self, i: usize) -> Option<usize> {
+        match self.fields.get(i) {
+            Some(Field::Choice { selected, .. }) => Some(*selected),
+            _ => None,
         }
     }
 
@@ -295,12 +312,17 @@ impl Fields<'_, '_> {
         self
     }
 
-    fn choice(mut self, label: &str, hint: &str, options: &[&str], selected: &str) -> Self {
+    fn choice(self, label: &str, hint: &str, options: &[&str], selected: &str) -> Self {
+        let index = options.iter().position(|o| *o == selected).unwrap_or(0);
+        self.choice_at(label, hint, options, index)
+    }
+
+    fn choice_at(mut self, label: &str, hint: &str, options: &[&str], selected: usize) -> Self {
         self.form.fields.push(Field::Choice {
             label: label.to_owned(),
             hint: hint.to_owned(),
             options: options.iter().map(|o| (*o).to_owned()).collect(),
-            selected: selected.to_owned(),
+            selected,
         });
         self
     }
@@ -361,7 +383,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let roles: Vec<String> = {
+        let roles: Vec<(Id, String)> = {
             let store = self.core.store();
             store
                 .instance(&inst)
@@ -370,7 +392,7 @@ impl Shell {
                     st.roles
                         .iter()
                         .filter(|r| !r.is_everyone())
-                        .map(|r| r.name.clone())
+                        .map(|r| (r.id, r.name.clone()))
                         .collect()
                 })
                 .unwrap_or_default()
@@ -380,6 +402,7 @@ impl Shell {
                 inst,
                 space,
                 parent,
+                roles: roles.iter().map(|(id, _)| *id).collect(),
             },
             "Create a channel",
             "Create",
@@ -397,7 +420,7 @@ impl Shell {
                 "Only the roles you tick below (and administrators) can see it.",
                 false,
             );
-        for role in roles {
+        for (_, role) in roles {
             fields = fields.check(&format!("Allow {role}"), "", false);
         }
         self.finish(fields);
@@ -455,10 +478,21 @@ impl Shell {
             ChannelKind::GroupDm => "Rename group",
             _ => "Edit channel",
         };
+        let categories = if matches!(c.kind, ChannelKind::Text | ChannelKind::Voice) {
+            self.categories_of(&inst, channel)
+        } else {
+            Vec::new()
+        };
         let form = Form::new(
             Purpose::EditChannel {
                 inst: inst.clone(),
                 channel,
+                categories: categories.iter().map(|(id, _)| *id).collect(),
+                // As the choice shows it: a category I cannot see shows as "None", and leaving
+                // that as it is must not take the channel out of it.
+                parent: c
+                    .parent_id
+                    .filter(|p| categories.iter().any(|(id, _)| id == p)),
             },
             title,
             "Save",
@@ -499,14 +533,14 @@ impl Shell {
                 );
         }
         if matches!(c.kind, ChannelKind::Text | ChannelKind::Voice) {
-            let categories = self.categories_of(&inst, channel);
+            // Option 0 is "None", then the categories.
             let current = categories
                 .iter()
-                .find(|(id, _)| Some(*id) == c.parent_id)
-                .map_or(NO_CATEGORY, |(_, name)| name.as_str());
+                .position(|(id, _)| Some(*id) == c.parent_id)
+                .map_or(0, |i| i + 1);
             let mut options = vec![NO_CATEGORY];
             options.extend(categories.iter().map(|(_, name)| name.as_str()));
-            fields = fields.choice("Category", "The group it shows under.", &options, current);
+            fields = fields.choice_at("Category", "The group it shows under.", &options, current);
         }
         self.finish(fields);
     }
@@ -968,6 +1002,7 @@ impl Shell {
                 inst,
                 space,
                 parent,
+                roles,
             } => {
                 let voice = form.selected(1) == "Voice";
                 let name = channel_name(&form.required(0, "a name", cx)?, voice);
@@ -977,23 +1012,9 @@ impl Shell {
                     ChannelKind::Text
                 };
                 let private = form.checked(2);
-                // The roles ticked for a private channel, by the order the form listed them.
-                let allowed: Vec<Id> = {
-                    let store = self.core.store();
-                    store
-                        .instance(&inst)
-                        .and_then(|s| s.spaces.get(&space))
-                        .map(|st| {
-                            st.roles
-                                .iter()
-                                .filter(|r| !r.is_everyone())
-                                .enumerate()
-                                .filter(|(i, _)| form.checked(3 + i))
-                                .map(|(_, r)| r.id)
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
+                // The roles ticked for a private channel: the checkboxes are the roles as the
+                // form listed them, which roles added, removed or moved since cannot shift.
+                let allowed = ticked_roles(form, &roles);
                 self.form_call(cx, async move {
                     let rest = core.rest(&inst)?;
                     let channel = rest
@@ -1038,7 +1059,12 @@ impl Shell {
                     ))
                 });
             }
-            Purpose::EditChannel { inst, channel } => {
+            Purpose::EditChannel {
+                inst,
+                channel,
+                categories,
+                parent,
+            } => {
                 let kind = {
                     let store = self.core.store();
                     store
@@ -1078,13 +1104,21 @@ impl Shell {
                 }
                 if matches!(kind, ChannelKind::Text | ChannelKind::Voice) {
                     let at = if kind == ChannelKind::Voice { 5 } else { 3 };
-                    let chosen = form.selected(at);
-                    req.parent_id = Some(
-                        self.categories_of(&inst, channel)
-                            .into_iter()
-                            .find(|(_, name)| *name == chosen)
-                            .map(|(id, _)| id),
-                    );
+                    // Sent only when it changed, so saving the topic does not move a channel
+                    // someone else moved meanwhile.
+                    let chosen = chosen_category(form.selected_index(at), &categories);
+                    if chosen != parent {
+                        let gone = chosen.is_some_and(|id| {
+                            !self
+                                .categories_of(&inst, channel)
+                                .iter()
+                                .any(|(c, _)| *c == id)
+                        });
+                        if gone {
+                            return Err("That category was deleted: pick another.".into());
+                        }
+                        req.parent_id = Some(chosen);
+                    }
                 }
                 self.form_call(cx, async move {
                     core.rest(&inst)?.update_channel(channel, &req).await?;
@@ -1441,8 +1475,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
             selected,
         } => {
             let chips = options.iter().enumerate().map(|(n, option)| {
-                let chosen = option == selected;
-                let value = option.clone();
+                let chosen = n == *selected;
                 crate::voice::chip(
                     SharedString::from(format!("form-{i}-{n}")),
                     option.clone(),
@@ -1452,7 +1485,7 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
                     if let Some(Field::Choice { selected, .. }) =
                         this.form.as_mut().and_then(|f| f.fields.get_mut(i))
                     {
-                        selected.clone_from(&value);
+                        *selected = n;
                     }
                     cx.notify();
                 }))
@@ -1481,6 +1514,24 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
             .children(hint_line(hint))
             .into_any_element(),
     }
+}
+
+/// The roles whose "Allow …" checkbox is ticked: checkbox `n` (field `3 + n`) is `roles[n]`.
+fn ticked_roles(form: &Form, roles: &[Id]) -> Vec<Id> {
+    roles
+        .iter()
+        .enumerate()
+        .filter(|(n, _)| form.checked(3 + n))
+        .map(|(_, id)| *id)
+        .collect()
+}
+
+/// The category picked in the edit form: option 0 is "None", option `n` is `categories[n - 1]`.
+fn chosen_category(selected: Option<usize>, categories: &[Id]) -> Option<Id> {
+    selected
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|n| categories.get(n))
+        .copied()
 }
 
 /// Text channel names are lowercase with dashes (`My Room` → `my-room`); voice channel names
@@ -1513,5 +1564,34 @@ mod tests {
         assert_eq!(channel_name("Game Night", true), "Game Night");
         assert_eq!(lookup(&SLOWMODE, "1 minute"), Some(60));
         assert_eq!(lookup(&SLOWMODE, "nope"), None);
+    }
+
+    #[test]
+    fn choices_and_checks_map_back_to_ids() {
+        let mut form = Form::new(Purpose::AddFriend, "t", "ok");
+        for n in 0..5 {
+            form.fields.push(Field::Check {
+                label: format!("{n}"),
+                hint: String::new(),
+                value: n == 3 || n == 4,
+            });
+        }
+        assert_eq!(ticked_roles(&form, &[Id(7), Id(8)]), [Id(7), Id(8)]);
+        assert_eq!(ticked_roles(&form, &[Id(7)]), [Id(7)], "only listed roles");
+        form.fields.push(Field::Choice {
+            label: String::new(),
+            hint: String::new(),
+            // Two categories may have the same name.
+            options: vec!["None".into(), "Games".into(), "Games".into()],
+            selected: 2,
+        });
+        let categories = [Id(20), Id(21)];
+        assert_eq!(form.selected(5), "Games");
+        assert_eq!(
+            chosen_category(form.selected_index(5), &categories),
+            Some(Id(21))
+        );
+        assert_eq!(chosen_category(Some(0), &categories), None, "None");
+        assert_eq!(chosen_category(Some(9), &categories), None);
     }
 }

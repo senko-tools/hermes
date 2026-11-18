@@ -1823,3 +1823,122 @@ Asked for by the developer.
   from the session existed, so this is the leading cause rather than a confirmed one.
 - **Send buffer:** `VIDEO_SEND_WINDOW` (two of the largest frames) replaces 16 MiB, which could hide seconds of a
   share from a slow connection instead of stepping its quality down.
+
+## 2026-11-18: Linux CI on Forgejo Actions
+
+- **What:** `.forgejo/workflows/ci.yml` runs the same checks as `.github/workflows/ci.yml` (`cargo fmt --check`,
+  clippy with `-D warnings`, `cargo test --workspace`) on Forgejo Actions (`runs-on: ubuntu-latest`), for pushes to
+  `main` and `dev`, pull requests and manual runs. PLAN.md section 19 names GitHub Actions only; the GitHub workflows
+  stay as they are for the Windows build and releases.
+- **Caching:** `Swatinem/rust-cache` with one fixed key, saved only by pushes to `main` and `dev` (pull requests
+  restore it but never write it); clippy and test share one job and one cache. Formatting is a separate job with no
+  cache. Apt downloads are not cached: the runner image is unknown and may not let a non-root step restore into
+  `/var/cache/apt`.
+- **Why:** the developer asked for CI on the Forgejo instance with proper build caching. The runner image behind
+  `ubuntu-latest` is not known (often Debian with only node.js), so the jobs install their own compilers and
+  libraries, and actions are named by full URL.
+
+## 2026-11-18: Forgejo release workflow for the Linux artifacts
+
+Requested by the developer (Forgejo Actions on `ubuntu-latest` with build caching). PLAN.md
+section 18.1 names `.github/workflows/release.yml` and the GitHub release; this adds a second,
+Linux-only release on the Forgejo instance (git.8w.fi).
+
+- **What:** `.forgejo/workflows/release.yml` builds the same Linux artifacts as the GitHub
+  workflow (server for x86_64 and aarch64 musl, the Linux TUI, install files, SHA256SUMS) and,
+  on a `v*` tag, publishes a Forgejo release (pre-release for tags with a `-`) and the image
+  `git.8w.fi/yesbad/hermes-server` (amd64 + arm64, from Dockerfile.release). Dry runs on `dev`
+  and by hand, as on GitHub. Each Rust job has its own rust-cache key.
+- **Not here:** Windows builds stay on GitHub, which remains the clients' update source; the
+  Forgejo SHA256SUMS only covers the Linux files.
+- **Runner:** the Linux TUI builds in `catthehacker/ubuntu:act-22.04-<date>` (glibc 2.35 like
+  GitHub's `ubuntu-22.04`, with node for the JS actions). The image job drives docker buildx
+  itself (installing the CLI and buildx if missing) and needs a Docker daemon in the job.
+- **Tokens:** the automatic token is scoped to the repository, so pushing the image needs the
+  repository secret `REGISTRY_TOKEN` (`write:package`); releases use the automatic token, or
+  `RELEASE_TOKEN` if set.
+- **Artifacts:** Forgejo's patched `forgejo/upload-artifact@v5` and `forgejo/download-artifact@v7`,
+  because the upstream v4+ actions refuse to run outside github.com.
+- **Images:** both Dockerfiles use `gcr.io/distroless/static-debian13` (was `-debian12`); the
+  source Dockerfile pins `rust:1.100-alpine3.24` and `alpine:3.24` and caches `cargo/git` too.
+- **Note:** once `.forgejo/workflows/` exists, Forgejo no longer reads `.github/workflows/`, so
+  the Forgejo instance runs only the workflows in `.forgejo/workflows/`.
+- **Why:** the developer wants releases on the self-hosted Forgejo instance as well.
+
+## 2026-11-18: Dependency refresh
+
+- **What (PLAN.md section 6 pins):** patch bumps `arc-swap` 1.9.3 → 1.9.5, `bytes` 1.12.1 → 1.12.2,
+  `rand` 0.10.3 → 0.10.4, `zeroize` 1.9.1 → 1.9.2, `clap` 4.6.7 → 4.6.8, `xcap` 0.9.8 → 0.9.10,
+  `openh264` 0.9.9 → 0.9.10, `notify` 8.2.1 → 8.2.2; minor bump `rubato` 5.0.1 → 5.1.0; small breaking
+  bumps `rfd` 0.17.2 → 0.18.0 and `global-hotkey` 0.9.0 → 0.10.0 (neither needed a code change: rfd's
+  Windows dialog only gained an opt-in "show hidden files", global-hotkey's Windows backend did not
+  change and only error variants Hermes never matches were removed; built and tested on Linux, the
+  Windows side is left to Windows CI and the developer's PC). `fuzz/` now pins
+  `libfuzzer-sys =0.4.13` instead of `0.4`, like everything else. `cargo update` refreshed the
+  transitive dependencies within their semver ranges.
+- **Lockfile note:** xcap 0.9.10's Linux backend moved to `ashpd` 0.14 / zbus 6, so those appear in
+  `Cargo.lock`. They are never built: Hermes uses xcap on Windows only. If screen capture ever comes
+  to Linux, that brings a second zbus stack next to gpui's zbus 5.
+- **Not taken:** `notify-rust` 4.19.0 (its only change outside macOS moves it to zbus 6, while gpui,
+  keyring and accesskit stay on zbus 5, so Linux builds would compile two zbus stacks for nothing);
+  `toml` / `toml_edit` (figment 0.10.19 still needs toml 0.8).
+- **Why:** the developer asked for the recommended updates, allowing patch and semver-compatible
+  minor bumps and a breaking bump only where it is small and contained.
+
+## 2026-11-18: gpui-kit 0.10
+
+- **What:** `gpui-kit` 0.9.0 → 0.10.0. The kit pins GPUI as `gpui-pre =0.3.12` (was 0.3.11), so
+  `hermes-gui`'s `gpui-pre` test dev-dependency moves to exactly `=0.3.12` too (not the newer 0.3.13,
+  which the kit does not use). No code change was needed. gpui-pre's Windows changes are internal to
+  its DirectWrite text and DirectX renderer.
+- **Why:** part of the 2026-11-18 dependency refresh. It is a separate change so it can be reverted
+  on its own if the new kit misbehaves on Windows.
+
+## 2026-11-18: Zoom in with the + key
+
+- **What:** `zoom_in` also answers to `Ctrl++` and `Ctrl+Shift+=` while `[keys]` leaves it at its default `Ctrl+=`
+  (setting `zoom_in` replaces all three). The Keybinds tab still shows `Ctrl+=`.
+- **Why:** keybinds match the key gpui reports, what the key types on the layout without Shift. On Finnish, Swedish,
+  German and similar layouts `=` needs Shift and `+` is a key of its own, so `Ctrl+=` could not be pressed and zooming
+  in only worked from the settings. `Ctrl+Shift+=` is what a US keyboard reports for "Ctrl and +". (The US-position
+  matching of 2026-10-31 belonged to the iced client; the gpui keystroke has no physical key to match on.)
+
+## 2026-11-18: Bounded voice control queue
+
+- **What:** the server keeps at most 1024 control messages (`CONTROL_QUEUE`) waiting for one voice
+  connection. When a client lets the queue fill (it stopped reading its control stream), the server closes that
+  QUIC connection with the reason `control queue full`, the way a gateway connection with a full queue is closed with
+  4009. The client reconnects as after any connection loss (PLAN.md 12.2) and gets a fresh `ready`.
+- **Why:** the queue was unbounded, and other members can make the server send messages to a connection at any rate
+  (share start/stop, voice key relays), so a client that never reads could make the server's memory grow without
+  limit. Dropping single messages instead would leave the client with a wrong picture of the room.
+
+## 2026-11-18: The markup parser has a work limit
+
+- **What:** `hermes-proto::markup` stops trying new formatting delimiters in an inline run once it has taken
+  64 steps per byte (plus 4096; a step is scanning a byte or copying a byte of an already parsed span). Markers after
+  that point mostly stay text, as unclosed ones always do, and a `***` there closes an open italic instead of starting
+  bold; the result is still the same on every client. Ordinary messages, nested formatting included, take one or two
+  steps per byte, so they parse exactly as before.
+- **Why:** a message of a few thousand interleaved, unclosed markers (`*a **a ~~a ||a __a _a ` repeated) made the
+  parser quadratic: about a second per parse in a debug build, and every client parses every message it shows. The
+  other quadratic cases found at the same time (long `*`/`_` runs, `[` and `<` without a closing `]`/`>`, many code
+  fences) were fixed without changing any output.
+
+## 2026-11-18: Database indexes and fewer queries per request
+
+- **`0019_indexes.sql`** adds indexes that section 7.3 does not list, for lookups and foreign keys
+  that no primary key, UNIQUE constraint or index served (each was a full table scan):
+  `attachments(created_at) WHERE message_id IS NULL` (the sweep of expired unattached uploads),
+  `message_mentions(kind, target_id, message_id)` (mentions inbox, in the order it pages),
+  `channels(parent_id)`, `roles(space_id)`, `read_states(channel_id)`, `member_roles(role_id)` and
+  `channel_overrides(role_id)`. Sessions, channels by space, avatars, icons and a message's
+  attachments are already indexed by `0014_retries_and_indexes.sql`. Columns that only point
+  at `users(id)` stay unindexed, since users are disabled and never deleted.
+- **Mentions inbox:** `GET /users/@me/mentions` now starts from the matching `message_mentions`
+  rows instead of checking every message of every readable channel; results, order and paging
+  are unchanged (`tests/mentions_inbox.rs` compares it with the old query).
+- **One statement instead of one per user:** mention counts of a new message, the devices in
+  `POST /users/devices`, and revoking the devices of several signed-out sessions.
+- **Why:** these grew with the database; deleting a channel, role or space, and the inbox, got
+  slower with every message.

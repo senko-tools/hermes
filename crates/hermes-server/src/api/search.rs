@@ -95,14 +95,20 @@ pub async fn search(
     }
     .limit();
     let db = &state.db.read;
-    let rows = db::messages::search(db, fts.as_deref(), &channels, filter, limit).await?;
+    let fts = fts.as_deref();
     // Counting every match costs as much as the search: once, for the first page. A later page
-    // (`before` is the last one shown) needs no count.
-    let first_page = q.before.is_none();
-    let total = if first_page {
-        db::messages::search_count(db, fts.as_deref(), &channels, filter).await?
+    // (`before` is the last one shown) needs no count. The page and the total are independent
+    // reads, so the first page runs them on two pooled connections at once.
+    let (rows, total) = if q.before.is_none() {
+        tokio::try_join!(
+            db::messages::search(db, fts, &channels, filter, limit),
+            db::messages::search_count(db, fts, &channels, filter),
+        )?
     } else {
-        0
+        (
+            db::messages::search(db, fts, &channels, filter, limit).await?,
+            0,
+        )
     };
     Ok(Json(SearchResponse {
         messages: messages::to_wire(&state, rows, auth.user_id).await?,

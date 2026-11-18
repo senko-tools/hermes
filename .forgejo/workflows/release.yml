@@ -1,0 +1,329 @@
+name: release
+
+# The Linux half of .github/workflows/release.yml, for the Forgejo repository
+# git.8w.fi/yesBad/hermes. On a `v*` tag it publishes one Forgejo release (a pre-release for tags
+# with a `-`, e.g. v0.1.0-alpha.6) with:
+#   - hermes-server for x86_64 and aarch64 Linux (static musl; aarch64 cross-compiled with zig)
+#   - hermes-tui for Linux (built in an Ubuntu 22.04 container, so it runs on older glibc versions)
+#   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
+# and pushes the Docker image git.8w.fi/yesbad/hermes-server (amd64 + arm64).
+#
+# Differences from the GitHub workflow:
+#   - No Windows builds: the Windows server, the installer and the portable zip are built by GitHub
+#     only, and the GitHub release stays the clients' update source. SHA256SUMS here therefore only
+#     covers the files of this release.
+#   - The image goes to the Forgejo registry, pushed with the repository secret REGISTRY_TOKEN (the
+#     automatic token is scoped to the repository and cannot write packages). The Docker job drives
+#     docker buildx itself and needs a Docker daemon (see the job).
+#   - Artifacts use Forgejo's patched upload/download-artifact forks: the upstream v4+ actions
+#     refuse to run on any server that is not github.com.
+#   - Release notes are not generated; they point to the GitHub release for the Windows files.
+#
+# Runner: `ubuntu-latest` must be a Docker runner label (not a host runner, which would ignore the
+# TUI job's container) whose image is Debian or Ubuntu with node (e.g. catthehacker/ubuntu:act-latest
+# or node:24-trixie); steps run as root or use sudo.
+#
+# Anything but a tag is a dry run: everything is built and uploaded as workflow artifacts, but no
+# release is created and no image is pushed. A dry run starts when this workflow or the release
+# Dockerfile changes on `dev`, or by hand (Actions → release → Run workflow).
+on:
+  push:
+    tags: ["v*"]
+    branches: [dev]
+    paths:
+      - .forgejo/workflows/release.yml
+      - deploy/docker/Dockerfile.release
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+  REGISTRY: git.8w.fi
+  # Registry paths are lowercase (the owner is yesBad).
+  IMAGE: git.8w.fi/yesbad/hermes-server
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        env:
+          REF_TYPE: ${{ forgejo.ref_type }}
+          REF_NAME: ${{ forgejo.ref_name }}
+          SHA: ${{ forgejo.sha }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "version=${REF_NAME#v}" >> "$FORGEJO_OUTPUT"
+          else
+            echo "version=dev-${SHA::7}" >> "$FORGEJO_OUTPUT"
+          fi
+
+  server-linux:
+    name: server ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build tools
+        run: |
+          SUDO=$(command -v sudo || true)
+          pkgs=(build-essential file)
+          if [ "${{ matrix.target }}" = x86_64-unknown-linux-musl ]; then
+            pkgs+=(musl-tools)
+          else
+            pkgs+=(python3-venv)
+          fi
+          $SUDO apt-get update -qq
+          $SUDO apt-get install -y -qq "${pkgs[@]}"
+      - name: Build (x86_64)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked -p hermes-server --target ${{ matrix.target }}
+      - name: Build (aarch64, cross-compiled with zig)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          # A venv: newer images refuse a system-wide `pip install` (PEP 668). The ziglang wheel
+          # comes with cargo-zigbuild, which runs it through the venv's python3.
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install -q cargo-zigbuild==0.24.1
+          export PATH="$RUNNER_TEMP/zig/bin:$PATH"
+          cargo zigbuild --release --locked -p hermes-server --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir dist
+          bin="target/${{ matrix.target }}/release/hermes-server"
+          file "$bin"
+          file "$bin" | grep -Eq "static(ally|-pie) linked"
+          tar -czf "dist/hermes-server-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" hermes-server
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v5
+        with:
+          name: server-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  tui-linux:
+    name: tui x86_64-unknown-linux-gnu
+    needs: version
+    runs-on: ubuntu-latest
+    # Ubuntu 22.04 (glibc 2.35), as on GitHub, so the binary runs on older systems too. A
+    # catthehacker act image because the JS actions (checkout, rust-cache, upload-artifact) need
+    # node inside the job container; the dated tag keeps the build reproducible.
+    container:
+      image: catthehacker/ubuntu:act-22.04-20261115
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          key: tui-linux
+      - name: Build tools and ALSA headers
+        run: |
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update -qq
+          # cmake builds libopus (opusic-sys).
+          $SUDO apt-get install -y -qq build-essential cmake pkg-config libasound2-dev
+      - name: Build
+        run: cargo build --release --locked -p hermes-tui
+      - name: Package
+        run: |
+          mkdir -p dist stage
+          cp target/release/hermes-tui LICENSE-GPL-3.0 stage/
+          tar -czf "dist/hermes-tui-$VERSION-x86_64-unknown-linux-gnu.tar.gz" -C stage .
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v5
+        with:
+          name: tui-linux
+          path: dist/
+          if-no-files-found: error
+
+  docker:
+    name: docker image
+    needs: [version, server-linux]
+    # Needs a Docker daemon: the runner must hand the job container a Docker socket (forgejo-runner
+    # config `container.docker_host: automount`). The docker CLI and buildx are installed here when
+    # the image lacks them. A dry run builds the image too (it checks Dockerfile.release); without
+    # Docker only this job fails there.
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      DOCKER_VERSION: 29.10.0
+      BUILDX_VERSION: v0.39.0
+      BUILDER: hermes-release-${{ forgejo.run_id }}
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v7
+        with:
+          pattern: server-*
+          path: artifacts
+          merge-multiple: true
+      - name: Build context
+        # The image only copies the binaries built above: nothing is compiled under emulation.
+        run: |
+          mkdir -p ctx/bin/amd64 ctx/bin/arm64 ctx/data
+          tar -xzf artifacts/hermes-server-x86_64-unknown-linux-musl.tar.gz -C ctx/bin/amd64
+          tar -xzf artifacts/hermes-server-aarch64-unknown-linux-musl.tar.gz -C ctx/bin/arm64
+          cp deploy/docker/Dockerfile.release ctx/Dockerfile
+      - name: Docker CLI and buildx
+        env:
+          # download.docker.com publishes no checksums for the static CLI, so they are pinned here.
+          DOCKER_SHA256_x86_64: 7c1ebadc65c716cdc6d35fc78759ed0e4317debf43c21dd12f066f2006999def
+          DOCKER_SHA256_aarch64: 6e5159e8b5615e0c0c2954a2a1a2a12bc65f5d9b603595dba24a10cb367408cd
+        run: |
+          tools="$RUNNER_TEMP/docker-tools"
+          plugins="${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins"
+          mkdir -p "$tools" "$plugins"
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64) goarch=amd64; sum=$DOCKER_SHA256_x86_64 ;;
+            aarch64) goarch=arm64; sum=$DOCKER_SHA256_aarch64 ;;
+            *) echo "::error::unsupported runner architecture $arch"; exit 1 ;;
+          esac
+          if ! command -v docker >/dev/null; then
+            curl -fsSL -o "$tools/docker.tgz" \
+              "https://download.docker.com/linux/static/stable/$arch/docker-$DOCKER_VERSION.tgz"
+            echo "$sum  $tools/docker.tgz" | sha256sum -c -
+            tar -xzf "$tools/docker.tgz" -C "$tools" docker/docker
+            echo "$tools/docker" >> "$FORGEJO_PATH"
+            export PATH="$tools/docker:$PATH"
+          fi
+          if ! docker buildx version >/dev/null 2>&1; then
+            name="buildx-$BUILDX_VERSION.linux-$goarch"
+            base="https://github.com/docker/buildx/releases/download/$BUILDX_VERSION"
+            (cd "$tools" && curl -fsSLO "$base/$name" && curl -fsSLO "$base/checksums.txt" \
+              && grep " \*\?$name\$" checksums.txt | sha256sum -c -)
+            install -m 755 "$tools/$name" "$plugins/docker-buildx"
+          fi
+          docker --version
+          docker buildx version
+          if ! docker info >/dev/null 2>&1; then
+            echo "::error::No Docker daemon reachable: give the runner's job containers a Docker socket"
+            exit 1
+          fi
+      - name: Tags
+        id: tags
+        run: |
+          tags="$IMAGE:$VERSION"
+          case "$VERSION" in
+            *-*) ;;
+            *) tags="$tags $IMAGE:latest" ;;
+          esac
+          echo "tags=$tags" >> "$FORGEJO_OUTPUT"
+      - name: Log in to the registry
+        if: forgejo.ref_type == 'tag'
+        env:
+          # A personal access token with the `write:package` scope, from an account that may write
+          # the owner's packages (vars.REGISTRY_USER, else the repository owner).
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          REGISTRY_USER: ${{ vars.REGISTRY_USER || forgejo.repository_owner }}
+        run: |
+          if [ -z "$REGISTRY_TOKEN" ]; then
+            echo "::error::The repository secret REGISTRY_TOKEN is missing"
+            exit 1
+          fi
+          printf '%s' "$REGISTRY_TOKEN" | docker login "$REGISTRY" --username "$REGISTRY_USER" --password-stdin
+      - name: Build (and push on tags)
+        env:
+          PUSH: ${{ forgejo.ref_type == 'tag' }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          SOURCE: ${{ forgejo.server_url }}/${{ forgejo.repository }}
+        run: |
+          docker buildx create --name "$BUILDER" --driver docker-container --bootstrap
+          # No provenance attestation: Forgejo's package page would list it as an extra
+          # "unknown/unknown" platform.
+          set -- --builder "$BUILDER" --platform linux/amd64,linux/arm64 --provenance=false \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.licenses=AGPL-3.0-or-later"
+          for tag in $TAGS; do
+            set -- "$@" --tag "$tag"
+          done
+          if [ "$PUSH" = true ]; then
+            set -- "$@" --push
+          else
+            set -- "$@" --output type=cacheonly
+          fi
+          docker buildx build "$@" ctx
+      - name: Clean up
+        if: always()
+        run: |
+          docker buildx rm --force "$BUILDER" >/dev/null 2>&1 || true
+          docker logout "$REGISTRY" >/dev/null 2>&1 || true
+
+  release:
+    needs: [server-linux, tui-linux, docker]
+    # A dry run still collects the release files when only the image failed (e.g. no Docker on the
+    # runner); a tag needs every job.
+    if: >-
+      always() && needs.server-linux.result == 'success' && needs.tui-linux.result == 'success'
+      && (needs.docker.result == 'success' || forgejo.ref_type != 'tag')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v7
+        with:
+          pattern: server-*
+          path: dist
+          merge-multiple: true
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v7
+        with:
+          name: tui-linux
+          path: dist
+      - name: Add the install files and checksums
+        working-directory: dist
+        run: |
+          cp ../deploy/systemd/hermes.service ../deploy/install.sh ../deploy/pterodactyl/egg-hermes.json .
+          # Only the files of this release: the Windows ones are on GitHub, with their own SHA256SUMS.
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload (dry run)
+        if: forgejo.ref_type != 'tag'
+        uses: https://code.forgejo.org/forgejo/upload-artifact@v5
+        with:
+          name: release-dry-run
+          path: dist/
+      - name: Release tools
+        if: forgejo.ref_type == 'tag'
+        run: |
+          SUDO=$(command -v sudo || true)
+          if ! command -v jq >/dev/null || ! command -v curl >/dev/null; then
+            $SUDO apt-get update -qq
+            $SUDO apt-get install -y -qq jq curl
+          fi
+      - name: Create release
+        if: forgejo.ref_type == 'tag'
+        # No major-version tag exists for this action, so it is pinned to a release.
+        uses: https://code.forgejo.org/actions/forgejo-release@v2.13.4
+        with:
+          direction: upload
+          url: ${{ forgejo.server_url }}
+          repo: ${{ forgejo.repository }}
+          tag: ${{ forgejo.ref_name }}
+          sha: ${{ forgejo.sha }}
+          # The automatic token may write releases; RELEASE_TOKEN (a token with `write:repository`)
+          # is only needed if the instance restricts it.
+          token: ${{ secrets.RELEASE_TOKEN || forgejo.token }}
+          # Re-running a release job that failed halfway replaces its incomplete release.
+          override: true
+          title: Hermes ${{ forgejo.ref_name }}
+          release-dir: dist
+          prerelease: ${{ contains(forgejo.ref_name, '-') }}
+          release-notes: |
+            Linux builds of Hermes ${{ forgejo.ref_name }}. The Windows server, installer and
+            portable client are on the GitHub release of the same tag.

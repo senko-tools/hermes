@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "UPDATE devices SET revoked_at = ?\n             WHERE session_id = ? AND revoked_at IS NULL RETURNING user_id",
+  "query": "UPDATE devices SET revoked_at = ?\n         WHERE session_id IN (SELECT value FROM json_each(?)) AND revoked_at IS NULL\n         RETURNING user_id",
   "describe": {
     "columns": [
       {
@@ -22,5 +22,5 @@
       false
     ]
   },
-  "hash": "52d9bb25ebcf858e6261df540c7f3f77777d2d8acc2248477dd091dea7587ee9"
+  "hash": "ce9d636a6aadf3d143d06ffac31dc13668735ec1af06914aab036b247a1150fb"
 }

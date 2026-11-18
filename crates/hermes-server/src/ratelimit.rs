@@ -204,10 +204,13 @@ impl KeyExtractor for ClientIp {
 macro_rules! governor_layer {
     ($extractor:expr, $burst:expr, $period:expr) => {{
         let burst: u32 = $burst.max(1);
+        // At least 1 ns: more than a billion requests per second would round the refill period
+        // down to zero, which `finish` refuses.
+        let per_request = ($period / burst).max(Duration::from_nanos(1));
         let config = Arc::new(
             GovernorConfigBuilder::default()
                 .key_extractor($extractor)
-                .period($period / burst)
+                .period(per_request)
                 .burst_size(burst)
                 .finish()
                 .expect("burst and period are not zero"),
@@ -325,6 +328,13 @@ mod tests {
         limiter.check_at(&"a", 1, period, now).unwrap();
         assert!(limiter.check_at(&"a", 1, period, now).is_err());
         limiter.check_at(&"b", 1, period, now).unwrap();
+    }
+
+    #[tokio::test]
+    async fn huge_limits_do_not_panic() {
+        // 1 s / u32::MAX rounds down to 0 ns.
+        let _ = limit_rest(Router::<()>::new(), &[], u32::MAX);
+        let _ = limit_login::<()>(axum::routing::get(|| async {}), &[], u32::MAX);
     }
 
     #[test]

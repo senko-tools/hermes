@@ -31,6 +31,7 @@ pub mod users;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use hermes_proto::id::Id;
 use sqlx::migrate::Migrator;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
@@ -172,6 +173,12 @@ fn connect_options(path: &PathBuf) -> SqliteConnectOptions {
         .pragma("journal_size_limit", JOURNAL_SIZE_LIMIT.to_string())
         // What is deleted is overwritten, not just marked free.
         .pragma("secure_delete", "ON")
+}
+
+/// The IDs as a JSON array for `json_each` (SQLite has no array parameters).
+fn id_list(ids: &[Id]) -> String {
+    serde_json::to_string(&ids.iter().map(|id| id.to_i64()).collect::<Vec<_>>())
+        .unwrap_or_else(|_| "[]".into())
 }
 
 /// Converts an `INTEGER` column to a narrower type, failing on out-of-range values.

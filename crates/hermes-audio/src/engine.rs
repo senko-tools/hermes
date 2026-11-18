@@ -378,7 +378,7 @@ impl Worker {
                 let volume = self.volumes.get(&participant).copied().unwrap_or(1.0);
                 let muted = self.local_mutes.get(&participant).copied().unwrap_or(false);
                 self.with_playback(|p| {
-                    p.push(participant, &datagram, now, volume);
+                    p.push(participant, datagram, now, volume);
                     if muted {
                         p.set_muted(participant, true);
                     }
@@ -387,7 +387,7 @@ impl Worker {
             Command::ReceiveShare(participant, datagram) => {
                 let now = self.now_ms();
                 let volume = self.share_volumes.get(&participant).copied().unwrap_or(1.0);
-                self.with_playback(|p| p.push_share(participant, &datagram, now, volume));
+                self.with_playback(|p| p.push_share(participant, datagram, now, volume));
             }
             Command::ShareVolume(participant, volume) => {
                 self.share_volumes.insert(participant, volume);
@@ -491,14 +491,19 @@ impl Worker {
         events: &dyn Fn(AudioEvent),
         transmitting: bool,
         mic_test: bool,
-        datagram: &[u8],
+        datagram: Vec<u8>,
         loopback: &mut Vec<Vec<u8>>,
     ) {
-        if transmitting {
-            events(AudioEvent::Packet(datagram.to_vec()));
-        }
         if mic_test {
-            loopback.push(datagram.to_vec());
+            loopback.push(if transmitting {
+                datagram.clone()
+            } else {
+                datagram
+            });
+            return;
+        }
+        if transmitting {
+            events(AudioEvent::Packet(datagram));
         }
     }
 
@@ -522,7 +527,7 @@ impl Worker {
             });
         }
         for datagram in loopback {
-            playback.push(MIC_TEST, &datagram, now, 1.0);
+            playback.push(MIC_TEST, datagram, now, 1.0);
         }
         io.write(playback.render_48k());
         self.report(now);
@@ -545,11 +550,13 @@ impl Worker {
         if let Some((device, capture)) = input {
             let channels = device.stream.channels;
             loop {
-                let n = device.ring.pop_slice(input_buf);
+                // Whole interleaved frames only, so the channels stay aligned between pops.
+                let n = device.ring.occupied_len().min(input_buf.len());
                 let n = n - n % channels;
                 if n == 0 {
                     break;
                 }
+                let n = device.ring.pop_slice(&mut input_buf[..n]);
                 capture.push(&input_buf[..n], |d| {
                     Self::captured(&*self.events, transmitting, mic_test, d, &mut loopback);
                 });
@@ -557,7 +564,7 @@ impl Worker {
         }
         if let Some((device, playback)) = output {
             for datagram in loopback {
-                playback.push(MIC_TEST, &datagram, now, 1.0);
+                playback.push(MIC_TEST, datagram, now, 1.0);
             }
             // Stereo samples: two per frame.
             let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize * 2;

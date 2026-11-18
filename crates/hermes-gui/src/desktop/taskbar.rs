@@ -2,6 +2,7 @@
 //! (Windows' overlay icon). Elsewhere there is no such thing, and this does nothing.
 
 /// The number on the dot: up to 9, then "9+".
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows has a taskbar overlay
 pub fn label(count: u32) -> String {
     if count > 9 {
         "9+".to_owned()
@@ -11,6 +12,7 @@ pub fn label(count: u32) -> String {
 }
 
 /// 3 x 5 pixel glyphs, one row per entry, the top bit on the left.
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows has a taskbar overlay
 fn glyph(c: char) -> [u8; 5] {
     match c {
         '0' => [0b111, 0b101, 0b101, 0b101, 0b111],
@@ -30,6 +32,7 @@ fn glyph(c: char) -> [u8; 5] {
 
 /// A `size` x `size` BGRA picture (top row first, as Windows wants it): a soft red dot with
 /// `text` in white, centred.
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows has a taskbar overlay
 pub fn picture(size: u32, text: &str) -> Vec<u8> {
     let s = size as i32;
     let mut out = vec![0u8; (size * size * 4) as usize];

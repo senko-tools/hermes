@@ -1573,9 +1573,8 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
-        for image in self.images.retired.drain(..) {
-            let _ = window.drop_image(image);
-        }
+        self.images
+            .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
         self.scale = window.scale_factor();
         self.viewport = window.viewport_size();
         // This frame paints them again.
@@ -1600,7 +1599,6 @@ impl Render for Shell {
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
-
         let rail = self.render_rail(cx).into_any_element();
         let sidebar = self.render_sidebar(cx);
         self.note_page_change(cx);

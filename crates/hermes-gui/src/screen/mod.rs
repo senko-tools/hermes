@@ -47,6 +47,13 @@ const KEYFRAME_REQUEST_GAP: std::time::Duration = std::time::Duration::from_mill
 /// How often the decoder's numbers are logged.
 const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A sharer's decoder (on Windows a Direct3D device and Media Foundation decoder of its own) is
+/// dropped after this long without a frame: they stopped sharing, or I stopped watching. A new
+/// one starts at their next keyframe. Well over the 5 s within which a sharer repeats even a still
+/// screen. (Checked every [`STATS_EVERY`] as frames come in, so the last decoders stay until
+/// somebody's share is watched again.)
+const DECODER_IDLE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The latest picture of a share I watch, ready to draw.
 pub struct Share {
     pub image: Arc<RenderImage>,
@@ -446,7 +453,8 @@ impl Shell {
 /// Decodes frames per sharer until the sink closes. A broken picture resets that sharer's
 /// decoder and asks them for a keyframe; pictures the window has no time for are dropped.
 fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>, latest: &Latest) {
-    let mut decoders: HashMap<(InstanceId, Id), codec::Decoder> = HashMap::new();
+    let mut decoders: HashMap<(InstanceId, Id), (codec::Decoder, std::time::Instant)> =
+        HashMap::new();
     let mut stats: HashMap<Id, DecodeStats> = HashMap::new();
     let mut requested: HashMap<Id, std::time::Instant> = HashMap::new();
     let mut want_keyframe = |user: Id| {
@@ -469,6 +477,7 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
                 s.log(user, secs);
             }
             stats_since = std::time::Instant::now();
+            drop_idle(&mut decoders, stats_since);
         }
         let begin = std::time::Instant::now();
         let s = stats.entry(frame.user).or_default();
@@ -488,7 +497,7 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
                         frame.user,
                         decoder.kind()
                     );
-                    decoders.insert(key.clone(), decoder);
+                    decoders.insert(key.clone(), (decoder, begin));
                 }
                 Err(err) => {
                     tracing::warn!("screen share decoder: {err}");
@@ -496,9 +505,10 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
                 }
             }
         }
-        let Some(decoder) = decoders.get_mut(&key) else {
+        let Some((decoder, last_frame)) = decoders.get_mut(&key) else {
             continue;
         };
+        *last_frame = begin;
         let decoded = decoder.decode(&frame.data);
         let took = micros(begin.elapsed());
         let s = stats.entry(frame.user).or_default();
@@ -535,6 +545,11 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
             }
         }
     }
+}
+
+/// Drops the decoders that got no frame for [`DECODER_IDLE`].
+fn drop_idle<K, D>(decoders: &mut HashMap<K, (D, std::time::Instant)>, now: std::time::Instant) {
+    decoders.retain(|_, (_, last_frame)| now.duration_since(*last_frame) < DECODER_IDLE);
 }
 
 fn micros(d: std::time::Duration) -> u64 {
@@ -612,6 +627,17 @@ mod tests {
                 assert_eq!(full_size_to_bgra(&picture), plain, "{w}x{h} nv12={nv12}");
             }
         }
+    }
+
+    #[test]
+    fn idle_decoders_are_dropped() {
+        let start = std::time::Instant::now();
+        let mut decoders = HashMap::from([("gone", ((), start)), ("live", ((), start))]);
+        drop_idle(&mut decoders, start + DECODER_IDLE / 2);
+        assert_eq!(decoders.len(), 2, "nothing is idle yet");
+        decoders.get_mut("live").unwrap().1 = start + DECODER_IDLE / 2;
+        drop_idle(&mut decoders, start + DECODER_IDLE);
+        assert_eq!(decoders.keys().collect::<Vec<_>>(), [&"live"]);
     }
 
     #[test]

@@ -1,9 +1,7 @@
 //! Keybinds (PLAN.md section 15.6): every action has a default, and `[keys]` in `config.toml`
 //! overrides it (`command_bar = "Ctrl+K"`). Combos are written `Ctrl+Shift+M`, `Alt+Down`,
-//! `Ctrl+\`, `Ctrl+,`, `Escape`, `F5`.
-//!
-//! A punctuation key in a combo also matches the key in its place on a US keyboard, so
-//! `Ctrl+\` works on layouts where `\` needs AltGr (approved, see docs/DECISIONS.md).
+//! `Ctrl+\`, `Ctrl+,`, `Escape`, `F5`. A combo matches the key as gpui reports it: what the key
+//! types on the current layout without Shift.
 
 use std::collections::BTreeMap;
 
@@ -124,6 +122,11 @@ pub const ACTIONS: [(Action, &str, &str, &str); 21] = [
     (Action::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
 ];
 
+/// Extra combos an action also answers to while `[keys]` leaves it at its default. On Nordic and
+/// German layouts `+` is a key of its own and `=` needs Shift, so `Ctrl+=` could not be pressed
+/// there; `Ctrl+Shift+=` is the same key press as `Ctrl++` on a US keyboard.
+const ALIASES: [(Action, &str); 2] = [(Action::ZoomIn, "Ctrl++"), (Action::ZoomIn, "Ctrl+Shift+=")];
+
 /// `[keys]` entry of the global mute key (unbound by default). It is registered system-wide with
 /// `global-hotkey` instead of being a window keybind (see `crate::ptt`).
 pub const GLOBAL_MUTE: &str = "toggle_mute_global";
@@ -242,6 +245,18 @@ impl Keybinds {
                 }
             }
         }
+        // Last, and only where no bind of the config or the defaults has the combo already.
+        for (action, alias) in ALIASES {
+            let (_, name, ..) = ACTIONS.iter().find(|(a, ..)| *a == action).expect("listed");
+            if keys.contains_key(*name) {
+                continue;
+            }
+            if let Some(combo) = Combo::parse(alias)
+                && !binds.iter().any(|(c, _)| *c == combo)
+            {
+                binds.push((combo, action));
+            }
+        }
         (Keybinds { binds }, warnings)
     }
 
@@ -298,5 +313,36 @@ mod tests {
         assert_eq!(binds.action(&key("ctrl-p")), Some(Action::CommandBar));
         assert_eq!(binds.action(&key("ctrl-k")), None);
         assert_eq!(binds.action(&key("ctrl-f")), None, "an empty value unbinds");
+    }
+
+    #[test]
+    fn zoom_in_also_answers_to_the_plus_key() {
+        let (binds, _) = Keybinds::from_config(&BTreeMap::new());
+        assert_eq!(binds.action(&key("ctrl-=")), Some(Action::ZoomIn));
+        // Nordic and German layouts: `+` has a key of its own.
+        assert_eq!(binds.action(&key("ctrl-+")), Some(Action::ZoomIn));
+        // US: Ctrl+Shift+= is "Ctrl++".
+        assert_eq!(binds.action(&key("ctrl-shift-=")), Some(Action::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl--")), Some(Action::ZoomOut));
+
+        let mut keys = BTreeMap::new();
+        keys.insert("zoom_in".to_owned(), "Ctrl+I".to_owned());
+        let (binds, _) = Keybinds::from_config(&keys);
+        assert_eq!(binds.action(&key("ctrl-i")), Some(Action::ZoomIn));
+        assert_eq!(
+            binds.action(&key("ctrl-+")),
+            None,
+            "a rebound action drops its extra combos"
+        );
+
+        let mut keys = BTreeMap::new();
+        keys.insert("zoom_reset".to_owned(), "Ctrl++".to_owned());
+        let (binds, _) = Keybinds::from_config(&keys);
+        assert_eq!(
+            binds.action(&key("ctrl-+")),
+            Some(Action::ZoomReset),
+            "a combo of the config wins over an extra one"
+        );
+        assert_eq!(binds.action(&key("ctrl-=")), Some(Action::ZoomIn));
     }
 }

@@ -100,7 +100,7 @@ pub fn parse_day(text: &str, offset_secs: i64) -> Option<(i64, i64)> {
 }
 
 pub fn day(unix_ms: i64, offset_secs: i64) -> i64 {
-    (unix_ms / 1000 + offset_secs).div_euclid(86_400)
+    (unix_ms.div_euclid(1000) + offset_secs).div_euclid(86_400)
 }
 
 pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
@@ -108,28 +108,28 @@ pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
     let (y, mo, d) = civil(secs.div_euclid(86_400));
     let in_day = secs.rem_euclid(86_400);
     let (h, mi, s) = (in_day / 3600, in_day % 3600 / 60, in_day % 60);
-    let mut out = String::new();
+    // Called for every timestamp drawn: write into one buffer instead of a string per field.
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(pattern.len() + 8);
     let mut chars = pattern.chars();
     while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
             continue;
         }
-        match chars.next() {
-            Some('H') => out.push_str(&format!("{h:02}")),
-            Some('M') => out.push_str(&format!("{mi:02}")),
-            Some('S') => out.push_str(&format!("{s:02}")),
-            Some('d') => out.push_str(&format!("{d:02}")),
-            Some('m') => out.push_str(&format!("{mo:02}")),
-            Some('Y') => out.push_str(&y.to_string()),
-            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
-            Some('%') => out.push('%'),
-            Some(other) => {
-                out.push('%');
-                out.push(other);
-            }
-            None => out.push('%'),
-        }
+        // Writing into a `String` cannot fail.
+        let _ = match chars.next() {
+            Some('H') => write!(out, "{h:02}"),
+            Some('M') => write!(out, "{mi:02}"),
+            Some('S') => write!(out, "{s:02}"),
+            Some('d') => write!(out, "{d:02}"),
+            Some('m') => write!(out, "{mo:02}"),
+            Some('Y') => write!(out, "{y}"),
+            Some('y') => write!(out, "{:02}", y.rem_euclid(100)),
+            Some('%') => out.write_char('%'),
+            Some(other) => write!(out, "%{other}"),
+            None => out.write_char('%'),
+        };
     }
     out
 }
@@ -209,6 +209,14 @@ mod tests {
         assert_eq!(format(ms, "%d.%m.%y %%", -14 * 3600), "30.10.26 %");
         assert_eq!(format(0, "%Y-%m-%d", 0), "1970-01-01");
         assert_eq!(day(ms, 0) + 1, day(ms + 11 * 3600 * 1000, 0));
+        assert_eq!(
+            format(0, "%q 100%", 0),
+            "%q 100%",
+            "unknown and trailing % stay"
+        );
+        // The same day as `format` shows, also just before 1970.
+        assert_eq!(format(-1, "%Y-%m-%d", 0), "1969-12-31");
+        assert_eq!(day(-1, 0), -1);
     }
 
     #[test]

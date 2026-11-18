@@ -105,7 +105,7 @@ impl Capture {
 
     /// Processes interleaved device samples; `send` gets each datagram to send (sender ID 0,
     /// the server sets it).
-    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(&[u8])) {
+    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(Vec<u8>)) {
         self.downmix.process(
             interleaved,
             self.channels,
@@ -118,7 +118,7 @@ impl Capture {
             self.frame.copy_from_slice(&self.at48[used..used + FRAME]);
             used += FRAME;
             if let Some(datagram) = self.process_frame() {
-                send(&datagram);
+                send(datagram);
             }
         }
         self.at48.drain(..used);
@@ -137,7 +137,7 @@ impl Capture {
         self.level_db = dsp::to_db(level);
         let open = self.gate.update(self.level_db, probability);
         // Encode every frame so the encoder state stays continuous.
-        let opus = self.encoder.encode(&self.frame).map(<[u8]>::to_vec);
+        let opus = self.encoder.encode(&self.frame);
         let timestamp = self.timestamp;
         self.timestamp = self.timestamp.wrapping_add(voice::FRAME_SAMPLES);
         let was_open = std::mem::replace(&mut self.was_open, open);
@@ -153,7 +153,7 @@ impl Capture {
             sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
             audio_level: voice::audio_level(level),
         };
-        Some(header.encode(&opus))
+        Some(header.encode(opus))
     }
 }
 
@@ -197,7 +197,7 @@ mod tests {
         let mut out = Vec::new();
         // 10 ms chunks, like a device callback.
         for chunk in samples.chunks(882) {
-            capture.push(chunk, |d| out.push(d.to_vec()));
+            capture.push(chunk, |d| out.push(d));
         }
         out
     }

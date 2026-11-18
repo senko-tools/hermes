@@ -19,10 +19,15 @@ pub const DRAIN_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long QUIC gets to tell clients the connection is closing.
 const QUIC_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How long the calls task gets to post the "Call ended" messages of the calls cut off by the
+/// shutdown (a database write each).
+const CALLS_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// Serves on `tcp` (and voice on `quic`, see [`voice::endpoint::bind`]) until `signal`
 /// completes, then stops accepting connections, closes every gateway connection with 4100 and
-/// every QUIC connection, waits up to [`DRAIN_TIMEOUT`] for open requests and closes the
-/// database. Logs `Hermes is ready on <bind>:<port>` once serving.
+/// every QUIC connection, waits up to [`DRAIN_TIMEOUT`] for open requests, ends the running
+/// voice rooms (posting their DM call messages) and closes the database. Logs
+/// `Hermes is ready on <bind>:<port>` once serving.
 pub async fn run(
     state: Arc<AppState>,
     tcp: TcpListener,
@@ -36,10 +41,13 @@ pub async fn run(
     let maintenance = tokio::spawn(crate::maintenance::task(state.clone()));
     let refresh = tokio::spawn(crate::users::refresh_task(state.clone()));
     let last_online = tokio::spawn(crate::gateway::last_online::flush_task(state.clone()));
-    let calls = state
-        .voice
-        .take_after()
-        .map(|rx| tokio::spawn(voice::calls::task(state.clone(), rx)));
+    let (calls_stop, calls_stopped) = oneshot::channel::<()>();
+    let calls = state.voice.take_after().map(|rx| {
+        let stop = async move {
+            let _ = calls_stopped.await;
+        };
+        tokio::spawn(voice::calls::task(state.clone(), rx, stop))
+    });
     let voice_task = quic
         .clone()
         .map(|endpoint| tokio::spawn(voice::endpoint::serve(state.clone(), endpoint)));
@@ -89,8 +97,20 @@ pub async fn run(
         quic.close(0u32.into(), b"server restarting");
         let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
     }
-    for task in [calls, voice_task].into_iter().flatten() {
+    if let Some(task) = voice_task {
         task.abort();
+    }
+    // Leave every room now rather than whenever each connection's task gets to it, so the calls
+    // task sees every "Call ended" before it is told to stop.
+    state.voice.close_all(&state);
+    let _ = calls_stop.send(());
+    if let Some(mut calls) = calls
+        && tokio::time::timeout(CALLS_TIMEOUT, &mut calls)
+            .await
+            .is_err()
+    {
+        tracing::warn!("call messages still being posted; dropping them");
+        calls.abort();
     }
     if let Some(reload) = reload {
         reload.abort();

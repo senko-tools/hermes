@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, RenderImage, SharedString, div, img};
+use gpui_kit::{AnyElement, Context, RenderImage, SharedString, Window, div, img};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Attachment;
@@ -71,12 +71,41 @@ pub struct Images {
     thumb_order: std::collections::VecDeque<(InstanceId, Id)>,
     /// Pictures no longer used, to be freed the next time the window draws.
     pub retired: Vec<Arc<RenderImage>>,
+    /// The viewer's picture as last drawn, freed from the GPU once the viewer lets go of it.
+    viewer_drawn: Option<Picture>,
 }
 
 /// Thumbnails kept in memory.
 const MAX_THUMBNAILS: usize = 400;
 
 impl Images {
+    /// At the start of each draw: frees the GPU copies of pictures nothing draws any more
+    /// (dropped or replaced ones, and the full-size picture of a closed viewer; gpui keeps every
+    /// drawn image until told).
+    pub fn free_unused(&mut self, viewer: Option<&Img>, window: &mut Window) {
+        for image in self.retired.drain(..) {
+            let _ = window.drop_image(image);
+        }
+        let shown = match viewer {
+            Some(Img::Ready(picture)) => Some(picture),
+            _ => None,
+        };
+        if let Some(old) = self.viewer_drawn.take() {
+            let same = |a: &Arc<RenderImage>, b: Option<&Arc<RenderImage>>| {
+                b.is_some_and(|b| Arc::ptr_eq(a, b))
+            };
+            if !same(&old.still, shown.map(|s| &s.still)) {
+                let _ = window.drop_image(old.still);
+            }
+            if let Some(moving) = old.moving
+                && !same(&moving, shown.and_then(|s| s.moving.as_ref()))
+            {
+                let _ = window.drop_image(moving);
+            }
+        }
+        self.viewer_drawn = shown.cloned();
+    }
+
     fn retire(&mut self, picture: Img) {
         if let Img::Ready(picture) = picture {
             self.retired.push(picture.still);

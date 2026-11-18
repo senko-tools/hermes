@@ -26,7 +26,7 @@ The developer's requests are what to build.
   the tests that can run here, then give the developer exact step-by-step instructions to test it on Windows
   or on the server.
 - Windows-specific code must still compile on Linux (use `cfg(windows)` where needed); CI on GitHub Actions
-  builds on both Windows and Linux.
+  builds on both Windows and Linux, and Forgejo Actions (`.forgejo/workflows/ci.yml`) also runs the Linux CI.
 - Do not connect to remote servers, with one exception: when the session runs on the developer's own PC,
   Claude may connect to the production server with `ssh senko.tools` or `hetzner` (from that PC only,
   never from a cloud VM).

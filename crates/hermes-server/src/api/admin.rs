@@ -168,19 +168,25 @@ pub async fn list_users(
 ) -> ApiResult<Json<Vec<AdminUser>>> {
     require_admin(&state, auth.user_id)?;
     let cache = state.cache();
-    let mut users: Vec<AdminUser> = cache
+    // Sort and cut the IDs first, so only one page of users is cloned.
+    let mut ids: Vec<Id> = cache
         .users
-        .values()
-        .filter(|u| q.after.is_none_or(|after| u.user.id > after))
-        .map(|u| AdminUser {
-            user: u.user.clone(),
-            disabled: u.disabled,
-            instance_admin: u.instance_admin,
-        })
+        .keys()
+        .copied()
+        .filter(|&id| q.after.is_none_or(|after| id > after))
         .collect();
-    users.sort_by_key(|u| u.user.id);
-    users.truncate(q.limit() as usize);
-    Ok(Json(users))
+    ids.sort_unstable();
+    ids.truncate(q.limit() as usize);
+    Ok(Json(
+        ids.iter()
+            .filter_map(|id| cache.users.get(id))
+            .map(|u| AdminUser {
+                user: u.user.clone(),
+                disabled: u.disabled,
+                instance_admin: u.instance_admin,
+            })
+            .collect(),
+    ))
 }
 
 /// Disabling signs the user out everywhere. Admins cannot disable or demote themselves, so an
@@ -243,7 +249,7 @@ pub async fn update_user(
                 ));
             };
             user.discriminator = tag;
-            db::users::set_handle(&mut tx, user_id, &user.handle()).await?;
+            super::users::set_handle(&mut tx, user_id, &user.handle()).await?;
             Some(user)
         }
         None => None,

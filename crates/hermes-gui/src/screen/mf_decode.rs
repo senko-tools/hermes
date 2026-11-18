@@ -64,6 +64,8 @@ pub struct MfDecoder {
 
 impl MfDecoder {
     pub fn new() -> Result<MfDecoder, String> {
+        // SAFETY: initialization calls without pointers; a successful MFStartup is balanced by the
+        // MFShutdown below (on failure) or in `Drop`.
         unsafe {
             // Already initialized (in another mode) is fine.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -71,6 +73,7 @@ impl MfDecoder {
         }
         let made = Self::make();
         if made.is_err() {
+            // SAFETY: balances the MFStartup above: no decoder exists to do it in `Drop`.
             unsafe {
                 let _ = MFShutdown();
             }
@@ -79,6 +82,9 @@ impl MfDecoder {
     }
 
     fn make() -> Result<MfDecoder, String> {
+        // SAFETY: COM calls on interfaces owned here, with arguments that live through each call.
+        // `manager.as_raw()` is a live device manager (the transform takes its own reference, and
+        // the decoder keeps `manager` as well).
         unsafe {
             let transform: IMFTransform =
                 CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)
@@ -146,6 +152,7 @@ impl MfDecoder {
     /// Decodes one access unit; `Ok(None)` while the decoder waits for more data.
     pub fn decode(&mut self, data: &[u8]) -> Result<Option<Picture>, String> {
         let sample = input_sample(data)?;
+        // SAFETY: `sample` is a live sample; the transform takes its own reference if it keeps it.
         unsafe {
             self.transform
                 .ProcessInput(0, &sample, 0)
@@ -163,6 +170,9 @@ impl MfDecoder {
     fn output(&mut self) -> Result<Option<Picture>, String> {
         // A changed format (the first picture, or a new size) is taken and asked again.
         for _ in 0..3 {
+            // SAFETY: `buffer` describes the one output stream. The sample and event collection the
+            // transform leaves in it (one reference each) are taken out of their `ManuallyDrop`s
+            // right after the call, so each is released exactly once.
             unsafe {
                 let own = if self.provides_samples {
                     None
@@ -219,6 +229,9 @@ impl MfDecoder {
         let Some((device, context)) = &self.gpu else {
             return Ok(None);
         };
+        // SAFETY: `GetResource` hands over one reference, which `from_raw` takes over. The mapped
+        // staging texture is NV12 of `rows` rows: `rows` Y rows `RowPitch` apart, then `rows / 2`
+        // U/V rows, which is the slice read; it is only read before `Unmap`.
         unsafe {
             let buffer = sample
                 .GetBufferByIndex(0)
@@ -276,6 +289,8 @@ impl MfDecoder {
 
 impl Drop for MfDecoder {
     fn drop(&mut self) {
+        // SAFETY: a message to the owned transform, and the MFShutdown balancing the MFStartup in
+        // `new`.
         unsafe {
             let _ = self
                 .transform
@@ -287,6 +302,8 @@ impl Drop for MfDecoder {
 
 /// A Direct3D 11 device with video support on the default GPU, and a device manager for it.
 fn gpu_device() -> Result<(ID3D11Device, IMFDXGIDeviceManager), String> {
+    // SAFETY: the out-pointers are locals living through each call; created interfaces come back
+    // owned.
     unsafe {
         let mut device = None;
         D3D11CreateDevice(
@@ -319,6 +336,7 @@ fn gpu_device() -> Result<(ID3D11Device, IMFDXGIDeviceManager), String> {
 
 /// Picks NV12 among the decoder's output formats; returns the picture size to show.
 fn choose_nv12(transform: &IMFTransform) -> Result<(u32, u32), String> {
+    // SAFETY: COM calls on the live transform and the media types it hands out.
     unsafe {
         let mut index = 0;
         while let Ok(offered) = transform.GetOutputAvailableType(0, index) {
@@ -338,6 +356,8 @@ fn choose_nv12(transform: &IMFTransform) -> Result<(u32, u32), String> {
 /// The size to show: the display aperture if the stream has one (the coded picture is a
 /// multiple of 16 rows, 1088 for 1080), else the frame size. `(0, 0)` before the first picture.
 fn display_size(t: &IMFMediaType) -> (u32, u32) {
+    // SAFETY: `bytes` covers exactly `area`, plain data that any bytes are valid for; it is not
+    // used again once GetBlob returns, before `area` is read.
     unsafe {
         let mut area = MFVideoArea::default();
         let bytes = std::slice::from_raw_parts_mut(
@@ -358,6 +378,8 @@ fn display_size(t: &IMFMediaType) -> (u32, u32) {
 
 /// A sample holding one access unit.
 fn input_sample(data: &[u8]) -> Result<IMFSample, String> {
+    // SAFETY: `Lock` gives the buffer's memory, at least its maximum length (`len.max(1)` bytes)
+    // long, so `data.len()` bytes fit; it is only written before `Unlock`.
     unsafe {
         let len = u32::try_from(data.len()).map_err(|_| "frame too large")?;
         let buffer = MFCreateMemoryBuffer(len.max(1)).map_err(failed("input buffer"))?;
@@ -385,6 +407,9 @@ fn read_nv12(
     transform: &IMFTransform,
     (width, height): (u32, u32),
 ) -> Result<Picture, String> {
+    // SAFETY: `Lock2DSize` gives the buffer (`start`, `len` bytes) and its first row (`scanline`)
+    // inside it; only the bytes from that row to the end of the buffer are read, and only before
+    // `Unlock2D`.
     unsafe {
         let buffer = sample
             .GetBufferByIndex(0)
@@ -412,7 +437,11 @@ fn read_nv12(
                 return Err("the decoder returned no picture".to_owned());
             }
             // The buffer holds `rows` Y rows and `rows / 2` U/V rows of `pitch` bytes.
-            let available = len as usize - (scanline as usize - start as usize);
+            // A first row outside the buffer would read out of bounds (or underflow).
+            let available = (scanline as usize)
+                .checked_sub(start as usize)
+                .and_then(|offset| (len as usize).checked_sub(offset))
+                .ok_or("the decoder returned a broken picture")?;
             let rows = available * 2 / 3 / pitch.max(1);
             let all = std::slice::from_raw_parts(scanline, available);
             nv12_from(all, pitch, rows, (width, height))
@@ -428,6 +457,8 @@ fn read_plain_nv12(
     transform: &IMFTransform,
     display: (u32, u32),
 ) -> Result<Picture, String> {
+    // SAFETY: COM calls on the live transform and buffer. `Lock` gives `len` (the current length)
+    // readable bytes at `start`, only read before `Unlock`.
     unsafe {
         let format = transform
             .GetOutputCurrentType(0)

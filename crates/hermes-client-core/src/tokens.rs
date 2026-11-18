@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
-use crate::config::write_atomic;
+use crate::config::{WriteOptions, write_atomic_with};
 
 /// Keyring service name; the account is `<username>@<instance id>`.
 const SERVICE: &str = "hermes";
@@ -124,6 +124,10 @@ fn read_file(path: &Path) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Every change of the file reads, changes and writes it whole: two at once (signing in to two
+/// instances, a device key made meanwhile) would lose one of them.
+static FILE_LOCK: Mutex<()> = Mutex::new(());
+
 fn write_file(path: &Path, tokens: &BTreeMap<String, String>) -> std::io::Result<()> {
     if tokens.is_empty() {
         return match std::fs::remove_file(path) {
@@ -135,17 +139,30 @@ fn write_file(path: &Path, tokens: &BTreeMap<String, String>) -> std::io::Result
         std::fs::create_dir_all(parent)?;
     }
     let text = toml::to_string(tokens).map_err(std::io::Error::other)?;
-    write_atomic(path, text.as_bytes())?;
-    restrict(path)
+    // Private from its first byte: a file restricted only after its rename could be read by others
+    // in between.
+    write_atomic_with(
+        path,
+        text.as_bytes(),
+        WriteOptions {
+            durable: true,
+            private: true,
+        },
+    )?;
+    #[cfg(windows)]
+    restrict(path)?;
+    Ok(())
 }
 
 fn write_to_file(path: &Path, account: &str, token: &str) -> std::io::Result<()> {
+    let _lock = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let mut tokens = read_file(path);
     tokens.insert(account.to_owned(), token.to_owned());
     write_file(path, &tokens)
 }
 
 fn remove_from_file(path: &Path, account: &str) -> std::io::Result<()> {
+    let _lock = FILE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let mut tokens = read_file(path);
     if tokens.remove(account).is_some() {
         write_file(path, &tokens)?;
@@ -153,14 +170,8 @@ fn remove_from_file(path: &Path, account: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Owner-only permissions.
-#[cfg(unix)]
-fn restrict(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-
-/// Only the current user, also where the folder is not private (portable mode).
+/// Only the current user, also where the folder is not private (portable mode). On Unix the
+/// file is written owner-only from its first byte.
 #[cfg(windows)]
 fn restrict(path: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt as _;
@@ -180,11 +191,6 @@ fn restrict(path: &Path) -> std::io::Result<()> {
     if !status.is_ok_and(|s| s.success()) {
         tracing::warn!("could not restrict {} to this user", path.display());
     }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn restrict(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -217,6 +223,49 @@ mod tests {
         assert_eq!(store.get("example.com", "alice"), None);
         store.delete("example.com:9000", "alice").unwrap();
         assert!(!dir.join("tokens.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_file_is_private_and_takes_writers_at_once() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-tokens2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tokens.toml");
+        let store = std::sync::Arc::new(TokenStore::File(path.clone()));
+        let writers: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    store
+                        .set(&format!("host{i}"), "alice", &format!("hms_{i}"))
+                        .unwrap();
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        for i in 0..8 {
+            let expected = format!("hms_{i}");
+            assert_eq!(
+                store.read(&format!("host{i}"), "alice"),
+                Ok(Some(expected)),
+                "no write is lost"
+            );
+        }
+        assert_eq!(store.read("nowhere", "alice"), Ok(None));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // Nothing half-written is left next to it.
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["tokens.toml"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

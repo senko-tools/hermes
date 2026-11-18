@@ -73,7 +73,7 @@ embed-resource.workspace = true
 hermes-server = { path = "../hermes-server" }
 # Headless windows for the UI tests: the gpui the kit pins, with its test platform on. Directly,
 # because the kit's own test-support feature would force taffy down in the app too.
-gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.12", features = ["test-support"] }
 
 [lints]
 workspace = true

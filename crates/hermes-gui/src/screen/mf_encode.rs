@@ -73,6 +73,8 @@ pub struct MfEncoder {
     events: Option<std::sync::mpsc::Receiver<u32>>,
     codec: Option<ICodecAPI>,
     _manager: IMFDXGIDeviceManager,
+    /// What made the encoder: shut down with it, as Media Foundation asks of hardware encoders.
+    activate: IMFActivate,
     /// Pictures the encoder asked for and has not got yet.
     credits: u32,
     /// The encoder hands out its own output samples; otherwise one of `output_size` is made.
@@ -94,20 +96,33 @@ impl MfEncoder {
         fps: u32,
         bitrate: u32,
     ) -> Result<MfEncoder, String> {
+        // SAFETY: initialization calls without pointers; a successful MFStartup is balanced by an
+        // MFShutdown below (no encoder) or in `Drop`.
         unsafe {
             // Already initialized (in another mode) is fine.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             MFStartup(MF_VERSION, MFSTARTUP_LITE).map_err(failed("Media Foundation"))?;
         }
         let mut errors = Vec::new();
+        // SAFETY: balances the MFStartup above: no encoder exists to do it in `Drop`.
         for activate in enumerate(luid).inspect_err(|_| unsafe {
             let _ = MFShutdown();
         })? {
             match configure(&activate, device, (width, height), fps, bitrate) {
                 Ok(encoder) => return Ok(encoder),
-                Err(err) => errors.push(err),
+                Err(err) => {
+                    errors.push(err);
+                    // An encoder that failed half-way may run threads of its own (asynchronous
+                    // ones do), and its event thread waits on it, until it is shut down.
+                    // SAFETY: a call on the live activation object; it shuts down only the
+                    // encoder it made, which nothing uses any more.
+                    unsafe {
+                        let _ = activate.ShutdownObject();
+                    }
+                }
             }
         }
+        // SAFETY: balances the MFStartup above: no encoder exists to do it in `Drop`.
         unsafe {
             let _ = MFShutdown();
         }
@@ -144,6 +159,7 @@ impl MfEncoder {
     /// Changes the bitrate of the next pictures.
     pub fn set_bitrate(&self, bitrate: u32) {
         if let Some(codec) = &self.codec {
+            // SAFETY: a COM call on the live codec API with a VARIANT that lives through it.
             unsafe {
                 let _ = codec.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &VARIANT::from(bitrate));
             }
@@ -155,6 +171,7 @@ impl MfEncoder {
     pub fn encode(&mut self, picture: &Nv12, keyframe: bool) -> Result<Vec<Encoded>, String> {
         let sample = self.sample(&picture.texture)?;
         if keyframe && let Some(codec) = &self.codec {
+            // SAFETY: a COM call on the live codec API with a VARIANT that lives through it.
             unsafe {
                 let _ = codec.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
             }
@@ -170,6 +187,8 @@ impl MfEncoder {
 
     /// A sample holding the GPU picture, stamped with its time.
     fn sample(&mut self, texture: &ID3D11Texture2D) -> Result<IMFSample, String> {
+        // SAFETY: COM calls on live objects; the surface buffer takes its own reference to
+        // `texture`.
         unsafe {
             let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, texture, 0, false)
                 .map_err(failed("picture buffer"))?;
@@ -199,6 +218,7 @@ impl MfEncoder {
                 None => return Err("the hardware encoder stopped asking for pictures".into()),
             }
         }
+        // SAFETY: `sample` is a live sample; the transform takes its own reference if it keeps it.
         unsafe {
             self.transform
                 .ProcessInput(0, sample, 0)
@@ -224,6 +244,7 @@ impl MfEncoder {
     }
 
     fn encode_sync(&mut self, sample: &IMFSample, out: &mut Vec<Encoded>) -> Result<(), String> {
+        // SAFETY: `sample` is a live sample; the transform takes its own reference if it keeps it.
         unsafe {
             self.transform
                 .ProcessInput(0, sample, 0)
@@ -255,6 +276,9 @@ impl MfEncoder {
 
     /// Takes one encoded picture out of the encoder (none if it has none).
     fn collect(&mut self, out: &mut Vec<Encoded>) -> Result<(), String> {
+        // SAFETY: `buffer` describes the one output stream. The sample and event collection the
+        // transform leaves in it (one reference each) are taken out of their `ManuallyDrop`s right
+        // after the call, so each is released exactly once.
         unsafe {
             let own = if self.provides_samples {
                 None
@@ -312,6 +336,8 @@ impl MfEncoder {
 
 impl Drop for MfEncoder {
     fn drop(&mut self) {
+        // SAFETY: calls on the owned transform and activation object, and the MFShutdown
+        // balancing the MFStartup in `new`.
         unsafe {
             let _ = self
                 .transform
@@ -320,6 +346,7 @@ impl Drop for MfEncoder {
                 // Asynchronous encoders run threads of their own until shut down.
                 let _ = MFShutdownObject(&self.transform);
             }
+            let _ = self.activate.ShutdownObject();
             let _ = MFShutdown();
         }
     }
@@ -335,6 +362,9 @@ fn enumerate(luid: LUID) -> Result<Vec<IMFActivate>, String> {
         guidMajorType: MFMediaType_Video,
         guidSubtype: MFVideoFormat_H264,
     };
+    // SAFETY: MFTEnum2 returns a CoTaskMem array of `count` activation objects, each holding one
+    // reference. Each is moved out with `take` (leaving `None`, so nothing is released twice)
+    // before the array is freed, once, with CoTaskMemFree.
     unsafe {
         let mut attributes: Option<IMFAttributes> = None;
         MFCreateAttributes(&mut attributes, 1).map_err(failed("encoder search"))?;
@@ -378,6 +408,9 @@ fn configure(
     fps: u32,
     bitrate: u32,
 ) -> Result<MfEncoder, String> {
+    // SAFETY: COM calls on interfaces owned here, with arguments that live through each call.
+    // `manager.as_raw()` is a live device manager (the transform takes its own reference, and the
+    // encoder keeps `manager` as well).
     unsafe {
         let name = friendly_name(activate);
         let transform: IMFTransform = activate
@@ -479,6 +512,7 @@ fn configure(
             events,
             codec,
             _manager: manager,
+            activate: activate.clone(),
             credits: 0,
             provides_samples: info.dwFlags & provides != 0,
             output_size: info.cbSize,
@@ -509,10 +543,13 @@ fn event_thread(
         .name("hermes-encoder-events".into())
         .spawn(move || {
             let generator = generator;
+            // SAFETY: joins this thread to the multithreaded apartment; no pointers.
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             }
             loop {
+                // SAFETY: a blocking COM call on the live generator; it fails once the encoder is
+                // shut down.
                 let event = unsafe {
                     generator
                         .0
@@ -521,6 +558,7 @@ fn event_thread(
                 let Ok(event) = event else {
                     return;
                 };
+                // SAFETY: a COM call on the live event.
                 let Ok(kind) = (unsafe { event.GetType() }) else {
                     return;
                 };
@@ -539,6 +577,7 @@ fn media_type(
     (width, height): (u32, u32),
     fps: u32,
 ) -> Result<IMFMediaType, String> {
+    // SAFETY: COM calls on the new media type, with GUIDs that live through each call.
     unsafe {
         let t = MFCreateMediaType().map_err(failed("media type"))?;
         let pair = |a: u32, b: u32| (u64::from(a) << 32) | u64::from(b);
@@ -566,6 +605,8 @@ fn buffer_size(bitrate: u32) -> u32 {
 
 /// The encoder's display name, or "hardware encoder".
 fn friendly_name(activate: &IMFActivate) -> String {
+    // SAFETY: `GetAllocatedString` hands over a NUL-terminated CoTaskMem string, read once and then
+    // freed once (only when the call succeeded).
     unsafe {
         let mut name = PWSTR::null();
         let mut len = 0u32;
@@ -584,6 +625,8 @@ fn friendly_name(activate: &IMFActivate) -> String {
 
 /// The bytes of an output sample.
 fn read_sample(sample: &IMFSample) -> Result<Vec<u8>, String> {
+    // SAFETY: `Lock` gives `len` (the current length) readable bytes at `data`, copied before
+    // `Unlock`.
     unsafe {
         let buffer = sample
             .ConvertToContiguousBuffer()

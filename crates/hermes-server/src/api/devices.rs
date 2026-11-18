@@ -87,13 +87,16 @@ pub async fn query(
             "Asking about too many users",
         ));
     }
-    let mut out = Vec::with_capacity(req.user_ids.len());
-    for user_id in req.user_ids {
-        out.push(UserDevices {
+    let found = db::devices::of_users(&state.db.read, &req.user_ids).await?;
+    // In the order asked, one entry per asked ID (an ID asked twice is answered twice).
+    let out = req
+        .user_ids
+        .iter()
+        .map(|&user_id| UserDevices {
             user_id,
-            devices: db::devices::of_user(&state.db.read, user_id).await?,
-        });
-    }
+            devices: found.get(&user_id).cloned().unwrap_or_default(),
+        })
+        .collect();
     Ok(Json(out))
 }
 

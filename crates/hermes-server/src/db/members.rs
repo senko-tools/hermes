@@ -167,8 +167,9 @@ pub async fn set_timeout(
 }
 
 /// Soft-deletes `author_id`'s messages in the space's channels with an ID of at least `min_id`
-/// (content cleared, unpinned, reactions and mentions removed, attachments unlinked). Returns
-/// `(message_id, channel_id)` of the messages deleted now.
+/// (content and any encrypted form cleared, unpinned, reactions and mentions removed, attachments
+/// unlinked), like [`super::messages::soft_delete`]. Returns `(message_id, channel_id)` of the
+/// messages deleted now.
 pub async fn soft_delete_messages_since(
     conn: &mut SqliteConnection,
     space_id: Id,

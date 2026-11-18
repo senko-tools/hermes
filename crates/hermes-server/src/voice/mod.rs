@@ -7,6 +7,9 @@
 //! The registry is one `std` mutex with short critical sections. Lock order: the registry first,
 //! then the cache. Never take the registry while holding the cache lock. Gateway events about
 //! voice are published while the registry is held, so they go out in the order of the changes.
+//! Audio datagrams are sent after the registry is released: under it, [`Voice::forward`] only
+//! checks the sender and collects the recipients' connections, so one busy room does not hold
+//! up the others (each `send_datagram` takes that connection's own lock).
 
 pub mod calls;
 pub mod endpoint;
@@ -16,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use hermes_proto::gateway::{ServerEvent, VoiceStateUpdate};
 use hermes_proto::id::Id;
 use hermes_proto::models::VoiceState;
@@ -25,6 +28,7 @@ use hermes_proto::voice::{
     self, AudioHeader, AudioKind, KickReason, Participant, ServerControl, VideoHeader,
 };
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::gateway::bus::Audience;
 use crate::ratelimit::KeyedLimiter;
@@ -42,6 +46,9 @@ const KEYFRAME_INTERVAL: Duration = Duration::from_millis(500);
 const SHARE_STATS_EVERY: Duration = Duration::from_secs(10);
 /// Rings older than this are forgotten (clients stop ringing after 30 s on their own).
 const RING_LIFETIME: Duration = Duration::from_secs(60);
+/// Control messages waiting to be written to one client. A client that lets this many pile up
+/// is closed, like a gateway connection whose queue is full, and reconnects (PLAN.md 12.2).
+pub const CONTROL_QUEUE: usize = 1024;
 
 pub type ConnId = u64;
 
@@ -72,11 +79,29 @@ pub struct Ticket {
 /// A connection's way back to its client.
 #[derive(Debug, Clone)]
 pub struct Link {
+    /// Control messages to write to the client, at most [`CONTROL_QUEUE`]; use [`Link::tell`].
     pub control: mpsc::Sender<ServerControl>,
     pub conn: quinn::Connection,
     /// Screen share frames to write to the client, one stream each, in order. Bounded: a slow
     /// client loses frames instead of piling them up.
     pub video: mpsc::Sender<Bytes>,
+}
+
+impl Link {
+    /// Queues a control message without blocking. When the queue is full the client has stopped
+    /// reading: the connection is closed instead of losing the message (which would leave the
+    /// client with a wrong picture of the room), and the client reconnects. Returns whether the
+    /// message was queued.
+    pub fn tell(&self, msg: ServerControl) -> bool {
+        match self.control.try_send(msg) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                self.conn.close(0u32.into(), b"control queue full");
+                false
+            }
+            Err(TrySendError::Closed(_)) => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,7 +195,9 @@ impl ShareStats {
         }
         let secs = elapsed.as_secs_f64();
         tracing::info!(
-            "screen share of {user_id}: in {:.1} fps ({} keyframes, {} over the rate limit),              {:.0} kbit/s; {watchers} watching: {} frames queued, {} lost to full queues, {}              skipped while waiting for a keyframe, {} keyframe requests",
+            "screen share of {user_id}: in {:.1} fps ({} keyframes, {} over the rate limit), \
+             {:.0} kbit/s; {watchers} watching: {} frames queued, {} lost to full queues, \
+             {} skipped while waiting for a keyframe, {} keyframe requests",
             f64::from(self.frames_in) / secs,
             self.keyframes_in,
             self.over_rate,
@@ -252,6 +279,8 @@ pub struct Voice {
     tokens: Mutex<HashMap<String, Ticket>>,
     next_conn: AtomicU64,
     token_lifetime: Duration,
+    /// Unbounded on purpose: it is fed under the registry lock, which cannot wait, and dropping
+    /// an item would lose a call's system message. It carries at most two items per call.
     after: mpsc::UnboundedSender<After>,
     after_rx: Mutex<Option<mpsc::UnboundedReceiver<After>>>,
     /// Voice packets a connection may send: well above what a microphone produces.
@@ -389,6 +418,17 @@ impl Voice {
         reg.conns.remove(&conn_id);
     }
 
+    /// Shutdown: takes everyone out of their room now, as if every connection had closed, so
+    /// the follow-up work (a DM call's "Call ended" message) is queued before the server stops.
+    /// Connections that close later find nothing left to leave.
+    pub fn close_all(&self, state: &AppState) {
+        let mut reg = self.registry();
+        let conn_ids: Vec<ConnId> = reg.conns.keys().copied().collect();
+        for conn_id in conn_ids {
+            reg.remove_member(state, &self.after, conn_id, None);
+        }
+    }
+
     /// Puts the connection's user into the ticket's room, leaving any room they were in (on this
     /// connection: a switch; on another: that one gets `kicked {joined_elsewhere}`).
     pub fn join(&self, state: &AppState, conn_id: ConnId, ticket: Ticket) -> Result<(), JoinError> {
@@ -470,10 +510,8 @@ impl Voice {
             .collect();
         for member in room.members.values() {
             if let Some(conn) = conns.get(&member.conn_id) {
-                let _ = conn
-                    .link
-                    .control
-                    .try_send(ServerControl::ParticipantJoined(Participant {
+                conn.link
+                    .tell(ServerControl::ParticipantJoined(Participant {
                         participant_id,
                         user_id,
                     }));
@@ -504,7 +542,7 @@ impl Voice {
         conn.user_id = Some(user_id);
         conn.room = Some((channel_id, participant_id));
         users.insert(user_id, conn_id);
-        let _ = conn.link.control.try_send(ServerControl::Ready {
+        conn.link.tell(ServerControl::Ready {
             participant_id,
             room_id: channel_id,
             bitrate: room.bitrate,
@@ -622,7 +660,7 @@ impl Voice {
             return Some(());
         }
         if (after.server_mute, after.server_deaf) != (before.server_mute, before.server_deaf) {
-            let _ = conn.link.control.try_send(ServerControl::ServerState {
+            conn.link.tell(ServerControl::ServerState {
                 server_mute: after.server_mute,
                 server_deaf: after.server_deaf,
             });
@@ -641,10 +679,7 @@ impl Voice {
         let Some(conn) = reg.users.get(&user_id).and_then(|c| reg.conns.get(c)) else {
             return false;
         };
-        conn.link
-            .control
-            .try_send(ServerControl::Moved { token })
-            .is_ok()
+        conn.link.tell(ServerControl::Moved { token })
     }
 
     /// A voice channel's bitrate changed: tell everyone in its room.
@@ -660,10 +695,7 @@ impl Voice {
         room.bitrate = bitrate;
         for member in room.members.values() {
             if let Some(conn) = conns.get(&member.conn_id) {
-                let _ = conn
-                    .link
-                    .control
-                    .try_send(ServerControl::BitrateChanged { bitrate });
+                conn.link.tell(ServerControl::BitrateChanged { bitrate });
             }
         }
     }
@@ -736,35 +768,57 @@ impl Voice {
     /// Forwards one datagram (PLAN.md 12.4 "Server forwarding rule"): dropped if the sender is
     /// muted (self or server), lacks `SPEAK`, or the packet is malformed or too large; otherwise
     /// sent with the sender's participant ID to everyone else in the room who is not deafened.
-    /// Share audio goes its own way ([`Voice::forward_share_audio`]).
-    pub fn forward(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
-        match AudioHeader::decode_any(&data) {
-            Ok((AudioKind::Voice, ..)) => {}
-            Ok((AudioKind::Share, ..)) => return self.forward_share_audio(state, conn_id, data),
+    /// Share audio follows its own rules (`share_audio_recipients`).
+    ///
+    /// The registry is held only to check the sender and collect the recipients into `peers`
+    /// (a buffer the caller reuses, left empty); the packet is rewritten and sent after it is
+    /// released. A member who deafens or leaves at that very moment may still get this one
+    /// packet, as if it had been sent a moment earlier.
+    pub fn forward(
+        &self,
+        state: &AppState,
+        conn_id: ConnId,
+        data: Bytes,
+        peers: &mut Vec<quinn::Connection>,
+    ) {
+        let participant_id = match AudioHeader::decode_any(&data) {
+            Ok((AudioKind::Voice, ..)) => {
+                if self
+                    .packets
+                    .check(&conn_id, VOICE_PACKETS_PER_SECOND, Duration::from_secs(1))
+                    .is_err()
+                {
+                    return;
+                }
+                self.voice_recipients(state, conn_id, peers)
+            }
+            Ok((AudioKind::Share, ..)) => self.share_audio_recipients(state, conn_id, peers),
             Err(_) => return,
+        };
+        if let Some(participant_id) = participant_id {
+            send_datagrams(data, participant_id, peers);
         }
-        if self
-            .packets
-            .check(&conn_id, VOICE_PACKETS_PER_SECOND, Duration::from_secs(1))
-            .is_err()
-        {
-            return;
-        }
+        peers.clear();
+    }
+
+    /// The sender's participant ID, with the connections a voice datagram from `conn_id` goes
+    /// to added to `peers`; `None` if it must be dropped (not in a room, muted, no `SPEAK`).
+    fn voice_recipients(
+        &self,
+        state: &AppState,
+        conn_id: ConnId,
+        peers: &mut Vec<quinn::Connection>,
+    ) -> Option<u16> {
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
-        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
-            return;
-        };
-        let Some(room) = rooms.get_mut(&channel_id) else {
-            return;
-        };
-        let Some(sender) = room.members.get_mut(&participant_id) else {
-            return;
-        };
+        let (channel_id, participant_id) = conns.get(&conn_id)?.room?;
+        let room = rooms.get_mut(&channel_id)?;
+        let sender = room.members.get_mut(&participant_id)?;
         if sender.state.self_mute || sender.state.server_mute {
-            return;
+            return None;
         }
         if sender.checked.elapsed() >= SPEAK_RECHECK {
+            // Registry, then cache: the documented lock order.
             sender.can_speak = state
                 .cache()
                 .channel_permissions(channel_id, sender.state.user_id)
@@ -772,20 +826,30 @@ impl Voice {
             sender.checked = Instant::now();
         }
         if !sender.can_speak {
-            return;
+            return None;
         }
-        let mut packet = data.to_vec();
-        voice::set_sender_id(&mut packet, participant_id);
-        let packet = Bytes::from(packet);
-        for (&id, member) in &room.members {
-            if id == participant_id || member.deaf() {
-                continue;
-            }
-            if let Some(conn) = conns.get(&member.conn_id) {
-                // Never blocks; a full or closed peer just loses the packet.
-                let _ = conn.link.conn.send_datagram(packet.clone());
-            }
-        }
+        room.connections(conns, peers, |id, member| {
+            id != participant_id && !member.deaf()
+        });
+        Some(participant_id)
+    }
+}
+
+/// Sends `data` with its sender ID set to `participant_id` to every peer. The datagram is
+/// rewritten in place when nothing else holds its buffer, else copied once (it is at most
+/// [`voice::MAX_DATAGRAM`] bytes); each peer then gets a cheap clone. Never blocks: a peer whose
+/// buffer is full, or that is closing, just loses the packet.
+fn send_datagrams(data: Bytes, participant_id: u16, peers: &[quinn::Connection]) {
+    if peers.is_empty() {
+        return;
+    }
+    let mut packet = data
+        .try_into_mut()
+        .unwrap_or_else(|shared| BytesMut::from(&shared[..]));
+    voice::set_sender_id(&mut packet, participant_id);
+    let packet = packet.freeze();
+    for peer in peers {
+        let _ = peer.send_datagram(packet.clone());
     }
 }
 
@@ -813,33 +877,28 @@ impl Voice {
             return;
         };
         if let Some(conn) = reg.conns.get(&member.conn_id) {
-            let _ = conn
-                .link
-                .control
-                .try_send(ServerControl::VoiceKey { from, key });
+            conn.link.tell(ServerControl::VoiceKey { from, key });
         }
     }
 
-    /// Forwards one share audio datagram (docs/DECISIONS.md 2026-11-05): dropped unless the
-    /// sender shares their screen, still has `STREAM` and stays under
+    /// Share audio datagrams (docs/DECISIONS.md 2026-11-05), for [`Voice::forward`]: dropped
+    /// unless the sender shares their screen, still has `STREAM` and stays under
     /// [`voice::MAX_SHARE_AUDIO_RATE`]; otherwise sent with the sender's participant ID to every
     /// member watching them who is not deafened. Muting the microphone does not mute it.
-    fn forward_share_audio(&self, state: &AppState, conn_id: ConnId, data: Bytes) {
+    /// Returns the sender's participant ID, with the recipients added to `peers`.
+    fn share_audio_recipients(
+        &self,
+        state: &AppState,
+        conn_id: ConnId,
+        peers: &mut Vec<quinn::Connection>,
+    ) -> Option<u16> {
         let mut reg = self.registry();
         let Registry { conns, rooms, .. } = &mut *reg;
-        let Some((channel_id, participant_id)) = conns.get(&conn_id).and_then(|c| c.room) else {
-            return;
-        };
-        let Some(room) = rooms.get_mut(&channel_id) else {
-            return;
-        };
-        let Some(sender) = room.members.get_mut(&participant_id) else {
-            return;
-        };
+        let (channel_id, participant_id) = conns.get(&conn_id)?.room?;
+        let room = rooms.get_mut(&channel_id)?;
+        let sender = room.members.get_mut(&participant_id)?;
         let user_id = sender.state.user_id;
-        let Some(share) = sender.share.as_mut() else {
-            return;
-        };
+        let share = sender.share.as_mut()?;
         if share.checked.elapsed() >= SPEAK_RECHECK {
             share.can_stream = state
                 .cache()
@@ -848,7 +907,7 @@ impl Voice {
             share.checked = Instant::now();
         }
         if !share.can_stream {
-            return;
+            return None;
         }
         let now = Instant::now();
         share.audio_tokens = (share.audio_tokens
@@ -857,21 +916,13 @@ impl Voice {
         .min(f64::from(voice::SHARE_AUDIO_BURST));
         share.audio_refilled = now;
         if share.audio_tokens < 1.0 {
-            return;
+            return None;
         }
         share.audio_tokens -= 1.0;
-        let mut packet = data.to_vec();
-        voice::set_sender_id(&mut packet, participant_id);
-        let packet = Bytes::from(packet);
-        for (&id, member) in &room.members {
-            if id == participant_id || member.deaf() || !member.watching.contains(&participant_id) {
-                continue;
-            }
-            if let Some(conn) = conns.get(&member.conn_id) {
-                // Never blocks; a full or closed peer just loses the packet.
-                let _ = conn.link.conn.send_datagram(packet.clone());
-            }
-        }
+        room.connections(conns, peers, |id, member| {
+            id != participant_id && !member.deaf() && member.watching.contains(&participant_id)
+        });
+        Some(participant_id)
     }
 }
 
@@ -1077,13 +1128,30 @@ impl Voice {
 }
 
 impl Room {
+    /// Adds the QUIC connections of the members `to` picks (by participant ID and member) to
+    /// `out`.
+    fn connections(
+        &self,
+        conns: &HashMap<ConnId, Conn>,
+        out: &mut Vec<quinn::Connection>,
+        to: impl Fn(u16, &Member) -> bool,
+    ) {
+        out.extend(
+            self.members
+                .iter()
+                .filter(|&(&id, member)| to(id, member))
+                .filter_map(|(_, member)| conns.get(&member.conn_id))
+                .map(|conn| conn.link.conn.clone()),
+        );
+    }
+
     /// Sends `msg` to every member but `except`.
     fn tell_others(&self, conns: &HashMap<ConnId, Conn>, except: u16, msg: ServerControl) {
         for (&id, member) in &self.members {
             if id != except
                 && let Some(conn) = conns.get(&member.conn_id)
             {
-                let _ = conn.link.control.try_send(msg.clone());
+                conn.link.tell(msg.clone());
             }
         }
     }
@@ -1127,10 +1195,7 @@ impl Room {
         }
         share.watchers = Some(count);
         if let Some(conn) = conns.get(&conn_id) {
-            let _ = conn
-                .link
-                .control
-                .try_send(ServerControl::ShareWatchers { count });
+            conn.link.tell(ServerControl::ShareWatchers { count });
         }
     }
 
@@ -1156,10 +1221,7 @@ impl Room {
         if member.share.as_mut().is_some_and(Share::keyframe_due)
             && let Some(conn) = conns.get(&conn_id)
         {
-            let _ = conn
-                .link
-                .control
-                .try_send(ServerControl::KeyframeRequested {});
+            conn.link.tell(ServerControl::KeyframeRequested {});
         }
     }
 }
@@ -1190,7 +1252,7 @@ impl Registry {
             return;
         };
         if let Some(reason) = reason {
-            let _ = conn.link.control.try_send(ServerControl::Kicked { reason });
+            conn.link.tell(ServerControl::Kicked { reason });
         }
         let Some(user_id) = conn.user_id else {
             return;
@@ -1210,10 +1272,9 @@ impl Registry {
         room.count_all_watchers(&self.conns);
         for member in room.members.values() {
             if let Some(other) = self.conns.get(&member.conn_id) {
-                let _ = other
+                other
                     .link
-                    .control
-                    .try_send(ServerControl::ParticipantLeft { participant_id });
+                    .tell(ServerControl::ParticipantLeft { participant_id });
             }
         }
         state.cache_mut().voice_states.remove(&user_id);

@@ -145,6 +145,41 @@ impl Tri {
     }
 }
 
+/// The bits I may allow or deny in `role`'s override in `channel`, or `None` if I may not change
+/// that override at all. As the server checks it: Manage channels and Manage roles in the
+/// channel, and the role is `@everyone`, one of mine or below my highest role; an override may
+/// only hold bits I have there myself.
+pub fn override_access(s: &InstanceStore, space: Id, channel: Id, role: Id) -> Option<Permissions> {
+    let have = s.channel_permissions(channel);
+    if !have.contains(Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES) {
+        return None;
+    }
+    let st = s.spaces.get(&space)?;
+    let role = st.role(role)?;
+    let me = st.members.get(&s.me_id()?)?;
+    let allowed = role.is_everyone()
+        || me.role_ids.contains(&role.id)
+        || hermes_client_core::proto::permissions::can_manage_role(&st.space, &st.roles, me, role);
+    allowed.then_some(have)
+}
+
+/// Whether setting `flag` to `tri` in an override (`ov`, if there is one) is something the server
+/// takes, with `access` from [`override_access`]. Emptying the override deletes it, which needs no
+/// bits of mine.
+pub fn override_change_allowed(
+    access: Option<Permissions>,
+    ov: Option<&Override>,
+    flag: Permissions,
+    tri: Tri,
+) -> bool {
+    access.is_some_and(|have| {
+        let (allow, deny) = ov.map_or_else(Default::default, |o| (o.allow, o.deny));
+        let (allow, deny) = tri.apply(allow, deny, flag);
+        let bits = allow | deny;
+        bits.is_empty() || have.contains(bits)
+    })
+}
+
 /// The role being edited, unsaved.
 pub struct RoleDraft {
     pub id: Id,
@@ -166,6 +201,9 @@ pub struct SpacePage {
     member_query: Entity<InputState>,
     /// The overview's fields differ from the store.
     overview_dirty: bool,
+    /// The name and description the overview's fields were filled with: a save sends only
+    /// what was edited since, so it cannot undo someone else's change to the other field.
+    overview_loaded: (String, String),
     pub role: Option<RoleDraft>,
     /// The channel and role whose overrides are shown.
     pub channel: Option<Id>,
@@ -193,6 +231,9 @@ pub fn parse_color(text: &str) -> Result<Option<u32>, ()> {
     let hex = text.trim().trim_start_matches('#');
     if hex.is_empty() {
         return Ok(None);
+    }
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(());
     }
     let hex = match hex.len() {
         3 => hex.chars().flat_map(|c| [c, c]).collect(),
@@ -228,24 +269,31 @@ pub fn reorder_roles(roles: &[Role], moved: Id, onto: Id) -> Vec<RolePosition> {
         .collect()
 }
 
-/// Members matching `query` (name, nickname or username, case-insensitive), by name.
-pub fn filter_members<'s>(s: &'s InstanceStore, space: Id, query: &str) -> Vec<&'s Member> {
+/// Members matching `query` (name, nickname or username, case-insensitive), by name, with the
+/// name they show as. Runs on every frame of the Members tab, so each name is lowercased once.
+pub fn filter_members<'s>(
+    s: &'s InstanceStore,
+    space: Id,
+    query: &str,
+) -> Vec<(String, &'s Member)> {
     let Some(st) = s.spaces.get(&space) else {
         return Vec::new();
     };
     let q = query.trim().to_lowercase();
-    let mut out: Vec<(String, &Member)> = st
+    let mut out: Vec<(String, String, &Member)> = st
         .members
         .values()
-        .map(|m| (s.display_name(Some(space), m.user.id), m))
-        .filter(|(name, m)| {
-            q.is_empty()
-                || name.to_lowercase().contains(&q)
-                || m.user.username.to_lowercase().contains(&q)
+        .filter_map(|m| {
+            let name = s.display_name(Some(space), m.user.id);
+            let lower = name.to_lowercase();
+            let matches =
+                q.is_empty() || lower.contains(&q) || m.user.username.to_lowercase().contains(&q);
+            matches.then_some((lower, name, m))
         })
         .collect();
-    out.sort_by_key(|(name, _)| name.to_lowercase());
-    out.into_iter().map(|(_, m)| m).collect()
+    // Same names keep one order from frame to frame.
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.user.id.cmp(&b.2.user.id)));
+    out.into_iter().map(|(_, name, m)| (name, m)).collect()
 }
 
 /// A readable line for an audit entry ("Alice kicked Bob") and its details.
@@ -365,6 +413,7 @@ impl Shell {
                     input
                 })
             };
+            let overview_loaded = (name.clone(), description.clone());
             let name = field(name, "Name", window, cx);
             let description = field(description, "What is this server about?", window, cx);
             let member_query = field(String::new(), "Search members", window, cx);
@@ -409,6 +458,7 @@ impl Shell {
                     description,
                     member_query,
                     overview_dirty: false,
+                    overview_loaded,
                     role: None,
                     channel: None,
                     override_role: None,
@@ -422,6 +472,32 @@ impl Shell {
                     _inputs: inputs,
                 },
             );
+        } else if let Some(page) = self.space_pages.get(&key)
+            && !page.overview_dirty
+        {
+            // The page is kept while the app runs: show the name and description as they are
+            // now, not as they were when it was first opened.
+            let current = {
+                let store = self.core.store();
+                store
+                    .instance(&inst)
+                    .and_then(|s| s.spaces.get(&space))
+                    .map(|st| {
+                        (
+                            st.space.name.clone(),
+                            st.space.description.clone().unwrap_or_default(),
+                        )
+                    })
+            };
+            if let Some((name, description)) = current {
+                let (name_input, description_input) = (page.name.clone(), page.description.clone());
+                if let Some(page) = self.space_pages.get_mut(&key) {
+                    page.overview_loaded = (name.clone(), description.clone());
+                }
+                // `set_value` sends no `Change`, so the page does not turn dirty.
+                name_input.update(cx, |input, cx| input.set_value(name, window, cx));
+                description_input.update(cx, |input, cx| input.set_value(description, window, cx));
+            }
         }
         self.open_space_page = Some(key);
         self.set_space_tab(tab, false, cx);
@@ -538,9 +614,16 @@ impl Shell {
         let Some(key) = self.open_space_page.clone() else {
             return;
         };
+        let append = before.is_some();
+        if append {
+            // Hides "Load older entries" until this page is in, so it is not loaded twice.
+            match self.space_pages.get_mut(&key) {
+                Some(page) if page.audit_more => page.audit_more = false,
+                _ => return,
+            }
+        }
         let core = self.core.clone();
         let (inst, space) = key.clone();
-        let append = before.is_some();
         self.run(
             cx,
             async move {
@@ -549,19 +632,31 @@ impl Shell {
                     .await
                     .map_err(|e| e.to_string())
             },
-            move |this, result, _, _| {
+            move |this, result, _, cx| {
                 let Some(page) = this.space_pages.get_mut(&key) else {
                     return;
                 };
-                match result {
-                    Ok(list) => {
+                // An older page belongs to the list whose last entry it was asked after; a
+                // reload since then replaced that list.
+                let same_list =
+                    !append || page.audit.ready().and_then(|l| l.last()).map(|e| e.id) == before;
+                if !same_list {
+                    return;
+                }
+                match (result, append) {
+                    (Ok(list), _) => {
                         page.audit_more = list.len() as u32 >= AUDIT_PAGE;
                         match (&mut page.audit, append) {
                             (Remote::Ready(old), true) => old.extend(list),
                             _ => page.audit = Remote::Ready(list),
                         }
                     }
-                    Err(err) => page.audit = Remote::Failed(err),
+                    // The entries already shown stay; the button comes back to try again.
+                    (Err(err), true) => {
+                        page.audit_more = true;
+                        this.error(format!("could not load older entries: {err}"), cx);
+                    }
+                    (Err(err), false) => page.audit = Remote::Failed(err),
                 }
             },
         );
@@ -580,9 +675,13 @@ impl Shell {
         };
         let name = page.name.read(cx).value().trim().to_owned();
         let description = page.description.read(cx).value().trim().to_owned();
+        // Only the fields edited since they were filled in, so saving one does not undo
+        // someone else's change to the other.
+        let (loaded_name, loaded_description) = &page.overview_loaded;
         let req = UpdateSpaceRequest {
-            name: Some(name),
-            description: Some((!description.is_empty()).then_some(description)),
+            name: (name != loaded_name.trim()).then(|| name.clone()),
+            description: (description != loaded_description.trim())
+                .then(|| (!description.is_empty()).then(|| description.clone())),
             icon_id: None,
         };
         let core = self.core.clone();
@@ -597,6 +696,7 @@ impl Shell {
                 Ok(()) => {
                     if let Some(page) = this.space_pages.get_mut(&key) {
                         page.overview_dirty = false;
+                        page.overview_loaded = (name, description);
                     }
                     this.info("Server saved", cx);
                 }
@@ -1265,6 +1365,11 @@ impl Shell {
         let space = page.space;
         let selected = page.role.as_ref().map(|r| r.id);
         let can_manage = view::can_in_space(s, space, Permissions::MANAGE_ROLES);
+        // How many members have each role, in one pass over the members.
+        let mut counts = std::collections::HashMap::<Id, usize>::new();
+        for role in st.members.values().flat_map(|m| &m.role_ids) {
+            *counts.entry(*role).or_default() += 1;
+        }
         let rows: Vec<AnyElement> = st
             .roles
             .iter()
@@ -1272,10 +1377,7 @@ impl Shell {
                 let count = if role.is_everyone() {
                     st.members.len()
                 } else {
-                    st.members
-                        .values()
-                        .filter(|m| m.role_ids.contains(&role.id))
-                        .count()
+                    counts.get(&role.id).copied().unwrap_or_default()
                 };
                 let id = role.id;
                 let chosen = selected == Some(id);
@@ -1621,8 +1723,9 @@ impl Shell {
         let st = &s.spaces[&page.space];
         let space = page.space;
         let inst = page.inst.clone();
+        // Reordering is checked space-wide on the server, editing and deleting in the channel.
         let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
-        let edit_overrides = manage && view::can_in_space(s, space, Permissions::MANAGE_ROLES);
+        let manage_here = view::can(s, id, Permissions::MANAGE_CHANNELS);
         let category = channel.kind == ChannelKind::Category;
         let kind = match channel.kind {
             ChannelKind::Category => "Category",
@@ -1636,40 +1739,42 @@ impl Shell {
                 _ => kind.to_owned(),
             }),
         ];
-        if manage {
+        if manage || manage_here {
             let (edit_inst, here_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
             col.push(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap(px(8.))
-                    .child(
-                        Button::new("channel-edit")
-                            .cursor_pointer()
-                            .label("Edit…")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("channel-up")
-                            .cursor_pointer()
-                            .label("Move up")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.move_channel_step(id, -1, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("channel-down")
-                            .cursor_pointer()
-                            .label("Move down")
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| {
+                    .when(manage_here, |d| {
+                        d.child(
+                            Button::new("channel-edit")
+                                .cursor_pointer()
+                                .label("Edit…")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
+                                })),
+                        )
+                    })
+                    .when(manage, |d| {
+                        d.child(
+                            Button::new("channel-up")
+                                .cursor_pointer()
+                                .label("Move up")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_channel_step(id, -1, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("channel-down")
+                                .cursor_pointer()
+                                .label("Move down")
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     this.move_channel_step(id, 1, cx)
-                                }),
-                            ),
-                    )
-                    .when(category, |d| {
+                                })),
+                        )
+                    })
+                    .when(category && manage, |d| {
                         d.child(
                             Button::new("channel-here")
                                 .cursor_pointer()
@@ -1685,24 +1790,26 @@ impl Shell {
                                 })),
                         )
                     })
-                    .child(
-                        Button::new("channel-delete")
-                            .cursor_pointer()
-                            .danger()
-                            .label(if category {
-                                "Delete category"
-                            } else {
-                                "Delete channel"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.cancel_closing("confirm");
-                                this.confirm = Some((
-                                    Target::Channel(delete_inst.clone(), id),
-                                    Action::DeleteChannel,
-                                ));
-                                cx.notify();
-                            })),
-                    )
+                    .when(manage_here, |d| {
+                        d.child(
+                            Button::new("channel-delete")
+                                .cursor_pointer()
+                                .danger()
+                                .label(if category {
+                                    "Delete category"
+                                } else {
+                                    "Delete channel"
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.cancel_closing("confirm");
+                                    this.confirm = Some((
+                                        Target::Channel(delete_inst.clone(), id),
+                                        Action::DeleteChannel,
+                                    ));
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .into_any_element(),
             );
         }
@@ -1736,6 +1843,9 @@ impl Shell {
         if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
             let ov = channel.overrides.iter().find(|o| o.role_id == role_id);
             let role_name = st.role(role_id).map(|r| r.name.clone()).unwrap_or_default();
+            let access = override_access(s, space, id, role_id);
+            // Some toggles are off because they would allow or deny what I do not have.
+            let mut limited = false;
             let clear_inst = inst.clone();
             col.push(
                 div()
@@ -1747,7 +1857,7 @@ impl Shell {
                             .text_size(theme::secondary_size())
                             .child(format!("Overrides for {role_name}")),
                     )
-                    .when(edit_overrides && ov.is_some(), |d| {
+                    .when(access.is_some() && ov.is_some(), |d| {
                         d.child(
                             Button::new("override-clear")
                                 .cursor_pointer()
@@ -1781,13 +1891,15 @@ impl Shell {
                     .map(|info| {
                         let state = Tri::of(ov, info.flag);
                         let flag = info.flag;
-                        let toggle = |tri: Tri, text: &'static str, cx: &mut Context<Self>| {
+                        let mut toggle = |tri: Tri, text: &'static str, cx: &mut Context<Self>| {
+                            let allowed = override_change_allowed(access, ov, flag, tri);
+                            limited |= access.is_some() && !allowed;
                             chip(
                                 SharedString::from(format!("{}-{text}", info.name)),
                                 text,
                                 state == tri,
                             )
-                            .when(edit_overrides, |d| {
+                            .when(allowed, |d| {
                                 d.on_click(cx.listener(move |this, _, _, cx| {
                                     this.set_override(flag, tri, cx);
                                 }))
@@ -1807,9 +1919,19 @@ impl Shell {
                     .collect();
                 col.push(group(permission_group.title(), rows));
             }
-            if !edit_overrides {
+            let have = s.channel_permissions(id);
+            if !have.contains(Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES) {
                 col.push(muted(
                     "Changing these needs both Manage channels and Manage roles.",
+                ));
+            } else if access.is_none() {
+                col.push(muted(
+                    "You can only change the overrides of @everyone, your own roles and roles \
+                     below your highest one.",
+                ));
+            } else if limited {
+                col.push(muted(
+                    "You can only allow or deny permissions you have in this channel yourself.",
                 ));
             }
         }
@@ -1829,9 +1951,8 @@ impl Shell {
         let rows: Vec<AnyElement> = members
             .into_iter()
             .take(MAX_ROWS)
-            .map(|m| {
+            .map(|(name, m)| {
                 let user = m.user.id;
-                let name = s.display_name(Some(space), user);
                 let name_color = crate::channel::author_color(s, space, user)
                     .map_or(theme::text(), theme::rgb_u32);
                 list_row(format!("settings-member-{user}"), page.member == Some(user))
@@ -2717,7 +2838,116 @@ mod tests {
         assert_eq!(parse_color("F80"), Ok(Some(0xFF8800)));
         assert_eq!(parse_color("#12345"), Err(()));
         assert_eq!(parse_color("zzzzzz"), Err(()));
+        // `from_str_radix` alone would take a sign.
+        assert_eq!(parse_color("+12345"), Err(()));
+        assert_eq!(parse_color("#+F8"), Err(()));
         assert_eq!(color_hex(0xFF8800), "#FF8800");
+    }
+
+    #[test]
+    fn override_editing_follows_the_server_rules() {
+        let mut s = crate::fixtures::store();
+        let (space, general) = (Id(10), Id(11));
+        let owner = override_access(&s, space, general, space);
+        assert!(
+            owner.is_some_and(|have| have == Permissions::all()),
+            "the owner"
+        );
+
+        // Bob owns the space now. I am a moderator (position 2) with Manage channels and Manage
+        // roles but not Mention everyone; there is an admin role above me and a helper below.
+        let role = |id: u64, position: i32, permissions: Permissions| Role {
+            id: Id(id),
+            space_id: space,
+            name: format!("r{id}"),
+            color: None,
+            hoist: false,
+            mentionable: false,
+            position,
+            permissions,
+        };
+        let st = s.spaces.get_mut(&space).unwrap();
+        st.space.owner_id = Id(3);
+        let everyone = st.roles.pop().unwrap();
+        st.roles = vec![
+            role(40, 3, Permissions::empty()),
+            role(
+                41,
+                2,
+                Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES,
+            ),
+            role(42, 1, Permissions::empty()),
+            everyone,
+        ];
+        st.members.get_mut(&Id(1)).unwrap().role_ids = vec![Id(41)];
+        let have = override_access(&s, space, general, space).expect("@everyone");
+        assert!(!have.contains(Permissions::MENTION_EVERYONE));
+        assert!(
+            override_access(&s, space, general, Id(41)).is_some(),
+            "my own role"
+        );
+        assert!(
+            override_access(&s, space, general, Id(42)).is_some(),
+            "below mine"
+        );
+        assert_eq!(
+            override_access(&s, space, general, Id(40)),
+            None,
+            "above mine"
+        );
+
+        let send = Permissions::SEND_MESSAGES;
+        let everyone_ping = Permissions::MENTION_EVERYONE;
+        let access = Some(have);
+        assert!(override_change_allowed(access, None, send, Tri::Deny));
+        assert!(!override_change_allowed(
+            access,
+            None,
+            everyone_ping,
+            Tri::Allow
+        ));
+        // An override holding a bit I lack can still be emptied, but not changed otherwise.
+        let theirs = Override {
+            role_id: Id(42),
+            allow: everyone_ping,
+            deny: Permissions::empty(),
+        };
+        assert!(override_change_allowed(
+            access,
+            Some(&theirs),
+            everyone_ping,
+            Tri::Inherit
+        ));
+        assert!(!override_change_allowed(
+            access,
+            Some(&theirs),
+            send,
+            Tri::Deny
+        ));
+        assert!(!override_change_allowed(None, None, send, Tri::Deny));
+
+        // Without Manage roles in the channel, nothing.
+        let st = s.spaces.get_mut(&space).unwrap();
+        st.channels.get_mut(&general).unwrap().overrides = vec![Override {
+            role_id: Id(41),
+            allow: Permissions::empty(),
+            deny: Permissions::MANAGE_ROLES,
+        }];
+        assert_eq!(override_access(&s, space, general, space), None);
+    }
+
+    #[test]
+    fn members_filter_and_sort_by_shown_name() {
+        let s = crate::fixtures::store();
+        let names: Vec<String> = filter_members(&s, Id(10), "")
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["Bobby", "me"], "case-insensitive order");
+        let found = filter_members(&s, Id(10), "BOB");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1.user.id, Id(3), "by username too");
+        assert!(filter_members(&s, Id(10), "nobody").is_empty());
     }
 
     #[test]

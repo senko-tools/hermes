@@ -589,20 +589,20 @@ fn signature(row: &Row, s: &InstanceStore, channel: Id) -> u64 {
     let window = s.window(channel);
     match row {
         Row::Message(m) => {
-            m.grouped.hash(&mut hash);
-            m.ends_group.hash(&mut hash);
+            // The padding above and below a message depends on its group.
+            (m.grouped, m.ends_group).hash(&mut hash);
             m.next_starts_with_file.hash(&mut hash);
             if let Some(message) = window.and_then(|w| w.get(m.id)) {
                 message.content.hash(&mut hash);
                 message.edited_at.hash(&mut hash);
                 message.attachments.len().hash(&mut hash);
                 for r in &message.reactions {
-                    r.emoji.hash(&mut hash);
+                    (&r.emoji, r.count).hash(&mut hash);
                 }
             }
         }
         Row::Pending(p) => {
-            p.grouped.hash(&mut hash);
+            (p.grouped, p.ends_group).hash(&mut hash);
             if let Some(pending) = window.and_then(|w| w.pending(p.local_id)) {
                 pending.content.hash(&mut hash);
                 matches!(pending.state, PendingState::Failed(_)).hash(&mut hash);
@@ -2867,6 +2867,31 @@ impl Shell {
             .into_any_element()
     }
 
+    /// Before a message row is drawn: starts loading its pictures that are not loaded yet.
+    fn prepare_message(&mut self, key: &ChannelKey, id: Id, cx: &mut Context<Self>) {
+        if !self.config.buffer.image_previews {
+            return;
+        }
+        let pictures: Vec<Attachment> = {
+            let store = self.core.store();
+            let Some(message) = store
+                .instance(&key.0)
+                .and_then(|s| s.window(key.1)?.get(id))
+            else {
+                return;
+            };
+            message
+                .attachments
+                .iter()
+                .filter(|a| is_image(a) && !self.images.thumbs.contains_key(&(key.0.clone(), a.id)))
+                .cloned()
+                .collect()
+        };
+        for attachment in &pictures {
+            self.load_thumbnail(&key.0, attachment, cx);
+        }
+    }
+
     fn render_row(
         &mut self,
         inst: &InstanceId,
@@ -2875,38 +2900,25 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = (inst.clone(), channel);
-        let Some(row) = self.chats.get(&key).and_then(|v| v.rows.get(ix)).cloned() else {
-            return div().into_any_element();
+        let message = match self.chats.get(&key).and_then(|v| v.rows.get(ix)) {
+            Some(Row::Message(m)) => Some(m.id),
+            Some(_) => None,
+            None => return div().into_any_element(),
         };
-        if let Row::Message(m) = &row
-            && self.config.buffer.image_previews
-        {
-            let wanted: Vec<Attachment> = {
-                let store = self.core.store();
-                store
-                    .instance(inst)
-                    .and_then(|s| s.window(channel)?.get(m.id).cloned())
-                    .map(|msg| {
-                        msg.attachments
-                            .iter()
-                            .filter(|a| is_image(a))
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            for attachment in &wanted {
-                self.load_thumbnail(inst, attachment, cx);
-            }
+        if let Some(id) = message {
+            self.prepare_message(&key, id, cx);
         }
         let store = self.core.store();
         let Some(s) = store.instance(inst) else {
             return div().into_any_element();
         };
+        let Some(row) = self.chats.get(&key).and_then(|v| v.rows.get(ix)) else {
+            return div().into_any_element();
+        };
         // Rows that just came grow in, so the list glides instead of jumping: someone else's
         // fresh message, and mine while it sends (it then stays as it is).
         let grow = (!cx.reduce_motion())
-            .then(|| match &row {
+            .then(|| match row {
                 Row::Message(m) => s.window(channel).and_then(|w| w.get(m.id)).and_then(|msg| {
                     let age = now_ms() - msg.created_at() as i64;
                     ((-500..1500).contains(&age) && s.me_id() != Some(msg.author.id))
@@ -2921,7 +2933,7 @@ impl Shell {
                 _ => None,
             })
             .flatten();
-        let element = match &row {
+        let element = match row {
             Row::Older => div()
                 .flex()
                 .justify_center()

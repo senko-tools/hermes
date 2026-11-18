@@ -47,10 +47,26 @@ pub fn report(app: &str, message: &str, location: &str, backtrace: &str) -> Stri
 
 fn write(dir: &Path, text: &str, offset_secs: i64) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = crate::logs::report_path(dir, "crash", "log", crate::core::now_ms(), offset_secs);
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(text.as_bytes())?;
-    Ok(path)
+    // Threads that panic in the same second find the same free name: only one may take it.
+    let mut tries = 0;
+    loop {
+        let path =
+            crate::logs::report_path(dir, "crash", "log", crate::core::now_ms(), offset_secs);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && tries < 10 => {
+                tries += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 #[cfg(test)]

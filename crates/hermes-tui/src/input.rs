@@ -85,8 +85,7 @@ impl Input {
     /// Deletes the word before the cursor (Ctrl+W).
     pub fn delete_word(&mut self) {
         let before = &self.text[..self.cursor];
-        let trimmed = before.trim_end();
-        let start = trimmed.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        let start = word_start(before.trim_end());
         self.text.replace_range(start..self.cursor, "");
         self.cursor = start;
     }
@@ -94,8 +93,7 @@ impl Input {
     /// The word being typed: from the last whitespace before the cursor up to the cursor.
     pub fn current_token(&self) -> &str {
         let before = &self.text[..self.cursor];
-        let start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
-        &before[start..]
+        &before[word_start(before)..]
     }
 
     /// Replaces [`current_token`](Self::current_token) with `replacement`.
@@ -104,6 +102,15 @@ impl Input {
         self.text.replace_range(start..self.cursor, replacement);
         self.cursor = start + replacement.len();
     }
+}
+
+/// Where the last word of `s` starts: after its last whitespace character, which may be wider
+/// than one byte (a no-break space, an ideographic space).
+fn word_start(s: &str) -> usize {
+    s.char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8())
 }
 
 #[cfg(test)]
@@ -141,5 +148,19 @@ mod tests {
         assert_eq!(j.current_token(), ":smi");
         j.replace_token("😄 ");
         assert_eq!(j.text(), "line one\n😄 ");
+    }
+
+    #[test]
+    fn multibyte_whitespace_separates_words() {
+        // U+00A0 (no-break space) is two bytes, U+3000 (ideographic space) three.
+        let mut i = Input::with_text("hi\u{a0}@al");
+        assert_eq!(i.current_token(), "@al");
+        i.replace_token("<@2>");
+        assert_eq!(i.text(), "hi\u{a0}<@2>");
+        let mut j = Input::with_text("one\u{3000}two");
+        j.delete_word();
+        assert_eq!(j.text(), "one\u{3000}");
+        j.delete_word();
+        assert_eq!(j.text(), "");
     }
 }

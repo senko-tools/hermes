@@ -8,11 +8,13 @@ use hermes_client_core::audio::mixer::STEREO_FRAME;
 pub type Send = Box<dyn FnMut(&[u8], f32) + std::marker::Send + 'static>;
 
 /// Cuts interleaved stereo samples into 20 ms frames.
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows has share sound
 #[derive(Default)]
 pub struct Framer {
     pending: Vec<f32>,
 }
 
+#[cfg_attr(not(windows), allow(dead_code))] // only Windows has share sound
 impl Framer {
     /// Adds samples; `each` gets every whole frame that is ready.
     pub fn push(&mut self, samples: &[f32], mut each: impl FnMut(&[f32; STEREO_FRAME])) {
