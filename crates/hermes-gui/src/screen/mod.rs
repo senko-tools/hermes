@@ -572,6 +572,15 @@ pub fn hardware_encoders() -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
 
+    /// Lists this machine's hardware H.264 encoders, as Diagnostics does.
+    #[test]
+    #[ignore = "needs a GPU with an H.264 encoder"]
+    fn hardware_encoders_are_listed() {
+        let names = hardware_encoders().expect("the search runs");
+        eprintln!("hardware encoders: {names:?}");
+        assert!(!names.is_empty());
+    }
+
     fn picture(y: u8, u: u8, v: u8, nv12: bool) -> codec::Picture {
         let (w, h) = (4u32, 4u32);
         let mut planes = vec![y; (w * h) as usize];
