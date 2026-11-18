@@ -288,21 +288,63 @@ fn http() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Where a release's files are: `HERMES_UPDATE_URL` in debug builds (for testing), else GitHub.
+/// Whether this build listens to `HERMES_UPDATE_URL` and `HERMES_UPDATE_KEY`: debug builds, and
+/// release builds made with `HERMES_UPDATE_TESTING=1` set at build time (to try updating on one
+/// PC, see docs/desktop-client.md). Official releases never set it, so their updates only come
+/// from GitHub and only with the built-in key.
+pub const TESTING: bool = cfg!(debug_assertions) || option_env!("HERMES_UPDATE_TESTING").is_some();
+
+/// The test server's address, when testing.
+fn test_url() -> Option<String> {
+    if !TESTING {
+        return None;
+    }
+    let url = std::env::var("HERMES_UPDATE_URL").ok()?;
+    Some(url.trim_end_matches('/').to_owned())
+}
+
+/// Where a release's files are: the test server when testing, else GitHub.
 fn base_url(version: &str) -> String {
-    if cfg!(debug_assertions)
-        && let Ok(url) = std::env::var("HERMES_UPDATE_URL")
-    {
-        return url.trim_end_matches('/').to_owned();
+    if let Some(url) = test_url() {
+        return url;
     }
     format!("{DOWNLOADS}/v{version}")
 }
 
-/// The key to check with: `HERMES_UPDATE_KEY` (base64) in debug builds, else the built-in one.
+/// When testing: the version the test server offers, checked like a real update. `None` when
+/// not testing, so the update check asks GitHub as usual.
+pub async fn test_check(current: &str) -> Option<Result<Option<crate::update::Update>, String>> {
+    let base = test_url()?;
+    Some(
+        async {
+            let key = key().ok_or("HERMES_UPDATE_KEY is not a base64 public key")?;
+            let http = http()?;
+            let json = get_all(&http, &format!("{base}/{MANIFEST}")).await?;
+            let signature = get_all(&http, &format!("{base}/{SIGNATURE}")).await?;
+            let manifest = verify(&json, &signature, &key)?;
+            let newer = match (
+                crate::update::Version::parse(&manifest.version),
+                crate::update::Version::parse(current),
+            ) {
+                (Some(offered), Some(current)) => offered > current,
+                _ => false,
+            };
+            tracing::info!(
+                "update test server {base} offers {} (newer: {newer})",
+                manifest.version
+            );
+            Ok(newer.then(|| crate::update::Update {
+                version: manifest.version,
+                url: base.clone(),
+            }))
+        }
+        .await,
+    )
+}
+
+/// The key to check with: `HERMES_UPDATE_KEY` (base64) when [`TESTING`], else the built-in one.
 fn key() -> Option<VerifyingKey> {
-    if cfg!(debug_assertions)
-        && let Ok(text) = std::env::var("HERMES_UPDATE_KEY")
-    {
+    if TESTING && let Ok(text) = std::env::var("HERMES_UPDATE_KEY") {
         let bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
             .decode(text.trim())
             .ok()?
