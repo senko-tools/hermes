@@ -1508,7 +1508,7 @@ impl Core {
                     self.set_speaking(inst, user, speaking);
                 }
             }
-            AudioEvent::InputLevel(db) => self.emit(CoreEvent::InputLevel(db)),
+            AudioEvent::InputLevel { db, open } => self.emit(CoreEvent::InputLevel { db, open }),
             AudioEvent::DeviceChanged { input, name } => {
                 let what = if input { "Microphone" } else { "Speakers" };
                 self.emit(CoreEvent::Error(format!(

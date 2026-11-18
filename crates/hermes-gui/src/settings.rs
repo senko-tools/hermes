@@ -250,7 +250,9 @@ impl Shell {
                     let next = meter_step(this.meter_shown, this.input_level, seconds);
                     let moved = (next - this.meter_shown).abs();
                     this.meter_shown = next;
-                    if moved >= METER_STEP_DB {
+                    let opened = this.meter_open != this.input_open;
+                    this.meter_open = this.input_open;
+                    if moved >= METER_STEP_DB || opened {
                         cx.notify();
                     }
                     true
@@ -2188,9 +2190,10 @@ impl Shell {
                 },
             ))
         });
-        // The bar moves smoothly; whether the gate is open is the real level's business.
+        // The bar moves smoothly; it is green while the microphone would go through, as the
+        // input mode decides: above the line, or while push-to-talk is held.
         let level = self.meter_shown.clamp(METER_MIN, 0.);
-        let open = self.input_level >= v.vad_sensitivity as f32;
+        let open = self.meter_open;
         let fill = (level - METER_MIN) / -METER_MIN;
         let meter = div()
             .w_full()
@@ -2235,17 +2238,26 @@ impl Shell {
                 self.slider(page, SliderKind::ReleaseDelay),
             ));
         }
-        input_rows.push(setting(
-            "Voice activity sensitivity",
-            &format!("Opens above {} dBFS · now {level:.0}", v.vad_sensitivity),
-            div()
-                .flex()
-                .flex_col()
-                .w_full()
-                .gap(px(6.))
-                .child(meter)
-                .child(self.slider(page, SliderKind::Vad)),
-        ));
+        if ptt_mode {
+            // Sensitivity does nothing here: the key decides.
+            input_rows.push(setting(
+                "Microphone level",
+                &format!("Green while your push-to-talk key is held · now {level:.0} dBFS"),
+                meter,
+            ));
+        } else {
+            input_rows.push(setting(
+                "Voice activity sensitivity",
+                &format!("Opens above {} dBFS · now {level:.0}", v.vad_sensitivity),
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .gap(px(6.))
+                    .child(meter)
+                    .child(self.slider(page, SliderKind::Vad)),
+            ));
+        }
         if !ptt_mode {
             input_rows.push(setting(
                 "Stay open after speaking",

@@ -85,8 +85,12 @@ pub enum CoreEvent {
         user: Id,
         speaking: bool,
     },
-    /// Microphone level in dBFS, 50 times a second while [`Core::set_level_meter`] is on.
-    InputLevel(f32),
+    /// Microphone level in dBFS, 50 times a second while [`Core::set_level_meter`] is on, and
+    /// whether the microphone would go through now (the input mode's gate is open).
+    InputLevel {
+        db: f32,
+        open: bool,
+    },
     /// Who shares their screen in your voice room changed, or your own share started or
     /// stopped ([`Core::screen_sharers`], [`Core::sharing_screen`]).
     ScreenShares,
@@ -566,7 +570,7 @@ impl Core {
         match event {
             CoreEvent::StoreChanged { inst, what } => self.changed(&inst, [what]),
             // A meter reading says nothing about the store, so changes fold across it.
-            event @ CoreEvent::InputLevel(_) => {
+            event @ CoreEvent::InputLevel { .. } => {
                 let _ = self.inner.events.send(event);
             }
             event => {
@@ -2222,7 +2226,10 @@ mod tests {
         core.emit(changed("a", Changed::Dms));
         core.changed("b", [m1]);
         // A meter reading does not stop the folding.
-        core.emit(CoreEvent::InputLevel(-20.0));
+        core.emit(CoreEvent::InputLevel {
+            db: -20.0,
+            open: true,
+        });
         core.changed("b", [m1]);
         // Other events are never folded, and changes after one come after it.
         core.emit(CoreEvent::Error("x".into()));
@@ -2238,7 +2245,10 @@ mod tests {
                 changed("a", m1),
                 changed("a", Changed::Dms),
                 changed("b", m1),
-                CoreEvent::InputLevel(-20.0),
+                CoreEvent::InputLevel {
+                    db: -20.0,
+                    open: true,
+                },
                 CoreEvent::Error("x".into()),
                 CoreEvent::Error("x".into()),
                 changed("a", m1),

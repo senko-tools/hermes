@@ -59,8 +59,10 @@ pub enum AudioEvent {
         participant: Option<u16>,
         speaking: bool,
     },
-    /// dBFS of the processed microphone signal, 50 times a second while metering.
-    InputLevel(f32),
+    /// The processed microphone signal, 50 times a second while metering: its level in dBFS,
+    /// and whether it would go through (the gate is open: voice activity, push-to-talk held,
+    /// the hold time, not muted).
+    InputLevel { db: f32, open: bool },
     /// A device was lost (or the chosen one is missing) and another one is used.
     DeviceChanged { input: bool, name: String },
     /// No device could be opened.
@@ -708,6 +710,7 @@ impl Worker {
                 speaking(playback, now),
             ),
         };
+        let gate_open = own;
         let own = own && self.transmitting && !self.self_mute;
         let changes: Vec<(Option<u16>, bool)> = std::iter::once((None, own))
             .chain(remote.into_iter().map(|(p, s)| (Some(p), s)))
@@ -722,7 +725,10 @@ impl Worker {
         }
         if self.meter && self.last_level.elapsed() >= LEVEL_INTERVAL {
             self.last_level = Instant::now();
-            (self.events)(AudioEvent::InputLevel(level));
+            (self.events)(AudioEvent::InputLevel {
+                db: level,
+                open: gate_open && !self.self_mute,
+            });
         }
     }
 }
@@ -830,6 +836,58 @@ mod tests {
         }
     }
 
+    /// The meter says whether the microphone would go through as the input mode decides: in
+    /// push-to-talk a loud tone is not "open" until the key is held, even outside a call.
+    #[test]
+    fn the_meter_follows_push_to_talk() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let engine = {
+            let events = events.clone();
+            Engine::start(
+                Io::Virtual(Box::new(Loop {
+                    phase: 0,
+                    recorded: Arc::new(Mutex::new(Vec::new())),
+                })),
+                AudioSettings {
+                    mode: crate::InputMode::PushToTalk,
+                    ptt_release_delay: Duration::ZERO,
+                    ..settings()
+                },
+                move |e| events.lock().unwrap().push(e),
+            )
+        };
+        let readings = |events: &Mutex<Vec<AudioEvent>>| -> Vec<(f32, bool)> {
+            std::mem::take(&mut *events.lock().unwrap())
+                .into_iter()
+                .filter_map(|e| match e {
+                    AudioEvent::InputLevel { db, open } => Some((db, open)),
+                    _ => None,
+                })
+                .collect()
+        };
+        engine.set_level_meter(true);
+        thread::sleep(Duration::from_millis(300));
+        let released = readings(&events);
+        assert!(
+            released.iter().any(|(db, _)| *db > -20.0),
+            "the tone is heard"
+        );
+        assert!(
+            released.iter().all(|(_, open)| !open),
+            "but not open: {released:?}"
+        );
+
+        engine.set_ptt(true);
+        thread::sleep(Duration::from_millis(100));
+        readings(&events);
+        thread::sleep(Duration::from_millis(200));
+        let held = readings(&events);
+        assert!(
+            !held.is_empty() && held.iter().all(|(_, open)| *open),
+            "{held:?}"
+        );
+    }
+
     #[test]
     fn virtual_engine_sends_receives_and_reports() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -867,7 +925,7 @@ mod tests {
             assert!(
                 events
                     .iter()
-                    .any(|e| matches!(e, AudioEvent::InputLevel(l) if *l > -20.0))
+                    .any(|e| matches!(e, AudioEvent::InputLevel { db, open: true } if *db > -20.0))
             );
         }
 

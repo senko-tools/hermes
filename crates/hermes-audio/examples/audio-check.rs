@@ -65,9 +65,10 @@ fn main() {
 
 fn print_event(event: AudioEvent) {
     match event {
-        AudioEvent::InputLevel(db) => {
+        AudioEvent::InputLevel { db, open } => {
             let bars = ((db + 60.0).max(0.0) / 2.0) as usize;
-            println!("{db:6.1} dBFS {}", "#".repeat(bars));
+            let gate = if open { "open" } else { "    " };
+            println!("{db:6.1} dBFS {gate} {}", "#".repeat(bars));
         }
         AudioEvent::Packet(_) => {}
         other => println!("{other:?}"),

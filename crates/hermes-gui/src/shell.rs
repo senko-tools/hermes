@@ -251,6 +251,10 @@ pub struct Shell {
     pub headphones_hint_shown: bool,
     /// Microphone level in dBFS while the meter runs.
     pub input_level: f32,
+    /// Whether the microphone would go through now, as the input mode decides.
+    pub input_open: bool,
+    /// `input_open` as the meter last drew it.
+    pub meter_open: bool,
     /// What the level meter's bar shows, and when it was last drawn.
     pub meter_shown: f32,
     pub meter_drawn: Instant,
@@ -426,6 +430,8 @@ impl Shell {
             joining: None,
             headphones_hint_shown: false,
             input_level: -60.0,
+            input_open: false,
+            meter_open: false,
             meter_shown: -60.0,
             meter_drawn: Instant::now(),
             ptt_down: false,
@@ -552,7 +558,9 @@ impl Shell {
                         watchdog::beat();
                         // The microphone level comes 50 times a second: the meter's own timer
                         // decides when it is worth a redraw.
-                        let redraw = batch.iter().any(|e| !matches!(e, CoreEvent::InputLevel(_)));
+                        let redraw = batch
+                            .iter()
+                            .any(|e| !matches!(e, CoreEvent::InputLevel { .. }));
                         for event in batch {
                             this.on_core(event, window, cx);
                         }
@@ -663,8 +671,9 @@ impl Shell {
                 }
             }
             CoreEvent::VoiceStatus(_) => self.update_tray_voice(),
-            CoreEvent::InputLevel(db) => {
+            CoreEvent::InputLevel { db, open } => {
                 self.input_level = db;
+                self.input_open = open;
                 return;
             }
             CoreEvent::StoreChanged { inst, what } => {
