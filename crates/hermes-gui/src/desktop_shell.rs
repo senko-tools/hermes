@@ -12,6 +12,11 @@ use crate::desktop::{self, CloseAction, window as native};
 use crate::ptt;
 use crate::shell::Shell;
 
+/// How long quitting waits for the last read marks to reach the server.
+const QUIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(1500);
+/// A message sound plays at most this often.
+const SOUND_GAP: std::time::Duration = std::time::Duration::from_secs(2);
+
 impl Shell {
     pub fn start_desktop(
         &mut self,
@@ -118,7 +123,10 @@ impl Shell {
                 self.hide_window(window, cx);
                 false
             }
-            CloseAction::Quit => true,
+            CloseAction::Quit => {
+                self.core.flush_read_marks_blocking(QUIT_FLUSH);
+                true
+            }
         }
     }
 
@@ -150,6 +158,7 @@ impl Shell {
             }
             TrayAction::Quit => {
                 self.save_layout(cx);
+                self.core.flush_read_marks_blocking(QUIT_FLUSH);
                 cx.quit();
             }
         }
@@ -219,7 +228,8 @@ impl Shell {
         }
     }
 
-    /// A toast (if enabled) and a taskbar flash for DMs and mentions while unfocused.
+    /// A sound, and while unfocused a toast (if enabled) and a taskbar flash for DMs and
+    /// mentions. Mentions ping; other messages play the softer message sound. A burst plays one.
     pub fn notify(
         &mut self,
         inst: InstanceId,
@@ -241,10 +251,20 @@ impl Shell {
         } else {
             (settings.toast_other, settings.sound_other)
         };
-        if settings.sound && sound {
-            self.core.play_sound(Sound::Ping);
+        let now = std::time::Instant::now();
+        let quiet = self
+            .last_message_sound
+            .is_some_and(|last| now.duration_since(last) < SOUND_GAP);
+        if settings.sound && sound && !quiet {
+            self.last_message_sound = Some(now);
+            self.core.play_sound(if notification.mention {
+                Sound::Ping
+            } else {
+                Sound::Message
+            });
         }
-        if !toast {
+        // Looking at Hermes already: the sound and the sidebar say enough.
+        if !toast || self.focused {
             return;
         }
         self.run(

@@ -195,6 +195,8 @@ pub struct Shell {
     pub resizing_members: bool,
     /// The status went idle by itself, so it comes back by itself.
     pub auto_idle: bool,
+    /// When a message sound last played: a burst of messages plays one.
+    pub last_message_sound: Option<std::time::Instant>,
     /// What the system asked for, under the setting.
     pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
@@ -392,6 +394,7 @@ impl Shell {
             resizing: None,
             resizing_members: false,
             auto_idle: false,
+            last_message_sound: None,
             system_reduce_motion: false,
             update: None,
             newer_server_dismissed: false,
@@ -705,6 +708,11 @@ impl Shell {
         self.core.set_app_focused(active);
         if active {
             self.mark_open_read(cx);
+        } else {
+            // What was just read reaches the server before the app may be closed.
+            let core = self.core.clone();
+            self.runtime
+                .spawn(async move { core.flush_read_marks().await });
         }
         cx.notify();
     }

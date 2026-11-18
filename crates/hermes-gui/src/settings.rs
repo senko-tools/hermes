@@ -12,7 +12,7 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
-use hermes_client_core::audio::AudioDevices;
+use hermes_client_core::audio::{AudioDevices, Sound};
 use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
@@ -2505,6 +2505,29 @@ impl Shell {
                             cx,
                         ),
                         self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
+                        setting(
+                            "Test sounds",
+                            "Messages and DMs play the softer one, mentions the ping.",
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .child(
+                                    Button::new("test-sound-message")
+                                        .cursor_pointer()
+                                        .label("Message")
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            this.core.play_sound(Sound::Message);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("test-sound-mention")
+                                        .cursor_pointer()
+                                        .label("Mention")
+                                        .on_click(cx.listener(|this, _, _, _| {
+                                            this.core.play_sound(Sound::Ping);
+                                        })),
+                                ),
+                        ),
                         setting(
                             "Quiet hours",
                             &if n.quiet_from.is_empty() {

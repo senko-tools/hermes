@@ -255,9 +255,87 @@ fn pending_follows_pending(rows: &[Row]) -> bool {
     matches!(rows.last(), Some(Row::Pending(_)))
 }
 
+/// The first message under the "new messages" divider and how many messages are under it;
+/// `None` without a divider.
+pub fn first_new(rows: &[Row]) -> Option<(Id, usize)> {
+    let at = rows.iter().position(|r| matches!(r, Row::NewMessages))?;
+    let mut new = rows[at + 1..].iter().filter_map(|r| match r {
+        Row::Message(m) => Some(m.id),
+        _ => None,
+    });
+    let first = new.next()?;
+    Some((first, 1 + new.count()))
+}
+
+/// Where the read marker goes when the list changes: while I watch the newest messages
+/// (`watching`: the window has the focus and the list is at its end) and no divider shows, it
+/// follows the newest message, so what arrives in front of me is not "new". Before the first
+/// rows it stays, so what was unread on opening gets its divider.
+pub fn followed_marker(
+    marker: Option<Id>,
+    rows: &[Row],
+    watching: bool,
+    newest: Option<Id>,
+) -> Option<Id> {
+    if !watching || rows.is_empty() || rows.contains(&Row::NewMessages) {
+        return marker;
+    }
+    marker.max(newest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_marker_follows_only_while_watching_without_a_divider() {
+        let rows = vec![row(1, false, false), row(2, false, false)];
+        assert_eq!(
+            followed_marker(Some(Id(2)), &rows, true, Some(Id(3))),
+            Some(Id(3)),
+            "seen arriving: no divider"
+        );
+        assert_eq!(
+            followed_marker(Some(Id(2)), &rows, false, Some(Id(3))),
+            Some(Id(2)),
+            "unfocused or scrolled up: it stays"
+        );
+        assert_eq!(
+            followed_marker(Some(Id(2)), &[], true, Some(Id(3))),
+            Some(Id(2)),
+            "not loaded yet: unread on opening keeps its divider"
+        );
+        let with_divider = vec![row(1, false, false), Row::NewMessages, row(3, false, false)];
+        assert_eq!(
+            followed_marker(Some(Id(1)), &with_divider, true, Some(Id(4))),
+            Some(Id(1)),
+            "a divider stays for the visit"
+        );
+        assert_eq!(
+            followed_marker(Some(Id(5)), &rows, true, Some(Id(3))),
+            Some(Id(5)),
+            "never backwards"
+        );
+    }
+
+    #[test]
+    fn the_jump_goes_to_the_first_message_under_the_divider() {
+        assert_eq!(
+            first_new(&[row(1, false, false), row(2, true, false)]),
+            None
+        );
+        let rows = vec![
+            row(1, false, false),
+            Row::NewMessages,
+            Row::Day {
+                day: 1,
+                label: String::new(),
+            },
+            row(3, false, false),
+            row(4, true, false),
+        ];
+        assert_eq!(first_new(&rows), Some((Id(3), 2)));
+    }
 
     #[test]
     fn the_last_message_of_a_group_ends_it() {

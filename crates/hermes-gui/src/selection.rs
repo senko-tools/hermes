@@ -103,7 +103,7 @@ pub struct TextSelection {
     at: Point<Pixels>,
     laid: Laid,
     /// Where the message list was drawn, for scrolling at its edges.
-    list: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub(crate) list: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl TextSelection {

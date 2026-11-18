@@ -13,7 +13,8 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnimationExt as _, AnyElement, App, Context, Entity, ExternalPaths, FontStyle, FontWeight,
     HighlightStyle, InteractiveText, ListAlignment, ListScrollEvent, ListState, MouseButton,
-    SharedString, StrikethroughStyle, Subscription, UnderlineStyle, Window, div, img, list, rgba,
+    SharedString, StrikethroughStyle, Subscription, UnderlineStyle, Window, canvas, div, img, list,
+    rgba,
 };
 use hermes_client_core::commands::{self, SlashCommand};
 use hermes_client_core::proto::id::Id;
@@ -249,8 +250,11 @@ pub struct ChatView {
     pub rows: Vec<Row>,
     /// What each row showed when last measured: a change means measuring it again.
     signatures: Vec<u64>,
-    /// My read marker when the channel was opened (the divider position).
+    /// My read marker when the channel was opened (the divider position). While I watch the
+    /// newest messages it follows them, so what I see arrive gets no divider.
     pub read_marker: Option<Id>,
+    /// The "new messages" divider has been on screen this visit: no button leads to it then.
+    pub divider_seen: std::rc::Rc<std::cell::Cell<bool>>,
     pub loading_older: bool,
     pub loading_newer: bool,
     /// The message whose quick-reaction palette is open.
@@ -680,6 +684,7 @@ impl Shell {
                 rows: Vec::new(),
                 signatures: Vec::new(),
                 read_marker: marker,
+                divider_seen: std::rc::Rc::default(),
                 loading_older: false,
                 loading_newer: false,
                 palette: None,
@@ -736,6 +741,7 @@ impl Shell {
             if let Some(view) = self.chats.get_mut(&key) {
                 view.read_marker = marker;
                 view.unread_jump_done = false;
+                view.divider_seen.set(false);
             }
         }
         self.page = Page::Chat(inst.clone(), channel);
@@ -774,9 +780,30 @@ impl Shell {
     /// The store changed for a channel: brings its rows and list up to date.
     pub fn messages_changed(&mut self, inst: &str, channel: Id, cx: &mut Context<Self>) {
         let key = (inst.to_owned(), channel);
+        if self.open_channel().as_ref() == Some(&key) {
+            self.follow_read_marker(&key);
+        }
         self.sync_rows(&key);
         if self.open_channel().as_ref() == Some(&key) {
             self.mark_open_read(cx);
+        }
+    }
+
+    /// Moves the open channel's read marker along while I watch (`rows::followed_marker`).
+    fn follow_read_marker(&mut self, key: &ChannelKey) {
+        let newest = {
+            let store = self.core.store();
+            store
+                .instance(&key.0)
+                .and_then(|s| s.window(key.1))
+                .filter(|w| w.loaded && w.reached_end)
+                .and_then(|w| w.messages.last().map(|m| m.id))
+        };
+        let focused = self.focused;
+        if let Some(view) = self.chats.get_mut(key) {
+            let watching = focused && view.list.is_scrolled_to_end() != Some(false);
+            view.read_marker =
+                rows::followed_marker(view.read_marker, &view.rows, watching, newest);
         }
     }
 
@@ -2155,6 +2182,14 @@ impl Shell {
             }
             (Target::Message(inst, channel, message), Action::MarkUnreadHere) => {
                 self.core.mark_unread(&inst, channel, message);
+                let key = (inst, channel);
+                if let Some(view) = self.chats.get_mut(&key) {
+                    // The divider moves there at once.
+                    view.read_marker = Some(Id(message.0.saturating_sub(1)));
+                    view.unread_jump_done = false;
+                    view.divider_seen.set(false);
+                }
+                self.sync_rows(&key);
                 cx.notify();
             }
             (Target::Message(inst, channel, message), Action::Forward) => {
@@ -2310,10 +2345,10 @@ impl Shell {
         } else {
             SharedString::from("Jump to present")
         };
-        let newest = window_state.and_then(|w| w.messages.iter().last().map(|m| m.id));
-        let first_unread = view
-            .read_marker
-            .filter(|marker| !view.unread_jump_done && newest.is_some_and(|n| n > *marker));
+        // The first new message and how many there are, while the divider is off screen and was
+        // not seen yet. My own messages never make a divider (`rows::build`).
+        let first_unread = rows::first_new(&view.rows)
+            .filter(|_| !view.unread_jump_done && !view.divider_seen.get());
         let selected_count = view.selected.len();
         let can_send = s.is_some_and(|s| view::can(s, channel, Permissions::SEND_MESSAGES));
         let reply_name = view.reply_to.map(|id| {
@@ -2386,7 +2421,7 @@ impl Shell {
                 .min_h_0()
                 .child(self.selection_list_marker())
                 .child(messages)
-                .children(first_unread.map(|marker| {
+                .children(first_unread.map(|(first, count)| {
                     let (jump_inst, jump_channel) = key.clone();
                     div()
                         .absolute()
@@ -2395,7 +2430,10 @@ impl Shell {
                         .child(
                             Button::new("jump-unread")
                                 .cursor_pointer()
-                                .label("Jump to new messages")
+                                .label(format!(
+                                    "{count} new message{} · Jump",
+                                    if count == 1 { "" } else { "s" }
+                                ))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     if let Some(view) =
                                         this.chats.get_mut(&(jump_inst.clone(), jump_channel))
@@ -2405,7 +2443,7 @@ impl Shell {
                                     this.jump_to(
                                         jump_inst.clone(),
                                         jump_channel,
-                                        marker,
+                                        first,
                                         window,
                                         cx,
                                     );
@@ -2900,7 +2938,36 @@ impl Shell {
                     theme::border(),
                 )
             }
-            Row::NewMessages => new_messages_divider(),
+            Row::NewMessages => {
+                // Notes when the divider is on screen, so the button leading to it goes.
+                let seen = self.chats.get(&key).map(|v| v.divider_seen.clone());
+                let viewport = self.selection.list.clone();
+                let shell = cx.entity_id();
+                div()
+                    .relative()
+                    .child(new_messages_divider())
+                    .child(
+                        canvas(
+                            move |bounds, _, cx| {
+                                let on_screen = viewport.get().is_some_and(|v| {
+                                    bounds.bottom() > v.top() && bounds.top() < v.bottom()
+                                });
+                                if on_screen
+                                    && let Some(seen) = &seen
+                                    && !seen.replace(true)
+                                {
+                                    cx.notify(shell);
+                                }
+                            },
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                    .into_any_element()
+            }
             Row::Message(m) => match s.window(channel).and_then(|w| w.get(m.id)) {
                 Some(message) => self.render_message(s, inst, channel, m, message, cx),
                 None => div().into_any_element(),
