@@ -279,6 +279,17 @@ pub struct RowState {
 }
 
 impl RowState {
+    /// What a row inside a highlighted block shows under the pointer, over the block's fill: the
+    /// state's own hover, or where a theme gives it the same colour as the fill, a light wash of
+    /// the bar's colour, so it always shows and stays on the block's hue.
+    pub fn block_hover(&self) -> gpui_kit::Rgba {
+        if self.hover == self.background {
+            theme::alpha(self.bar, 0.12)
+        } else {
+            self.hover
+        }
+    }
+
     /// `None`: a plain row. The states are in order of what matters most.
     fn of(selected: bool, connected: bool, badge: Badge) -> Option<RowState> {
         if selected {
@@ -316,6 +327,28 @@ impl RowState {
 }
 
 impl Shell {
+    /// The pill a row inside a highlighted block (`state`) shows under the pointer, inset evenly
+    /// within the row so the block's bar and edges stay clear. It fades on the hover spring; the
+    /// row notes its hover under `key` (`track_hover`) and lays this out first, under its content.
+    pub fn block_hover_pill(&self, key: &str, state: RowState) -> AnyElement {
+        use gpui_kit::{AnimationExt as _, SpringAnimation};
+        let color = state.block_hover();
+        div()
+            .absolute()
+            .top(px(2.))
+            .bottom(px(2.))
+            .left_0()
+            .right_0()
+            .rounded(theme::row_radius())
+            .with_spring(
+                SharedString::from(format!("{key}-pill")),
+                SpringAnimation::new(theme::paced(crate::hover::HOVER_SPRING))
+                    .to(self.is_hovered(key)),
+                move |d, phase| d.bg(theme::alpha(color, phase.0.clamp(0., 1.))),
+            )
+            .into_any_element()
+    }
+
     /// The state a highlighted row's colours crossfade from (itself when nothing changed), and
     /// notes the one it shows now. A row that isn't highlighted forgets it.
     fn tint_from(&self, row: &str, state: Option<RowState>) -> Option<RowState> {
@@ -460,7 +493,8 @@ fn rail_icon(id: impl Into<SharedString>) -> Stateful<Div> {
 }
 
 /// Morphs a rail icon from round to a rounded square as it gets selected or hovered, and back,
-/// while its background fades to the accent as it gets selected. A server's `picture` fills it,
+/// while its background fades to the accent as it gets selected, and a little way towards it
+/// under the pointer (on the same spring, so shape and colour move together). A server's `picture` fills it,
 /// in the same shape.
 fn rail_morph(
     id: &str,
@@ -495,10 +529,17 @@ fn rail_morph(
         // Under a picture the background would show at the rounded edge.
         .with_spring(
             SharedString::from(format!("{id}-fade")),
-            SpringAnimation::new(crate::theme::paced(SpringConfig::new(380., 30., 1.)))
-                .to(selected),
-            move |d, phase| {
-                let fade = phase.0.clamp(0., 1.);
+            SpringAnimation::new(crate::theme::paced(SpringConfig::new(380., 30., 1.))).to(
+                if selected {
+                    1.
+                } else if hovered {
+                    RAIL_HOVER_TINT
+                } else {
+                    0.
+                },
+            ),
+            move |d, fade: f32| {
+                let fade = fade.clamp(0., 1.);
                 d.map_element(|e| {
                     e.when(plain, |e| {
                         e.bg(theme::mix(theme::selected(), theme::accent(), fade))
@@ -508,6 +549,9 @@ fn rail_morph(
         )
         .into_any_element()
 }
+
+/// How far a plain rail icon's background goes towards the accent under the pointer.
+const RAIL_HOVER_TINT: f32 = 0.22;
 
 /// How tall an icon's own pill at the rail's edge is: a dot while unread, longer under the
 /// pointer, none while selected (the rail's one pill is there).
@@ -695,7 +739,6 @@ impl Shell {
         let home_badge = self.home_badge();
         let home_selected = self.selected == Selected::Home;
         let home = rail_icon("home")
-            .when(!home_selected, |d| d.hover(|d| d.bg(theme::hover())))
             .child(icon(
                 assets::FEATHER,
                 28.,
@@ -765,9 +808,6 @@ impl Shell {
                     } else {
                         theme::text()
                     })
-                    .when(!selected && picture.is_none(), |d| {
-                        d.hover(|d| d.bg(theme::hover()))
-                    })
                     .when(picture.is_none(), |d| d.child(initials(&name)))
                     .tooltip({
                         let name = SharedString::from(rail_tooltip(&name, voice.count));
@@ -815,7 +855,6 @@ impl Shell {
             .collect();
 
         let add = rail_icon("rail-add")
-            .hover(|d| d.bg(theme::hover()))
             .on_hover(self.track_hover("rail-add", cx))
             .child(icon(assets::PLUS, 24., theme::accent()))
             .on_click(
@@ -1161,7 +1200,7 @@ impl Shell {
             let block_key = format!("voice-block-{id}");
             let from = self.tint_from(&block_key, Some(state)).unwrap_or(state);
             let reach = self.row_reach();
-            let head = self.render_channel_row(tree_row, true, cx);
+            let head = self.render_channel_row(tree_row, Some(state), cx);
             let mut people = Vec::new();
             while let Some(Row::VoiceUser {
                 inst,
@@ -1177,7 +1216,17 @@ impl Shell {
             }) = tree_rows.next_if(|r| matches!(r, Row::VoiceUser { .. }))
             {
                 people.push(self.render_voice_user(
-                    inst, channel, user, name, muted, deafened, speaking, nested, dm, true, cx,
+                    inst,
+                    channel,
+                    user,
+                    name,
+                    muted,
+                    deafened,
+                    speaking,
+                    nested,
+                    dm,
+                    Some(state),
+                    cx,
                 ));
             }
             rows.push(stagger(
@@ -1227,6 +1276,8 @@ impl Shell {
                         .justify_center()
                         .size(px(20.))
                         .rounded(theme::radius_small())
+                        .cursor_pointer()
+                        .hover(|d| d.bg(theme::hover()))
                         .group("category-add")
                         .child(
                             icon(assets::PLUS, 16., theme::category_text())
@@ -1293,7 +1344,7 @@ impl Shell {
                 let element = self.with_drag(element, drag, name, cx);
                 self.with_menu(element, target, cx).into_any_element()
             }
-            channel @ Row::Channel { .. } => self.render_channel_row(channel, false, cx),
+            channel @ Row::Channel { .. } => self.render_channel_row(channel, None, cx),
             Row::VoiceUser {
                 inst,
                 channel,
@@ -1306,7 +1357,7 @@ impl Shell {
                 dm,
                 ..
             } => self.render_voice_user(
-                inst, channel, user, name, muted, deafened, speaking, nested, dm, false, cx,
+                inst, channel, user, name, muted, deafened, speaking, nested, dm, None, cx,
             ),
             Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
                 .text_size(theme::body_size())
@@ -1400,13 +1451,14 @@ impl Shell {
         }
     }
 
-    /// A channel's row. `in_block`: the block around it draws its state.
+    /// A channel's row. `block`: the state of the highlighted block around it, which draws it.
     fn render_channel_row(
         &self,
         tree_row: Row,
-        in_block: bool,
+        block: Option<RowState>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let in_block = block.is_some();
         let Row::Channel {
             inst,
             id,
@@ -1429,6 +1481,8 @@ impl Shell {
         };
         let target = Target::Channel(inst.clone(), id);
         let strong = selected || connected || badge.unread || badge.mentions > 0;
+        // Rows that keep their text and icon under the pointer.
+        let lit_still = selected || connected || in_block;
         let state = RowState::of(selected, connected, badge).filter(|_| !in_block);
         let row_key = format!("channel-{id}");
         let from = self.tint_from(&row_key, state);
@@ -1453,16 +1507,17 @@ impl Shell {
             .when(strong && !muted, |d| {
                 d.text_color(theme::text()).font_weight(FontWeight::MEDIUM)
             })
-            // Plain rows brighten their text and icon under the pointer.
-            .when(state.is_none() && !in_block, |d| {
-                d.hover(|d| d.text_color(theme::accent()))
-            })
-            // Inside a highlighted block: an inset pill beside the bar, the text where it was.
-            .when(in_block, |d| {
+            // Plain, unread and mention rows brighten their text and icon under the pointer; the
+            // open one and the voice channel I am in stay as they are (their tint may deepen).
+            .when(!lit_still, |d| d.hover(|d| d.text_color(theme::accent())))
+            // Inside a highlighted block: a pill of the block's own hue beside the bar, the text
+            // where it was.
+            .when_some(block, |d, block| {
                 d.ml(theme::indicator_width() + px(2.))
                     .mr(px(2.))
                     .pl(px(6.) - theme::indicator_width())
-                    .hover(|d| d.bg(theme::hover()).text_color(theme::accent()))
+                    .on_hover(self.track_hover(row_key.clone(), cx))
+                    .child(self.block_hover_pill(&row_key, block))
             })
             .child(
                 icon(
@@ -1474,7 +1529,7 @@ impl Shell {
                         theme::icon_color()
                     },
                 )
-                .when(!connected, |i| {
+                .when(!lit_still, |i| {
                     i.group_hover(CHANNEL_ROW, |s| s.text_color(theme::accent()))
                 }),
             )

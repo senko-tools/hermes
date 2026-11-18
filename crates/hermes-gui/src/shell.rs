@@ -1080,7 +1080,13 @@ impl Shell {
             .bg(crate::theme::raised())
             .text_size(crate::theme::caption_size())
             .text_color(theme::text_tertiary())
-            .child(icon(assets::SEARCH, 14., theme::text_tertiary()))
+            // Like the other header buttons: it brightens under the pointer.
+            .group(FIND_GROUP)
+            .hover(|d| d.text_color(theme::text_secondary()))
+            .child(
+                icon(assets::SEARCH, 14., theme::text_tertiary())
+                    .group_hover(FIND_GROUP, |s| s.text_color(theme::accent())),
+            )
             .child(div().flex_1().truncate().child("Find anything"))
             .child(
                 crate::keybinds::Keybinds::combo_text(
@@ -1358,6 +1364,7 @@ impl Shell {
                         })),
                 )
                 .cursor_pointer()
+                .hover(|d| d.text_color(theme::accent()))
                 .text_size(crate::theme::secondary_size())
                 .child(div().flex_1().child(if self_update {
                     format!("Hermes {} is available: click to update", update.version)
@@ -1408,9 +1415,11 @@ impl Shell {
                         })),
                 )
                 .cursor_pointer()
+                .hover(|d| d.text_color(theme::accent()))
                 .text_size(crate::theme::secondary_size())
                 .child(div().flex_1().child(
-                    "A server you use is newer than this Hermes: some things won't show until                      you update. Click to check for an update",
+                    "A server you use is newer than this Hermes: some things won't show until \
+                    you update. Click to check for an update",
                 ))
                 .on_click(cx.listener(|this, _, _, cx| this.check_for_update_now(cx)))
                 .into_any_element(),
@@ -1759,3 +1768,6 @@ impl Render for Shell {
             .children(self.render_menu())
     }
 }
+
+/// The hover group of the header's "Find anything" box.
+const FIND_GROUP: &str = "header-find";

@@ -2126,7 +2126,8 @@ impl Shell {
                     ),
                     setting(
                         "Warn about unencrypted chats",
-                        "A popup when opening a chat the server can read. The note above                          the message box is always there.",
+                        "A popup when opening a chat the server can read. The note above \
+                        the message box is always there.",
                         self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
                     ),
                 ],
@@ -2332,7 +2333,8 @@ impl Shell {
                 ),
                 setting(
                     "Echo cancellation",
-                    "For speakers or a laptop's own microphone: others don't hear                      themselves back. Not needed with headphones.",
+                    "For speakers or a laptop's own microphone: others don't hear \
+                    themselves back. Not needed with headphones.",
                     voice_switch(
                         "echo",
                         v.echo_cancellation,
@@ -2462,7 +2464,8 @@ impl Shell {
                 ),
                 setting(
                     "Share sound",
-                    "Others hear what your computer plays, but not this call. From your next                      share; needs Windows 10 version 2004 or later.",
+                    "Others hear what your computer plays, but not this call. From your next \
+                    share; needs Windows 10 version 2004 or later.",
                     Switch::new("share-sound")
                         .cursor_pointer()
                         .checked(v.share_sound)

@@ -45,7 +45,11 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   the protocol keep `space`). Instances stay "instances".
 - **Hover (2026-11-08):** most things turn the accent colour under the pointer (`icon_button`, chips, nav
   items, channel rows, people under voice channels, who also get a background since 2026-11-10). Inside a
-  highlighted voice block the rows are inset pills that leave its bar alone (2026-11-11). People in member lists, messages, search results and
+  highlighted voice block the rows are inset pills that leave its bar alone (2026-11-11); since 2026-11-18 the
+  pill is the block's own hover tint (`RowState::block_hover`, a wash of its bar colour where a theme's hover
+  equals its fill), inset 2 px top and bottom, fading on the hover spring, and the text brightens instead of
+  turning accent. The open channel and the voice channel I am in keep their text and icon under the pointer.
+  Rail icons tint a little towards the accent under the pointer on the same spring as their shape. People in member lists, messages, search results and
   emoji keep a background hover. `group_hover` only recolours icons (svg): gpui ignores it for text in
   plain divs, so text takes a direct `.hover` on its row.
 - **Voice buttons:** `voice::voice_button` with a `Look`: mute and deafen grey while off and red while
@@ -78,7 +82,10 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
   and call `cancel_closing(id)` where they open. Durations: `theme::FADE` (120 ms) for fades,
   `modal::POP` (150 ms) for dialogs and popups. Voice buttons (`Shell::voice_button`, `OnHover`):
   sharing turns into a red stop button under the pointer, muted and deafened stay red and crossed out (the pointer only deepens the red; changed 2026-11-18),
-  Leave grows into a red "Leave" pill. Divs cannot be scaled in gpui: grow their size instead (tiles, the
+  Leave grows into a red "Leave" pill in the call bar; the sidebar's voice panel is narrow, so its Leave
+  keeps its square and only fills red (`OnHover::Fill { grow }`, 2026-11-18).
+  Speaking rings are not paced by the motion speed: they light up in about 50 ms and fade in about 120 ms
+  (`ring_spring`), since a slower spring from rest read as a delay. Divs cannot be scaled in gpui: grow their size instead (tiles, the
   rail's pills, badges), and draw rings as an overlay (`theme::border_width`) so the content never moves.
   Hard-coded corner radii are only for circles and pills; cards and popups use the theme's shape.
 - **People (2026-11-10):** a left click on someone (voice rows, member lists, a name or picture in the chat)
@@ -159,11 +166,12 @@ Testing on the developer's PC needs a scratch server and its own config dir; see
 
 - **Share picker (2026-11-18):** `share_picker.rs`, a panel over most of the window (40 px margin, at most
   1080 wide): screens on top, a labelled rule, windows below in a scrolling grid. Every card is the same
-  size (184 px, 104 px picture) and rows are centred (`flex_wrap` + `justify_center`, like the voice
+  size and rows are centred; the panel is at most 1400 wide and cards are 230 to 320 px, as many per row
+  as fit at 230 and stretched to fill it (`card_layout`), pictures 16:9 (`flex_wrap` + `justify_center`, like the voice
   tiles). Pictures come from `capture::sources(true)` on a blocking thread every 2.5 s while it is open
   (about 1 s for ten windows in release; the first listing comes without pictures so the cards show at
-  once). Minimized windows get a plain card. A click selects, Share (or a double click) saves
-  `voice.share_screen` and starts; the footer holds resolution, frame rate, preference and Share sound.
+  once). Minimized windows and windows without a picture get a card with its own lighter face and a border. A click selects, Share (or a double click) saves
+  `voice.share_screen` and starts; the footer holds resolution, frame rate, preference and a Share sound switch (as in Settings).
 - **Unencrypted chats (2026-11-18):** encrypted is the normal case and shows no mark (messages lost
   their grey lock). A chat the server can read has an amber note above its composer, always, and
   opening one shows a popup (`unencrypted.rs`) as `privacy.warn_unencrypted` says: `every`, `first`
