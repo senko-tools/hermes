@@ -810,18 +810,7 @@ impl Core {
         let seen = recorder
             .seen()
             .ok_or_else(|| CoreError::Io("no certificate seen".into()))?;
-        let pinned = self
-            .inner
-            .known_hosts
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(host);
-        let cert = match pinned {
-            Some(p) if p == seen.fingerprint => CertStatus::Pinned,
-            Some(pinned) => CertStatus::Changed { pinned },
-            None if seen.ca_valid => CertStatus::Trusted,
-            None => CertStatus::Unknown,
-        };
+        let cert = self.cert_status(host, &seen);
         // A newer server is fine: what it adds is announced in `features` and skipped here.
         if info.protocol_version < MIN_SERVER_PROTOCOL {
             return Err(CoreError::UnsupportedProtocol {
@@ -834,6 +823,26 @@ impl Core {
             fingerprint: seen.fingerprint,
             cert,
         })
+    }
+
+    /// How the certificate `seen` at `host` compares with what this client trusts for it.
+    pub(crate) fn cert_status(
+        &self,
+        host: &HostPort,
+        seen: &crate::tls::SeenCertificate,
+    ) -> CertStatus {
+        let pinned = self
+            .inner
+            .known_hosts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(host);
+        match pinned {
+            Some(p) if p == seen.fingerprint => CertStatus::Pinned,
+            Some(pinned) => CertStatus::Changed { pinned },
+            None if seen.ca_valid => CertStatus::Trusted,
+            None => CertStatus::Unknown,
+        }
     }
 
     /// Pins a fingerprint for a host (trust on first use, an invite's `#fp=`, or "I re-generated

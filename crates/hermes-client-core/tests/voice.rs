@@ -762,3 +762,51 @@ async fn voice_tries_the_next_address_when_one_does_not_answer() {
     endpoint.close(0u32.into(), b"done");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Diagnostics against a working server: every check of it is Working, voice included.
+#[tokio::test]
+async fn diagnostics_find_a_working_server_working() {
+    use hermes_client_core::diagnostics::Level;
+
+    let server = start("diagnostics").await;
+    let (core, mut events) = core(&Device::default());
+    let inst = sign_up(
+        &server,
+        &core,
+        &mut events,
+        "owner",
+        Some(&server.setup_code),
+    )
+    .await;
+    // The device's keys are registered just after signing in.
+    let mut checks = Vec::new();
+    for _ in 0..50 {
+        checks = core.diagnose_instance(&inst).await;
+        if checks.iter().all(|c| c.level == Level::Working) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Address lookup",
+            "HTTPS (text, files)",
+            "Certificate",
+            "Live connection",
+            "Version",
+            "Voice (UDP)",
+            "Encryption keys",
+        ]
+    );
+    for check in &checks {
+        assert_eq!(check.level, Level::Working, "{check:?}");
+    }
+    assert!(
+        checks[1].detail.starts_with("IPv4 127.0.0.1: "),
+        "{:?}",
+        checks[1]
+    );
+    assert_eq!(core.diagnose_storage().level, Level::Warning, "in memory");
+}

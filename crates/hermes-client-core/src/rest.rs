@@ -179,6 +179,31 @@ impl Rest {
         })
     }
 
+    /// [`Rest::with_tls`] that connects to `addr` only, whatever `host` resolves to: for testing
+    /// each of a server's addresses (diagnostics). The certificate is still checked for `host`.
+    pub(crate) fn with_tls_at(
+        config: rustls::ClientConfig,
+        host: &HostPort,
+        addr: std::net::SocketAddr,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let mut builder = reqwest::Client::builder()
+            .use_preconfigured_tls(config)
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .user_agent(concat!("hermes-client-core/", env!("CARGO_PKG_VERSION")));
+        // An IP address is already the one address; a name is made to resolve to `addr`.
+        if host.host.parse::<std::net::IpAddr>().is_err() {
+            builder = builder.resolve(&host.host, addr);
+        }
+        let http = builder.build().map_err(network)?;
+        Ok(Rest {
+            http,
+            base: format!("{}/api/v1", host.url()).into(),
+            token: None,
+        })
+    }
+
     /// The same client, sending `token`.
     pub fn with_token(&self, token: &str) -> Self {
         Rest {

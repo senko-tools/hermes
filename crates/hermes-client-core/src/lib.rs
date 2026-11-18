@@ -10,6 +10,7 @@ pub mod compress;
 pub mod config;
 mod core;
 pub mod crash;
+pub mod diagnostics;
 pub mod e2ee;
 pub mod files;
 pub mod gateway;
