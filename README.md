@@ -141,6 +141,20 @@ configuration and data are kept. The server uses the panel's port even though `h
 If the console shows *address already in use*, the port from step 2 is taken: check what uses it
 with `sudo ss -tulpn | grep <port>` and pick another allocation.
 
+**If the domain has an IPv6 address** (an AAAA record), the server must listen on IPv6 too. An
+allocation on `0.0.0.0` is published on IPv4 only, so people whose computer prefers IPv6 cannot
+reach it (older apps then fail voice while text still works):
+
+1. *Admin → Nodes →* your node *→ Allocations*: add the machine's public IPv6 address with the
+   same port.
+2. *Admin → Servers →* the server *→ Build Configuration*: add it under *Additional
+   Allocations* (keep the `0.0.0.0` one as the primary).
+3. *Admin → Servers →* the server *→ Startup*: set *Bind address* to `::`.
+4. Allow the port for IPv6 in the firewall too (`ufw allow` covers both when `IPV6=yes` in
+   `/etc/default/ufw`), and restart the server.
+
+*Settings → Diagnostics* in the app tests HTTPS and voice on each of the server's addresses.
+
 ### Way 4: by hand (Linux or Windows)
 
 Good for trying Hermes out. Unlike Way 1 it does not start by itself after a reboot or renew

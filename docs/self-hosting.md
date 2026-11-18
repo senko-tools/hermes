@@ -135,11 +135,12 @@ read them. Reports carry what the reporter chooses to share.
 |---|---|
 | The app says it cannot reach the server | Check that TCP 7700 is open in every firewall (the server's own and the provider's), and that `public_host` is right: `hermes-server check-config`. |
 | Text works but voice does not connect | UDP 7700 is blocked. Open **UDP** 7700 in every firewall; with a reverse proxy, UDP must go straight to Hermes. Some school or office networks block UDP entirely. |
+| Voice works for some people but not others | The domain has an IPv6 address (AAAA record) that the server does not listen on: text falls back to IPv4, apps before 1.4.0 do not for voice. Listen on IPv6 too (`network.bind = "::"`; on a game server panel see the README's IPv6 steps), or remove the AAAA record. |
 | "The certificate changed" warning | The server's own certificate was replaced (for example the data folder was deleted). If you did that, choose *Trust the new certificate*; otherwise do not continue. |
 | The setup link expired | `hermes-server invite create` prints a new one while nobody has registered yet. |
 | Let's Encrypt failed during install | Port 80 must be reachable from the internet and the domain must point at this server. Re-run the installer; it falls back to a self-signed certificate meanwhile. |
 | *address already in use* on start | Another program (often another Hermes server) uses the port. `sudo ss -tulpn \| grep 7700` shows which; stop it or give this server another port. |
-| Something else | `journalctl -u hermes -n 100` (or `docker compose logs hermes`) shows the last log lines; in the app, *Settings → About → Copy debug info* helps when asking for help. |
+| Something else | `journalctl -u hermes -n 100` (or `docker compose logs hermes`) shows the last log lines; in the app, *Settings → Diagnostics* tests each part and *Copy report* helps when asking for help. |
 
 ## Limiting disk use
 
