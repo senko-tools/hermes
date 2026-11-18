@@ -59,9 +59,9 @@ jobs:
           SHA: ${{ forgejo.sha }}
         run: |
           if [ "$REF_TYPE" = "tag" ]; then
-            echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "version=${REF_NAME#v}" >> "$FORGEJO_OUTPUT"
           else
-            echo "version=dev-${SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "version=dev-${SHA::7}" >> "$FORGEJO_OUTPUT"
           fi
 
   server-linux:
@@ -200,7 +200,7 @@ jobs:
               "https://download.docker.com/linux/static/stable/$arch/docker-$DOCKER_VERSION.tgz"
             echo "$sum  $tools/docker.tgz" | sha256sum -c -
             tar -xzf "$tools/docker.tgz" -C "$tools" docker/docker
-            echo "$tools/docker" >> "$GITHUB_PATH"
+            echo "$tools/docker" >> "$FORGEJO_PATH"
             export PATH="$tools/docker:$PATH"
           fi
           if ! docker buildx version >/dev/null 2>&1; then
@@ -224,7 +224,7 @@ jobs:
             *-*) ;;
             *) tags="$tags $IMAGE:latest" ;;
           esac
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$FORGEJO_OUTPUT"
       - name: Log in to the registry
         if: forgejo.ref_type == 'tag'
         env:

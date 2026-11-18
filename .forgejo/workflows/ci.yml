@@ -22,15 +22,11 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Ignored by Forgejo today; documents that the jobs only read the repository.
-permissions:
-  contents: read
-
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
   # A newer push to a pull request replaces the running check; branch pushes queue instead,
   # so every main/dev commit gets checked and can save the cache.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
 
 env:
   CI: true # crates/hermes-voicebot/tests/exchange.rs relaxes its latency limits on CI
@@ -95,7 +91,7 @@ jobs:
           # Nothing is `cargo install`ed, and where the toolchain action had to install rustup,
           # ~/.cargo/bin holds only rustup's own proxies.
           cache-bin: false
-          save-if: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
+          save-if: ${{ forgejo.event_name != 'pull_request' && (forgejo.ref == 'refs/heads/main' || forgejo.ref == 'refs/heads/dev') }}
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
