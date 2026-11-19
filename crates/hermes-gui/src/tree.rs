@@ -281,3 +281,144 @@ pub fn dm_rows(
         voice_users(s, inst, id, None, false, speaking, rows);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures;
+
+    /// A short picture of each row: kind, name and the flags that matter.
+    fn describe(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|row| match row {
+                Row::Space {
+                    name,
+                    collapsed,
+                    badge,
+                    ..
+                } => format!("space {name} collapsed={collapsed} {badge:?}"),
+                Row::Category {
+                    name,
+                    collapsed,
+                    badge,
+                    drag,
+                    ..
+                } => format!(
+                    "category {name} collapsed={collapsed} drag={} {badge:?}",
+                    drag.is_some()
+                ),
+                Row::Channel {
+                    name,
+                    nested,
+                    badge,
+                    selected,
+                    ..
+                } => format!("channel {name} nested={nested} selected={selected} {badge:?}"),
+                Row::VoiceUser {
+                    name,
+                    muted,
+                    nested,
+                    dm,
+                    ..
+                } => format!("voice {name} muted={muted} nested={nested} dm={dm}"),
+                Row::NewDm { .. } => "new dm".to_owned(),
+                Row::Requests { count, .. } => format!("requests {count}"),
+                Row::Request { name, .. } => format!("request {name}"),
+                Row::Dm {
+                    name,
+                    group,
+                    badge,
+                    selected,
+                    ..
+                } => format!("dm {name} group={group} selected={selected} {badge:?}"),
+            })
+            .collect()
+    }
+
+    fn space(collapsed: &Collapsed, selected: Option<Id>) -> Vec<String> {
+        let store = fixtures::store();
+        let mut rows = Vec::new();
+        space_rows(
+            &store,
+            &"inst".to_owned(),
+            Id(10),
+            collapsed,
+            selected,
+            &|_, _| false,
+            &mut rows,
+        );
+        describe(&rows)
+    }
+
+    #[test]
+    fn a_space_lists_its_channels_with_people_in_voice_under_theirs() {
+        let rows = space(&Collapsed::default(), Some(Id(13)));
+        assert_rows(
+            &rows,
+            &[
+                "space Friends collapsed=false Badge { unread: false, mentions: 0 }",
+                "channel general nested=false selected=false Badge { unread: true, mentions: 2 }",
+                "category Games collapsed=false drag=true Badge { unread: false, mentions: 0 }",
+                "channel chess nested=true selected=true Badge { unread: false, mentions: 0 }",
+                "channel Lounge nested=true selected=false Badge { unread: false, mentions: 0 }",
+                "voice Bobby muted=true nested=true dm=false",
+                "channel memes nested=false selected=false Badge { unread: true, mentions: 0 }",
+            ],
+        );
+    }
+
+    #[test]
+    fn collapsing_hides_rows_and_sums_their_badges() {
+        let mut collapsed = Collapsed::default();
+        collapsed
+            .toggle(&Node::Category("inst".to_owned(), Id(12)))
+            .unwrap();
+        let rows = space(&collapsed, None);
+        assert!(
+            rows.iter()
+                .all(|r| !r.contains("chess") && !r.contains("Bobby")),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.starts_with("category Games collapsed=true")),
+            "{rows:#?}"
+        );
+
+        collapsed
+            .toggle(&Node::Space("inst".to_owned(), Id(10)))
+            .unwrap();
+        assert_eq!(
+            space(&collapsed, None),
+            ["space Friends collapsed=true Badge { unread: true, mentions: 2 }"],
+            "a folded space is one row carrying everything unread inside"
+        );
+    }
+
+    #[test]
+    fn direct_messages_start_with_new_message_and_list_newest_first() {
+        let store = fixtures::store();
+        let mut rows = Vec::new();
+        dm_rows(
+            &store,
+            &"inst".to_owned(),
+            Some(Id(21)),
+            &|_, _| false,
+            &mut rows,
+        );
+        assert_rows(
+            &describe(&rows),
+            &[
+                "new dm",
+                "dm carol group=false selected=false Badge { unread: true, mentions: 0 }",
+                "dm Trio group=true selected=true Badge { unread: false, mentions: 0 }",
+            ],
+        );
+    }
+
+    /// `assert_eq!` that prints both lists one row per line.
+    #[track_caller]
+    fn assert_rows(got: &[String], want: &[&str]) {
+        assert_eq!(got, want, "\ngot:\n{}\n", got.join("\n"));
+    }
+}

@@ -460,38 +460,14 @@ impl Shell {
         action: Action,
         cx: &mut Context<Self>,
     ) {
-        let (current, fallback) = {
+        let req = {
             let store = self.core.store();
-            let s = store.instance(&inst);
-            let current = s.and_then(|s| s.notification_settings.get(&target).copied());
-            let fallback = s.map_or(NotificationLevel::Mentions, |s| {
-                if s.spaces.contains_key(&target) {
-                    NotificationLevel::Mentions
-                } else if s.dms.contains_key(&target) {
-                    NotificationLevel::All
-                } else {
-                    // A space channel follows its space.
-                    s.space_of(target)
-                        .and_then(|sp| s.notification_settings.get(&sp).map(|n| n.level))
-                        .unwrap_or(NotificationLevel::Mentions)
-                }
-            });
-            (current, fallback)
-        };
-        let level = current.map_or(fallback, |c| c.level);
-        let muted_until = current.and_then(|c| c.muted_until);
-        let req = match action {
-            Action::NotifyAll => Some((NotificationLevel::All, muted_until)),
-            Action::NotifyMentions => Some((NotificationLevel::Mentions, muted_until)),
-            Action::NotifyNothing => Some((NotificationLevel::None, muted_until)),
-            Action::Mute => Some((level, Some(NotificationSetting::MUTED_FOREVER))),
-            a if a.mute_minutes().is_some() => Some((
-                level,
-                a.mute_minutes()
-                    .map(|m| hermes_client_core::now_ms() + m * 60_000),
-            )),
-            Action::Unmute => Some((level, None)),
-            _ => None,
+            notification_change(
+                store.instance(&inst),
+                target,
+                action,
+                hermes_client_core::now_ms(),
+            )
         };
         let text = match action {
             Action::Mute => "Muted",
@@ -554,6 +530,99 @@ impl Shell {
                 Ok(channel) => this.select(inst, channel, window, cx),
                 Err(err) => this.error(err, cx),
             },
+        );
+    }
+}
+
+/// The notification setting `action` gives `target` (a server, channel or DM): its level and
+/// until when it is muted, or `None` to go back to the default. A mute keeps the level, and a
+/// level keeps the mute; `now` is in milliseconds.
+fn notification_change(
+    s: Option<&hermes_client_core::store::InstanceStore>,
+    target: Id,
+    action: Action,
+    now: i64,
+) -> Option<(NotificationLevel, Option<i64>)> {
+    let current = s.and_then(|s| s.notification_settings.get(&target).copied());
+    let fallback = s.map_or(NotificationLevel::Mentions, |s| {
+        if s.spaces.contains_key(&target) {
+            NotificationLevel::Mentions
+        } else if s.dms.contains_key(&target) {
+            NotificationLevel::All
+        } else {
+            // A space channel follows its space.
+            s.space_of(target)
+                .and_then(|sp| s.notification_settings.get(&sp).map(|n| n.level))
+                .unwrap_or(NotificationLevel::Mentions)
+        }
+    });
+    let level = current.map_or(fallback, |c| c.level);
+    let muted_until = current.and_then(|c| c.muted_until);
+    match action {
+        Action::NotifyAll => Some((NotificationLevel::All, muted_until)),
+        Action::NotifyMentions => Some((NotificationLevel::Mentions, muted_until)),
+        Action::NotifyNothing => Some((NotificationLevel::None, muted_until)),
+        Action::Mute => Some((level, Some(NotificationSetting::MUTED_FOREVER))),
+        a if a.mute_minutes().is_some() => {
+            Some((level, a.mute_minutes().map(|m| now + m * 60_000)))
+        }
+        Action::Unmute => Some((level, None)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures;
+
+    #[test]
+    fn a_mute_keeps_the_level_each_kind_of_channel_falls_back_to() {
+        let store = fixtures::store();
+        let s = Some(&store);
+        let forever = Some(NotificationSetting::MUTED_FOREVER);
+        // A server: mentions. A DM: everything. A server's channel: what its server has.
+        assert_eq!(
+            notification_change(s, Id(10), Action::Mute, 0),
+            Some((NotificationLevel::Mentions, forever))
+        );
+        assert_eq!(
+            notification_change(s, Id(20), Action::Mute, 0),
+            Some((NotificationLevel::All, forever))
+        );
+        assert_eq!(
+            notification_change(s, Id(11), Action::Mute, 0),
+            Some((NotificationLevel::Mentions, forever))
+        );
+        assert_eq!(
+            notification_change(s, Id(11), Action::NotifyNothing, 0),
+            Some((NotificationLevel::None, None))
+        );
+    }
+
+    #[test]
+    fn a_level_keeps_the_mute_and_a_timed_mute_ends_later() {
+        let mut store = fixtures::store();
+        store.notification_settings.insert(
+            Id(11),
+            NotificationSetting {
+                target_id: Id(11),
+                level: NotificationLevel::All,
+                muted_until: Some(5_000),
+            },
+        );
+        let s = Some(&store);
+        assert_eq!(
+            notification_change(s, Id(11), Action::NotifyNothing, 0),
+            Some((NotificationLevel::None, Some(5_000)))
+        );
+        assert_eq!(
+            notification_change(s, Id(11), Action::Unmute, 0),
+            Some((NotificationLevel::All, None))
+        );
+        assert_eq!(
+            notification_change(s, Id(11), Action::MuteForHour, 1_000),
+            Some((NotificationLevel::All, Some(1_000 + 60 * 60_000)))
         );
     }
 }

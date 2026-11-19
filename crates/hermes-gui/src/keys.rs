@@ -296,18 +296,10 @@ impl Shell {
         let current = self.open_channel();
         let start =
             current.and_then(|(i, c)| channels.iter().position(|(ci, cc, _)| *ci == i && *cc == c));
-        let len = channels.len() as i32;
-        for step in 1..=len {
-            let index = match start {
-                Some(s) => (s as i32 + delta * step).rem_euclid(len),
-                None if delta > 0 => step - 1,
-                None => len - step,
-            } as usize;
-            let (inst, id, is_unread) = &channels[index];
-            if !unread || *is_unread {
-                self.select(inst.clone(), *id, window, cx);
-                return;
-            }
+        let unread_flags: Vec<bool> = channels.iter().map(|(_, _, u)| *u).collect();
+        if let Some(index) = step_index(&unread_flags, start, delta, unread) {
+            let (inst, id, _) = &channels[index];
+            self.select(inst.clone(), *id, window, cx);
         }
     }
 
@@ -345,5 +337,58 @@ impl Shell {
             }
         }
         out
+    }
+}
+
+/// Which of the sidebar's channels (`unread` flags in order) to open, `delta` steps from
+/// `start`, wrapping around; with `only_unread`, the nearest unread one that way. From no
+/// channel, forward starts at the first and backward at the last.
+fn step_index(
+    unread: &[bool],
+    start: Option<usize>,
+    delta: i32,
+    only_unread: bool,
+) -> Option<usize> {
+    let len = i32::try_from(unread.len()).ok()?;
+    (1..=len)
+        .map(|step| match start {
+            Some(s) => (s as i32 + delta * step).rem_euclid(len) as usize,
+            None if delta > 0 => (step - 1) as usize,
+            None => (len - step) as usize,
+        })
+        .find(|&index| !only_unread || unread[index])
+}
+
+#[cfg(test)]
+mod step_tests {
+    use super::step_index;
+
+    #[test]
+    fn steps_wrap_around_and_can_skip_to_unread_ones() {
+        let flags = [false, true, false, false];
+        assert_eq!(step_index(&flags, Some(0), 1, false), Some(1));
+        assert_eq!(
+            step_index(&flags, Some(0), -1, false),
+            Some(3),
+            "wraps backwards"
+        );
+        assert_eq!(
+            step_index(&flags, Some(3), 1, false),
+            Some(0),
+            "wraps forwards"
+        );
+        assert_eq!(
+            step_index(&flags, Some(2), 1, true),
+            Some(1),
+            "the next unread, around"
+        );
+        assert_eq!(step_index(&flags, None, 1, false), Some(0));
+        assert_eq!(step_index(&flags, None, -1, false), Some(3));
+        assert_eq!(
+            step_index(&[false; 3], Some(0), 1, true),
+            None,
+            "nothing unread"
+        );
+        assert_eq!(step_index(&[], None, 1, false), None);
     }
 }
