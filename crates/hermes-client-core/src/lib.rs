@@ -17,6 +17,7 @@ pub mod gateway;
 pub mod known_hosts;
 pub mod logs;
 pub mod notify;
+pub mod picture;
 pub mod read_marks;
 pub mod remote_file;
 pub mod rest;

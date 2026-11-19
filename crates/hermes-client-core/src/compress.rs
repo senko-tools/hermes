@@ -134,15 +134,18 @@ pub fn preview(bytes: &[u8]) -> Option<Vec<u8>> {
     let format = image::guess_format(bytes).ok()?;
     if !matches!(
         format,
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+        ImageFormat::Png
+            | ImageFormat::Jpeg
+            | ImageFormat::WebP
+            | ImageFormat::Bmp
+            | ImageFormat::Tiff
     ) {
         return None;
     }
     let image = image::load_from_memory_with_format(bytes, format).ok()?;
-    let image = image.thumbnail(PREVIEW_SIDE, PREVIEW_SIDE);
     let mut out = Vec::new();
     if image.color().has_alpha() {
-        let rgba = image.to_rgba8();
+        let rgba = crate::picture::thumbnail(&image.to_rgba8(), PREVIEW_SIDE, PREVIEW_SIDE);
         PngEncoder::new_with_quality(&mut out, CompressionType::Best, FilterType::Adaptive)
             .write_image(
                 rgba.as_raw(),
@@ -152,6 +155,7 @@ pub fn preview(bytes: &[u8]) -> Option<Vec<u8>> {
             )
             .ok()?;
     } else {
+        let image = image.thumbnail(PREVIEW_SIDE, PREVIEW_SIDE);
         JpegEncoder::new_with_quality(&mut out, PREVIEW_JPEG_QUALITY)
             .encode_image(&image.to_rgb8())
             .ok()?;
