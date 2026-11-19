@@ -1,20 +1,12 @@
 //! `POST /users/devices` for several users at once (one query for all of them), and revoking the
 //! devices of several signed-out sessions together.
 
-mod common;
+use crate::common;
+use common::device;
 
 use common::{TestServer, start};
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
-
-fn device(n: u8) -> Value {
-    json!({
-        "device_id": format!("{n:032x}"),
-        "sign_key": format!("sign{n}"),
-        "dh_key": format!("dh{n}"),
-        "signature": format!("sig{n}"),
-    })
-}
 
 async fn login(server: &TestServer, username: &str) -> String {
     server.login(username, "correct horse").await.ok()["token"]

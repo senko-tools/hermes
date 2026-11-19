@@ -1,6 +1,6 @@
 //! Space invites: create, list, preview, join, delete; limits, expiry, bans and permissions.
 
-mod common;
+use crate::common;
 
 use common::start;
 use hermes_proto::id::Id;

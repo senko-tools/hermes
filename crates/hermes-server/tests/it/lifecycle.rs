@@ -1,6 +1,6 @@
 //! Rate limits, request validation limits, `/healthz` and graceful shutdown.
 
-mod common;
+use crate::common;
 
 use common::{start, start_with};
 use hermes_server::config::RegistrationMode;

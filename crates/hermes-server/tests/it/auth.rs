@@ -1,6 +1,6 @@
 //! Register, login, logout, sessions, `/users/@me`, and the first-start setup invite.
 
-mod common;
+use crate::common;
 
 use common::{Res, start};
 use hermes_proto::id::Id;

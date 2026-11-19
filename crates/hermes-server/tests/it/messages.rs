@@ -1,7 +1,8 @@
 //! Messages: send, history, edit, delete, pins, attachments, mentions, read states, slowmode,
 //! typing.
 
-mod common;
+use crate::common;
+use common::bits;
 
 use common::{TestServer, start};
 use hermes_proto::id::Id;
@@ -9,21 +10,6 @@ use hermes_proto::models::{Channel, ChannelKind, PresenceStatus};
 use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
-
-fn bits(p: Permissions) -> String {
-    p.bits().to_string()
-}
-
-async fn send(server: &TestServer, token: &str, channel: &str, content: &str) -> Value {
-    server
-        .post(
-            &format!("/channels/{channel}/messages"),
-            Some(token),
-            json!({ "content": content, "nonce": common::nonce() }),
-        )
-        .await
-        .ok()
-}
 
 fn id(message: &Value) -> String {
     message["id"].as_str().unwrap().to_owned()
@@ -102,7 +88,7 @@ async fn send_and_history() {
 
     // Replies carry an excerpt of the first 100 characters.
     let long = "a".repeat(150);
-    let target = send(&server, &alice, &general, &long).await;
+    let target = server.send_message(&alice, &general, &long).await;
     let reply = server
         .post(
             &path,
@@ -117,7 +103,9 @@ async fn send_and_history() {
 
     let mut ids = vec![id(&first), id(&target), id(&reply)];
     for i in 0..4 {
-        ids.push(id(&send(&server, &owner, &general, &format!("m{i}")).await));
+        ids.push(id(&server
+            .send_message(&owner, &general, &format!("m{i}"))
+            .await));
     }
     let history = |query: String| {
         let server = &server;
@@ -203,7 +191,7 @@ async fn send_and_history() {
         .get(&path, Some(&alice))
         .await
         .err(403, "MISSING_PERMISSION");
-    send(&server, &alice, &general, "still allowed").await;
+    server.send_message(&alice, &general, "still allowed").await;
     server
         .put(
             &everyone_override,
@@ -231,8 +219,8 @@ async fn edit_delete_pin() {
     let general = server.channel_id(&space_id, "general");
     let path = format!("/channels/{general}/messages");
 
-    let m1 = id(&send(&server, &alice, &general, "first").await);
-    let m2 = id(&send(&server, &bob, &general, "second").await);
+    let m1 = id(&server.send_message(&alice, &general, "first").await);
+    let m2 = id(&server.send_message(&bob, &general, "second").await);
 
     // Edit: author only.
     server
@@ -389,7 +377,7 @@ async fn edit_delete_pin() {
         },
         vec![alice_id.parse().unwrap(), bob_id.parse().unwrap()],
     );
-    let dm_message = id(&send(&server, &alice, &dm.to_string(), "psst").await);
+    let dm_message = id(&server.send_message(&alice, &dm.to_string(), "psst").await);
     server
         .put(
             &format!("/channels/{dm}/messages/{dm_message}/pin"),
@@ -518,16 +506,16 @@ async fn mentions_and_read_states() {
     server.assign(&owner, &space_id, &carol_id, &[&fans]).await;
 
     // Without MENTION_EVERYONE: no @everyone, no non-mentionable roles; unknown users dropped.
-    let m = send(
-        &server,
-        &alice,
-        &general,
-        &format!(
-            "<@{bob_id}> @everyone <@&{team}> <@&{fans}> <@{}> `<@{carol_id}>`",
-            Id(999)
-        ),
-    )
-    .await;
+    let m = server
+        .send_message(
+            &alice,
+            &general,
+            &format!(
+                "<@{bob_id}> @everyone <@&{team}> <@&{fans}> <@{}> `<@{carol_id}>`",
+                Id(999)
+            ),
+        )
+        .await;
     assert_eq!(
         m["mentions"],
         json!({ "users": [bob_id], "roles": [fans], "everyone": false, "here": false })
@@ -550,7 +538,7 @@ async fn mentions_and_read_states() {
     assert_eq!(history[0]["mentions"], m["mentions"]);
 
     // The owner may mention everyone; the author is not counted.
-    let everyone = send(&server, &owner, &general, "@everyone hi").await;
+    let everyone = server.send_message(&owner, &general, "@everyone hi").await;
     assert_eq!(everyone["mentions"]["everyone"], true);
     for (user, count) in [(&alice_id, 1), (&bob_id, 2), (&carol_id, 2)] {
         assert_eq!(read_state(&server, user, &general).await.unwrap().1, count);
@@ -572,7 +560,7 @@ async fn mentions_and_read_states() {
         .cache_mut()
         .presences
         .insert(bob_id.parse().unwrap(), PresenceStatus::Invisible);
-    send(&server, &owner, &general, "@here").await;
+    server.send_message(&owner, &general, "@here").await;
     assert_eq!(read_state(&server, &carol_id, &general).await.unwrap().1, 3);
     assert_eq!(read_state(&server, &bob_id, &general).await.unwrap().1, 2);
 
@@ -594,13 +582,9 @@ async fn mentions_and_read_states() {
         )
         .await
         .ok();
-    send(
-        &server,
-        &alice,
-        &secret,
-        &format!("<@{bob_id}> <@{carol_id}>"),
-    )
-    .await;
+    server
+        .send_message(&alice, &secret, &format!("<@{bob_id}> <@{carol_id}>"))
+        .await;
     assert_eq!(read_state(&server, &bob_id, &secret).await, None);
     assert_eq!(read_state(&server, &carol_id, &secret).await, Some((0, 1)));
 
@@ -654,7 +638,9 @@ async fn mentions_and_read_states() {
         .ok();
 
     // A mention newer than the read position counts; editing does not count again.
-    let late = send(&server, &alice, &general, &format!("<@{bob_id}>")).await;
+    let late = server
+        .send_message(&alice, &general, &format!("<@{bob_id}>"))
+        .await;
     assert_eq!(read_state(&server, &bob_id, &general).await.unwrap().1, 1);
     let edited = server
         .patch(
@@ -685,7 +671,7 @@ async fn slowmode_and_typing() {
         .await
         .ok();
 
-    send(&server, &alice, &general, "one").await;
+    server.send_message(&alice, &general, "one").await;
     let res = server
         .post(
             &format!("/channels/{general}/messages"),
@@ -697,9 +683,9 @@ async fn slowmode_and_typing() {
     let wait = res.body["error"]["retry_after_ms"].as_u64().unwrap();
     assert!((1..=60_000).contains(&wait), "{wait}");
     // Other channels (voice channels have a text chat too) and BYPASS_SLOWMODE are unaffected.
-    send(&server, &alice, &voice, "elsewhere").await;
-    send(&server, &owner, &general, "owner 1").await;
-    send(&server, &owner, &general, "owner 2").await;
+    server.send_message(&alice, &voice, "elsewhere").await;
+    server.send_message(&owner, &general, "owner 1").await;
+    server.send_message(&owner, &general, "owner 2").await;
 
     let typing = format!("/channels/{general}/typing");
     server.post(&typing, Some(&alice), json!(null)).await.ok();
@@ -754,7 +740,7 @@ async fn someone_who_cannot_send_cannot_edit() {
     let (owner, _, space_id) = server.owner().await;
     let (alice, _) = server.member(&owner, &space_id, "alice").await;
     let general = server.channel_id(&space_id, "general");
-    let message = send(&server, &alice, &general, "before").await;
+    let message = server.send_message(&alice, &general, "before").await;
     server
         .put(
             &format!("/channels/{general}/overrides/{space_id}"),
@@ -779,8 +765,8 @@ async fn bulk_delete_takes_only_what_may_be_deleted() {
     let (owner, _, space_id) = server.owner().await;
     let (alice, _) = server.member(&owner, &space_id, "alice").await;
     let general = server.channel_id(&space_id, "general");
-    let mine = send(&server, &alice, &general, "mine").await;
-    let theirs = send(&server, &owner, &general, "theirs").await;
+    let mine = server.send_message(&alice, &general, "mine").await;
+    let theirs = server.send_message(&owner, &general, "theirs").await;
     let path = format!("/channels/{general}/messages");
     server
         .post(
@@ -810,7 +796,7 @@ async fn a_report_reaches_the_moderators_only() {
     let (owner, _, space_id) = server.owner().await;
     let (alice, _) = server.member(&owner, &space_id, "alice").await;
     let general = server.channel_id(&space_id, "general");
-    let message = send(&server, &owner, &general, "rude").await;
+    let message = server.send_message(&owner, &general, "rude").await;
     server
         .post(
             &format!("/channels/{general}/messages/{}/report", id(&message)),

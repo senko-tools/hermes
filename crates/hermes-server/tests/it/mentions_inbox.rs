@@ -1,9 +1,9 @@
 //! The mentions inbox (`GET /users/@me/mentions`): the query driven by `message_mentions` returns
 //! exactly what the earlier per-message scan returned, and the endpoint covers every kind of mention.
 
-mod common;
+use crate::common;
 
-use common::{TempDir, TestServer, start};
+use common::{TempDir, start};
 use hermes_proto::id::Id;
 use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
@@ -168,17 +168,6 @@ async fn mention_driven_query_matches_the_message_scan() {
     db.close().await;
 }
 
-async fn send(server: &TestServer, token: &str, channel: &str, content: &str) -> Value {
-    server
-        .post(
-            &format!("/channels/{channel}/messages"),
-            Some(token),
-            json!({ "content": content, "nonce": common::nonce() }),
-        )
-        .await
-        .ok()
-}
-
 fn contents(page: &Value) -> Vec<&str> {
     page.as_array()
         .unwrap()
@@ -215,18 +204,20 @@ async fn inbox_lists_every_kind_of_mention_once_and_pages() {
         .await
         .ok();
 
-    send(&server, &owner, &general, "@everyone standup").await;
-    send(&server, &owner, &general, "@here lunch").await;
-    send(
-        &server,
-        &owner,
-        &general,
-        &format!("both <@{alice_id}> <@&{role}>"),
-    )
-    .await;
-    send(&server, &owner, &secret, &format!("hidden <@{alice_id}>")).await;
-    let gone = send(&server, &owner, &general, &format!("gone <@{alice_id}>")).await;
-    send(&server, &owner, &general, "no mention").await;
+    server
+        .send_message(&owner, &general, "@everyone standup")
+        .await;
+    server.send_message(&owner, &general, "@here lunch").await;
+    server
+        .send_message(&owner, &general, &format!("both <@{alice_id}> <@&{role}>"))
+        .await;
+    server
+        .send_message(&owner, &secret, &format!("hidden <@{alice_id}>"))
+        .await;
+    let gone = server
+        .send_message(&owner, &general, &format!("gone <@{alice_id}>"))
+        .await;
+    server.send_message(&owner, &general, "no mention").await;
     server
         .delete(
             &format!(

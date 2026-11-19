@@ -1,6 +1,6 @@
 //! Members: listing, nicknames, role assignment with the hierarchy rule, kick, leave, bans.
 
-mod common;
+use crate::common;
 
 use common::start;
 use hermes_proto::id::Id;

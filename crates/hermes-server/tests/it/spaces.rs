@@ -1,6 +1,6 @@
 //! Spaces: create (with the per-user limit), update, transfer, delete; the audit log.
 
-mod common;
+use crate::common;
 
 use common::start;
 use hermes_proto::id::Id;

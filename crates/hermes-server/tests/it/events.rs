@@ -1,26 +1,19 @@
 //! Dispatch events and their audiences (PLAN.md sections 9.4 and 11.5): every change made through
 //! REST reaches exactly the sessions that can see it.
 
-mod common;
+use crate::common;
+use common::bits;
 
 use common::{TestServer, Ws, start};
 use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
 
-fn bits(p: Permissions) -> String {
-    p.bits().to_string()
-}
-
+/// Sends with the nonce `nonce-<content>`, which these tests look for.
 async fn send_message(server: &TestServer, token: &str, channel_id: &str, content: &str) -> Value {
     server
-        .post(
-            &format!("/channels/{channel_id}/messages"),
-            Some(token),
-            json!({ "content": content, "nonce": format!("nonce-{content}") }),
-        )
+        .send_message_with_nonce(token, channel_id, content, &format!("nonce-{content}"))
         .await
-        .ok()
 }
 
 /// Sends a message in `channel_id` and checks that it is the next event `ws` receives, proving

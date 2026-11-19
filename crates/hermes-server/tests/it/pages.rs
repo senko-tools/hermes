@@ -1,6 +1,6 @@
 //! The landing page `/` and the invite page `/invite/{code}`.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 

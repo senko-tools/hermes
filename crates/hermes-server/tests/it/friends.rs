@@ -1,6 +1,6 @@
 //! Tags (`name#1234`), changing the username, and friends.
 
-mod common;
+use crate::common;
 
 use common::{TestServer, start};
 use hermes_server::config::RegistrationMode;

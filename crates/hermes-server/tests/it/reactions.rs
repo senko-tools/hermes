@@ -1,7 +1,7 @@
 //! Reactions: add, join, remove own, remove others', emoji validation, ADD_REACTIONS, the
 //! 20-emoji limit.
 
-mod common;
+use crate::common;
 
 use common::start;
 use hermes_proto::permissions::Permissions;

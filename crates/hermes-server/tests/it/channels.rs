@@ -1,16 +1,13 @@
 //! Space channels: create, update, delete, reorder; permission overrides.
 
-mod common;
+use crate::common;
+use common::bits;
 
 use common::start;
 use hermes_proto::id::Id;
 use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
-
-fn bits(p: Permissions) -> String {
-    p.bits().to_string()
-}
 
 #[tokio::test]
 async fn create_update_delete() {

@@ -1,7 +1,7 @@
 //! Voice edge cases around the life of a connection: a client that stops reading its control
 //! stream, and calls that are still running when the server stops.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::time::Duration;

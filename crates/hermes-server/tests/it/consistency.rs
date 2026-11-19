@@ -1,7 +1,7 @@
 //! Consistency of the HTTP API under concurrent requests (a delete racing an edit, a ban racing
 //! a join) and of message payloads built for a page of history.
 
-mod common;
+use crate::common;
 
 use common::start;
 use hermes_proto::id::Id;

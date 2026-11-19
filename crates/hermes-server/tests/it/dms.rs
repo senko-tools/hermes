@@ -1,22 +1,11 @@
 //! DMs and group DMs (PLAN.md sections 8.2 and 10): `/dms`, recipients, renaming and leaving
 //! through `/channels/{id}`, `dm_policy`, and their gateway events.
 
-mod common;
+use crate::common;
 
-use common::{TestServer, start, start_with};
+use common::{start, start_with};
 use hermes_server::config::{DmPolicy, RegistrationMode};
 use serde_json::{Value, json};
-
-async fn send_message(server: &TestServer, token: &str, channel_id: &str, content: &str) -> Value {
-    server
-        .post(
-            &format!("/channels/{channel_id}/messages"),
-            Some(token),
-            json!({ "content": content, "nonce": common::nonce() }),
-        )
-        .await
-        .ok()
-}
 
 fn ids(channel: &Value) -> Vec<&str> {
     channel["recipients"]
@@ -65,7 +54,7 @@ async fn one_to_one_dms() {
     assert_eq!(again["id"], dm_id);
 
     // Messages reach the other recipient; strangers cannot see the DM.
-    send_message(&server, &owner, &dm_id, "hi").await;
+    server.send_message(&owner, &dm_id, "hi").await;
     let message = aws.next_event().await;
     assert_eq!(message["op"], "message_create");
     assert_eq!(message["d"]["channel_id"], dm_id);
@@ -275,7 +264,7 @@ async fn group_dms() {
         )
         .await
         .err(404, "NOT_FOUND");
-    send_message(&server, &carol, &gid, "bye bob").await;
+    server.send_message(&carol, &gid, "bye bob").await;
     assert_eq!(
         aws.recv_op("message_create").await["d"]["content"],
         "bye bob"
@@ -396,7 +385,7 @@ async fn closing_and_reopening_a_dm() {
     assert!(listed(&server.get("/dms", Some(&owner)).await.ok()).contains(&dm_id));
 
     // A new message reopens it: dm_create arrives before the message.
-    send_message(&server, &owner, &dm_id, "still there?").await;
+    server.send_message(&owner, &dm_id, "still there?").await;
     let reopened = aws.next_event().await;
     assert_eq!(reopened["op"], "dm_create");
     assert_eq!(reopened["d"]["id"], dm_id);
@@ -511,7 +500,7 @@ async fn privacy_settings_and_message_requests() {
     );
 
     // Messages still arrive, but a call does not ring.
-    send_message(&server, &stranger, &dm_id, "hello?").await;
+    server.send_message(&stranger, &dm_id, "hello?").await;
     assert_eq!(aws.next_event().await["op"], "message_create");
     server
         .post(
@@ -529,7 +518,7 @@ async fn privacy_settings_and_message_requests() {
         .await
         .ok();
     assert_eq!(aws.next_event().await["op"], "dm_delete");
-    send_message(&server, &stranger, &dm_id, "please").await;
+    server.send_message(&stranger, &dm_id, "please").await;
     aws.assert_silent(300).await;
     assert!(
         !server
@@ -579,7 +568,9 @@ async fn privacy_settings_and_message_requests() {
         .await
         .err(403, "MISSING_PERMISSION");
     // Existing DMs keep working.
-    send_message(&server, &bob, direct["id"].as_str().unwrap(), "still ok").await;
+    server
+        .send_message(&bob, direct["id"].as_str().unwrap(), "still ok")
+        .await;
 
     // Answering a request with a message accepts it.
     server
@@ -596,7 +587,7 @@ async fn privacy_settings_and_message_requests() {
         .await
         .ok();
     let dave_dm_id = dave_dm["id"].as_str().unwrap();
-    send_message(&server, &alice, dave_dm_id, "hi dave").await;
+    server.send_message(&alice, dave_dm_id, "hi dave").await;
     let list = server.get("/dms", Some(&alice)).await.ok();
     let listed = list
         .as_array()

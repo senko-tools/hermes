@@ -1,7 +1,7 @@
 //! Gateway lifecycle (PLAN.md section 11): hello, identify/ready, heartbeat, resume,
 //! invalid_session, close codes, revocation and presences.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 
@@ -10,15 +10,11 @@ use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::{Value, json};
 
+/// Sends with the content as the nonce, which these tests look for.
 async fn send_message(server: &TestServer, token: &str, channel_id: &str, content: &str) -> Value {
     server
-        .post(
-            &format!("/channels/{channel_id}/messages"),
-            Some(token),
-            json!({ "content": content, "nonce": content }),
-        )
+        .send_message_with_nonce(token, channel_id, content, content)
         .await
-        .ok()
 }
 
 #[tokio::test]

@@ -1,7 +1,8 @@
 //! End-to-end encryption, from the server's side: it holds public keys and opaque envelopes, keeps
 //! plain DMs out, and shows that what it stores is not the message.
 
-mod common;
+use crate::common;
+use common::device;
 
 use common::{TestServer, start_with};
 use hermes_server::config::{DmPolicy, RegistrationMode};
@@ -13,15 +14,6 @@ async fn server(name: &str) -> TestServer {
         state.config.privacy.dm_policy = DmPolicy::Anyone;
     })
     .await
-}
-
-fn device(n: u8) -> Value {
-    json!({
-        "device_id": format!("{n:032x}"),
-        "sign_key": format!("sign{n}"),
-        "dh_key": format!("dh{n}"),
-        "signature": format!("sig{n}"),
-    })
 }
 
 fn envelope(words: &str) -> Value {

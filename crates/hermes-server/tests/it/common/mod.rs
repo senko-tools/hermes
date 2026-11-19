@@ -1,8 +1,6 @@
 //! Test harness: a real server on a random port with a temp data dir, TLS off, plus a small JSON
 //! client on top of `reqwest` and a gateway client on top of `tokio-tungstenite`.
 
-#![allow(dead_code)] // Each test binary uses a different subset.
-
 pub mod voice;
 
 use std::path::{Path, PathBuf};
@@ -198,6 +196,35 @@ impl TestServer {
 
     pub async fn post(&self, path: &str, token: Option<&str>, body: Value) -> Res {
         self.request(Method::POST, path, token, Some(body)).await
+    }
+
+    /// Sends `content` to `channel` as `token`; the message.
+    pub async fn send_message(&self, token: &str, channel: &str, content: &str) -> Value {
+        self.send_message_with_nonce(token, channel, content, &nonce())
+            .await
+    }
+
+    /// [`TestServer::send_message`] with a given nonce, for tests that look for it.
+    pub async fn send_message_with_nonce(
+        &self,
+        token: &str,
+        channel: &str,
+        content: &str,
+        nonce: &str,
+    ) -> Value {
+        self.post(
+            &format!("/channels/{channel}/messages"),
+            Some(token),
+            json!({ "content": content, "nonce": nonce }),
+        )
+        .await
+        .ok()
+    }
+
+    /// When `user` was last online as `viewer` sees it, after a moment for writes to land.
+    pub async fn last_online(&self, viewer: &str, user: &str) -> Value {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.get(&format!("/users/{user}"), Some(viewer)).await.ok()["last_online_at"].clone()
     }
 
     pub async fn delete(&self, path: &str, token: Option<&str>) -> Res {
@@ -512,6 +539,21 @@ impl Ws {
 }
 
 /// A nonce no other message of this run has, as a real client's random ones are.
+/// `p` as the decimal string the API takes.
+pub fn bits(p: hermes_proto::permissions::Permissions) -> String {
+    p.bits().to_string()
+}
+
+/// A made-up device (keys are not checked by the server), `n` making it unique.
+pub fn device(n: u8) -> Value {
+    json!({
+        "device_id": format!("{n:032x}"),
+        "sign_key": format!("sign{n}"),
+        "dh_key": format!("dh{n}"),
+        "signature": format!("sig{n}"),
+    })
+}
+
 pub fn nonce() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     format!(

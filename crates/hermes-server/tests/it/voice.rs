@@ -1,7 +1,8 @@
 //! Voice (PLAN.md sections 10, 12 and 19): `/voice/join` tokens, QUIC auth, the control stream,
 //! forwarding rules, voice states, moderation, user limits, DM calls and ringing.
 
-mod common;
+use crate::common;
+use common::bits;
 
 use std::time::Duration;
 
@@ -10,10 +11,6 @@ use common::{start, start_with};
 use hermes_proto::permissions::Permissions;
 use hermes_server::config::RegistrationMode;
 use serde_json::json;
-
-fn bits(p: Permissions) -> String {
-    p.bits().to_string()
-}
 
 /// Going into a server's voice channel counts as being online even while invisible; a DM call
 /// does not.
@@ -26,14 +23,7 @@ async fn joining_voice_in_a_server_updates_last_online() {
     let (mut ws, _) = server.identify(&alice).await;
     ws.send(json!({ "op": "presence_update", "d": { "status": "invisible" } }))
         .await;
-    let seen = async || {
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        server
-            .get(&format!("/users/{alice_id}"), Some(&owner))
-            .await
-            .ok()["last_online_at"]
-            .clone()
-    };
+    let seen = || server.last_online(&owner, &alice_id);
     let dm = server
         .post("/dms", Some(&alice), json!({ "recipient_ids": [owner_id] }))
         .await

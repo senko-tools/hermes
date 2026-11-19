@@ -1,6 +1,6 @@
 //! Attachments: upload, download, thumbnails, access rules, limits and cleanup.
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 

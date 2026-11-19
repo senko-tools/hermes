@@ -2,7 +2,7 @@
 //! authenticated endpoint refusing requests without a valid token, and each space permission bit
 //! gating its endpoint.
 
-mod common;
+use crate::common;
 
 use common::{Res, TestServer, start};
 use hermes_proto::PROTOCOL_VERSION;

@@ -1,7 +1,7 @@
 //! Encrypted server channels, from the server's side: numbered keys, who may hand them to whom,
 //! and that nothing readable gets in once they are required.
 
-mod common;
+use crate::common;
 
 use common::{TestServer, start_with};
 use hermes_proto::permissions::Permissions;
