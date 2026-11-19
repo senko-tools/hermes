@@ -98,16 +98,10 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let policy = core
-                    .space_key_policy(&inst, space)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let policy = core.space_key_policy(&inst, space).await?;
                 let mut overrides = HashMap::new();
                 for channel in channels {
-                    let own = core
-                        .channel_key_policy(&inst, channel)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let own = core.channel_key_policy(&inst, channel).await?;
                     overrides.insert(channel, own);
                 }
                 Ok::<_, String>((policy, overrides))
@@ -139,9 +133,7 @@ impl Shell {
         let core = self.core.clone();
         let (inst, space) = key;
         self.run_status(cx, async move {
-            core.set_space_key_policy(&inst, space, policy)
-                .await
-                .map_err(|e| e.to_string())?;
+            core.set_space_key_policy(&inst, space, policy).await?;
             Ok("Encryption rules saved".to_owned())
         });
         cx.notify();
@@ -160,9 +152,7 @@ impl Shell {
         let core = self.core.clone();
         let inst = key.0;
         self.run_status(cx, async move {
-            core.set_channel_key_policy(&inst, channel, policy)
-                .await
-                .map_err(|e| e.to_string())?;
+            core.set_channel_key_policy(&inst, channel, policy).await?;
             Ok("Encryption rules saved".to_owned())
         });
         cx.notify();

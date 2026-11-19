@@ -1576,10 +1576,8 @@ impl Shell {
                         nickname: Some(nick),
                         role_ids: None,
                     };
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    rest.update_member(space, None, &req)
-                        .await
-                        .map_err(|e| e.to_string())?;
+                    let rest = core.rest(&inst)?;
+                    rest.update_member(space, None, &req).await?;
                     Ok("Nickname changed".to_owned())
                 });
             }
@@ -1777,10 +1775,7 @@ impl Shell {
                 } else {
                     None
                 };
-                let bytes = core
-                    .download(&inst, &attachment)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let bytes = core.download(&inst, &attachment).await?;
                 let dir = if folder.is_empty() {
                     crate::open::downloads_dir()
                 } else {
@@ -1839,10 +1834,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let bytes = core
-                    .download(&inst, &attachment)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let bytes = core.download(&inst, &attachment).await?;
                 tokio::task::spawn_blocking(move || crate::images::decode(&bytes, None))
                     .await
                     .map_err(|e| e.to_string())?
@@ -2234,7 +2226,7 @@ impl Shell {
                     let total = messages.len();
                     let mut failed = 0;
                     let mut last_error = None;
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    let rest = core.rest(&inst)?;
                     for ids in messages.chunks(BULK_DELETE_AT_ONCE) {
                         if let Err(err) = rest.bulk_delete(channel, ids.to_vec()).await {
                             failed += ids.len();

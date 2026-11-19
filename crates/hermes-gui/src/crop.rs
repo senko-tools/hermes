@@ -481,7 +481,8 @@ impl Shell {
                 let output =
                     tokio::task::spawn_blocking(move || crop_file(shape, &file, zoom, offset))
                         .await
-                        .map_err(|e| e.to_string())??;
+                        .map_err(|e| e.to_string())?
+                        .map_err(|e| e.to_string())?;
                 // A long animation can grow when cropped.
                 if output.bytes.len() as u64 > PICTURE_MAX_BYTES {
                     return Err(too_big());

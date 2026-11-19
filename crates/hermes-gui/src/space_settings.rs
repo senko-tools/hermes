@@ -544,7 +544,7 @@ impl Shell {
                 self.run(
                     cx,
                     async move {
-                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        let rest = core.rest(&inst)?;
                         rest.invites(space).await.map_err(|e| e.to_string())
                     },
                     move |this, result, _, _| {
@@ -565,7 +565,7 @@ impl Shell {
                 self.run(
                     cx,
                     async move {
-                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        let rest = core.rest(&inst)?;
                         rest.bans(space).await.map_err(|e| e.to_string())
                     },
                     move |this, result, _, _| {
@@ -586,7 +586,7 @@ impl Shell {
                 self.run(
                     cx,
                     async move {
-                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                        let rest = core.rest(&inst)?;
                         rest.reports(space).await.map_err(|e| e.to_string())
                     },
                     move |this, result, _, _| {
@@ -628,7 +628,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                let rest = core.rest(&inst)?;
                 rest.audit_log(space, before, AUDIT_PAGE)
                     .await
                     .map_err(|e| e.to_string())
@@ -2482,8 +2482,7 @@ impl Shell {
                                 this.run(
                                     cx,
                                     async move {
-                                        core.rest(&inst)
-                                            .map_err(|e| e.to_string())?
+                                        core.rest(&inst)?
                                             .resolve_report(space, id)
                                             .await
                                             .map_err(|e| e.to_string())

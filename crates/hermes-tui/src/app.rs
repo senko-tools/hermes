@@ -1505,10 +1505,7 @@ impl App {
         let tasks = self.tasks.clone();
         tokio::spawn(async move {
             let result = async {
-                let bytes = core
-                    .download(&inst, &attachment)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let bytes = core.download(&inst, &attachment).await?;
                 let dir = std::env::temp_dir()
                     .join("hermes-tui")
                     .join(attachment.id.to_string());

@@ -330,10 +330,7 @@ impl Shell {
                 let (source, fetched) = match remote {
                     Some(file) => (super::serve::Source::Remote(file, runtime), None),
                     None => {
-                        let bytes = core
-                            .download(&inst, &attachment)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let bytes = core.download(&inst, &attachment).await?;
                         let size = bytes.len();
                         (
                             super::serve::Source::Memory(Arc::new(bytes)),

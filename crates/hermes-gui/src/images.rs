@@ -311,14 +311,13 @@ impl Shell {
             self.run(
                 cx,
                 async move {
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    let rest = core.rest(&inst)?;
                     // The thumbnail of an animated picture is still: its original moves.
                     let bytes = if maybe_animated("", &filename) {
                         rest.download(id, &filename).await
                     } else {
                         rest.thumbnail(id).await
-                    }
-                    .map_err(|e| e.to_string())?;
+                    }?;
                     tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(max)))
                         .await
                         .map_err(|e| e.to_string())?
@@ -407,10 +406,10 @@ impl Shell {
                     } else {
                         SEALED_PREVIEW
                     };
-                    (bytes.map_err(|e| e.to_string())?, Some(max))
+                    (bytes?, Some(max))
                 } else {
                     let bytes = core.thumbnail(&inst, &attachment).await;
-                    (bytes.map_err(|e| e.to_string())?, None)
+                    (bytes?, None)
                 };
                 tokio::task::spawn_blocking(move || decode_preview(&bytes, max))
                     .await

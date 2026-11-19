@@ -70,7 +70,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&target).map_err(|e| e.to_string())?;
+                let rest = core.rest(&target)?;
                 rest.create_dm(ids)
                     .await
                     .map(|c| c.id)

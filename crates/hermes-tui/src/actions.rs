@@ -670,15 +670,13 @@ impl App {
                 let rest = self.core.rest(&inst);
                 tokio::spawn(async move {
                     let result = async {
-                        let rest = rest.map_err(|e| e.to_string())?;
-                        let bans = rest.bans(space).await.map_err(|e| e.to_string())?;
+                        let rest = rest?;
+                        let bans = rest.bans(space).await?;
                         let ban = bans
                             .iter()
                             .find(|b| b.user.username.eq_ignore_ascii_case(&name))
                             .ok_or_else(|| format!("{name} is not banned"))?;
-                        rest.unban(space, ban.user.id)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        rest.unban(space, ban.user.id).await?;
                         Ok::<_, String>(format!("unbanned {name}"))
                     }
                     .await;

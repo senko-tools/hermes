@@ -163,6 +163,13 @@ impl fmt::Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
+/// The text shown for an error: lets a front end that reports errors as text write `?`.
+impl From<CoreError> for String {
+    fn from(e: CoreError) -> String {
+        e.to_string()
+    }
+}
+
 impl From<rest::Error> for CoreError {
     fn from(e: rest::Error) -> Self {
         CoreError::Rest(e)

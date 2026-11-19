@@ -101,6 +101,13 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// The text shown for an error: lets a front end that reports errors as text write `?`.
+impl From<Error> for String {
+    fn from(e: Error) -> String {
+        e.to_string()
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn network(err: reqwest::Error) -> Error {

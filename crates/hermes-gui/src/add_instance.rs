@@ -667,8 +667,7 @@ pub async fn probe(core: Core, input: String) -> Result<Probed, String> {
         }) => (host, Some(code), fingerprint),
     };
     if let Some(fp) = fingerprint {
-        core.trust_invite_fingerprint(&host, fp)
-            .map_err(|e| e.to_string())?;
+        core.trust_invite_fingerprint(&host, fp)?;
     }
     let probe = core
         .probe_instance(&host)

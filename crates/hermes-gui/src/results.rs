@@ -420,11 +420,8 @@ impl Shell {
                 self.run(
                     cx,
                     async move {
-                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let mut res = core
-                            .search_with(&rest, &inst, &request)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        let rest = core.rest(&inst)?;
+                        let mut res = core.search_with(&rest, &inst, &request).await?;
                         core.open_messages(&inst, &mut res.messages).await;
                         res.messages.retain(|m| passes(m, &f));
                         Ok::<ResultPage, String>((
@@ -444,8 +441,8 @@ impl Shell {
                 self.run(
                     cx,
                     async move {
-                        let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                        let mut list = rest.pins(channel).await.map_err(|e| e.to_string())?;
+                        let rest = core.rest(&inst)?;
+                        let mut list = rest.pins(channel).await?;
                         core.open_messages(&inst, &mut list).await;
                         Ok::<ResultPage, String>((
                             list.into_iter().map(|m| (inst.clone(), m)).collect(),
@@ -472,11 +469,8 @@ impl Shell {
                     self.run(
                         cx,
                         async move {
-                            let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                            let mut list = rest
-                                .mentions(None, MENTIONS)
-                                .await
-                                .map_err(|e| e.to_string())?;
+                            let rest = core.rest(&inst)?;
+                            let mut list = rest.mentions(None, MENTIONS).await?;
                             core.open_messages(&inst, &mut list).await;
                             Ok::<ResultPage, String>((
                                 list.into_iter().map(|m| (inst.clone(), m)).collect(),

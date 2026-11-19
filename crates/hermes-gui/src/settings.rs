@@ -643,8 +643,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                core.rest(&inst)
-                    .map_err(|e| e.to_string())?
+                core.rest(&inst)?
                     .sessions()
                     .await
                     .map_err(|e| e.to_string())
@@ -948,9 +947,9 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                let rest = core.rest(&inst)?;
                 for id in ids {
-                    rest.delete_session(id).await.map_err(|e| e.to_string())?;
+                    rest.delete_session(id).await?;
                 }
                 Ok::<(), String>(())
             },
@@ -1953,12 +1952,7 @@ impl Shell {
             let Some(file) = file else {
                 return Ok("Export cancelled".to_owned());
             };
-            let text = core
-                .rest(&inst)
-                .map_err(|e| e.to_string())?
-                .export_account()
-                .await
-                .map_err(|e| e.to_string())?;
+            let text = core.rest(&inst)?.export_account().await?;
             let path = file.path().to_path_buf();
             let written = path.clone();
             tokio::task::spawn_blocking(move || std::fs::write(written, text))
@@ -1981,13 +1975,10 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                let users = rest
-                    .admin_users(None, 200)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let log = rest.admin_log().await.map_err(|e| e.to_string())?;
-                let settings = rest.admin_settings().await.map_err(|e| e.to_string())?;
+                let rest = core.rest(&inst)?;
+                let users = rest.admin_users(None, 200).await?;
+                let log = rest.admin_log().await?;
+                let settings = rest.admin_settings().await?;
                 Ok::<_, String>((users, log, settings))
             },
             |this, result, _, cx| {
@@ -2031,8 +2022,7 @@ impl Shell {
                     this.run(
                         cx,
                         async move {
-                            core.rest(&inst)
-                                .map_err(|e| e.to_string())?
+                            core.rest(&inst)?
                                 .set_admin_settings(&AdminSettings {
                                     registration_mode: mode,
                                 })
@@ -2165,8 +2155,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                core.rest(&inst)
-                    .map_err(|e| e.to_string())?
+                core.rest(&inst)?
                     .admin_update_user(
                         user,
                         &hermes_client_core::proto::api::AdminUserPatch {

@@ -48,8 +48,8 @@ impl Shell {
         let inst = inst.clone();
         let ok = ok.to_owned();
         self.run_status(cx, async move {
-            let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-            call(rest).await.map_err(|e| e.to_string())?;
+            let rest = core.rest(&inst)?;
+            call(rest).await?;
             Ok(ok)
         });
     }
@@ -267,10 +267,10 @@ impl Shell {
             (Target::Member(inst, _, user), Action::Block) => {
                 let core = self.core.clone();
                 self.run_status(cx, async move {
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
+                    let rest = core.rest(&inst)?;
                     // Someone blocked is no longer a friend either.
                     let _ = rest.remove_friend(user).await;
-                    rest.block(user).await.map_err(|e| e.to_string())?;
+                    rest.block(user).await?;
                     core.set_blocked(&inst, user, true);
                     Ok("Blocked".to_owned())
                 });
@@ -278,8 +278,8 @@ impl Shell {
             (Target::Member(inst, _, user), Action::Unblock) => {
                 let core = self.core.clone();
                 self.run_status(cx, async move {
-                    let rest = core.rest(&inst).map_err(|e| e.to_string())?;
-                    rest.unblock(user).await.map_err(|e| e.to_string())?;
+                    let rest = core.rest(&inst)?;
+                    rest.unblock(user).await?;
                     core.set_blocked(&inst, user, false);
                     Ok("Unblocked".to_owned())
                 });
@@ -520,7 +520,7 @@ impl Shell {
         self.run(
             cx,
             async move {
-                let rest = core.rest(&target).map_err(|e| e.to_string())?;
+                let rest = core.rest(&target)?;
                 rest.create_dm(vec![user])
                     .await
                     .map(|c| c.id)
