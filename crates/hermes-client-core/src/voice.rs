@@ -660,6 +660,8 @@ impl Core {
     /// Joins (or switches to) the voice room of a voice channel, DM or group DM. Returns once
     /// the server has answered `ready`.
     pub async fn join_voice(&self, inst: &str, channel: Id) -> Result<()> {
+        let started = std::time::Instant::now();
+        tracing::info!("voice: joining {channel} on {inst}");
         let rest = self.rest(inst)?;
         let (mute, deaf) = Self::self_flags(&self.voice().state());
         let join = rest
@@ -668,7 +670,12 @@ impl Core {
                 self_mute: mute,
                 self_deaf: deaf,
             })
-            .await?;
+            .await
+            .inspect_err(|err| tracing::warn!("voice: the server did not let me join: {err}"))?;
+        tracing::info!(
+            "voice: the server let me join after {} ms",
+            started.elapsed().as_millis()
+        );
         let (tx, rx) = oneshot::channel();
         let switched = {
             let mut state = self.voice().state();
@@ -685,7 +692,17 @@ impl Core {
             self.leave_voice().await;
             self.start_session(inst, channel, join, tx);
         }
-        match tokio::time::timeout(READY_TIMEOUT, rx).await {
+        let result = tokio::time::timeout(READY_TIMEOUT, rx).await;
+        match &result {
+            Ok(Ok(Ok(()))) => tracing::info!(
+                "voice: in {channel} after {} ms",
+                started.elapsed().as_millis()
+            ),
+            Ok(Ok(Err(message))) => tracing::warn!("voice: joining {channel} failed: {message}"),
+            Ok(Err(_)) => tracing::warn!("voice: the connection closed before it was ready"),
+            Err(_) => tracing::warn!("voice: no answer within {READY_TIMEOUT:?}"),
+        }
+        match result {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(message))) => {
                 self.end_failed_join(inst, channel);
@@ -754,6 +771,7 @@ impl Core {
     pub async fn leave_voice(&self) {
         let session = self.voice().state().session.take();
         if let Some(session) = session {
+            tracing::info!("voice: leaving");
             let _ = session.control.send(ClientControl::Leave {});
             self.close_session(session, true);
         }
@@ -982,6 +1000,7 @@ impl Core {
         let (frames_tx, mut frames) = mpsc::channel(32);
         let reader = tokio::spawn(read_frames(recv, frames_tx));
         let (screen_out, screen_frames) = mpsc::channel(SCREEN_QUEUE);
+        let my_screen_out = screen_out.clone();
         *lock(&self.voice().screen_out) = Some(screen_out);
         let screen_writer = tokio::spawn(write_screen(conn.clone(), screen_frames));
         let screen_reader = tokio::spawn(self.clone().read_screen(conn.clone(), generation));
@@ -1117,7 +1136,13 @@ impl Core {
         reader.abort();
         screen_writer.abort();
         screen_reader.abort();
-        *lock(&self.voice().screen_out) = None;
+        {
+            // Only this connection's: a newer one (a quick rejoin) may have set its own already.
+            let mut out = lock(&self.voice().screen_out);
+            if out.as_ref().is_some_and(|o| o.same_channel(&my_screen_out)) {
+                *out = None;
+            }
+        }
         {
             let mut link = lock(&self.voice().link);
             if link
@@ -1986,9 +2011,16 @@ async fn write_screen(conn: quinn::Connection, mut frames: mpsc::Receiver<Vec<u8
 
 /// Resolves the endpoint of a `/voice/join` answer and connects with the pinned certificate.
 async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connection, String> {
+    let started = std::time::Instant::now();
     connect_quic(&join.quic)
         .await
-        .map(|(_, conn)| conn)
+        .map(|(addr, conn)| {
+            tracing::info!(
+                "voice: connected to {addr} in {} ms",
+                started.elapsed().as_millis()
+            );
+            conn
+        })
         .map_err(|e| e.to_string())
 }
 

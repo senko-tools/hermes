@@ -150,9 +150,14 @@ struct Participant {
 
 impl Shell {
     /// Join (or switch to) the voice room of a voice channel or DM. In a DM nobody is in, this
-    /// starts a call. While a join runs, further requests do nothing.
+    /// starts a call. While a join runs, further requests do nothing; while leaving runs, the
+    /// join waits for it (it used to be dropped: "joining back did nothing").
     pub fn join_voice(&mut self, inst: InstanceId, channel: Id, cx: &mut Context<Self>) {
         let key = (inst.clone(), channel);
+        if self.leaving_voice {
+            self.join_after_leave = Some(key);
+            return;
+        }
         if self.core.voice_channel().as_ref() == Some(&key) || self.joining.is_some() {
             return;
         }
@@ -199,13 +204,18 @@ impl Shell {
     pub fn leave_voice(&mut self, cx: &mut Context<Self>) {
         // The panel closes down: an empty one of its height shrinks away.
         self.close_later("voice-panel", |_| {}, cx);
+        self.leaving_voice = true;
         let core = self.core.clone();
         self.run(
             cx,
             async move { core.leave_voice().await },
             |this, (), _, cx| {
+                this.leaving_voice = false;
                 this.net.clear();
                 this.close_later("network-in", |s| s.network_open = None, cx);
+                if let Some((inst, channel)) = this.join_after_leave.take() {
+                    this.join_voice(inst, channel, cx);
+                }
             },
         );
     }

@@ -250,6 +250,10 @@ pub struct Shell {
     pub next_upload: u64,
     /// A join in progress: further requests wait for it.
     pub joining: Option<ChannelKey>,
+    /// Leaving voice is still running; a join asked for meanwhile waits in
+    /// [`Shell::join_after_leave`] instead of being dropped.
+    pub leaving_voice: bool,
+    pub join_after_leave: Option<ChannelKey>,
     pub headphones_hint_shown: bool,
     /// Microphone level in dBFS while the meter runs.
     pub input_level: f32,
@@ -433,6 +437,8 @@ impl Shell {
             utc_offset: hermes_client_core::time::local_offset_secs(),
             next_upload: 0,
             joining: None,
+            leaving_voice: false,
+            join_after_leave: None,
             headphones_hint_shown: false,
             input_level: -60.0,
             input_open: false,
