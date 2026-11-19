@@ -20,6 +20,7 @@ pub mod logs;
 pub mod menus;
 pub mod net;
 pub mod notify;
+pub mod os_open;
 pub mod picture;
 pub mod read_marks;
 pub mod remote_file;
