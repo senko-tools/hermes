@@ -254,6 +254,9 @@ pub struct Buffer {
     pub compact: bool,
     /// What is being written shows formatted above the message box.
     pub composer_preview: bool,
+    /// Linked pages are fetched by this device to show their title and picture (off: nothing is
+    /// fetched).
+    pub link_previews: bool,
     /// Pictures and videos in the chat, in percent of their normal size.
     pub media_scale: u32,
     /// The reactions offered first, separated by spaces.
@@ -275,6 +278,7 @@ impl Default for Buffer {
             markdown: true,
             compact: false,
             composer_preview: false,
+            link_previews: false,
             media_scale: 100,
             quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
             recent_emoji: String::new(),

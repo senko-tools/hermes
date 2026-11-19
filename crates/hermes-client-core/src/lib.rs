@@ -15,6 +15,7 @@ pub mod e2ee;
 pub mod files;
 pub mod gateway;
 pub mod known_hosts;
+pub mod link_preview;
 pub mod logs;
 pub mod notify;
 pub mod picture;

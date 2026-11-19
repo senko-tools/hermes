@@ -69,7 +69,25 @@ struct Pins {
     /// Names I gave people, shown instead of theirs.
     #[serde(default)]
     local_names: BTreeMap<Id, String>,
+    /// Messages I saved to come back to, newest saved last.
+    #[serde(default)]
+    saved: Vec<SavedMessage>,
 }
+
+/// A message I saved: where it is, and a copy of what it said when saved (the list shows
+/// without asking the server, and an encrypted message stays readable here).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedMessage {
+    pub channel: Id,
+    pub message: Id,
+    /// Unix ms.
+    pub saved_at: i64,
+    pub author: String,
+    pub text: String,
+}
+
+/// Saved messages kept at most.
+const MAX_SAVED: usize = 1000;
 
 /// The ring's file.
 #[derive(Serialize, Deserialize)]
@@ -798,6 +816,39 @@ impl Core {
             }
         }
         Ok(())
+    }
+
+    /// The messages I saved on `inst`, the latest saved first.
+    pub fn saved_messages(&self, inst: &str) -> Vec<SavedMessage> {
+        let Some(keys) = self.account_keys(inst) else {
+            return Vec::new();
+        };
+        let ring = keys.ring.lock().expect("ring");
+        ring.pins.saved.iter().rev().cloned().collect()
+    }
+
+    pub fn is_saved(&self, inst: &str, message: Id) -> bool {
+        self.account_keys(inst).is_some_and(|keys| {
+            let ring = keys.ring.lock().expect("ring");
+            ring.pins.saved.iter().any(|s| s.message == message)
+        })
+    }
+
+    /// Saves a message (sealed, on this device), or with `None` forgets `message`. False when
+    /// this instance keeps nothing sealed here (not signed in).
+    pub fn set_saved(&self, inst: &str, message: Id, saved: Option<SavedMessage>) -> bool {
+        let Some(keys) = self.account_keys(inst) else {
+            return false;
+        };
+        let mut ring = keys.ring.lock().expect("ring");
+        ring.pins.saved.retain(|s| s.message != message);
+        if let Some(saved) = saved {
+            ring.pins.saved.push(saved);
+            let extra = ring.pins.saved.len().saturating_sub(MAX_SAVED);
+            ring.pins.saved.drain(..extra);
+        }
+        ring.save();
+        true
     }
 
     /// What was being written in a conversation.
