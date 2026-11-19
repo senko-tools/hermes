@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateRoleRequest, RolePosition, UpdateRoleRequest};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -60,10 +59,9 @@ pub async fn create(
             .get(&space_id)
             .is_some_and(|space| space.roles.len() >= MAX_ROLES)
         {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                format!("A server can have at most {MAX_ROLES} roles"),
-            ));
+            return Err(Error::bad_request(format!(
+                "A server can have at most {MAX_ROLES} roles"
+            )));
         }
         let permissions = req.permissions.unwrap_or_default();
         if !access.may_grant(permissions) {
@@ -155,8 +153,7 @@ pub async fn update(
                 || req.hoist.is_some()
                 || req.mentionable.is_some())
         {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
+            return Err(Error::bad_request(
                 "Only the permissions of @everyone can be changed",
             ));
         }
@@ -251,10 +248,7 @@ pub async fn delete(
             .role(role_id)
             .ok_or_else(|| Error::not_found("role"))?;
         if role.is_everyone() {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                "The @everyone role cannot be deleted",
-            ));
+            return Err(Error::bad_request("The @everyone role cannot be deleted"));
         }
         if !access.outranks_role(role) {
             return Err(access.hierarchy_error("roles"));

@@ -33,10 +33,7 @@ fn space_of(cache: &Cache, channel: Id, user: Id) -> ApiResult<Id> {
     access.require(Permissions::VIEW_CHANNEL)?;
     match access.channel.space_id {
         Some(space) if access.channel.kind.has_messages() => Ok(space),
-        _ => Err(Error::new(
-            ErrorCode::BadRequest,
-            "This channel does not use channel keys",
-        )),
+        _ => Err(Error::bad_request("This channel does not use channel keys")),
     }
 }
 
@@ -151,10 +148,7 @@ pub async fn start_epoch(
         // Replacing the key stops everyone's sends for a moment, so reading is not enough.
         let perms = cache.channel_permissions(channel, auth.user_id);
         if !perms.intersects(Permissions::SEND_MESSAGES | Permissions::MANAGE_SPACE) {
-            return Err(Error::new(
-                ErrorCode::MissingPermission,
-                "You cannot replace this channel's key",
-            ));
+            return Err(Error::forbidden("You cannot replace this channel's key"));
         }
         check_keys(&cache, channel, auth.user_id, &req.keys)?;
     }
@@ -286,10 +280,7 @@ pub async fn set_space_policy(
     {
         let cache = state.cache();
         if !perms::space(&cache, space, auth.user_id)?.is_owner() {
-            return Err(Error::new(
-                ErrorCode::MissingPermission,
-                "Only the owner can change this",
-            ));
+            return Err(Error::forbidden("Only the owner can change this"));
         }
     }
     db::channel_keys::set_space_policy(&state.db.write, space, policy).await?;

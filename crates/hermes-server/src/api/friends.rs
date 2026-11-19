@@ -112,10 +112,7 @@ pub async fn add(
         (other, cache.relationship(me, other))
     };
     if other == me {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
-            "You cannot add yourself as a friend",
-        ));
+        return Err(Error::bad_request("You cannot add yourself as a friend"));
     }
     match existing {
         Some(r) if r.kind == RelationshipKind::Incoming => {

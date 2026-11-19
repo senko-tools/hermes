@@ -339,6 +339,21 @@ impl Error {
         Error::new(ErrorCode::Internal, "Internal server error")
     }
 
+    /// A request that cannot be done as asked (`BAD_REQUEST`).
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::BadRequest, message)
+    }
+
+    /// Not allowed, for a reason other than one missing permission (`MISSING_PERMISSION`).
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::MissingPermission, message)
+    }
+
+    /// The person does not accept direct messages from the caller.
+    pub fn dms_not_accepted() -> Self {
+        Error::forbidden("This user does not accept direct messages from you")
+    }
+
     pub fn not_found(what: &str) -> Self {
         Error::new(ErrorCode::NotFound, format!("Unknown {what}"))
     }

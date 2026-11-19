@@ -51,10 +51,7 @@ fn target(cache: &Cache, channel_id: Id, user_id: Id, perm: Permissions) -> ApiR
     let access = perms::require_channel(cache, channel_id, user_id, perm)?;
     let channel = access.channel;
     if !channel.kind.has_messages() {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
-            "Categories have no messages",
-        ));
+        return Err(Error::bad_request("Categories have no messages"));
     }
     Ok(Target {
         perms: access.perms,
@@ -109,8 +106,7 @@ pub async fn history(
     )?;
     let anchors = [q.before, q.after, q.around];
     if anchors.iter().flatten().count() > 1 {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
+        return Err(Error::bad_request(
             "Use only one of before, after and around",
         ));
     }
@@ -235,14 +231,12 @@ async fn check_epoch(
 fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) -> ApiResult<()> {
     if kind.is_private() {
         if e2ee.is_none() && state.config.privacy.require_dm_encryption {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
+            return Err(Error::bad_request(
                 "Direct messages are end-to-end encrypted here: update Hermes to send them",
             ));
         }
     } else if e2ee.is_none() && state.config.privacy.require_channel_encryption {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
+        return Err(Error::bad_request(
             "Channels are end-to-end encrypted here: update Hermes to write in them",
         ));
     }
@@ -325,10 +319,7 @@ pub async fn send(
                     .any(|id| *id != auth.user_id && cache.blocked(*id, auth.user_id))
             })
         {
-            return Err(Error::new(
-                ErrorCode::MissingPermission,
-                "This user does not accept direct messages from you",
-            ));
+            return Err(Error::dms_not_accepted());
         }
         let resolved = messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, raw);
         let slowmode = Some(t.slowmode_secs)
@@ -457,10 +448,7 @@ pub async fn edit(
     let mut tx = checking_tx(&state).await?;
     let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
-        return Err(Error::new(
-            ErrorCode::MissingPermission,
-            "You can only edit your own messages",
-        ));
+        return Err(Error::forbidden("You can only edit your own messages"));
     }
     if req.content.trim().is_empty()
         && e2ee.is_none()
@@ -683,10 +671,9 @@ pub async fn add_reaction(
     if !existing.contains(&emoji) {
         t.require(Permissions::ADD_REACTIONS)?;
         if existing.len() >= MAX_REACTION_EMOJI {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                format!("A message can have at most {MAX_REACTION_EMOJI} different reactions"),
-            ));
+            return Err(Error::bad_request(format!(
+                "A message can have at most {MAX_REACTION_EMOJI} different reactions"
+            )));
         }
     }
     let added =

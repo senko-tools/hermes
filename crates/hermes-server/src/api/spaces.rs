@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateSpaceRequest, TransferSpaceRequest, UpdateSpaceRequest};
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
@@ -54,16 +53,12 @@ pub async fn create(
             .filter(|s| s.space.owner_id == auth.user_id)
             .count();
         if !admin && max == 0 {
-            return Err(Error::new(
-                ErrorCode::MissingPermission,
-                "Only instance admins can create spaces",
-            ));
+            return Err(Error::forbidden("Only instance admins can create spaces"));
         }
         if !admin && owned >= max {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                format!("You already own {owned} spaces, the most allowed on this instance"),
-            ));
+            return Err(Error::bad_request(format!(
+                "You already own {owned} spaces, the most allowed on this instance"
+            )));
         }
     }
 
@@ -164,10 +159,7 @@ pub async fn update(
 }
 
 fn owner_only(action: &str) -> Error {
-    Error::new(
-        ErrorCode::MissingPermission,
-        format!("Only the owner can {action} the space"),
-    )
+    Error::forbidden(format!("Only the owner can {action} the space"))
 }
 
 /// Owner only. Deletes the space with all its channels, messages, roles and invites.

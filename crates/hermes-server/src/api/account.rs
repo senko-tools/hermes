@@ -89,12 +89,8 @@ pub async fn two_factor_confirm(
 ) -> ApiResult<StatusCode> {
     state.throttle(auth.user_id, Action::Password)?;
     let pending = totp_column(&state, auth.user_id, true).await?;
-    let secret = pending.ok_or_else(|| {
-        Error::new(
-            ErrorCode::BadRequest,
-            "Start setting up two-factor login first",
-        )
-    })?;
+    let secret =
+        pending.ok_or_else(|| Error::bad_request("Start setting up two-factor login first"))?;
     if !totp::check(&secret, &req.code, now_secs()) {
         return Err(wrong_code());
     }
@@ -142,10 +138,7 @@ pub async fn block(
     Path(user): Path<Id>,
 ) -> ApiResult<StatusCode> {
     if user == auth.user_id {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
-            "You cannot block yourself",
-        ));
+        return Err(Error::bad_request("You cannot block yourself"));
     }
     if !state.cache().users.contains_key(&user) {
         return Err(Error::not_found("user"));
@@ -282,8 +275,7 @@ pub async fn delete(
             .values()
             .any(|s| s.space.owner_id == auth.user_id)
         {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
+            return Err(Error::bad_request(
                 "Give away or delete the servers you own first",
             ));
         }

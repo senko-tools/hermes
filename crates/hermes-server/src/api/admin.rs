@@ -29,10 +29,7 @@ fn require_admin(state: &AppState, user_id: Id) -> ApiResult<()> {
     {
         Ok(())
     } else {
-        Err(Error::new(
-            ErrorCode::MissingPermission,
-            "Only instance admins can do this",
-        ))
+        Err(Error::forbidden("Only instance admins can do this"))
     }
 }
 
@@ -207,8 +204,7 @@ pub async fn update_user(
         .ok_or_else(|| Error::not_found("user"))?;
     if user_id == auth.user_id && (req.disabled == Some(true) || req.instance_admin == Some(false))
     {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
+        return Err(Error::bad_request(
             "You cannot disable yourself or remove your own admin rights",
         ));
     }
@@ -216,8 +212,7 @@ pub async fn update_user(
         && (req.disabled == Some(true) || req.instance_admin == Some(false))
         && state.cache().first_admin() == Some(user_id)
     {
-        return Err(Error::new(
-            ErrorCode::MissingPermission,
+        return Err(Error::forbidden(
             "The instance's first admin cannot be disabled or demoted by anyone else",
         ));
     }

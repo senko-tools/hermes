@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{BanRequest, Pagination, TimeoutRequest, UpdateMemberRequest};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -194,8 +193,7 @@ pub async fn remove(
         let access = perms::space(&cache, space_id, auth.user_id)?;
         if leaving {
             if access.is_owner() {
-                return Err(Error::new(
-                    ErrorCode::BadRequest,
+                return Err(Error::bad_request(
                     "The owner cannot leave the space; transfer or delete it instead",
                 ));
             }
@@ -351,7 +349,7 @@ pub async fn ban(
         let access =
             perms::require_space(&cache, space_id, auth.user_id, Permissions::BAN_MEMBERS)?;
         if user_id == auth.user_id {
-            return Err(Error::new(ErrorCode::BadRequest, "You cannot ban yourself"));
+            return Err(Error::bad_request("You cannot ban yourself"));
         }
         if !cache.users.contains_key(&user_id) {
             return Err(Error::not_found("user"));

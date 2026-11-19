@@ -46,7 +46,7 @@ pub async fn register(
         || !valid_key(&req.dh_key)
         || !valid_key(&req.signature)
     {
-        return Err(Error::new(ErrorCode::BadRequest, "Malformed device keys"));
+        return Err(Error::bad_request("Malformed device keys"));
     }
     // A client registers on every connect: nothing changes, nobody hears about it.
     if db::devices::is_live(&state.db.read, auth.user_id, &req, auth.session_id).await? {
@@ -55,8 +55,7 @@ pub async fn register(
     if db::devices::count_live(&state.db.read, auth.user_id, &req.device_id).await?
         >= MAX_DEVICES as i64
     {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
+        return Err(Error::bad_request(
             "This account has too many devices: sign some out",
         ));
     }
@@ -82,10 +81,7 @@ pub async fn query(
     Json(req): Json<DeviceQuery>,
 ) -> ApiResult<Json<Vec<UserDevices>>> {
     if req.user_ids.len() > MAX_DEVICE_QUERY {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
-            "Asking about too many users",
-        ));
+        return Err(Error::bad_request("Asking about too many users"));
     }
     let found = db::devices::of_users(&state.db.read, &req.user_ids).await?;
     // In the order asked, one entry per asked ID (an ID asked twice is answered twice).

@@ -198,8 +198,7 @@ async fn receive(path: &FsPath, mut body: Body, max: u64) -> ApiResult<Option<([
     let mut hasher = Sha256::new();
     let mut size = 0u64;
     while let Some(frame) = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await {
-        let frame = frame
-            .map_err(|err| Error::new(ErrorCode::BadRequest, format!("Upload failed: {err}")))?;
+        let frame = frame.map_err(|err| Error::bad_request(format!("Upload failed: {err}")))?;
         let Ok(data) = frame.into_data() else {
             continue; // trailers
         };
