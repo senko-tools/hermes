@@ -22,7 +22,9 @@ directories.workspace = true
 futures-util.workspace = true
 global-hotkey.workspace = true
 gpui-kit.workspace = true
-image = { workspace = true, features = ["png", "jpeg", "webp", "gif"] }
+image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp", "tiff", "ico"] }
+png.workspace = true
+resvg.workspace = true
 notify.workspace = true
 notify-rust.workspace = true
 openh264.workspace = true
