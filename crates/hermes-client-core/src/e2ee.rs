@@ -54,7 +54,7 @@ const CHANNEL_KEY_SIG: &[u8] = b"hermes-e2ee/v1/channel-key";
 const REACTION_INFO: &[u8] = b"hermes-e2ee/v1/reaction";
 const LOCAL_AAD: &[u8] = b"hermes-e2ee/v1/local";
 /// A sealed reaction starts with this, so it cannot be mistaken for an emoji.
-pub const REACTION_PREFIX: &str = "e2-";
+pub const REACTION_PREFIX: &str = hermes_proto::e2ee::SEALED_REACTION_PREFIX;
 /// Reactions are padded to this many bytes: which emoji it is should not show in its length.
 const REACTION_PADDING: usize = 48;
 /// Message plaintext is padded to a multiple of this, so its length says little.

@@ -593,17 +593,7 @@ fn last_online_text(now: i64, at: i64, offset_secs: i64) -> String {
 }
 
 fn long_date(unix_ms: i64, offset_secs: i64) -> String {
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let date = hermes_client_core::time::format(unix_ms, "%Y %m %d", offset_secs);
-    let mut parts = date.split(' ').map(|p| p.parse::<usize>().unwrap_or(1));
-    let (y, m, d) = (
-        parts.next().unwrap_or(1970),
-        parts.next().unwrap_or(1),
-        parts.next().unwrap_or(1),
-    );
-    format!("{} {d}, {y}", MONTHS[m.clamp(1, 12) - 1])
+    hermes_client_core::time::format(unix_ms, "%b %e, %Y", offset_secs)
 }
 
 #[cfg(test)]

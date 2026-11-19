@@ -170,9 +170,11 @@ fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<Strin
 
 /// A sealed reaction: `e2-` and hex, long enough to hold one and short enough to store.
 fn is_sealed_reaction(emoji: &str) -> bool {
-    emoji.strip_prefix("e2-").is_some_and(|hex| {
-        (48..=256).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
-    })
+    emoji
+        .strip_prefix(hermes_proto::e2ee::SEALED_REACTION_PREFIX)
+        .is_some_and(|hex| {
+            (48..=256).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        })
 }
 
 /// A reaction has to be an emoji, or one sealed by a client.

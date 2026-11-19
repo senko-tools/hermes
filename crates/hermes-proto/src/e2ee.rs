@@ -85,6 +85,8 @@ pub struct Envelope {
 
 /// The most sealed keys one request can carry.
 pub const MAX_CHANNEL_KEYS: usize = 4096;
+/// A sealed reaction's emoji starts with this, then hex, so it cannot be mistaken for an emoji.
+pub const SEALED_REACTION_PREFIX: &str = "e2-";
 
 /// Who hands a channel's keys to those who lack them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
