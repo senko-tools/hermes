@@ -2005,15 +2005,9 @@ impl std::fmt::Display for QuicError {
 
 const TIMED_OUT: &str = "timed out";
 
-/// The addresses `host` resolves to, in the order the system prefers, without repeats.
+/// The addresses `host` resolves to, without repeats, in the order to try them (see `net`).
 pub async fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
-    let mut addrs: Vec<SocketAddr> = Vec::new();
-    for addr in tokio::net::lookup_host((host, port)).await? {
-        if !addrs.contains(&addr) {
-            addrs.push(addr);
-        }
-    }
-    Ok(addrs)
+    crate::net::resolve(host, port).await
 }
 
 /// The order to try `addrs` in: the system's first choice, then the other family's first, then
@@ -2059,13 +2053,23 @@ pub async fn connect_any(
     addrs: &[SocketAddr],
     each: Duration,
 ) -> std::result::Result<(SocketAddr, quinn::Connection), QuicError> {
-    let mut failed = Vec::new();
+    let mut failed: Vec<(SocketAddr, String)> = Vec::new();
+    let note = |failed: &[(SocketAddr, String)]| {
+        if !failed.is_empty() {
+            let why: Vec<String> = failed.iter().map(|(a, e)| format!("{a}: {e}")).collect();
+            crate::net::connect_failed(&quic.host, &format!("voice: {}", why.join("; ")));
+        }
+    };
     for addr in try_order(addrs) {
         match connect_addr(quic, addr, each).await {
-            Ok(conn) => return Ok((addr, conn)),
+            Ok(conn) => {
+                note(&failed);
+                return Ok((addr, conn));
+            }
             Err(e) => failed.push((addr, e)),
         }
     }
+    note(&failed);
     Err(QuicError::Addresses(failed))
 }
 

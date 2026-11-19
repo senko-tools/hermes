@@ -17,6 +17,7 @@ pub mod gateway;
 pub mod known_hosts;
 pub mod link_preview;
 pub mod logs;
+pub mod net;
 pub mod notify;
 pub mod picture;
 pub mod read_marks;

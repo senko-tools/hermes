@@ -22,6 +22,8 @@ use crate::tls::{self, Trust};
 /// How long the server has to send `hello` (and `ready`/`resumed`) before the attempt counts as
 /// failed.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Each of the server's addresses gets this long to accept the TCP connection.
+const TCP_CONNECT_EACH: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Connection status reported to the UI.
@@ -80,6 +82,7 @@ impl Gateway {
         let (tx, rx) = mpsc::unbounded_channel();
         let task = Task {
             url: format!("wss://{}/api/v1/gateway", host.authority()),
+            host,
             trust,
             token,
             client,
@@ -135,6 +138,7 @@ enum End {
 
 struct Task {
     url: String,
+    host: HostPort,
     trust: Trust,
     token: String,
     client: ClientInfo,
@@ -242,18 +246,26 @@ impl Task {
     async fn connect(&self) -> Result<Ws, String> {
         let config = tls::client_config(self.trust, false).map_err(|e| e.to_string())?;
         let connector = tokio_tungstenite::Connector::Rustls(config);
-        let (ws, _) = timeout(
-            HANDSHAKE_TIMEOUT,
-            tokio_tungstenite::connect_async_tls_with_config(
+        let (host, port) = (self.host.host.as_str(), self.host.port);
+        let handshake = async {
+            // Our own connect, so the gateway skips an address family that does not answer
+            // like HTTPS does (see `net`).
+            let tcp = crate::net::connect_tcp(host, port, TCP_CONNECT_EACH)
+                .await
+                .map_err(|e| e.to_string())?;
+            let _ = tcp.set_nodelay(true);
+            tokio_tungstenite::client_async_tls_with_config(
                 self.url.as_str(),
+                tcp,
                 None,
-                true,
                 Some(connector),
-            ),
-        )
-        .await
-        .map_err(|_| "connection timed out".to_owned())?
-        .map_err(|e| e.to_string())?;
+            )
+            .await
+            .map_err(|e| e.to_string())
+        };
+        let (ws, _) = timeout(HANDSHAKE_TIMEOUT, handshake)
+            .await
+            .map_err(|_| "connection timed out".to_owned())??;
         Ok(ws)
     }
 

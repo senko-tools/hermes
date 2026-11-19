@@ -38,6 +38,8 @@ use crate::tls::{self, Trust};
 
 /// Requests that take longer fail (uploads have their own, longer limit).
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// Connecting, TLS included. Short, since a failed connect is tried once more (see `send`).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// The most a server may send in answer: a hostile one must not be able to fill the memory.
 const MAX_JSON_BYTES: usize = 64 << 20;
@@ -168,7 +170,8 @@ impl Rest {
     pub(crate) fn with_tls(config: rustls::ClientConfig, host: &HostPort) -> Result<Self> {
         let http = reqwest::Client::builder()
             .use_preconfigured_tls(config)
-            .connect_timeout(Duration::from_secs(10))
+            .dns_resolver(crate::net::Resolver)
+            .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(concat!("hermes-client-core/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(network)?;
@@ -228,7 +231,27 @@ impl Rest {
     }
 
     async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-        let res = req.send().await.map_err(network)?;
+        // A connect error means the request never left, so it can be sent again; by then the
+        // host's other address family goes first (see `net`).
+        let again = req.try_clone();
+        let res = match req.send().await {
+            Ok(res) => res,
+            Err(err) if err.is_connect() => {
+                let host = err
+                    .url()
+                    .and_then(|u| u.host_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let first = network(err);
+                crate::net::connect_failed(&host, &first.to_string());
+                match again {
+                    Some(again) => again.send().await.map_err(network)?,
+                    // A streamed body cannot be sent twice.
+                    None => return Err(first),
+                }
+            }
+            Err(err) => return Err(network(err)),
+        };
         if res.status().is_success() {
             return Ok(res);
         }
