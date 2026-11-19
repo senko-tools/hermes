@@ -235,6 +235,8 @@ pub struct Shell {
     /// Message text parsed already, by what it depends on. Parsing and resolving mentions per
     /// visible row per frame was the biggest cost of drawing a chat.
     pub markup_cache: std::cell::RefCell<HashMap<u64, std::rc::Rc<Vec<crate::markup::Block>>>>,
+    /// Link previews by address (`[buffer] link_previews`).
+    pub link_cards: HashMap<String, crate::link_card::LinkCard>,
     /// The member list, grouped and sorted, per server.
     pub member_groups_cache: MemberGroupsCache,
     /// Plays mouse-wheel notches back smoothly.
@@ -423,6 +425,7 @@ impl Shell {
             grow_heights: Default::default(),
             syntax_cache: Default::default(),
             markup_cache: Default::default(),
+            link_cards: HashMap::new(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
             crop: None,
@@ -1046,6 +1049,7 @@ impl Shell {
                 Page::Friends => "Friends".to_owned(),
                 Page::Results(Key::Search(..)) => "Search".to_owned(),
                 Page::Results(Key::Mentions) => "Mentions".to_owned(),
+                Page::Results(Key::Saved) => "Saved messages".to_owned(),
                 Page::Results(Key::Pins(..)) => "Pinned messages".to_owned(),
                 Page::Chat(inst, channel) | Page::Voice(inst, channel) => store
                     .instance(inst)
@@ -1199,6 +1203,13 @@ impl Shell {
             crate::channel::tip_button("header-mentions", assets::AT, "Mentions")
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_results(Key::Mentions, window, cx);
+                }))
+                .into_any_element(),
+        );
+        controls.push(
+            crate::channel::tip_button("header-saved", assets::BOOKMARK, "Saved messages")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_results(Key::Saved, window, cx);
                 }))
                 .into_any_element(),
         );

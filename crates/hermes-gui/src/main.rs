@@ -29,6 +29,7 @@ mod images;
 mod key_settings;
 mod keybinds;
 mod keys;
+mod link_card;
 mod markup;
 mod media;
 mod members;

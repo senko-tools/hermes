@@ -1537,6 +1537,15 @@ impl Shell {
                             cx,
                         ),
                         self.flag(
+                            "Link previews",
+                            "Show the title and picture of linked pages. This computer fetches \
+                            them itself, so the site sees your address (the Hermes server never \
+                            fetches them).",
+                            b.link_previews,
+                            "buffer.link_previews",
+                            cx,
+                        ),
+                        self.flag(
                             "Preview while writing",
                             "The message shows formatted above the message box. Also the eye \
                             button next to it.",

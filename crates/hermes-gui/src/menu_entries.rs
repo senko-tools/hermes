@@ -111,6 +111,9 @@ pub enum Action {
     QuoteText,
     CopyText,
     CopyMessageId,
+    /// Keeps the message in my saved messages (on this device).
+    Save,
+    Unsave,
     Pin,
     Unpin,
     DeleteMessage,
@@ -220,6 +223,8 @@ impl Action {
             Action::QuoteText => "Quote",
             Action::CopyText => "Copy text",
             Action::CopyMessageId => "Copy message ID",
+            Action::Save => "Save message",
+            Action::Unsave => "Remove from saved",
             Action::Pin => "Pin message",
             Action::Unpin => "Unpin message",
             Action::DeleteMessage => "Delete message",
@@ -427,6 +432,8 @@ pub struct Extra {
     pub presence: Option<PresenceStatus>,
     /// The person is muted for me (a member's menu).
     pub locally_muted: bool,
+    /// The message is in my saved messages (a message's menu).
+    pub saved: bool,
 }
 
 /// The entries for `target`; `status` is the instance's connection status and `s` its store.
@@ -582,6 +589,14 @@ pub fn entries_with(
                 push(&mut out, [Action::QuoteText]);
             }
             push(&mut out, [Action::CopyText]);
+            push(
+                &mut out,
+                [if extra.saved {
+                    Action::Unsave
+                } else {
+                    Action::Save
+                }],
+            );
             if manage {
                 push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
             }
@@ -999,6 +1014,7 @@ mod tests {
         let extra = Extra {
             presence: None,
             locally_muted,
+            saved: false,
         };
         actions(&entries_with(
             &target,

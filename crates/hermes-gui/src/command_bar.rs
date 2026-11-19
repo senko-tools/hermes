@@ -503,6 +503,11 @@ pub fn entries(
         detail: "Messages that mention you".into(),
         command: Command::Results(Key::Mentions),
     });
+    out.push(Entry {
+        label: "Saved messages".into(),
+        detail: "Messages you saved on this device".into(),
+        command: Command::Results(Key::Saved),
+    });
     for (action, _, _, title) in ACTIONS {
         // Split panes come later.
         if matches!(

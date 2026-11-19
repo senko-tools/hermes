@@ -71,6 +71,7 @@ pub const FOLDER_PLUS: &str = "folder-plus-outline";
 pub const ALERT: &str = "alert";
 pub const PULSE: &str = "pulse";
 pub const EYE: &str = "eye-outline";
+pub const BOOKMARK: &str = "bookmark-outline";
 pub const CALENDAR: &str = "calendar";
 
 const FONTS: [&[u8]; 4] = [

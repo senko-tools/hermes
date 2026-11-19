@@ -2179,6 +2179,36 @@ impl Shell {
             (Target::Message(_, _, message), Action::CopyMessageId) => {
                 self.copy(message.to_string(), "Message ID", cx);
             }
+            (Target::Message(inst, channel, message), Action::Save) => {
+                let saved = {
+                    let store = self.core.store();
+                    store.instance(&inst).and_then(|s| {
+                        let m = s.window(channel)?.get(message)?;
+                        let space = s.space_of(channel);
+                        let text = view::plain_text(s, space, &m.content, 4000);
+                        Some(hermes_client_core::channel_keys::SavedMessage {
+                            channel,
+                            message,
+                            saved_at: hermes_client_core::now_ms(),
+                            author: s.display_name(space, m.author.id),
+                            text: if text.is_empty() && !m.attachments.is_empty() {
+                                format!("[{} attachment(s)]", m.attachments.len())
+                            } else {
+                                text
+                            },
+                        })
+                    })
+                };
+                if saved.is_some_and(|saved| self.core.set_saved(&inst, message, Some(saved))) {
+                    self.info("Saved. Find it under Saved messages.", cx);
+                } else {
+                    self.error("could not save this message here", cx);
+                }
+            }
+            (Target::Message(inst, _, message), Action::Unsave) => {
+                self.core.set_saved(&inst, message, None);
+                self.info("Removed from saved messages", cx);
+            }
             (Target::Message(inst, channel, message), Action::Pin | Action::Unpin) => {
                 let pin = action == Action::Pin;
                 self.call_status(
@@ -2961,6 +2991,18 @@ impl Shell {
 
     /// Before a message row is drawn: starts loading its pictures that are not loaded yet.
     fn prepare_message(&mut self, key: &ChannelKey, id: Id, cx: &mut Context<Self>) {
+        if self.config.buffer.link_previews {
+            let text = {
+                let store = self.core.store();
+                store.instance(&key.0).and_then(|s| {
+                    let m = s.window(key.1)?.get(id)?;
+                    (!m.deleted && !s.blocked.contains(&m.author.id)).then(|| m.content.clone())
+                })
+            };
+            if let Some(text) = text {
+                self.prepare_link_card(&text, cx);
+            }
+        }
         if !self.config.buffer.image_previews {
             return;
         }
@@ -3290,6 +3332,18 @@ impl Shell {
                     .min_w_0()
                     .when(after_something, |d| d.mt(px(crate::rows::FILE_SPACE)))
                     .child(self.render_attachment(inst, place, attachment, cx))
+                    .into_any_element(),
+            );
+        }
+        if !s.blocked.contains(&msg.author.id)
+            && let Some(card) = self.render_link_card(&msg.content, cx)
+        {
+            body.push(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .mt(px(crate::rows::FILE_SPACE))
+                    .child(card)
                     .into_any_element(),
             );
         }

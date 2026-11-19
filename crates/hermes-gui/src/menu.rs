@@ -290,6 +290,10 @@ impl Shell {
                 Target::Member(inst, _, user) => self.core.user_muted(inst, *user),
                 _ => false,
             },
+            saved: match target {
+                Target::Message(inst, _, message) => self.core.is_saved(inst, *message),
+                _ => false,
+            },
         };
         let entries = {
             let store = self.core.store();

@@ -32,6 +32,8 @@ pub enum Key {
     Search(InstanceId, Option<Id>),
     Mentions,
     Pins(InstanceId, Id),
+    /// My saved messages on every instance (kept on this device).
+    Saved,
 }
 
 /// A list loaded over REST.
@@ -453,6 +455,10 @@ impl Shell {
                     move |this, result, _, cx| this.results_loaded(&done, append, result, cx),
                 );
             }
+            // Read from this device when drawn.
+            Key::Saved => {
+                state.items = Remote::Ready(Vec::new());
+            }
             Key::Mentions => {
                 let instances = self.core.instance_ids();
                 if instances.is_empty() {
@@ -591,7 +597,10 @@ impl Shell {
                 .child(text)
                 .into_any_element()
         };
-        match &state.items {
+        if key == Key::Saved {
+            list.extend(self.saved_rows(cx));
+        } else {
+            match &state.items {
             Remote::Idle => list.push(muted(if matches!(key, Key::Search(..)) {
                 "Type to search: every word must appear somewhere in the message. Narrow it with \
                  from:, in:, has:, before:, after: or during:."
@@ -626,6 +635,7 @@ impl Shell {
                     "Nothing pinned",
                     "Right-click a message and choose Pin.",
                 ),
+                Key::Saved => div().into_any_element(),
             }),
             Remote::Ready(items) => {
                 if let (Key::Search(..), Some(total)) = (&key, state.total) {
@@ -657,6 +667,7 @@ impl Shell {
                 }
             }
         }
+        }
         div()
             .flex()
             .flex_col()
@@ -677,6 +688,81 @@ impl Shell {
             .into_any_element()
     }
 
+    /// My saved messages on every instance, the latest saved first; each opens where it was
+    /// said and can be let go.
+    fn saved_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let store = self.core.store();
+        let mut saved: Vec<(InstanceId, hermes_client_core::channel_keys::SavedMessage)> = self
+            .core
+            .instance_ids()
+            .into_iter()
+            .flat_map(|inst| {
+                self.core
+                    .saved_messages(&inst)
+                    .into_iter()
+                    .map(move |s| (inst.clone(), s))
+            })
+            .collect();
+        saved.sort_by_key(|(_, s)| std::cmp::Reverse(s.saved_at));
+        if saved.is_empty() {
+            return vec![theme::empty_state(
+                "saved",
+                crate::assets::BOOKMARK,
+                "Nothing saved",
+                "Right-click a message and choose Save message.",
+            )];
+        }
+        let many = self.core.instance_ids().len() > 1;
+        saved
+            .into_iter()
+            .enumerate()
+            .map(|(n, (inst, item))| {
+                let place = store
+                    .instance(&inst)
+                    .and_then(|s| Some(view::channel_title(s, s.channel(item.channel)?)))
+                    .unwrap_or_else(|| "a channel".into());
+                let place = if many {
+                    format!("{place} \u{b7} {inst}")
+                } else {
+                    place
+                };
+                let when = time::format(
+                    item.message.timestamp_ms() as i64,
+                    "%Y-%m-%d %H:%M",
+                    self.utc_offset,
+                );
+                let (remove_inst, message) = (inst.clone(), item.message);
+                let line = ResultLine {
+                    inst,
+                    channel: item.channel,
+                    message: item.message,
+                    author: item.author,
+                    when,
+                    place,
+                    text: item.text,
+                    marks: Vec::new(),
+                };
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(4.))
+                    .child(div().flex_1().min_w_0().child(result_row(n, line, cx)))
+                    .child(
+                        crate::channel::tip_button(
+                            ("saved-remove", n),
+                            crate::assets::CLOSE,
+                            "Remove from saved",
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.core.set_saved(&remove_inst, message, None);
+                            cx.notify();
+                        })),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     /// The heading and scope of a results page.
     fn results_title(&self, key: &Key) -> (String, String) {
         let store = self.core.store();
@@ -691,6 +777,10 @@ impl Shell {
                 ("Search".into(), scope)
             }
             Key::Mentions => ("Mentions".into(), "Recent messages that mention you".into()),
+            Key::Saved => (
+                "Saved messages".into(),
+                "Kept on this device, sealed like your drafts".into(),
+            ),
             Key::Pins(inst, channel) => {
                 let name = store
                     .instance(inst)
