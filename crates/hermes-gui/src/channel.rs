@@ -360,21 +360,6 @@ pub fn display_size(a: &Attachment) -> (f32, f32) {
     }
 }
 
-/// `1.4 MB`, `820 KB`, `12 B`.
-pub fn human_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    let b = bytes as f64;
-    if b >= KB * KB * KB {
-        format!("{:.1} GB", b / (KB * KB * KB))
-    } else if b >= KB * KB {
-        format!("{:.1} MB", b / (KB * KB))
-    } else if b >= KB {
-        format!("{:.0} KB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
 /// A reaction's count. When it changes the new number drops in from above; a count that is
 /// only shown again (the row scrolled back) stays still.
 fn reaction_count(key: &str, count: u32) -> impl IntoElement {
@@ -422,28 +407,6 @@ pub fn typing_dots(id: impl Into<SharedString>, color: gpui_kit::Rgba) -> AnyEle
             },
         )
         .into_any_element()
-}
-
-/// `Bob is typing…`, `Bob and Carol are typing…`, `Several people are typing…`.
-pub fn typing_text(names: &[String]) -> Option<String> {
-    match names {
-        [] => None,
-        [a] => Some(format!("{a} is typing…")),
-        [a, b] => Some(format!("{a} and {b} are typing…")),
-        [a, b, c] => Some(format!("{a}, {b} and {c} are typing…")),
-        _ => Some("Several people are typing…".into()),
-    }
-}
-
-/// The color of a user's name: their highest colored role.
-pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
-    let state = s.spaces.get(&space)?;
-    let member = state.members.get(&user)?;
-    state
-        .roles
-        .iter()
-        .filter(|r| member.role_ids.contains(&r.id))
-        .find_map(|r| r.color)
 }
 
 /// A day divider's text: the date in `[buffer] date_format`. `day` counts days since
@@ -2628,7 +2591,7 @@ impl Shell {
             .into_iter()
             .map(|u| s.display_name(space, u))
             .collect();
-        typing_text(&names)
+        view::typing_text(&names)
     }
 
     fn render_selection_bar(
@@ -2803,7 +2766,7 @@ impl Shell {
         let chips = view.uploads.iter().map(|upload| {
             let (state, color) = match &upload.state {
                 UploadState::Uploading => ("uploading…".to_owned(), theme::text_tertiary()),
-                UploadState::Ready(_) => (human_size(upload.size), theme::text_tertiary()),
+                UploadState::Ready(_) => (view::human_size(upload.size), theme::text_tertiary()),
                 UploadState::Failed(e) => (format!("failed: {e}"), theme::danger()),
             };
             let local = upload.local;
@@ -3202,7 +3165,7 @@ impl Shell {
         if !m.grouped {
             let name = s.display_name(space, msg.author.id);
             let color = space
-                .and_then(|sp| author_color(s, sp, msg.author.id))
+                .and_then(|sp| view::role_color(s, sp, msg.author.id))
                 .map_or(theme::role_default(), theme::rgb_u32);
             let part = |index| Part { message: id, index };
             let (name, name_record) =
@@ -4089,7 +4052,7 @@ impl Shell {
                             .text_color(gpui_kit::rgb(0xffffff))
                             .opacity(0.)
                             .group_hover(IMAGE_GROUP, |s| s.opacity(1.))
-                            .child(human_size(a.size)),
+                            .child(view::human_size(a.size)),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -4179,7 +4142,7 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child(human_size(a.size)),
+                            .child(view::human_size(a.size)),
                     ),
             )
             .child(self.download_button(inst, a, cx));
@@ -4536,7 +4499,7 @@ mod tests {
         ChatMessage {
             id: Id(9 << 22),
             channel_id: Id(1),
-            author: crate::fixtures::user(2, "a", None),
+            author: hermes_client_core::testing::fixtures::user(2, "a", None),
             content: content.into(),
             reply_to: None,
             edited_at: None,
@@ -4588,13 +4551,6 @@ mod tests {
             (100.0, 50.0)
         );
         assert_eq!(display_size(&attachment(None, None)), (300.0, 200.0));
-    }
-
-    #[test]
-    fn sizes_are_human() {
-        assert_eq!(human_size(12), "12 B");
-        assert_eq!(human_size(820 * 1024), "820 KB");
-        assert_eq!(human_size(1_468_006), "1.4 MB");
     }
 
     #[test]
@@ -4663,15 +4619,5 @@ there",
         );
         assert_eq!(length_counter(4001, 4000), Some(("4001/4000".into(), true)));
         assert_eq!(length_counter(5, 0), None);
-    }
-
-    #[test]
-    fn typing_lines_read_well() {
-        assert_eq!(typing_text(&[]), None);
-        assert_eq!(typing_text(&["A".into()]).unwrap(), "A is typing…");
-        assert_eq!(
-            typing_text(&["A".into(), "B".into()]).unwrap(),
-            "A and B are typing…"
-        );
     }
 }

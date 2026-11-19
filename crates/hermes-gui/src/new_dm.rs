@@ -190,7 +190,7 @@ pub fn resolve(store: &InstanceStore, input: &str) -> Result<Vec<Id>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     #[test]
     fn names_resolve_to_known_users() {

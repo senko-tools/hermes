@@ -2,13 +2,13 @@
 //! 15.1). Which entries show depends on what I may do, so a menu never offers something the
 //! server would refuse.
 
-use hermes_client_core::InstanceId;
-use hermes_client_core::gateway::ConnStatus;
-use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::{ChannelKind, NotificationLevel, PresenceStatus};
-use hermes_client_core::proto::permissions::Permissions;
-use hermes_client_core::store::InstanceStore;
-use hermes_client_core::view;
+use crate::InstanceId;
+use crate::gateway::ConnStatus;
+use crate::store::InstanceStore;
+use crate::view;
+use hermes_proto::id::Id;
+use hermes_proto::models::{ChannelKind, NotificationLevel, PresenceStatus};
+use hermes_proto::permissions::Permissions;
 
 /// What was right-clicked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,8 +328,8 @@ impl Action {
     }
 
     /// The status a status entry sets, for its colored dot.
-    pub fn status(self) -> Option<hermes_client_core::proto::models::PresenceStatus> {
-        use hermes_client_core::proto::models::PresenceStatus as P;
+    pub fn status(self) -> Option<hermes_proto::models::PresenceStatus> {
+        use hermes_proto::models::PresenceStatus as P;
         match self {
             Action::SetOnline => Some(P::Online),
             Action::SetIdle => Some(P::Idle),
@@ -423,6 +423,17 @@ pub fn can_delete(s: &InstanceStore, channel: Id, message: Id) -> bool {
     };
     s.me_id() == Some(msg.author.id)
         || (!s.dms.contains_key(&channel) && view::can(s, channel, Permissions::MANAGE_MESSAGES))
+}
+
+/// The actions `target`'s menu offers on a connected instance, without separators or
+/// submenus' structure: for a client that draws its own menus but must offer the same things
+/// (the TUI).
+pub fn allowed_actions(target: &Target, s: &InstanceStore) -> Vec<Action> {
+    entries_with(target, &ConnStatus::Connected, Some(s), Extra::default())
+        .into_iter()
+        .flatten()
+        .map(|entry| entry.action)
+        .collect()
 }
 
 /// What the entries depend on beyond the store.
@@ -621,7 +632,7 @@ pub fn entries_with(
             }
             push(&mut out, [Action::Mention]);
             if let (false, Some(s)) = (me, s) {
-                use hermes_client_core::proto::models::RelationshipKind as R;
+                use hermes_proto::models::RelationshipKind as R;
                 match s.relationships.get(user).map(|r| r.kind) {
                     None => push(&mut out, [Action::AddFriend]),
                     Some(R::Friend) => push(&mut out, [Action::RemoveFriend]),
@@ -875,12 +886,12 @@ fn notification_entries(
             until: None,
         }));
     }
-    let muted = setting.filter(|n| n.is_muted(hermes_client_core::now_ms()));
+    let muted = setting.filter(|n| n.is_muted(crate::now_ms()));
     match muted {
         Some(n) => out.push(Some(Entry {
-            until: n.muted_until.filter(|u| {
-                *u != hermes_client_core::proto::models::NotificationSetting::MUTED_FOREVER
-            }),
+            until: n
+                .muted_until
+                .filter(|u| *u != hermes_proto::models::NotificationSetting::MUTED_FOREVER),
             ..Action::Unmute.into()
         })),
         None => push(
@@ -941,8 +952,8 @@ mod tests {
 
     #[test]
     fn channel_and_member_entries_follow_the_server_rules() {
-        use hermes_client_core::proto::models::Override;
-        let mut s = crate::fixtures::store();
+        use hermes_proto::models::Override;
+        let mut s = crate::testing::fixtures::store();
         let (inst, space, games, me) = ("h".to_owned(), Id(10), Id(12), Id(1));
         let st = s.spaces.get_mut(&space).unwrap();
         // Bob owns the space; I manage channels and nicknames through @everyone, but the
@@ -1027,7 +1038,7 @@ mod tests {
     #[test]
     fn someone_in_voice_gets_volume_and_moderation() {
         // I own the server; Bob is in its voice channel.
-        let mut s = crate::fixtures::store();
+        let mut s = crate::testing::fixtures::store();
         let all = member_entries(&s, false);
         for action in [
             Action::Profile,
@@ -1068,7 +1079,7 @@ mod tests {
 
     #[test]
     fn the_channel_area_and_the_rail_have_their_own_menus() {
-        let s = crate::fixtures::store();
+        let s = crate::testing::fixtures::store();
         let area = Target::ChannelArea("h".into(), Id(10));
         assert_eq!(
             actions(&entries(&area, &ConnStatus::Connected, Some(&s))),

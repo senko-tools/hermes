@@ -1954,7 +1954,7 @@ impl Shell {
             .take(MAX_ROWS)
             .map(|(name, m)| {
                 let user = m.user.id;
-                let name_color = crate::channel::author_color(s, space, user)
+                let name_color = hermes_client_core::view::role_color(s, space, user)
                     .map_or(theme::text(), theme::rgb_u32);
                 list_row(format!("settings-member-{user}"), page.member == Some(user))
                     .h(px(46.))
@@ -2847,7 +2847,7 @@ mod tests {
 
     #[test]
     fn override_editing_follows_the_server_rules() {
-        let mut s = crate::fixtures::store();
+        let mut s = hermes_client_core::testing::fixtures::store();
         let (space, general) = (Id(10), Id(11));
         let owner = override_access(&s, space, general, space);
         assert!(
@@ -2939,7 +2939,7 @@ mod tests {
 
     #[test]
     fn members_filter_and_sort_by_shown_name() {
-        let s = crate::fixtures::store();
+        let s = hermes_client_core::testing::fixtures::store();
         let names: Vec<String> = filter_members(&s, Id(10), "")
             .into_iter()
             .map(|(name, _)| name)

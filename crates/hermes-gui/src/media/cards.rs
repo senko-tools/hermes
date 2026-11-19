@@ -1115,7 +1115,7 @@ impl Shell {
                 .get(key)
                 .is_some_and(|i| matches!(i.load, Load::Ready(_)))
             || self.media.resume.contains_key(key);
-        let size = crate::channel::human_size(a.size);
+        let size = hermes_client_core::view::human_size(a.size);
         if started {
             format!("{} / {}  ·  {size}", clock(position), clock(duration))
         } else if let Some(ms) = a.duration_ms {
@@ -1332,8 +1332,12 @@ impl Shell {
     /// A video's top bar: its name, length and size.
     fn video_top(&self, inst: &InstanceId, place: Option<FilePlace>, a: &Attachment) -> Div {
         let meta = match a.duration_ms {
-            Some(ms) => format!("{}  ·  {}", clock(ms), crate::channel::human_size(a.size)),
-            None => crate::channel::human_size(a.size),
+            Some(ms) => format!(
+                "{}  ·  {}",
+                clock(ms),
+                hermes_client_core::view::human_size(a.size)
+            ),
+            None => hermes_client_core::view::human_size(a.size),
         };
         let (name, name_record) = self.selectable_file_name(inst, place, &a.filename);
         div()

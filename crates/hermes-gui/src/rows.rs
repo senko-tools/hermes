@@ -405,9 +405,9 @@ mod tests {
             GROUP_SPACE
         );
     }
-    use crate::fixtures;
     use hermes_client_core::proto::models::{MessageRef, User};
     use hermes_client_core::store::{PendingMessage, PendingState};
+    use hermes_client_core::testing::fixtures;
 
     fn id_at(unix_ms: u64, seq: u16) -> Id {
         Id::from_parts(

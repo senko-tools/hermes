@@ -552,7 +552,7 @@ pub fn entries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     #[test]
     fn fuzzy_scores() {

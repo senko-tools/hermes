@@ -17,6 +17,7 @@ pub mod gateway;
 pub mod known_hosts;
 pub mod link_preview;
 pub mod logs;
+pub mod menus;
 pub mod net;
 pub mod notify;
 pub mod picture;
@@ -26,6 +27,8 @@ pub mod rest;
 pub mod search_index;
 pub mod secure;
 pub mod store;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod time;
 pub mod tls;
 pub mod tokens;

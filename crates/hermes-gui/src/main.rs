@@ -20,8 +20,6 @@ mod diagnostics;
 mod drag;
 mod emoji_picker;
 mod encryption;
-#[cfg(test)]
-mod fixtures;
 mod form;
 mod friends;
 mod hover;
@@ -34,7 +32,7 @@ mod markup;
 mod media;
 mod members;
 mod menu;
-mod menu_entries;
+use hermes_client_core::menus as menu_entries;
 mod modal;
 mod new_dm;
 mod open;

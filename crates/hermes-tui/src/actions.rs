@@ -2,6 +2,7 @@
 //! result lists with jump-to (search, mentions, pins), and the space management commands
 //! (PLAN.md section 16.2 and Phase 6).
 
+use hermes_client_core::menus::{self, Action as Shared, Target};
 use hermes_client_core::proto::api::{
     BanRequest, CreateChannelRequest, NotificationSettingRequest, SearchQuery,
     UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
@@ -249,22 +250,23 @@ impl App {
         let s = store.instance(&inst)?;
         let msg = s.window(channel)?.get(id)?;
         let own = s.me_id() == Some(author);
-        let dm = s.dms.contains_key(&channel);
-        let manage = view::can(s, channel, Permissions::MANAGE_MESSAGES);
+        // The same rules as the desktop client's menu.
+        let allowed = menus::allowed_actions(&Target::Message(inst.clone(), channel, id), s);
+        let may = |a: Shared| allowed.contains(&a);
         let mut out = Menu::new();
-        if view::can(s, channel, Permissions::SEND_MESSAGES) {
+        if may(Shared::Reply) {
             out.push(item("Reply", MenuItem::Key(Action::Reply)));
         }
-        out.push(item("React", MenuItem::Key(Action::React)));
-        if own {
+        if may(Shared::AddReaction) {
+            out.push(item("React", MenuItem::Key(Action::React)));
+        }
+        if may(Shared::Edit) {
             out.push(item("Edit", MenuItem::Key(Action::Edit)));
         }
-        if manage || dm {
-            if msg.pinned {
-                out.push(item("Unpin", MenuItem::Pin(false)));
-            } else {
-                out.push(item("Pin", MenuItem::Pin(true)));
-            }
+        if may(Shared::Unpin) {
+            out.push(item("Unpin", MenuItem::Pin(false)));
+        } else if may(Shared::Pin) {
+            out.push(item("Pin", MenuItem::Pin(true)));
         }
         if !msg.attachments.is_empty() {
             out.push(item("Open the attachment", MenuItem::Run(Command::Open(1))));
@@ -277,7 +279,7 @@ impl App {
             ));
             out.push(item("Mention the author", MenuItem::Mention(username)));
         }
-        if own || (manage && !dm) {
+        if may(Shared::DeleteMessage) {
             out.push(item("Delete", MenuItem::Key(Action::Delete)));
         }
         let title = format!("message by {}", s.display_name(s.space_of(channel), author));
@@ -322,9 +324,11 @@ impl App {
         }
         out.push(item("Mention", MenuItem::Mention(username.clone())));
         if let Some(space) = space {
-            let can = |p| view::can_in_space(s, space, p);
-            let above = view::outranks(s, space, user);
-            if can(Permissions::MANAGE_ROLES) {
+            // The same rules as the desktop client's menu.
+            let allowed =
+                menus::allowed_actions(&Target::Member(inst.clone(), Some(space), user), s);
+            let may = |a: Shared| allowed.contains(&a);
+            if may(Shared::ManageRoles) {
                 out.push(item(
                     "Give a role…",
                     MenuItem::Prefill(format!("role {username} +")),
@@ -334,13 +338,13 @@ impl App {
                     MenuItem::Prefill(format!("role {username} -")),
                 ));
             }
-            if above && can(Permissions::KICK_MEMBERS) {
+            if may(Shared::Kick) {
                 out.push(item(
                     "Kick",
                     MenuItem::Kick(inst.clone(), space, user, s.display_name(Some(space), user)),
                 ));
             }
-            if above && can(Permissions::BAN_MEMBERS) {
+            if may(Shared::Ban) {
                 out.push(item("Ban…", MenuItem::Prefill(format!("ban {username} "))));
             }
         }

@@ -5,15 +5,13 @@
 //! muted, and the top-level `#memes` (15, unread). DMs: with Carol (4, unread) and a group DM
 //! "Trio" (21). Known users: me, bob (display name "Bobby"), carol.
 
-use hermes_client_core::proto::gateway::{
-    InstanceInfo, InstanceLimits, Ready, SpaceSnapshot, VoiceInfo,
-};
-use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::{
+use crate::store::InstanceStore;
+use hermes_proto::gateway::{InstanceInfo, InstanceLimits, Ready, SpaceSnapshot, VoiceInfo};
+use hermes_proto::id::Id;
+use hermes_proto::models::{
     Channel, ChannelKind, CurrentUser, Member, ReadState, Role, Space, User, VoiceState,
 };
-use hermes_client_core::proto::permissions::Permissions;
-use hermes_client_core::store::InstanceStore;
+use hermes_proto::permissions::Permissions;
 
 pub fn user(id: u64, name: &str, display: Option<&str>) -> User {
     User {

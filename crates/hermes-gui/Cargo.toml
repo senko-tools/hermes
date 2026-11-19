@@ -71,6 +71,7 @@ xcap.workspace = true
 embed-resource.workspace = true
 
 [dev-dependencies]
+hermes-client-core = { workspace = true, features = ["testing"] }
 # The end-to-end tests run a real server (PLAN.md section 19); never a normal dependency.
 hermes-server = { path = "../hermes-server", features = ["testing"] }
 # Headless windows for the UI tests: the gpui the kit pins, with its test platform on. Directly,

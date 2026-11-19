@@ -116,19 +116,11 @@ fn render_span(ctx: &Ctx, span: &M, style: Style, lines: &mut Vec<Pieces>) {
             push(lines, &format!("@{name}"), style.fg(Color::Magenta));
         }
         M::RoleMention(id) => {
-            let name = ctx
-                .space
-                .and_then(|s| ctx.store.spaces.get(&s))
-                .and_then(|s| s.role(*id))
-                .map_or_else(|| "role".to_owned(), |r| r.name.clone());
+            let name = view::role_mention_name(ctx.store, ctx.space, *id);
             push(lines, &format!("@{name}"), style.fg(Color::Magenta));
         }
         M::ChannelMention(id) => {
-            let name = ctx
-                .store
-                .channel(*id)
-                .and_then(|c| c.name.clone())
-                .unwrap_or_else(|| "channel".into());
+            let name = view::channel_mention_name(ctx.store, *id);
             push(lines, &format!("#{name}"), style.fg(Color::Cyan));
         }
         M::Everyone => push(lines, "@everyone", style.fg(Color::Magenta)),
@@ -136,25 +128,15 @@ fn render_span(ctx: &Ctx, span: &M, style: Style, lines: &mut Vec<Pieces>) {
     }
 }
 
-fn size_text(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{size:.1} {}", UNITS[unit])
-    }
-}
-
 fn attachment_line(i: usize, a: &Attachment) -> Pieces {
     let text = match (a.width, a.height) {
         (Some(w), Some(h)) => format!("[{}] [image: {} {w}×{h}]", i + 1, a.filename),
-        _ => format!("[{}] [file: {} {}]", i + 1, a.filename, size_text(a.size)),
+        _ => format!(
+            "[{}] [file: {} {}]",
+            i + 1,
+            a.filename,
+            view::human_size(a.size)
+        ),
     };
     vec![(text, Style::default().fg(Color::Blue))]
 }
@@ -245,15 +227,7 @@ impl Layout<'_> {
         let color = self
             .ctx
             .space
-            .and_then(|s| self.ctx.store.spaces.get(&s))
-            .and_then(|state| {
-                let member = state.members.get(&author)?;
-                state
-                    .roles
-                    .iter()
-                    .find(|r| r.color.is_some() && member.role_ids.contains(&r.id))
-                    .and_then(|r| r.color)
-            })
+            .and_then(|space| view::role_color(self.ctx.store, space, author))
             .map(|c| Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8));
         bold().fg(color.unwrap_or(Color::Green))
     }
@@ -516,16 +490,8 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Typing line at the bottom of the pane.
     let typing = s.typing(channel, now_ms());
-    let typing_text = match typing.as_slice() {
-        [] => String::new(),
-        [a] => format!("{} is typing…", s.display_name(space, *a)),
-        [a, b] => format!(
-            "{} and {} are typing…",
-            s.display_name(space, *a),
-            s.display_name(space, *b)
-        ),
-        _ => "several people are typing…".into(),
-    };
+    let names: Vec<String> = typing.iter().map(|u| s.display_name(space, *u)).collect();
+    let typing_text = view::typing_text(&names).unwrap_or_default();
     let show_typing = config.buffer.show_typing && !typing_text.is_empty();
     let height = inner.height as usize - usize::from(show_typing);
     app.page = (height / 2).max(1);
@@ -640,11 +606,5 @@ mod tests {
         });
         assert_eq!(got, (490..500).collect::<Vec<_>>());
         assert_eq!(calls, 10);
-    }
-
-    #[test]
-    fn sizes() {
-        assert_eq!(size_text(512), "512 B");
-        assert_eq!(size_text(2 * 1024 * 1024 + 100_000), "2.1 MB");
     }
 }

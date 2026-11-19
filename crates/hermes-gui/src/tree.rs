@@ -285,7 +285,7 @@ pub fn dm_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     /// A short picture of each row: kind, name and the flags that matter.
     fn describe(rows: &[Row]) -> Vec<String> {

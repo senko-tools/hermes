@@ -574,7 +574,7 @@ fn notification_change(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     #[test]
     fn a_mute_keeps_the_level_each_kind_of_channel_falls_back_to() {

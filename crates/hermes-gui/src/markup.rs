@@ -211,23 +211,24 @@ fn flatten(
                 ..piece(format!("@{}", store.display_name(space, *id)), style)
             }),
             Span::RoleMention(id) => {
-                let role = space
+                let color = space
                     .and_then(|s| store.spaces.get(&s))
-                    .and_then(|s| s.roles.iter().find(|r| r.id == *id));
+                    .and_then(|s| s.role(*id))
+                    .and_then(|r| r.color);
                 out.push(Piece {
                     mention: true,
-                    color: role.and_then(|r| r.color),
+                    color,
                     ..piece(
-                        format!("@{}", role.map_or("deleted-role", |r| r.name.as_str())),
+                        format!(
+                            "@{}",
+                            hermes_client_core::view::role_mention_name(store, space, *id)
+                        ),
                         style,
                     )
                 });
             }
             Span::ChannelMention(id) => {
-                let name = store
-                    .channel(*id)
-                    .and_then(|c| c.name.clone())
-                    .unwrap_or_else(|| "unknown".into());
+                let name = hermes_client_core::view::channel_mention_name(store, *id);
                 out.push(Piece {
                     mention: true,
                     link: (!style.spoiler).then_some(Link::Channel(*id)),
@@ -249,7 +250,7 @@ fn flatten(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     fn texts(block: &Block) -> Vec<String> {
         match block {
@@ -299,7 +300,7 @@ mod tests {
         let store = fixtures::store();
         let blocks = blocks("<@999> <#999> <@&999> @everyone", &store, Some(Id(10)));
         let all = texts(&blocks[0]).concat();
-        assert!(all.contains("#unknown"), "{all}");
+        assert!(all.contains("#deleted-channel"), "{all}");
         assert!(all.contains("@deleted-role"), "{all}");
         assert!(all.contains("@everyone"), "{all}");
     }

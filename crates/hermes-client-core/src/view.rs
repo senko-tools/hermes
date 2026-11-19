@@ -371,11 +371,7 @@ pub fn member_groups(store: &InstanceStore, space: Id) -> Vec<MemberGroup> {
     let mut offline = Vec::new();
     for member in state.members.values() {
         let status = store.status(member.user.id);
-        let color = state
-            .roles
-            .iter()
-            .find(|r| r.color.is_some() && member.role_ids.contains(&r.id))
-            .and_then(|r| r.color);
+        let color = role_color(store, space, member.user.id);
         let row = MemberRow {
             user_id: member.user.id,
             name: member
@@ -498,21 +494,12 @@ pub fn plain_text(store: &InstanceStore, space: Option<Id>, content: &str, max: 
                     out.push_str(&store.display_name(space, *id));
                 }
                 Span::RoleMention(id) => {
-                    let name = space
-                        .and_then(|sp| store.spaces.get(&sp))
-                        .and_then(|st| st.role(*id))
-                        .map_or("role", |r| r.name.as_str());
                     out.push('@');
-                    out.push_str(name);
+                    out.push_str(&role_mention_name(store, space, *id));
                 }
                 Span::ChannelMention(id) => {
                     out.push('#');
-                    out.push_str(
-                        store
-                            .channel(*id)
-                            .and_then(|c| c.name.as_deref())
-                            .unwrap_or("channel"),
-                    );
+                    out.push_str(&channel_mention_name(store, *id));
                 }
                 Span::Everyone => out.push_str("@everyone"),
                 Span::Here => out.push_str("@here"),
@@ -800,8 +787,79 @@ pub fn emoji_name(emoji: &str) -> Option<&'static str> {
     emojis::get(emoji).and_then(emojis::Emoji::shortcode)
 }
 
+/// The colour of `user`'s name in `space`: their first coloured role, in the space's role order.
+pub fn role_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
+    let state = s.spaces.get(&space)?;
+    let member = state.members.get(&user)?;
+    state
+        .roles
+        .iter()
+        .filter(|r| member.role_ids.contains(&r.id))
+        .find_map(|r| r.color)
+}
+
+/// The name a role mention shows (without the `@`); `deleted-role` once the role is gone.
+pub fn role_mention_name(s: &InstanceStore, space: Option<Id>, role: Id) -> String {
+    space
+        .and_then(|sp| s.spaces.get(&sp))
+        .and_then(|st| st.role(role))
+        .map_or_else(|| "deleted-role".to_owned(), |r| r.name.clone())
+}
+
+/// The name a channel mention shows (without the `#`); `deleted-channel` once it is gone.
+pub fn channel_mention_name(s: &InstanceStore, channel: Id) -> String {
+    s.channel(channel)
+        .and_then(|c| c.name.clone())
+        .unwrap_or_else(|| "deleted-channel".to_owned())
+}
+
+/// `Bob is typing…`, `Bob and Carol are typing…`, `Bob, Carol and Dan are typing…`,
+/// `Several people are typing…`.
+pub fn typing_text(names: &[String]) -> Option<String> {
+    match names {
+        [] => None,
+        [a] => Some(format!("{a} is typing…")),
+        [a, b] => Some(format!("{a} and {b} are typing…")),
+        [a, b, c] => Some(format!("{a}, {b} and {c} are typing…")),
+        _ => Some("Several people are typing…".into()),
+    }
+}
+
+/// `1.4 MB`, `820 KB`, `12 B`.
+pub fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= KB * KB * KB {
+        format!("{:.1} GB", b / (KB * KB * KB))
+    } else if b >= KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sizes_and_typing_read_naturally() {
+        assert_eq!(human_size(12), "12 B");
+        assert_eq!(human_size(820 * 1024), "820 KB");
+        assert_eq!(human_size(1_468_006), "1.4 MB");
+        assert_eq!(typing_text(&[]), None);
+        assert_eq!(typing_text(&["A".into()]).unwrap(), "A is typing…");
+        assert_eq!(
+            typing_text(&["A".into(), "B".into(), "C".into()]).unwrap(),
+            "A, B and C are typing…"
+        );
+        assert_eq!(
+            typing_text(&["A".into(), "B".into(), "C".into(), "D".into()]).unwrap(),
+            "Several people are typing…"
+        );
+    }
+
     use super::*;
     use crate::store::tests::{channel, message, ready, user};
 

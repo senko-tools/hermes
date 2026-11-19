@@ -8,6 +8,10 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# `hermes_client_core::testing`: fixtures for the clients' tests.
+testing = []
+
 [dependencies]
 hermes-proto.workspace = true
 hermes-audio.workspace = true

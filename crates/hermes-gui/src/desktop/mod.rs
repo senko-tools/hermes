@@ -191,7 +191,7 @@ pub fn on_close(close_to_tray: bool, tray_available: bool) -> CloseAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures;
+    use hermes_client_core::testing::fixtures;
 
     fn notification(space: Option<u64>, title: &str, preview: &str, mention: bool) -> Notification {
         Notification {
