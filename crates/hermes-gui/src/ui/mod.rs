@@ -136,6 +136,56 @@ pub fn nav_item(
         .child(label)
 }
 
+/// A row of a list (DMs, requests, server settings' roles, channels and members): its background
+/// fades in under the pointer and fills in when selected, on one spring. The caller adds the
+/// contents and what a click does; it may change the corner radius and text size.
+pub fn list_row(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    selected: bool,
+    height: f32,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id = id.into();
+    let hover = SharedString::from(format!("{id}-hover"));
+    let to = state(shell.is_hovered(&hover), selected);
+    // Under the contents; the row's own corners clip it.
+    let fill = div().absolute().inset_0().with_spring(
+        SharedString::from(format!("{id}-fill")),
+        spring(to),
+        |d, t| {
+            let t = t.clamp(0., 2.);
+            let hover = t.min(1.);
+            let chosen = (t - 1.).max(0.);
+            d.bg(theme::mix(
+                theme::alpha(theme::hover(), hover),
+                theme::selected(),
+                chosen,
+            ))
+        },
+    );
+    div()
+        .id(id)
+        .relative()
+        .overflow_hidden()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(8.))
+        .h(px(height))
+        .px(px(8.))
+        .rounded(theme::row_radius())
+        .text_size(theme::body_size())
+        .cursor_pointer()
+        .text_color(if selected {
+            theme::text()
+        } else {
+            theme::text_secondary()
+        })
+        .on_hover(shell.track_hover(hover, cx))
+        .child(fill)
+}
+
 /// A small square button holding an icon. Under the pointer a soft background fades in behind
 /// the icon and the icon turns accent. The caller adds what a click does.
 pub fn icon_button(

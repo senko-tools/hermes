@@ -1383,7 +1383,7 @@ impl Shell {
                 };
                 let id = role.id;
                 let chosen = selected == Some(id);
-                let element = list_row(format!("role-{id}"), chosen)
+                let element = list_row(self, format!("role-{id}"), chosen, cx)
                     .child(
                         div()
                             .size(px(10.))
@@ -1651,13 +1651,18 @@ impl Shell {
                     ChannelKind::Voice => assets::VOLUME,
                     _ => assets::POUND,
                 };
-                let element = list_row(format!("settings-channel-{id}"), page.channel == Some(id))
-                    .when(c.depth > 0, |d| d.ml(px(14.)))
-                    .child(icon(glyph, 18., theme::text_tertiary()))
-                    .child(div().flex_1().min_w_0().truncate().child(c.name.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_settings_channel(id, cx);
-                    }));
+                let element = list_row(
+                    self,
+                    format!("settings-channel-{id}"),
+                    page.channel == Some(id),
+                    cx,
+                )
+                .when(c.depth > 0, |d| d.ml(px(14.)))
+                .child(icon(glyph, 18., theme::text_tertiary()))
+                .child(div().flex_1().min_w_0().truncate().child(c.name.clone()))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.select_settings_channel(id, cx);
+                }));
                 let element = if manage {
                     self.with_list_drag(element, page, Kind::Channel, id, c.name.clone(), cx)
                 } else {
@@ -1967,31 +1972,36 @@ impl Shell {
                 let user = m.user.id;
                 let name_color = hermes_client_core::view::role_color(s, space, user)
                     .map_or(theme::text(), theme::rgb_u32);
-                list_row(format!("settings-member-{user}"), page.member == Some(user))
-                    .h(px(46.))
-                    .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().truncate().text_color(name_color).child(name))
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(format!("@{}", m.user.username)),
-                            ),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(page) = this.open_page() {
-                            page.member = Some(user);
-                        }
-                        cx.notify();
-                    }))
-                    .into_any_element()
+                list_row(
+                    self,
+                    format!("settings-member-{user}"),
+                    page.member == Some(user),
+                    cx,
+                )
+                .h(px(46.))
+                .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().truncate().text_color(name_color).child(name))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(theme::caption_size())
+                                .text_color(theme::text_tertiary())
+                                .child(format!("@{}", m.user.username)),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(page) = this.open_page() {
+                        page.member = Some(user);
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
             })
             .collect();
         let more = total.saturating_sub(MAX_ROWS);
@@ -2698,20 +2708,16 @@ fn strong(text: String) -> AnyElement {
         .into_any_element()
 }
 
-fn list_row(id: String, selected: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(SharedString::from(id))
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(8.))
-        .h(px(32.))
-        .px(px(8.))
+/// A row of the lists here: [`crate::ui::list_row`], a little smaller.
+fn list_row(
+    shell: &Shell,
+    id: String,
+    selected: bool,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    crate::ui::list_row(shell, id, selected, 32., cx)
         .rounded(theme::radius_small())
-        .cursor_pointer()
         .text_size(theme::secondary_size())
-        .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
 }
 
 /// A narrow list column with a header and scrolling rows.

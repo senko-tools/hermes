@@ -121,13 +121,6 @@ fn bare_row(id: impl Into<SharedString>, selected: bool, height: f32) -> Statefu
         })
 }
 
-/// A row with hover and selected looks. The caller adds what a click does.
-fn row(id: impl Into<SharedString>, selected: bool, height: f32) -> Stateful<Div> {
-    bare_row(id, selected, height)
-        .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected, |d| d.hover(|d| d.bg(theme::hover())))
-}
-
 fn count_badge(count: u32) -> Div {
     div()
         .flex()
@@ -1041,7 +1034,7 @@ impl Shell {
             let logged_out = status == ConnStatus::LoggedOut;
             let id = SharedString::from(format!("notice-{inst}"));
             let target = Target::Instance(inst.clone());
-            let element = row(id, false, theme::ROW_HEIGHT)
+            let element = crate::ui::list_row(self, id, false, theme::ROW_HEIGHT, cx)
                 .text_size(theme::secondary_size())
                 .text_color(if logged_out {
                     theme::accent()
@@ -1065,7 +1058,7 @@ impl Shell {
         let instances = self.core.instance_ids();
         if instances.is_empty() {
             return vec![
-                row("add-instance", false, theme::ROW_HEIGHT)
+                crate::ui::list_row(self, "add-instance", false, theme::ROW_HEIGHT, cx)
                     .child(icon(assets::PLUS, theme::ROW_ICON, theme::text_secondary()))
                     .child("Add an instance")
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1375,18 +1368,20 @@ impl Shell {
             } => self.render_voice_user(
                 inst, channel, user, name, muted, deafened, speaking, nested, dm, None, cx,
             ),
-            Row::NewDm { inst } => row(format!("new-dm-{inst}"), false, theme::ROW_HEIGHT)
-                .text_size(theme::body_size())
-                .child(icon(assets::PLUS, 18., theme::text_tertiary()))
-                .child(if many {
-                    format!("New message on {inst}")
-                } else {
-                    "New message".to_owned()
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_new_dm(inst.clone(), window, cx);
-                }))
-                .into_any_element(),
+            Row::NewDm { inst } => {
+                crate::ui::list_row(self, format!("new-dm-{inst}"), false, theme::ROW_HEIGHT, cx)
+                    .text_size(theme::body_size())
+                    .child(icon(assets::PLUS, 18., theme::text_tertiary()))
+                    .child(if many {
+                        format!("New message on {inst}")
+                    } else {
+                        "New message".to_owned()
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_new_dm(inst.clone(), window, cx);
+                    }))
+                    .into_any_element()
+            }
             Row::Requests { count, .. } => section_heading_owned(format!("REQUESTS ({count})")),
             Row::Request {
                 inst,
@@ -1399,7 +1394,7 @@ impl Shell {
                 let target = Target::Channel(inst.clone(), id);
                 let avatar = self.dm_avatar(&inst, peer, &name);
                 let (open_inst, accept_inst) = (inst.clone(), inst);
-                let element = row(format!("request-{id}"), selected, 44.)
+                let element = crate::ui::list_row(self, format!("request-{id}"), selected, 44., cx)
                     .child(avatar)
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(
@@ -1444,7 +1439,7 @@ impl Shell {
                         && self.core.store().instance(&inst).is_some_and(|s| {
                             !s.typing(id, hermes_client_core::now_ms()).is_empty()
                         });
-                let element = row(format!("dm-{id}"), selected, 44.)
+                let element = crate::ui::list_row(self, format!("dm-{id}"), selected, 44., cx)
                     .when(badge.unread || badge.mentions > 0, |d| {
                         d.text_color(theme::text())
                     })
