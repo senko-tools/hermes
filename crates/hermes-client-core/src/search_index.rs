@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hermes_proto::api::{HistoryQuery, SearchQuery, SearchResponse};
+use hermes_proto::api::{HistoryQuery, SearchQuery, SearchResponse, SearchSort};
 use hermes_proto::id::Id;
 use hermes_proto::models::Message;
 use serde::{Deserialize, Serialize};
@@ -29,9 +29,12 @@ const MAX_PENDING: usize = 5_000;
 const IDLE_MS: i64 = 5 * 60 * 1000;
 /// Messages asked for at once, and the pause after each page, so the server hardly notices.
 const SYNC_PAGE: u32 = 100;
-const SYNC_PAUSE: Duration = Duration::from_millis(250);
-/// How long after connecting the pass over the history starts.
-const SYNC_DELAY: Duration = Duration::from_secs(30);
+const SYNC_PAUSE: Duration = Duration::from_millis(100);
+/// How long after connecting the pass over the history starts (the first moments are busy
+/// with loading what is on screen).
+const SYNC_DELAY: Duration = Duration::from_secs(5);
+/// Pages of found messages asked for at the same time.
+const FETCH_AT_ONCE: usize = 4;
 const ZSTD_LEVEL: i32 = 3;
 
 /// How far the pass over a channel's history has got.
@@ -328,12 +331,14 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return Ok(merged);
         };
+        let ranked = query.sort == Some(SearchSort::Relevance);
+        // Sorted by relevance, later pages are the server's alone: the hits here (which have no
+        // rank) all come with the first page.
+        if ranked && query.offset.unwrap_or(0) > 0 {
+            return Ok(merged);
+        }
         let hits = self.local_hits(inst, &keys, query).await;
         merged.total += hits.len() as u64;
-        // Enough of each list to fill a page: the server's are sorted already.
-        // Whole pages around the hits: fewer requests, and the server cannot tell which of the
-        // messages on a page was the match.
-        let mut by_channel: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
         // What a message has is only known once it is opened: look at more, the caller sorts
         // out the rest.
         let local_limit = if query.has.is_some() {
@@ -341,24 +346,61 @@ impl Core {
         } else {
             limit
         };
-        for (channel, id) in hits.into_iter().take(local_limit) {
-            by_channel.entry(channel).or_default().insert(id);
-        }
-        for (channel, mut wanted) in by_channel {
-            while let Some(first) = wanted.iter().next().copied() {
-                let around = HistoryQuery {
-                    around: Some(first),
-                    limit: Some(SYNC_PAGE),
-                    ..HistoryQuery::default()
-                };
-                wanted.remove(&first);
-                for message in rest.messages(channel, &around).await? {
-                    if (message.id == first || wanted.remove(&message.id)) && !message.deleted {
-                        merged.messages.push(message);
+        // Messages already in memory need no request.
+        let mut by_channel: BTreeMap<Id, BTreeSet<Id>> = BTreeMap::new();
+        let mut found: Vec<Message> = Vec::new();
+        {
+            let store = self.store();
+            let s = store.instance(inst);
+            for (channel, id) in hits.into_iter().take(local_limit) {
+                match s.and_then(|s| s.window(channel)?.get(id)) {
+                    Some(m) if !m.deleted => found.push(m.clone()),
+                    Some(_) => {}
+                    None => {
+                        by_channel.entry(channel).or_default().insert(id);
                     }
                 }
             }
         }
+        // Whole pages around the rest: fewer requests, and the server cannot tell which of the
+        // messages on a page was the match. A few channels at a time.
+        use futures_util::StreamExt as _;
+        let jobs = by_channel
+            .into_iter()
+            .map(|(channel, mut wanted)| async move {
+                let mut out = Vec::new();
+                while let Some(first) = wanted.iter().next().copied() {
+                    let around = HistoryQuery {
+                        around: Some(first),
+                        limit: Some(SYNC_PAGE),
+                        ..HistoryQuery::default()
+                    };
+                    wanted.remove(&first);
+                    for message in rest.messages(channel, &around).await? {
+                        if (message.id == first || wanted.remove(&message.id)) && !message.deleted {
+                            out.push(message);
+                        }
+                    }
+                }
+                rest::Result::Ok(out)
+            });
+        let answers: Vec<rest::Result<Vec<Message>>> = futures_util::stream::iter(jobs)
+            .buffer_unordered(FETCH_AT_ONCE)
+            .collect()
+            .await;
+        for answer in answers {
+            found.extend(answer?);
+        }
+        found.sort_by_key(|m| std::cmp::Reverse(m.id));
+        if ranked {
+            // The server's best matches first, then the ones found here, newest first.
+            let seen: BTreeSet<Id> = merged.messages.iter().map(|m| m.id).collect();
+            merged
+                .messages
+                .extend(found.into_iter().filter(|m| !seen.contains(&m.id)));
+            return Ok(merged);
+        }
+        merged.messages.extend(found);
         merged.messages.sort_by_key(|m| std::cmp::Reverse(m.id));
         merged.messages.truncate(limit);
         Ok(merged)
