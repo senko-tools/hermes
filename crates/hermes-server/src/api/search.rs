@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::extract::State;
-use hermes_proto::api::{Pagination, SearchQuery, SearchResponse};
+use hermes_proto::api::{Pagination, SearchQuery, SearchResponse, SearchSort};
 use hermes_proto::id::Id;
 use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
@@ -17,6 +17,10 @@ use crate::state::{AppState, Cache};
 
 /// At most this many search words are used.
 const MAX_TERMS: usize = 16;
+/// Results skipped at most (relevance pages go on by `offset`).
+const MAX_OFFSET: u32 = 10_000;
+/// The substring index needs this many characters per word.
+const MIN_PART_CHARS: usize = 3;
 /// Longer queries are refused.
 const MAX_QUERY_CHARS: usize = 256;
 
@@ -61,6 +65,30 @@ pub fn fts_query(input: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" "))
 }
 
+/// The user's words as a query of the substring index (`messages_trigram`): every word must
+/// appear anywhere in the text. `None` unless every word has at least three characters (shorter
+/// ones are looked for as the start of a word instead, [`fts_query`]).
+pub fn parts_query(input: &str) -> Option<String> {
+    // Quotes and punctuation around a word are not part of what is looked for (the word index
+    // drops them too).
+    let words: Vec<&str> = input
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|w| !w.is_empty())
+        .take(MAX_TERMS)
+        .collect();
+    if words.is_empty() || words.iter().any(|w| w.chars().count() < MIN_PART_CHARS) {
+        return None;
+    }
+    Some(
+        words
+            .iter()
+            .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
 pub async fn search(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -95,20 +123,26 @@ pub async fn search(
     }
     .limit();
     let db = &state.db.read;
-    let fts = fts.as_deref();
+    let parts = parts_query(&q.q);
+    let text = match (&parts, &fts) {
+        (Some(parts), _) => db::messages::SearchText::Parts(parts),
+        (None, Some(words)) => db::messages::SearchText::Words(words),
+        (None, None) => db::messages::SearchText::Nothing,
+    };
+    let relevance = q.sort == Some(SearchSort::Relevance);
+    let offset = q.offset.unwrap_or(0).min(MAX_OFFSET);
+    let first_page = q.before.is_none() && offset == 0;
     // Counting every match costs as much as the search: once, for the first page. A later page
     // (`before` is the last one shown) needs no count. The page and the total are independent
     // reads, so the first page runs them on two pooled connections at once.
-    let (rows, total) = if q.before.is_none() {
+    let page = db::messages::search(db, text, &channels, filter, relevance, limit, offset);
+    let (rows, total) = if first_page {
         tokio::try_join!(
-            db::messages::search(db, fts, &channels, filter, limit),
-            db::messages::search_count(db, fts, &channels, filter),
+            page,
+            db::messages::search_count(db, text, &channels, filter)
         )?
     } else {
-        (
-            db::messages::search(db, fts, &channels, filter, limit).await?,
-            0,
-        )
+        (page.await?, 0)
     };
     Ok(Json(SearchResponse {
         messages: messages::to_wire(&state, rows, auth.user_id).await?,
@@ -125,5 +159,20 @@ mod tests {
         assert_eq!(fts_query("  "), None);
         assert_eq!(fts_query("hello wor"), Some("\"hello\"* \"wor\"*".into()));
         assert_eq!(fts_query("a\"b OR"), Some("\"a\"\"b\"* \"OR\"*".into()));
+    }
+
+    #[test]
+    fn parts_need_three_characters_a_word() {
+        assert_eq!(
+            parts_query("crypted mess"),
+            Some("\"crypted\" \"mess\"".into())
+        );
+        assert_eq!(parts_query("a\"bc"), Some("\"a\"\"bc\"".into()));
+        assert_eq!(
+            parts_query("\"party friday!"),
+            Some("\"party\" \"friday\"".into())
+        );
+        assert_eq!(parts_query("hi there"), None);
+        assert_eq!(parts_query(" "), None);
     }
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM messages m\n               WHERE ?1 IS NULL AND m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5\n                 AND (?6 IS NULL\n                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))\n                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a\n                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))\n                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))\n               ORDER BY m.id DESC LIMIT ?7",
+  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM (SELECT rowid, bm25(messages_trigram) AS score FROM messages_trigram WHERE messages_trigram MATCH ?1) f\n               JOIN messages m ON m.id = f.rowid\n               WHERE m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5\n                 AND (?6 IS NULL\n                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))\n                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a\n                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))\n                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))\n               ORDER BY CASE WHEN ?8 THEN f.score ELSE 0 END, m.id DESC LIMIT ?7 OFFSET ?9",
   "describe": {
     "columns": [
       {
@@ -115,7 +115,7 @@
       }
     ],
     "parameters": {
-      "Right": 7
+      "Right": 9
     },
     "nullable": [
       false,
@@ -130,5 +130,5 @@
       true
     ]
   },
-  "hash": "8d1b1c02a905890a0695198a4107648cf661de65a76578547ad386b9ad65d3de"
+  "hash": "8788612124bbdd1ba4bb78f2445d30b4342a5da102eae9e1a92314e9d63e09bb"
 }

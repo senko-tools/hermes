@@ -726,26 +726,41 @@ impl SearchFilter {
     }
 }
 
-/// Matches in `channels`, newest first, not deleted: of `fts` (an FTS5 query), or with no
-/// words every message that passes `filter`.
+/// What a search looks for in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchText<'a> {
+    /// Nothing: every message that passes the filters.
+    Nothing,
+    /// Words (an FTS5 query over `messages_fts`): each word as the start of a word.
+    Words(&'a str),
+    /// Parts of words (an FTS5 query over `messages_trigram`): each anywhere in the text.
+    Parts(&'a str),
+}
+
+/// Matches in `channels`, not deleted: of `text`, or with none every message that passes
+/// `filter`. Newest first, or with `relevance` the best matches first (FTS5's bm25); `offset`
+/// skips that many.
 pub async fn search(
     e: impl SqliteExecutor<'_>,
-    fts: Option<&str>,
+    text: SearchText<'_>,
     channels: &[Id],
     filter: SearchFilter,
+    relevance: bool,
     limit: u32,
+    offset: u32,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let channels = id_list(channels);
     let (author, before, after, has) = filter.binds();
-    let limit = i64::from(limit);
-    let raw = match fts {
-        Some(fts) => {
+    let (limit, offset) = (i64::from(limit), i64::from(offset));
+    let raw = match text {
+        SearchText::Words(query) => {
             sqlx::query_as!(
                 Raw,
                 r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
                       m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
-               FROM messages_fts f JOIN messages m ON m.id = f.rowid
-               WHERE messages_fts MATCH ?1 AND m.deleted = 0
+               FROM (SELECT rowid, bm25(messages_fts) AS score FROM messages_fts WHERE messages_fts MATCH ?1) f
+               JOIN messages m ON m.id = f.rowid
+               WHERE m.deleted = 0
                  AND m.channel_id IN (SELECT value FROM json_each(?2))
                  AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
                  AND (?6 IS NULL
@@ -753,19 +768,50 @@ pub async fn search(
                       OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
                                                    WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
                       OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))
-               ORDER BY m.id DESC LIMIT ?7"#,
-                fts,
+               ORDER BY CASE WHEN ?8 THEN f.score ELSE 0 END, m.id DESC LIMIT ?7 OFFSET ?9"#,
+                query,
                 channels,
                 author,
                 before,
                 after,
                 has,
-                limit
+                limit,
+                relevance,
+                offset
             )
             .fetch_all(e)
             .await?
         }
-        None => {
+        SearchText::Parts(query) => {
+            sqlx::query_as!(
+                Raw,
+                r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
+                      m.edited_at, m.deleted AS "deleted: bool", m.pinned AS "pinned: bool", m.kind, m.e2ee
+               FROM (SELECT rowid, bm25(messages_trigram) AS score FROM messages_trigram WHERE messages_trigram MATCH ?1) f
+               JOIN messages m ON m.id = f.rowid
+               WHERE m.deleted = 0
+                 AND m.channel_id IN (SELECT value FROM json_each(?2))
+                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))
+               ORDER BY CASE WHEN ?8 THEN f.score ELSE 0 END, m.id DESC LIMIT ?7 OFFSET ?9"#,
+                query,
+                channels,
+                author,
+                before,
+                after,
+                has,
+                limit,
+                relevance,
+                offset
+            )
+            .fetch_all(e)
+            .await?
+        }
+        SearchText::Nothing => {
             sqlx::query_as!(
                 Raw,
                 r#"SELECT m.id AS "id!", m.channel_id, m.author_id, m.content, m.reply_to_id,
@@ -779,14 +825,15 @@ pub async fn search(
                       OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
                                                    WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
                       OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))
-               ORDER BY m.id DESC LIMIT ?7"#,
+               ORDER BY m.id DESC LIMIT ?7 OFFSET ?8"#,
                 Option::<String>::None,
                 channels,
                 author,
                 before,
                 after,
                 has,
-                limit
+                limit,
+                offset
             )
             .fetch_all(e)
             .await?
@@ -798,14 +845,14 @@ pub async fn search(
 /// How many messages [`search`] could return without the page limit.
 pub async fn search_count(
     e: impl SqliteExecutor<'_>,
-    fts: Option<&str>,
+    text: SearchText<'_>,
     channels: &[Id],
     filter: SearchFilter,
 ) -> Result<i64, sqlx::Error> {
     let channels = id_list(channels);
     let (author, before, after, has) = filter.binds();
-    match fts {
-        Some(fts) => {
+    match text {
+        SearchText::Words(query) => {
             sqlx::query_scalar!(
                 r#"SELECT COUNT(*) AS "n!: i64"
            FROM messages_fts f JOIN messages m ON m.id = f.rowid
@@ -817,7 +864,7 @@ pub async fn search_count(
                       OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
                                                    WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
                       OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))"#,
-                fts,
+                query,
                 channels,
                 author,
                 before,
@@ -827,7 +874,29 @@ pub async fn search_count(
             .fetch_one(e)
             .await
         }
-        None => {
+        SearchText::Parts(query) => {
+            sqlx::query_scalar!(
+                r#"SELECT COUNT(*) AS "n!: i64"
+           FROM messages_trigram f JOIN messages m ON m.id = f.rowid
+           WHERE messages_trigram MATCH ?1 AND m.deleted = 0
+             AND m.channel_id IN (SELECT value FROM json_each(?2))
+             AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5
+                 AND (?6 IS NULL
+                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))
+                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a
+                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))
+                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))"#,
+                query,
+                channels,
+                author,
+                before,
+                after,
+                has
+            )
+            .fetch_one(e)
+            .await
+        }
+        SearchText::Nothing => {
             sqlx::query_scalar!(
                 r#"SELECT COUNT(*) AS "n!: i64"
            FROM messages m

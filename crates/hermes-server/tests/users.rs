@@ -264,6 +264,27 @@ async fn search_finds_only_what_i_may_read() {
         .await
         .ok();
     assert_eq!(found["total"], 1, "quotes are not FTS syntax errors");
+    let found = server.get("/search?q=izza", Some(&alice)).await.ok();
+    assert_eq!(found["total"], 2, "parts of words are found too");
+    let ranked = server
+        .get("/search?q=pizza&sort=relevance", Some(&owner))
+        .await
+        .ok();
+    assert_eq!(ranked["total"], 3);
+    let ranked = ranked["messages"].as_array().unwrap().clone();
+    let second = server
+        .get(
+            "/search?q=pizza&sort=relevance&limit=1&offset=1",
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(second["total"], 0, "counted on the first page only");
+    assert_eq!(
+        second["messages"].as_array().unwrap()[0]["id"],
+        ranked[1]["id"],
+        "pages by offset"
+    );
     server
         .get("/search?q=%20", Some(&alice))
         .await

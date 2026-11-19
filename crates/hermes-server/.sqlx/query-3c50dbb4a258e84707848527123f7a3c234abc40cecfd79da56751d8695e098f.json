@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM messages_fts f JOIN messages m ON m.id = f.rowid\n               WHERE messages_fts MATCH ?1 AND m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5\n                 AND (?6 IS NULL\n                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))\n                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a\n                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))\n                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))\n               ORDER BY m.id DESC LIMIT ?7",
+  "query": "SELECT m.id AS \"id!\", m.channel_id, m.author_id, m.content, m.reply_to_id,\n                      m.edited_at, m.deleted AS \"deleted: bool\", m.pinned AS \"pinned: bool\", m.kind, m.e2ee\n               FROM messages m\n               WHERE ?1 IS NULL AND m.deleted = 0\n                 AND m.channel_id IN (SELECT value FROM json_each(?2))\n                 AND (?3 IS NULL OR m.author_id = ?3) AND m.id < ?4 AND m.id > ?5\n                 AND (?6 IS NULL\n                      OR (?6 = 'file' AND EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = m.id))\n                      OR (?6 = 'image' AND EXISTS (SELECT 1 FROM attachments a\n                                                   WHERE a.message_id = m.id AND a.content_type LIKE 'image/%'))\n                      OR (?6 = 'link' AND (m.content LIKE '%http://%' OR m.content LIKE '%https://%')))\n               ORDER BY m.id DESC LIMIT ?7 OFFSET ?8",
   "describe": {
     "columns": [
       {
@@ -115,7 +115,7 @@
       }
     ],
     "parameters": {
-      "Right": 7
+      "Right": 8
     },
     "nullable": [
       false,
@@ -130,5 +130,5 @@
       true
     ]
   },
-  "hash": "4b012de2d5381b1753c34322f8e43d5d529089daca39341e346c572d4505fe6a"
+  "hash": "3c50dbb4a258e84707848527123f7a3c234abc40cecfd79da56751d8695e098f"
 }

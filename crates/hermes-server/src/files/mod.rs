@@ -205,7 +205,12 @@ fn is_apng(file: &Path) -> bool {
 /// shrinking (the scaler mixes neighbours as they are), so clear pixels, often stored black,
 /// leave no dark rim on soft edges.
 fn thumbnail(mut pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
-    let soft = pixels.as_raw().as_chunks::<4>().0.iter().any(|p| p[3] != u8::MAX);
+    let soft = pixels
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|p| p[3] != u8::MAX);
     if soft {
         for p in pixels.as_mut().as_chunks_mut::<4>().0 {
             let a = u32::from(p[3]);
