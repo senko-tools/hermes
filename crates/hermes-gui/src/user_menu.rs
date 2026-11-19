@@ -415,6 +415,17 @@ impl Shell {
 
         let message_inst = inst.clone();
         let volume_inst = inst.clone();
+        let (edit_inst, edit_space) = (inst.clone(), card.space);
+        let edit = mine.then(|| {
+            Button::new("profile-edit")
+                .cursor_pointer()
+                .w_full()
+                .label(SharedString::from("Edit profile"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.close_later("profile-card-in", |s| s.profile = None, cx);
+                    this.open_form_profile_in(edit_inst.clone(), edit_space, window, cx);
+                }))
+        });
         let buttons = (!mine).then(|| {
             div()
                 .flex()
@@ -554,7 +565,8 @@ impl Shell {
                             d.child(div().h(px(1.)).bg(theme::border()))
                                 .children(details)
                         })
-                        .children(buttons),
+                        .children(buttons)
+                        .children(edit),
                 ),
         ))
     }

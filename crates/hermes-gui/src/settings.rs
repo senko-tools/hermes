@@ -1537,6 +1537,14 @@ impl Shell {
                             cx,
                         ),
                         self.flag(
+                            "Preview while writing",
+                            "The message shows formatted above the message box. Also the eye \
+                            button next to it.",
+                            b.composer_preview,
+                            "buffer.composer_preview",
+                            cx,
+                        ),
+                        self.flag(
                             "Enter sends",
                             "Shift+Enter starts a new line.",
                             b.enter_sends,

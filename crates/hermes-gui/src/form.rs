@@ -121,6 +121,11 @@ pub enum Purpose {
         invite: Option<String>,
     },
     QuickReactions,
+    /// Shows a channel's messages from the start of a day.
+    JumpToDate {
+        inst: InstanceId,
+        channel: Id,
+    },
     QuietHours,
     Keywords,
     Note {
@@ -175,7 +180,20 @@ pub struct Form {
     pub danger: bool,
     pub busy: bool,
     pub error: Option<String>,
+    /// My profile everywhere, or my nickname in a server: the form switches between the two.
+    pub profile_switch: Option<ProfileSwitch>,
     _inputs: Vec<Subscription>,
+}
+
+/// Which of my profiles a form edits, and the server the other one is for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileSwitch {
+    pub inst: InstanceId,
+    pub space: Id,
+    /// The server's name, for the switch.
+    pub space_name: String,
+    /// The form edits my profile everywhere (else my nickname here).
+    pub everywhere: bool,
 }
 
 impl Form {
@@ -189,6 +207,7 @@ impl Form {
             danger: false,
             busy: false,
             error: None,
+            profile_switch: None,
             _inputs: Vec::new(),
         }
     }
@@ -595,13 +614,49 @@ impl Shell {
                 .and_then(|m| m.nickname.clone())
                 .unwrap_or_default()
         };
-        let form = Form::new(
+        let mine = self.core.store().instance(&inst).and_then(|s| s.me_id()) == Some(user);
+        let switch = mine
+            .then(|| self.profile_switch(&inst, Some(space), false))
+            .flatten();
+        let mut form = Form::new(
             Purpose::Nickname { inst, space, user },
-            "Change nickname",
+            if switch.is_some() {
+                "Edit profile"
+            } else {
+                "Change nickname"
+            },
             "Save",
         )
         .text("A nickname is only used in this server. Leave it empty to remove it.");
+        form.profile_switch = switch;
         let fields = Self::fields(form, window, cx).text("Nickname", "", current);
+        self.finish(fields);
+    }
+
+    pub fn open_form_jump_to_date(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let today = hermes_client_core::time::format(
+            hermes_client_core::now_ms(),
+            "%Y-%m-%d",
+            self.utc_offset,
+        );
+        let form = Form::new(
+            Purpose::JumpToDate { inst, channel },
+            "Jump to a date",
+            "Go",
+        )
+        .text("The channel shows its messages from the start of that day.");
+        let fields = Self::fields(form, window, cx).text_hint(
+            "Date",
+            "Year-month-day.",
+            "2026-11-19",
+            today,
+        );
         self.finish(fields);
     }
 
@@ -623,9 +678,45 @@ impl Shell {
         self.finish(fields);
     }
 
+    /// The switch between my profile and my nickname in `space`, if I may set one there.
+    fn profile_switch(
+        &self,
+        inst: &InstanceId,
+        space: Option<Id>,
+        everywhere: bool,
+    ) -> Option<ProfileSwitch> {
+        let space = space?;
+        let store = self.core.store();
+        let s = store.instance(inst)?;
+        if !hermes_client_core::view::can_in_space(
+            s,
+            space,
+            hermes_client_core::proto::permissions::Permissions::CHANGE_NICKNAME,
+        ) {
+            return None;
+        }
+        Some(ProfileSwitch {
+            inst: inst.clone(),
+            space,
+            space_name: s.spaces.get(&space)?.space.name.clone(),
+            everywhere,
+        })
+    }
+
     pub fn open_form_profile(
         &mut self,
         inst: InstanceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_form_profile_in(inst, None, window, cx);
+    }
+
+    /// My profile, with a switch to my nickname in `space` when there is one.
+    pub fn open_form_profile_in(
+        &mut self,
+        inst: InstanceId,
+        space: Option<Id>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -640,7 +731,7 @@ impl Shell {
             .instance(&inst)
             .is_some_and(|s| s.has_feature(hermes_client_core::proto::compat::features::BIO));
         if !with_bio {
-            self.show_profile_form(inst, me.user, None, window, cx);
+            self.show_profile_form(inst, space, me.user, None, window, cx);
             return;
         }
         // The "About me" is only on the full profile: fetched first.
@@ -653,7 +744,7 @@ impl Shell {
             async move { rest.user(id).await },
             move |this, result, window, cx| {
                 let bio = result.ok().and_then(|p| p.bio).unwrap_or_default();
-                this.show_profile_form(inst.clone(), me.user.clone(), Some(bio), window, cx);
+                this.show_profile_form(inst.clone(), space, me.user.clone(), Some(bio), window, cx);
             },
         );
     }
@@ -661,17 +752,20 @@ impl Shell {
     fn show_profile_form(
         &mut self,
         inst: InstanceId,
+        space: Option<Id>,
         user: hermes_client_core::proto::models::User,
         bio: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let switch = self.profile_switch(&inst, space, true);
         let purpose = Purpose::EditProfile {
             inst,
             bio: bio.is_some(),
         };
-        let form = Form::new(purpose, "Edit profile", "Save")
+        let mut form = Form::new(purpose, "Edit profile", "Save")
             .text(format!("Signed in as @{}.", user.username));
+        form.profile_switch = switch;
         let mut fields = Self::fields(form, window, cx)
             .text_hint(
                 "Display name",
@@ -1191,6 +1285,16 @@ impl Shell {
                     Ok(format!("Signed in to {inst}"))
                 });
             }
+            Purpose::JumpToDate { inst, channel } => {
+                let text = form.value(0, cx);
+                let Some((start, _)) = hermes_client_core::time::parse_day(&text, self.utc_offset)
+                else {
+                    return Err("Write the date as year-month-day, like 2026-11-19.".into());
+                };
+                self.jump_to_time(inst.clone(), channel, start, cx);
+                let done = format!("Messages from {}", text.trim());
+                self.form_call(cx, async move { Ok(done) });
+            }
             Purpose::QuickReactions => {
                 let value = form.value(0, cx);
                 self.persist(
@@ -1397,6 +1501,9 @@ impl Shell {
     pub fn render_form(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let form = self.form.as_ref()?;
         let mut content: Vec<AnyElement> = vec![heading(form.title.clone()).into_any_element()];
+        if let Some(switch) = &form.profile_switch {
+            content.push(profile_switch_chips(switch, cx));
+        }
         if !form.text.is_empty() {
             content.push(paragraph(form.text.clone()).into_any_element());
         }
@@ -1444,6 +1551,44 @@ impl Shell {
             div().flex().flex_col().gap(px(14.)).children(content),
         ))
     }
+}
+
+/// "Everywhere" and "In <server>": which of my profiles the form edits; the other one replaces
+/// the form.
+fn profile_switch_chips(switch: &ProfileSwitch, cx: &mut Context<Shell>) -> AnyElement {
+    let choices = [
+        (true, "Everywhere".to_owned()),
+        (false, format!("In {}", switch.space_name)),
+    ];
+    div()
+        .flex()
+        .gap(px(6.))
+        .children(
+            choices
+                .into_iter()
+                .enumerate()
+                .map(|(n, (everywhere, name))| {
+                    let (inst, space) = (switch.inst.clone(), switch.space);
+                    crate::voice::chip(("profile-switch", n), name, switch.everywhere == everywhere)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let current = this
+                                .form
+                                .as_ref()
+                                .and_then(|f| f.profile_switch.as_ref())
+                                .map(|s| s.everywhere);
+                            if current == Some(everywhere) {
+                                return;
+                            }
+                            let me = this.core.store().instance(&inst).and_then(|s| s.me_id());
+                            if everywhere {
+                                this.open_form_profile_in(inst.clone(), Some(space), window, cx);
+                            } else if let Some(me) = me {
+                                this.open_form_nickname(inst.clone(), space, me, window, cx);
+                            }
+                        }))
+                }),
+        )
+        .into_any_element()
 }
 
 fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement {

@@ -1156,6 +1156,7 @@ impl Shell {
                 );
             }
             let (pins_inst, search_inst) = (inst.clone(), inst);
+            let date_inst = search_inst.clone();
             controls.push(
                 crate::channel::tip_button("header-pins", assets::PIN, "Pinned messages")
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1183,6 +1184,13 @@ impl Shell {
                 crate::channel::tip_button("header-search", assets::SEARCH, "Search")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.search_from(search_inst.clone(), channel, window, cx);
+                    }))
+                    .into_any_element(),
+            );
+            controls.push(
+                crate::channel::tip_button("header-date", assets::CALENDAR, "Jump to a date")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_form_jump_to_date(date_inst.clone(), channel, window, cx);
                     }))
                     .into_any_element(),
             );

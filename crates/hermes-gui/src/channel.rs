@@ -1189,6 +1189,50 @@ impl Shell {
         );
     }
 
+    /// Shows a channel from the first message at or after `unix_ms` (the last one before it when
+    /// nothing came after).
+    pub fn jump_to_time(
+        &mut self,
+        inst: InstanceId,
+        channel: Id,
+        unix_ms: i64,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = Id::min_at_unix_ms(u64::try_from(unix_ms).unwrap_or(0));
+        let core = self.core.clone();
+        let load_inst = inst.clone();
+        self.run(
+            cx,
+            async move {
+                core.load_history(&load_inst, channel, HistoryAnchor::Around(anchor))
+                    .await
+            },
+            move |this, result, window, cx| {
+                if let Err(err) = result {
+                    this.error(format!("could not load that day: {err}"), cx);
+                    return;
+                }
+                let found = {
+                    let store = this.core.store();
+                    store
+                        .instance(&inst)
+                        .and_then(|s| s.window(channel))
+                        .and_then(|w| {
+                            w.messages
+                                .iter()
+                                .find(|m| m.id >= anchor)
+                                .or_else(|| w.messages.last())
+                                .map(|m| m.id)
+                        })
+                };
+                match found {
+                    Some(message) => this.jump_to(inst.clone(), channel, message, window, cx),
+                    None => this.info("No messages here yet.", cx),
+                }
+            },
+        );
+    }
+
     /// Back to the newest messages.
     fn jump_to_present(&mut self, key: &ChannelKey, window: &mut Window, cx: &mut Context<Self>) {
         let live = self
@@ -2820,6 +2864,12 @@ impl Shell {
                     .child(text),
             )
         });
+        // What is written, formatted, while the preview is on and there is something to show.
+        let preview = (self.config.buffer.composer_preview && self.config.buffer.markdown)
+            .then(|| view.input.read(cx).value().to_string())
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| self.composer_preview(&key, &text));
+        let preview_on = self.config.buffer.composer_preview;
         let shell = cx.entity().downgrade();
         let input = Textarea::new(&view.input)
             .large()
@@ -2847,6 +2897,7 @@ impl Shell {
                     .border_color(theme::border())
                     .children(mode_bar)
                     .children(uploads)
+                    .children(preview)
                     .child(
                         div()
                             .flex()
@@ -2866,6 +2917,25 @@ impl Shell {
                             )
                             .child(div().flex_1().min_w_0().child(input))
                             .children(counter)
+                            .child(
+                                icon_button("composer-preview", assets::EYE)
+                                    .when(preview_on, |d| d.bg(theme::selected()))
+                                    .tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(if preview_on {
+                                            "Hide the formatted preview"
+                                        } else {
+                                            "Show it formatted while you write"
+                                        })
+                                        .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.persist(
+                                            "buffer.composer_preview",
+                                            &(!preview_on).to_string(),
+                                            cx,
+                                        );
+                                    })),
+                            )
                             .child({
                                 let key = emoji_key.clone();
                                 icon_button("composer-emoji", assets::EMOJI)
@@ -3719,6 +3789,80 @@ impl Shell {
                 ))
                 .into_any_element(),
         }
+    }
+
+    /// The message being written as it will look: blocks drawn without selection or links.
+    fn composer_preview(&self, key: &ChannelKey, text: &str) -> AnyElement {
+        let blocks = {
+            let store = self.core.store();
+            match store.instance(&key.0) {
+                Some(s) => {
+                    let space = s.space_of(key.1);
+                    markup::blocks(text, s, space)
+                }
+                None => markup::plain(text),
+            }
+        };
+        let styled = |pieces: Vec<Piece>| {
+            let mut text = String::new();
+            let mut highlights = Vec::new();
+            for piece in pieces {
+                let start = text.len();
+                text.push_str(&piece.text);
+                if start < text.len() {
+                    highlights.push((start..text.len(), piece_style(&piece, false, true)));
+                }
+            }
+            gpui_kit::StyledText::new(text).with_highlights(highlights)
+        };
+        let rows = blocks.into_iter().map(|block| match block {
+            Block::Text(pieces) => div().child(styled(pieces)).into_any_element(),
+            Block::Code { code, language } => {
+                let colors = self
+                    .syntax_cache
+                    .borrow_mut()
+                    .highlights(&code, language.as_deref());
+                div()
+                    .p(px(8.))
+                    .rounded(theme::radius_small())
+                    .bg(theme::code_background())
+                    .border_1()
+                    .border_color(theme::border())
+                    .font_family(theme::mono_font())
+                    .text_size(theme::secondary_size())
+                    .child(gpui_kit::StyledText::new(code).with_highlights(colors))
+                    .into_any_element()
+            }
+            Block::Quote(pieces) => div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .w(px(3.))
+                        .rounded(px(1.))
+                        .bg(theme::text_tertiary()),
+                )
+                .child(div().flex_1().min_w_0().child(styled(pieces)))
+                .into_any_element(),
+        });
+        div()
+            .id("composer-preview-text")
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .mb(px(6.))
+            .px(px(10.))
+            .py(px(8.))
+            .rounded(theme::radius_small())
+            .bg(theme::sidebar())
+            .border_1()
+            .border_color(theme::border())
+            .text_size(theme::body_size())
+            .children(rows)
+            .into_any_element()
     }
 
     /// Styled, clickable text. Links and spoilers act on release, as everything does.
