@@ -37,23 +37,6 @@ const HISTORY: usize = 900;
 /// The time ranges the network graphs offer, in seconds.
 pub const NET_RANGES: [usize; 3] = [60, 300, 900];
 
-/// `voice.join_on`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JoinOn {
-    DoubleClick,
-    SingleClick,
-}
-
-impl JoinOn {
-    pub fn from_config(value: &str) -> JoinOn {
-        if value.eq_ignore_ascii_case("single_click") {
-            JoinOn::SingleClick
-        } else {
-            JoinOn::DoubleClick
-        }
-    }
-}
-
 /// A ringing incoming call.
 pub struct Call {
     pub inst: InstanceId,
@@ -1714,7 +1697,7 @@ impl Shell {
     /// What my share keeps when it cannot keep up; a running share follows at once.
     pub fn render_preference_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::screen::capture::{PREFERENCES, Preference};
-        let current = Preference::from_config(&self.config.voice.share_preference);
+        let current = Preference::from_config(self.config.voice.share_preference);
         div()
             .flex()
             .gap(px(4.))
@@ -1722,7 +1705,7 @@ impl Shell {
                 chip(("preference", n), preference.label(), preference == current).on_click(
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        let value = preference.config_value().to_owned();
+                        let value = preference.config_value();
                         this.set_config(|c| c.voice.share_preference = value, cx);
                         if let Some(capture) = &this.capture {
                             capture.set_preference(preference);

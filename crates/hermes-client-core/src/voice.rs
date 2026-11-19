@@ -289,10 +289,9 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         output_device: device(&v.output_device),
         input_volume: v.input_volume as f32,
         output_volume: v.output_volume as f32,
-        mode: if v.mode == "push_to_talk" {
-            InputMode::PushToTalk
-        } else {
-            InputMode::VoiceActivity
+        mode: match v.mode {
+            config::VoiceMode::PushToTalk => InputMode::PushToTalk,
+            config::VoiceMode::VoiceActivity => InputMode::VoiceActivity,
         },
         ptt_release_delay: Duration::from_millis(u64::from(v.ptt_release_delay_ms)),
         vad_sensitivity_db: v.vad_sensitivity as f32,
@@ -318,10 +317,9 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     v.input_volume = f64::from(s.input_volume);
     v.output_volume = f64::from(s.output_volume);
     v.mode = match s.mode {
-        InputMode::PushToTalk => "push_to_talk",
-        InputMode::VoiceActivity => "voice_activity",
-    }
-    .into();
+        InputMode::PushToTalk => config::VoiceMode::PushToTalk,
+        InputMode::VoiceActivity => config::VoiceMode::VoiceActivity,
+    };
     v.ptt_release_delay_ms = u32::try_from(s.ptt_release_delay.as_millis()).unwrap_or(u32::MAX);
     v.vad_sensitivity = s.vad_sensitivity_db.round() as i32;
     v.vad_hold_ms = u32::try_from(s.vad_hold.as_millis()).unwrap_or(u32::MAX);
@@ -2203,7 +2201,7 @@ mod tests {
         store_settings(&mut v, &changed);
         assert_eq!(v.input_device, "Yeti X");
         assert_eq!(v.output_device, "default");
-        assert_eq!(v.mode, "push_to_talk");
+        assert_eq!(v.mode, config::VoiceMode::PushToTalk);
         assert_eq!(v.sounds_volume, 0.25);
         assert_eq!(audio_settings(&v), changed);
     }

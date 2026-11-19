@@ -339,7 +339,7 @@ impl Shell {
     }
 
     pub fn render_share_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use crate::screen::capture::{FRAME_RATES, RESOLUTIONS};
+        use crate::screen::capture::{FRAME_RATES, ShareResolution};
         use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
         let picker = self.share_menu.as_ref()?;
         let voice = &self.config.voice;
@@ -438,15 +438,22 @@ impl Shell {
                 })
                 .into_any_element()
         };
-        let resolutions = RESOLUTIONS.into_iter().enumerate().map(|(n, name)| {
-            let label = if name == "native" { "Native" } else { name };
-            chip(("share-res", n), label, voice.share_resolution == name).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.set_config(|c| c.voice.share_resolution = name.to_owned(), cx);
-                },
-            ))
-        });
+        let resolutions = ShareResolution::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(n, value)| {
+                let label = match value {
+                    ShareResolution::Native => "Native",
+                    _ => value.as_str(),
+                };
+                chip(("share-res", n), label, voice.share_resolution == value).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_config(|c| c.voice.share_resolution = value, cx);
+                    }),
+                )
+            });
         let rates = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
             chip(
                 ("share-fps", n),

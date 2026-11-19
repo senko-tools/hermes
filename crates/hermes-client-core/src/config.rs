@@ -78,6 +78,132 @@ impl ConfigPaths {
     }
 }
 
+/// A setting with a few named values, written as text in `config.toml` (`motion_speed =
+/// "calm"`). Reading ignores case, and a value it does not know means the default (with a
+/// warning in the log), as when these were plain strings.
+macro_rules! choice {
+    (
+        $(#[$meta:meta])*
+        $name:ident, default $default:ident {
+            $($(#[$vmeta:meta])* $variant:ident = $text:literal),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant),+
+        }
+
+        impl $name {
+            /// Every value, in the order they are offered.
+            pub const ALL: &'static [$name] = &[$($name::$variant),+];
+
+            /// How it is written in `config.toml`.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
+                }
+            }
+
+            /// The value written as `text`, ignoring case.
+            pub fn parse(text: &str) -> Option<$name> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|v| v.as_str().eq_ignore_ascii_case(text.trim()))
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                $name::$default
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(d)?;
+                Ok($name::parse(&text).unwrap_or_else(|| {
+                    tracing::warn!(
+                        "config: {text:?} is not one of the values of {}; using {}",
+                        stringify!($name),
+                        $name::$default.as_str()
+                    );
+                    $name::$default
+                }))
+            }
+        }
+    };
+}
+
+choice! {
+    /// `general.motion_speed`: how long things take to slide and fade.
+    MotionSpeed, default Normal { Snappy = "snappy", Normal = "normal", Calm = "calm" }
+}
+
+choice! {
+    /// `sidebar.position`.
+    SidebarPosition, default Left { Left = "left", Right = "right" }
+}
+
+choice! {
+    /// `voice.join_on`: what joins a voice channel in the sidebar.
+    JoinOn, default DoubleClick { DoubleClick = "double_click", SingleClick = "single_click" }
+}
+
+choice! {
+    /// `voice.mode`: when the microphone goes through.
+    VoiceMode, default VoiceActivity {
+        VoiceActivity = "voice_activity",
+        PushToTalk = "push_to_talk",
+    }
+}
+
+choice! {
+    /// `voice.share_resolution`: the largest size a share is sent at.
+    ShareResolution, default P1080 {
+        P720 = "720p",
+        P1080 = "1080p",
+        P1440 = "1440p",
+        P2160 = "2160p",
+        Native = "native",
+    }
+}
+
+choice! {
+    /// `voice.share_preference`: what a share keeps when it cannot keep up.
+    SharePreference, default Smoothness {
+        /// The frame rate.
+        Smoothness = "smoothness",
+        Mixed = "mixed",
+        /// Sharp, full-size pictures.
+        Clarity = "clarity",
+    }
+}
+
+choice! {
+    /// `privacy.warn_unencrypted`: when opening a chat the server can read shows a warning.
+    WarnUnencrypted, default First {
+        /// Every time.
+        Every = "every",
+        /// The first time for each chat.
+        First = "first",
+        Never = "never",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClientConfig {
@@ -141,7 +267,7 @@ pub struct General {
     /// No sliding or fading, whatever the system says.
     pub reduce_motion: bool,
     /// How long things take to slide and fade: `snappy`, `normal` or `calm`.
-    pub motion_speed: String,
+    pub motion_speed: MotionSpeed,
     /// The mouse wheel glides instead of jumping.
     pub smooth_scroll: bool,
     /// How far a wheel notch goes, as a multiple of the plain distance.
@@ -169,7 +295,7 @@ impl Default for General {
             auto_idle_minutes: 10,
             presence: "online".into(),
             reduce_motion: false,
-            motion_speed: "normal".into(),
+            motion_speed: MotionSpeed::Normal,
             smooth_scroll: true,
             scroll_speed: 1.25,
             animate_pictures: true,
@@ -206,7 +332,7 @@ impl Default for Font {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sidebar {
-    pub position: String,
+    pub position: SidebarPosition,
     pub width: u16,
     pub show_voice_users: bool,
     /// Width of the member list (desktop client).
@@ -224,7 +350,7 @@ pub struct Sidebar {
 impl Default for Sidebar {
     fn default() -> Self {
         Sidebar {
-            position: "left".into(),
+            position: SidebarPosition::Left,
             width: 240,
             show_voice_users: true,
             member_list_width: 232,
@@ -289,12 +415,12 @@ impl Default for Buffer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Voice {
-    pub join_on: String,
+    pub join_on: JoinOn,
     pub input_device: String,
     pub output_device: String,
     pub input_volume: f64,
     pub output_volume: f64,
-    pub mode: String,
+    pub mode: VoiceMode,
     pub ptt_key: String,
     pub ptt_release_delay_ms: u32,
     pub vad_sensitivity: i32,
@@ -326,12 +452,12 @@ pub struct Voice {
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
     /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
-    pub share_resolution: String,
+    pub share_resolution: ShareResolution,
     /// Frames per second a share is sent at (at most 60).
     pub share_fps: u32,
     /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
     /// `clarity` (sharp, full-size pictures).
-    pub share_preference: String,
+    pub share_preference: SharePreference,
     /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
     pub share_sound: bool,
 }
@@ -339,12 +465,12 @@ pub struct Voice {
 impl Default for Voice {
     fn default() -> Self {
         Voice {
-            join_on: "double_click".into(),
+            join_on: JoinOn::DoubleClick,
             input_device: "default".into(),
             output_device: "default".into(),
             input_volume: 1.0,
             output_volume: 1.0,
-            mode: "voice_activity".into(),
+            mode: VoiceMode::VoiceActivity,
             ptt_key: String::new(),
             ptt_release_delay_ms: 150,
             vad_sensitivity: -50,
@@ -364,9 +490,9 @@ impl Default for Voice {
             media_volume: 1.0,
             media_muted: false,
             share_screen: String::new(),
-            share_resolution: "1080p".into(),
+            share_resolution: ShareResolution::P1080,
             share_fps: 60,
-            share_preference: "smoothness".into(),
+            share_preference: SharePreference::Smoothness,
             share_sound: true,
         }
     }
@@ -425,7 +551,7 @@ pub struct Privacy {
     pub local_search_only: bool,
     /// When opening a chat that is not end-to-end encrypted shows a warning: `"every"` time,
     /// the `"first"` time for each chat, or `"never"`. Kept on this device only.
-    pub warn_unencrypted: String,
+    pub warn_unencrypted: WarnUnencrypted,
     /// The chats that warning was shown for (`instance/channel`), for `"first"`.
     pub warned_unencrypted: Vec<String>,
 }
@@ -436,7 +562,7 @@ impl Default for Privacy {
             send_typing: true,
             send_read_marks: true,
             local_search_only: false,
-            warn_unencrypted: "first".into(),
+            warn_unencrypted: WarnUnencrypted::First,
             warned_unencrypted: Vec::new(),
         }
     }
@@ -932,6 +1058,29 @@ x = 1
         assert_eq!(std::fs::read_to_string(&by_text).unwrap(), written);
         assert!(written.contains("# keep this comment") && written.contains("[unknown]"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings with a few named values read like the strings they were: any case, and
+    /// an unknown value is the default instead of a broken file.
+    #[test]
+    fn choices_read_leniently_and_write_as_before() {
+        let config: ClientConfig = toml::from_str(
+            "[general]
+motion_speed = \"CALM\"
+[voice]
+share_resolution = \"bogus\"
+mode = \"push_to_talk\"
+",
+        )
+        .unwrap();
+        assert_eq!(config.general.motion_speed, MotionSpeed::Calm);
+        assert_eq!(config.voice.share_resolution, ShareResolution::default());
+        assert_eq!(config.voice.mode, VoiceMode::PushToTalk);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("motion_speed = \"calm\""), "{text}");
+        assert!(text.contains("share_resolution = \"1080p\""), "{text}");
+        let set = set_value(&config, "sidebar.position", "\"right\"").unwrap();
+        assert_eq!(set.sidebar.position, SidebarPosition::Right);
     }
 
     #[test]

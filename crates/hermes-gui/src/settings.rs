@@ -15,7 +15,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::audio::{AudioDevices, Sound};
-use hermes_client_core::config::ClientConfig;
+use hermes_client_core::config::{self, ClientConfig};
 use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
@@ -24,7 +24,7 @@ use hermes_client_core::{InstanceId, time};
 use crate::assets::{self, icon};
 use crate::keybinds::{ACTIONS, Action, Keybinds};
 use crate::results::Remote;
-use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, RESOLUTIONS};
+use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, ShareResolution};
 use crate::shell::Shell;
 use crate::theme::{self, Theme, px};
 use crate::voice::chip;
@@ -1426,19 +1426,22 @@ impl Shell {
                 cx.listener(move |this, _, window, cx| this.set_ui_scale(value, window, cx)),
             )
         });
-        let position_chips = [("left", "Left"), ("right", "Right")]
-            .into_iter()
-            .enumerate()
-            .map(|(n, (value, name))| {
-                chip(
-                    ("sidebar-position", n),
-                    name,
-                    config.sidebar.position.eq_ignore_ascii_case(value),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_config(|c| c.sidebar.position = value.to_owned(), cx);
-                }))
-            });
+        let position_chips = [
+            (config::SidebarPosition::Left, "Left"),
+            (config::SidebarPosition::Right, "Right"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (value, name))| {
+            chip(
+                ("sidebar-position", n),
+                name,
+                config.sidebar.position == value,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_config(|c| c.sidebar.position = value, cx);
+            }))
+        });
         let layout_group = group(
             "Layout",
             vec![
@@ -1691,14 +1694,11 @@ impl Shell {
                             crate::voice::chip(
                                 ("settings-motion", n),
                                 label,
-                                g.motion_speed.eq_ignore_ascii_case(value),
+                                g.motion_speed == value,
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.set_config(
-                                        |c| c.general.motion_speed = value.to_owned(),
-                                        cx,
-                                    );
+                                    this.set_config(|c| c.general.motion_speed = value, cx);
                                 },
                             ))
                         },
@@ -2436,14 +2436,21 @@ impl Shell {
                 },
             ))
         });
-        let res_chips = RESOLUTIONS.into_iter().enumerate().map(|(n, value)| {
-            let name = if value == "native" { "Native" } else { value };
-            chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.set_config(|c| c.voice.share_resolution = value.to_owned(), cx);
-                },
-            ))
-        });
+        let res_chips = ShareResolution::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(n, value)| {
+                let name = match value {
+                    ShareResolution::Native => "Native",
+                    _ => value.as_str(),
+                };
+                chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.set_config(|c| c.voice.share_resolution = value, cx);
+                    },
+                ))
+            });
         let fps_chips = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
             chip(
                 ("settings-fps", n),
@@ -2454,7 +2461,7 @@ impl Shell {
                 this.set_config(|c| c.voice.share_fps = fps, cx);
             }))
         });
-        let current = Preference::from_config(&v.share_preference);
+        let current = Preference::from_config(v.share_preference);
         let pref_chips = PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
             chip(
                 ("settings-pref", n),
@@ -2462,10 +2469,7 @@ impl Shell {
                 preference == current,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.set_config(
-                    |c| c.voice.share_preference = preference.config_value().to_owned(),
-                    cx,
-                );
+                this.set_config(|c| c.voice.share_preference = preference.config_value(), cx);
                 if let Some(capture) = &this.capture {
                     capture.set_preference(preference);
                 }
@@ -2549,17 +2553,17 @@ impl Shell {
                 ),
             ],
         );
-        let ptt_mode = v.mode == "push_to_talk";
+        let ptt_mode = v.mode == config::VoiceMode::PushToTalk;
         let mode_chips = [
-            ("voice_activity", "Voice activity"),
-            ("push_to_talk", "Push-to-talk"),
+            (config::VoiceMode::VoiceActivity, "Voice activity"),
+            (config::VoiceMode::PushToTalk, "Push-to-talk"),
         ]
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
             chip(("voice-mode", n), name, v.mode == value).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    this.change_voice(cx, move |voice| voice.mode = value.to_owned());
+                    this.change_voice(cx, move |voice| voice.mode = value);
                 },
             ))
         });
@@ -2752,15 +2756,15 @@ impl Shell {
             cx,
         );
         let join_chips = [
-            ("double_click", "Double-click"),
-            ("single_click", "Single click"),
+            (config::JoinOn::DoubleClick, "Double-click"),
+            (config::JoinOn::SingleClick, "Single click"),
         ]
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
             chip(("join-on", n), name, v.join_on == value).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    this.set_config(|c| c.voice.join_on = value.to_owned(), cx);
+                    this.set_config(|c| c.voice.join_on = value, cx);
                 },
             ))
         })

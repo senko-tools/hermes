@@ -157,7 +157,7 @@ impl Shell {
     fn ptt_check(&self) -> Option<Check> {
         const NAME: &str = "Push-to-talk";
         let v = &self.config.voice;
-        if v.mode != "push_to_talk" {
+        if v.mode != hermes_client_core::config::VoiceMode::PushToTalk {
             return None;
         }
         let key = v.ptt_key.trim();

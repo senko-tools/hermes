@@ -367,7 +367,7 @@ impl Shell {
     /// How far highlighted rows reach left past the list's padding: to the rail's border line
     /// when the rail is on their left.
     fn row_reach(&self) -> f32 {
-        if self.config.sidebar.position.eq_ignore_ascii_case("right") {
+        if self.config.sidebar.position == hermes_client_core::config::SidebarPosition::Right {
             0.
         } else {
             LIST_PAD
@@ -734,7 +734,8 @@ impl Shell {
     }
 
     pub fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+        let on_right =
+            self.config.sidebar.position == hermes_client_core::config::SidebarPosition::Right;
         let home_badge = self.home_badge();
         let home_selected = self.selected == Selected::Home;
         let home = rail_icon("home")
@@ -1561,9 +1562,9 @@ impl Shell {
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
                     this.select(inst.clone(), id, window, cx);
-                    let join_on = crate::voice::JoinOn::from_config(&this.config.voice.join_on);
-                    let joins =
-                        join_on == crate::voice::JoinOn::SingleClick || event.click_count() >= 2;
+                    let joins = this.config.voice.join_on
+                        == hermes_client_core::config::JoinOn::SingleClick
+                        || event.click_count() >= 2;
                     if kind == ChannelKind::Voice && joins {
                         this.join_voice(inst.clone(), id, cx);
                     }

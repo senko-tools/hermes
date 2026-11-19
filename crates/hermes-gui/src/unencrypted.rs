@@ -7,6 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div};
 use hermes_client_core::InstanceId;
+use hermes_client_core::config::WarnUnencrypted;
 use hermes_client_core::proto::id::Id;
 
 use crate::assets::{self, icon};
@@ -14,10 +15,10 @@ use crate::shell::Shell;
 use crate::theme::{self, px};
 
 /// The choices of `privacy.warn_unencrypted`: (value, label).
-pub const WARN_CHOICES: [(&str, &str); 3] = [
-    ("every", "Every time I open one"),
-    ("first", "First time for each chat"),
-    ("never", "Never"),
+pub const WARN_CHOICES: [(WarnUnencrypted, &str); 3] = [
+    (WarnUnencrypted::Every, "Every time I open one"),
+    (WarnUnencrypted::First, "First time for each chat"),
+    (WarnUnencrypted::Never, "Never"),
 ];
 
 /// How many chats the "first time" list remembers; the oldest are forgotten.
@@ -31,20 +32,12 @@ fn warned_key(inst: &str, channel: Id) -> String {
     format!("{inst}/{channel}")
 }
 
-/// Whether `value` (from the config) is one of the choices; anything else counts as "first".
-fn normalized(value: &str) -> &'static str {
-    WARN_CHOICES
-        .iter()
-        .find(|(v, _)| v.eq_ignore_ascii_case(value))
-        .map_or("first", |(v, _)| v)
-}
-
 /// Whether a popup is due for a chat, given the setting and the chats already warned about.
-pub fn popup_due(setting: &str, warned: &[String], key: &str) -> bool {
-    match normalized(setting) {
-        "every" => true,
-        "never" => false,
-        _ => !warned.iter().any(|w| w == key),
+pub fn popup_due(setting: WarnUnencrypted, warned: &[String], key: &str) -> bool {
+    match setting {
+        WarnUnencrypted::Every => true,
+        WarnUnencrypted::Never => false,
+        WarnUnencrypted::First => !warned.iter().any(|w| w == key),
     }
 }
 
@@ -69,12 +62,12 @@ impl Shell {
         }
         let privacy = self.config.privacy.clone();
         let key = warned_key(inst, channel);
-        if !popup_due(&privacy.warn_unencrypted, &privacy.warned_unencrypted, &key) {
+        if !popup_due(privacy.warn_unencrypted, &privacy.warned_unencrypted, &key) {
             return;
         }
         self.cancel_closing(POPUP);
         self.unencrypted_popup = Some((inst.clone(), channel));
-        if normalized(&privacy.warn_unencrypted) == "first" {
+        if privacy.warn_unencrypted == WarnUnencrypted::First {
             let mut warned = privacy.warned_unencrypted;
             warned.push(key);
             let over = warned.len().saturating_sub(WARNED_MAX);
@@ -85,13 +78,13 @@ impl Shell {
     }
 
     /// Sets `privacy.warn_unencrypted`, from the popup or from settings.
-    pub fn set_warn_unencrypted(&mut self, value: &'static str, cx: &mut Context<Self>) {
-        self.set_config(|c| c.privacy.warn_unencrypted = value.to_owned(), cx);
+    pub fn set_warn_unencrypted(&mut self, value: WarnUnencrypted, cx: &mut Context<Self>) {
+        self.set_config(|c| c.privacy.warn_unencrypted = value, cx);
     }
 
     /// The choices as a row of chips; `id` keeps the popup's apart from the setting's.
     pub fn warn_unencrypted_choices(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
-        let current = normalized(&self.config.privacy.warn_unencrypted);
+        let current = self.config.privacy.warn_unencrypted;
         crate::settings::wrap()
             .children(
                 WARN_CHOICES
@@ -213,7 +206,7 @@ impl Shell {
                             .hover(|d| d.text_color(theme::accent()).underline())
                             .child("Don't show again")
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_warn_unencrypted("never", cx);
+                                this.set_warn_unencrypted(WarnUnencrypted::Never, cx);
                                 close(this, cx);
                             })),
                     ),
@@ -265,13 +258,9 @@ mod tests {
     #[test]
     fn the_popup_shows_as_the_setting_says() {
         let warned = vec!["a/1".to_owned()];
-        assert!(popup_due("every", &warned, "a/1"));
-        assert!(!popup_due("never", &[], "a/2"));
-        assert!(popup_due("first", &warned, "a/2"));
-        assert!(!popup_due("first", &warned, "a/1"));
-        assert!(
-            !popup_due("something else", &warned, "a/1"),
-            "unknown values count as first"
-        );
+        assert!(popup_due(WarnUnencrypted::Every, &warned, "a/1"));
+        assert!(!popup_due(WarnUnencrypted::Never, &[], "a/2"));
+        assert!(popup_due(WarnUnencrypted::First, &warned, "a/2"));
+        assert!(!popup_due(WarnUnencrypted::First, &warned, "a/1"));
     }
 }

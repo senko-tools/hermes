@@ -26,20 +26,20 @@ pub struct Quality {
     pub fps: u32,
 }
 
-/// The resolutions offered; anything else counts as the first.
-pub const RESOLUTIONS: [&str; 5] = ["720p", "1080p", "1440p", "2160p", "native"];
+/// The resolutions offered.
+pub use hermes_client_core::config::ShareResolution;
 /// The frame rates offered.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
 
 impl Quality {
-    pub fn from_config(resolution: &str, fps: u32) -> Quality {
+    pub fn from_config(resolution: ShareResolution, fps: u32) -> Quality {
         let max = u32::from(MAX_VIDEO_DIMENSION);
         let (max_width, max_height) = match resolution {
-            "1080p" => (1920, 1080),
-            "1440p" => (2560, 1440),
-            "2160p" => (3840, 2160),
-            "native" => (max, max),
-            _ => (1280, 720),
+            ShareResolution::P720 => (1280, 720),
+            ShareResolution::P1080 => (1920, 1080),
+            ShareResolution::P1440 => (2560, 1440),
+            ShareResolution::P2160 => (3840, 2160),
+            ShareResolution::Native => (max, max),
         };
         Quality {
             max_width,
@@ -81,20 +81,21 @@ const fn step(fps: f64, size: f64, bits: f64) -> Step {
 }
 
 impl Preference {
-    /// Anything unknown is smoothness.
-    pub fn from_config(value: &str) -> Preference {
+    pub fn from_config(value: hermes_client_core::config::SharePreference) -> Preference {
+        use hermes_client_core::config::SharePreference as P;
         match value {
-            "clarity" => Preference::Clarity,
-            "mixed" => Preference::Mixed,
-            _ => Preference::Smoothness,
+            P::Smoothness => Preference::Smoothness,
+            P::Mixed => Preference::Mixed,
+            P::Clarity => Preference::Clarity,
         }
     }
 
-    pub fn config_value(self) -> &'static str {
+    pub fn config_value(self) -> hermes_client_core::config::SharePreference {
+        use hermes_client_core::config::SharePreference as P;
         match self {
-            Preference::Smoothness => "smoothness",
-            Preference::Mixed => "mixed",
-            Preference::Clarity => "clarity",
+            Preference::Smoothness => P::Smoothness,
+            Preference::Mixed => P::Mixed,
+            Preference::Clarity => P::Clarity,
         }
     }
 
@@ -1340,7 +1341,7 @@ mod tests {
 
     #[test]
     fn shares_fit_their_resolution_and_stay_even() {
-        let hd = Quality::from_config("720p", 10);
+        let hd = Quality::from_config(ShareResolution::P720, 10);
         assert_eq!(fit(2560, 1440, hd), (1280, 720));
         assert_eq!(fit(1920, 1080, hd), (1280, 720));
         assert_eq!(fit(1280, 720, hd), (1280, 720));
@@ -1348,10 +1349,10 @@ mod tests {
         assert_eq!(fit(3440, 1440, hd), (1280, 534));
         assert_eq!(fit(801, 601, hd), (800, 600));
         assert_eq!(fit(1, 1, hd), (2, 2));
-        let full = Quality::from_config("1080p", 30);
+        let full = Quality::from_config(ShareResolution::P1080, 30);
         assert_eq!(fit(2560, 1440, full), (1920, 1080));
         assert_eq!(fit(1280, 720, full), (1280, 720), "never scaled up");
-        let native = Quality::from_config("native", 60);
+        let native = Quality::from_config(ShareResolution::Native, 60);
         assert_eq!(
             fit(5120, 1440, native),
             (3840, 1080),
@@ -1359,16 +1360,15 @@ mod tests {
         );
         assert_eq!(native.fps, 60);
         assert_eq!(
-            Quality::from_config("native", 120).fps,
+            Quality::from_config(ShareResolution::Native, 120).fps,
             60,
             "the protocol's limit"
         );
-        assert_eq!(Quality::from_config("bogus", 10), hd);
     }
 
     #[test]
     fn preferences_give_way_differently() {
-        let q = Quality::from_config("1440p", 60);
+        let q = Quality::from_config(ShareResolution::P1440, 60);
         let screen = (2560, 1440);
         let full = |p| target(q, p, 0, screen);
         // At full quality all keep size and frame rate; clearer pictures cost more bits.
@@ -1404,8 +1404,10 @@ mod tests {
             assert_eq!(Preference::from_config(p.config_value()), p);
             assert_eq!(Preference::from_u8(p.to_u8()), p);
         }
-        assert_eq!(Preference::from_config("bogus"), Preference::Smoothness);
-        assert_eq!(Quality::from_config("2160p", 60).max_height, 2160);
+        assert_eq!(
+            Quality::from_config(ShareResolution::P2160, 60).max_height,
+            2160
+        );
     }
 
     #[test]
@@ -1443,7 +1445,7 @@ mod tests {
     fn real_screen_is_captured_and_encoded() {
         let monitor = pick_monitor("").unwrap();
         let name = monitor.name().unwrap();
-        let quality = Quality::from_config("1080p", 30);
+        let quality = Quality::from_config(ShareResolution::P1080, 30);
         let mut duplicator = super::super::dxgi::Duplicator::open(&name).unwrap();
         // The first call returns the current desktop; later ones only on change.
         let begin = Instant::now();

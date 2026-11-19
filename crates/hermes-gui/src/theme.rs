@@ -3,6 +3,7 @@
 //! changes; the others come from `dark`, except the [`DERIVED`] sections, which a file that leaves
 //! them out gets from its own older keys (so themes written before they existed look the same).
 
+use hermes_client_core::config::MotionSpeed;
 use std::path::{Path, PathBuf};
 
 use std::cell::RefCell;
@@ -540,17 +541,17 @@ pub const FADE: std::time::Duration = std::time::Duration::from_millis(120);
 static MOTION: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3FB3_3333);
 
 /// The motion speed settings, their names and how much longer than snappy each one takes.
-pub const MOTION_SPEEDS: [(&str, &str, f32); 3] = [
-    ("snappy", "Snappy", 1.0),
-    ("normal", "Normal", 1.4),
-    ("calm", "Calm", 2.0),
+pub const MOTION_SPEEDS: [(MotionSpeed, &str, f32); 3] = [
+    (MotionSpeed::Snappy, "Snappy", 1.0),
+    (MotionSpeed::Normal, "Normal", 1.4),
+    (MotionSpeed::Calm, "Calm", 2.0),
 ];
 
 /// Follows `general.motion_speed`.
-pub fn set_motion_speed(name: &str) {
+pub fn set_motion_speed(speed: MotionSpeed) {
     let scale = MOTION_SPEEDS
         .iter()
-        .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+        .find(|(s, ..)| *s == speed)
         .map_or(1.4, |(.., scale)| *scale);
     MOTION.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }

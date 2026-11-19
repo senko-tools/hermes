@@ -882,7 +882,7 @@ impl Shell {
 
     fn apply_motion(&self, cx: &mut Context<Self>) {
         let general = &self.config.general;
-        theme::set_motion_speed(&general.motion_speed);
+        theme::set_motion_speed(general.motion_speed);
         cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
         INFO_SECONDS.store(
             u64::from(general.status_seconds.max(1)),
@@ -1514,7 +1514,8 @@ impl Shell {
             cx.notify();
             return;
         }
-        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+        let on_right =
+            self.config.sidebar.position == hermes_client_core::config::SidebarPosition::Right;
         let new = if on_right {
             width - moved
         } else {
@@ -1748,7 +1749,8 @@ impl Render for Shell {
                 .into_any_element(),
             None => main_column.into_any_element(),
         };
-        let on_right = self.config.sidebar.position.eq_ignore_ascii_case("right");
+        let on_right =
+            self.config.sidebar.position == hermes_client_core::config::SidebarPosition::Right;
         let width = f32::from(self.config.sidebar.width).clamp(180., 480.);
         // The rail and the sidebar side by side, with the voice and user panels across both.
         let left = if showing_page || !self.sidebar_visible {
