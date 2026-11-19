@@ -25,8 +25,11 @@ pub mod features {
     /// Profiles have an "About me" (`UserProfile::bio`, `UpdateMeRequest::bio`).
     pub const BIO: &str = "bio";
 
+    /// `GET /search` finds parts of words and sorts by relevance (`sort`, `offset`).
+    pub const SEARCH_RANK: &str = "search_rank";
+
     /// Everything this build's server can do that older servers can't.
-    pub const ALL: &[&str] = &[SEARCH_FILTERS, BIO];
+    pub const ALL: &[&str] = &[SEARCH_FILTERS, BIO, SEARCH_RANK];
 }
 
 /// Whether a server's `features` list has `name`.

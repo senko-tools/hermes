@@ -278,6 +278,17 @@ pub struct NotificationSettingRequest {
     pub muted_until: Option<i64>,
 }
 
+/// How search results are ordered (`GET /search?sort=`, `search_rank`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSort {
+    /// Newest first; later pages go on with `before`.
+    #[default]
+    Newest,
+    /// Best matches first; later pages go on with `offset`.
+    Relevance,
+}
+
 /// What a found message must have (`GET /search?has=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -331,6 +342,12 @@ pub struct SearchQuery {
     pub has: Option<SearchHas>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// The order (`search_rank`); newest first without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SearchSort>,
+    /// Results to skip, for later pages sorted by relevance (`search_rank`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
 }
 
 impl SearchQuery {
@@ -343,7 +360,7 @@ impl SearchQuery {
     }
 }
 
-/// The answer of `GET /search`: newest first.
+/// The answer of `GET /search`: newest first, or best first when asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub messages: Vec<Message>,
