@@ -1,70 +1,35 @@
 //! End-to-end: the TUI adds an instance from an invite link, creates the owner account, opens
 //! `#general`, sends a message and renders it, all against a real `hermes-server`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use hermes_client_core::config::ClientConfig;
 use hermes_client_core::{Core, CoreEvents, CoreOptions};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
-use hermes_server::state::AppState;
+use hermes_server::config::RegistrationMode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
 use crate::app::{App, Mode, Popup, SidebarItem, TaskMsg};
 use crate::commands::Command;
 use crate::ui;
 
+/// A server from `hermes_server::testing`.
 struct Server {
     link: String,
-    shutdown: Arc<Notify>,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> Server {
-    let dir = std::env::temp_dir().join(format!("hermes-tui-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut config = Config::default();
-    config.instance.name = "Friends".into();
-    config.instance.public_host = "127.0.0.1".into();
-    config.network.port = tcp.local_addr().unwrap().port();
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::InviteOnly;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    tokio::spawn(hermes_server::server::run(
-        Arc::new(state),
-        tcp,
-        tls,
-        None,
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("tui-{name}"), false, |c| {
+        c.instance.name = "Friends".into();
+        c.registration.mode = RegistrationMode::InviteOnly;
+    })
+    .await;
     Server {
-        link: links.web,
-        shutdown,
-        dir,
+        link: server.link.clone(),
+        _server: server,
     }
 }
 

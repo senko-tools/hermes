@@ -44,7 +44,7 @@ windows = { workspace = true, features = ["Win32_System_Time"] }
 
 [dev-dependencies]
 # Integration tests run a real server (PLAN.md section 19); never a normal dependency.
-hermes-server = { path = "../hermes-server" }
+hermes-server = { path = "../hermes-server", features = ["testing"] }
 
 [lints]
 workspace = true

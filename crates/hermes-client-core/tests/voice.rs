@@ -2,7 +2,6 @@
 //! between two clients on virtual devices, speaking events, per-user volume, mute, switching,
 //! leaving, being disconnected, and reconnecting after a lost connection.
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,75 +12,30 @@ use hermes_client_core::proto::api::{CreateInviteRequest, VoiceStatePatchRequest
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::voice::ScreenFrame;
 use hermes_client_core::{Core, CoreEvent, CoreEvents, CoreOptions, InstanceId, VoiceStatus};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
-use hermes_server::state::AppState;
-use tokio::sync::Notify;
+use hermes_server::config::Config;
 
 const WAIT: Duration = Duration::from_secs(15);
 
+/// A server with voice from `hermes_server::testing`, with what these tests use of its
+/// invite link.
 struct TestServer {
     host: HostPort,
     setup_code: String,
     fingerprint: Fingerprint,
-    shutdown: Arc<Notify>,
-    dir: PathBuf,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> TestServer {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let dir = std::env::temp_dir().join(format!("hermes-cc-voice-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut config = Config::default();
-    config.instance.name = "Voice".into();
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::Open;
-    config.limits.requests_per_second = 100_000;
-    config.limits.login_attempts_per_minute = 100_000;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let (quic, cert_sha256) =
-        hermes_server::voice::endpoint::bind(&config, "127.0.0.1:0".parse().unwrap()).unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    state
-        .voice
-        .set_endpoint(hermes_server::voice::EndpointInfo {
-            cert_sha256,
-            port: quic.local_addr().unwrap().port(),
-        });
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let link = InviteLink::parse(&links.web).unwrap();
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    tokio::spawn(hermes_server::server::run(
-        Arc::new(state),
-        tcp,
-        tls,
-        Some(quic),
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("cc-voice-{name}"), true, |c| {
+        c.instance.name = "Voice".into();
+    })
+    .await;
+    let link = InviteLink::parse(&server.link).unwrap();
     TestServer {
-        host: HostPort::parse(&format!("127.0.0.1:{port}")).unwrap(),
+        host: HostPort::parse(&server.host()).unwrap(),
         setup_code: link.code,
         fingerprint: link.fingerprint.unwrap(),
-        shutdown,
-        dir,
+        _server: server,
     }
 }
 

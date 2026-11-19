@@ -3,7 +3,6 @@
 //! mute and deafen, the status line, `q` asks while in voice, `L` leaves, and an incoming DM call
 //! is answered with `:voice`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,11 +12,9 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::CreateInviteRequest;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::{Core, CoreEvents, CoreOptions, InstanceId};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
-use hermes_server::state::AppState;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
 use crate::app::{App, Focus, Popup, SidebarItem, TaskMsg};
 use crate::commands::Command;
@@ -25,65 +22,22 @@ use crate::ui;
 
 const WAIT: Duration = Duration::from_secs(15);
 
+/// A server with voice from `hermes_server::testing`.
 struct Server {
     host: HostPort,
     link: InviteLink,
-    shutdown: Arc<Notify>,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> Server {
-    let dir = std::env::temp_dir().join(format!("hermes-tui-voice-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut config = Config::default();
-    config.instance.name = "Friends".into();
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::Open;
-    config.limits.requests_per_second = 100_000;
-    config.limits.login_attempts_per_minute = 100_000;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let (quic, cert_sha256) =
-        hermes_server::voice::endpoint::bind(&config, "127.0.0.1:0".parse().unwrap()).unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    state
-        .voice
-        .set_endpoint(hermes_server::voice::EndpointInfo {
-            cert_sha256,
-            port: quic.local_addr().unwrap().port(),
-        });
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    tokio::spawn(hermes_server::server::run(
-        Arc::new(state),
-        tcp,
-        tls,
-        Some(quic),
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("tui-voice-{name}"), true, |c| {
+        c.instance.name = "Friends".into();
+    })
+    .await;
     Server {
-        host: HostPort::parse(&format!("127.0.0.1:{port}")).unwrap(),
-        link: InviteLink::parse(&links.web).unwrap(),
-        shutdown,
-        dir,
+        host: HostPort::parse(&server.host()).unwrap(),
+        link: InviteLink::parse(&server.link).unwrap(),
+        _server: server,
     }
 }
 

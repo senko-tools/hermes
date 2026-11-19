@@ -38,6 +38,10 @@ sha1.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+[features]
+# `hermes_server::testing`: a real server for the clients' tests.
+testing = []
+
 [dev-dependencies]
 figment = { workspace = true, features = ["test"] }
 futures-util.workspace = true

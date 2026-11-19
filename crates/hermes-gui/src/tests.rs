@@ -2,7 +2,6 @@
 //! with a fingerprint → create the owner account; plain address → trust on first use → sign in; a
 //! changed certificate shows the warning) and the message rows following the store.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use hermes_client_core::address::{Fingerprint, HostPort};
@@ -10,67 +9,33 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::{CreateInviteRequest, RegistrationMode as Registration};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::{CertStatus, Core, CoreEvents, CoreOptions, Draft};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
-use hermes_server::state::AppState;
-use tokio::sync::Notify;
+use hermes_server::config::RegistrationMode;
 
 use crate::add_instance::{self, Account, Probed, Tab};
 use crate::menu_entries::Target;
 use crate::rows::{self, Row};
 
+/// A server from `hermes_server::testing`.
 struct Server {
     link: String,
     host: HostPort,
-    shutdown: Arc<Notify>,
     dir: std::path::PathBuf,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> Server {
-    let dir = std::env::temp_dir().join(format!("hermes-gui-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    let mut config = Config::default();
-    config.instance.name = "Friends".into();
-    config.instance.description = "Our place".into();
-    config.instance.public_host = "127.0.0.1".into();
-    config.network.port = port;
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::InviteOnly;
-    config.privacy.require_channel_encryption = false;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    tokio::spawn(hermes_server::server::run(
-        Arc::new(state),
-        tcp,
-        tls,
-        None,
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("gui-{name}"), false, |c| {
+        c.instance.name = "Friends".into();
+        c.instance.description = "Our place".into();
+        c.registration.mode = RegistrationMode::InviteOnly;
+        c.privacy.require_channel_encryption = false;
+    })
+    .await;
     Server {
-        link: links.web,
-        host: HostPort::parse(&format!("127.0.0.1:{port}")).unwrap(),
-        shutdown,
-        dir,
+        link: server.link.clone(),
+        host: HostPort::parse(&server.host()).unwrap(),
+        dir: server.dir.clone(),
+        _server: server,
     }
 }
 

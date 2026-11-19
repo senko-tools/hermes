@@ -15,6 +15,8 @@ pub mod server;
 pub mod setup;
 pub mod snowflake;
 pub mod state;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod time;
 pub mod tls;
 pub mod users;
