@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -83,7 +84,11 @@ impl Core {
     /// This account's keys on `inst`, made on first use. `None` until signed in.
     pub(crate) fn account_keys(&self, inst: &str) -> Option<Arc<AccountKeys>> {
         let me = self.store().instance(inst).and_then(|s| s.me_id())?;
-        let mut accounts = self.inner.accounts.lock().expect("accounts");
+        let mut accounts = self
+            .inner
+            .accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(keys) = accounts.get(inst)
             && keys.me == me
         {
@@ -219,7 +224,7 @@ impl Core {
         };
         keys.directory
             .lock()
-            .expect("directory")
+            .unwrap_or_else(PoisonError::into_inner)
             .update(user, devices, now_ms());
         self.changed(inst, [Changed::Users]);
     }
@@ -234,7 +239,10 @@ impl Core {
     ) -> Result<()> {
         let now = now_ms();
         let stale: Vec<Id> = {
-            let directory = keys.directory.lock().expect("directory");
+            let directory = keys
+                .directory
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             users
                 .iter()
                 .copied()
@@ -252,7 +260,10 @@ impl Core {
         for chunk in stale.chunks(hermes_proto::e2ee::MAX_DEVICE_QUERY) {
             found.extend(self.rest(inst)?.query_devices(chunk).await?);
         }
-        let mut directory = keys.directory.lock().expect("directory");
+        let mut directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for user in found {
             directory.update(user.user_id, user.devices, now);
         }
@@ -293,7 +304,10 @@ impl Core {
         self.fetch_devices(inst, keys, &users, DEVICES_MAX_AGE_MS)
             .await?;
         let mut devices = vec![keys.identity.public(keys.me)];
-        let directory = keys.directory.lock().expect("directory");
+        let directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for user in users {
             let live = directory.live_devices(user);
             if directory.is_verified(user) && directory.unseen(user) > 0 {
@@ -301,7 +315,7 @@ impl Core {
                     .store()
                     .instance(inst)
                     .map_or_else(|| user.to_string(), |s| s.display_name(None, user));
-                return Err(CoreError::Voice(format!(
+                return Err(CoreError::Encryption(format!(
                     "{name} has a new device. Compare numbers or press OK on the notice before \
                      sending."
                 )));
@@ -311,7 +325,7 @@ impl Core {
                     .store()
                     .instance(inst)
                     .map_or_else(|| user.to_string(), |s| s.display_name(None, user));
-                return Err(CoreError::Voice(format!(
+                return Err(CoreError::Encryption(format!(
                     "{name} has not opened a version of Hermes with encryption yet, so this cannot \
                      be sent safely"
                 )));
@@ -335,9 +349,7 @@ impl Core {
         reply_to: Option<Id>,
         edits: Option<Id>,
     ) -> Result<hermes_proto::e2ee::Envelope> {
-        let keys = self
-            .account_keys(inst)
-            .ok_or_else(|| CoreError::Voice("Not signed in yet".into()))?;
+        let keys = self.account_keys(inst).ok_or(CoreError::NotSignedIn)?;
         let reply_excerpt = reply_to.and_then(|id| {
             let store = self.store();
             let window = store.instance(inst)?.window(channel)?;
@@ -359,7 +371,7 @@ impl Core {
             let (epoch, key) = self.key_for_sending(inst, &keys, channel).await?;
             e2ee::seal_channel_message(&keys.identity, keys.me, channel, epoch, &key, &inner)
         };
-        sealed.map_err(|err| CoreError::Voice(format!("Could not encrypt: {err}")))
+        sealed.map_err(|err| CoreError::Encryption(format!("Could not encrypt: {err}")))
     }
 
     /// A plain message after the first sealed one of its conversation did not come from a client
@@ -374,7 +386,7 @@ impl Core {
         let since = keys
             .ring
             .lock()
-            .expect("ring")
+            .unwrap_or_else(PoisonError::into_inner)
             .sealed_since(message.channel_id);
         if since.is_some_and(|first| message.id > first) {
             refuse(message, MessageLock::Unsealed, UNSEALED);
@@ -399,21 +411,25 @@ impl Core {
         let known = keys
             .directory
             .lock()
-            .expect("directory")
+            .unwrap_or_else(PoisonError::into_inner)
             .device(author, &envelope.device)
             .cloned();
         let sender = match known {
             Some(sender) => Some(sender),
             None => {
                 // A page of messages from a device nobody lists asks only once.
-                let asked = keys.directory.lock().expect("directory").fetched_at(author);
+                let asked = keys
+                    .directory
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .fetched_at(author);
                 let recently = asked.is_some_and(|at| now_ms() - at < UNKNOWN_DEVICE_RETRY_MS);
                 if !recently && let Err(err) = self.fetch_devices(inst, &keys, &[author], 0).await {
                     tracing::warn!("could not ask for {author}'s encryption keys: {err}");
                 }
                 keys.directory
                     .lock()
-                    .expect("directory")
+                    .unwrap_or_else(PoisonError::into_inner)
                     .device(author, &envelope.device)
                     .cloned()
             }
@@ -426,11 +442,12 @@ impl Core {
         let written = message
             .edited_at
             .unwrap_or(message.id.timestamp_ms() as i64);
-        if keys.directory.lock().expect("directory").revoked_before(
-            author,
-            &envelope.device,
-            written,
-        ) {
+        if keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revoked_before(author, &envelope.device, written)
+        {
             refuse(message, MessageLock::Tampered, TAMPERED);
             return;
         }
@@ -464,7 +481,7 @@ impl Core {
             Ok((inner, key)) => {
                 keys.ring
                     .lock()
-                    .expect("ring")
+                    .unwrap_or_else(PoisonError::into_inner)
                     .note_sealed(message.channel_id, message.id);
                 apply_inner(message, inner);
                 open_reactions(message, &key);
@@ -502,7 +519,7 @@ impl Core {
             self.store()
                 .instance(inst)
                 .and_then(|s| s.upload_refusal(size))
-                .map_or(Ok(()), |why| Err(CoreError::Io(why)))
+                .map_or(Ok(()), |why| Err(CoreError::Refused(why)))
         };
         if !self.channel_is_encrypted(inst, channel) {
             let size = tokio::fs::metadata(path)
@@ -601,7 +618,7 @@ impl Core {
         tokio::task::spawn_blocking(move || e2ee::open_file(&bytes, &thumb.key, &thumb.nonce))
             .await
             .map_err(|e| CoreError::Io(e.to_string()))?
-            .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
+            .map_err(|e| CoreError::Encryption(format!("The file could not be decrypted: {e}")))
     }
 
     /// An attachment that can be read in parts while it downloads (media plays from it). `None`
@@ -637,14 +654,12 @@ impl Core {
         })
         .await
         .map_err(|e| CoreError::Io(e.to_string()))?
-        .map_err(|e| CoreError::Io(format!("The file could not be decrypted: {e}")))
+        .map_err(|e| CoreError::Encryption(format!("The file could not be decrypted: {e}")))
     }
 
     /// The safety number and devices of a conversation, asking the server for the latest.
     pub async fn conversation_keys(&self, inst: &str, channel: Id) -> Result<ConversationKeys> {
-        let keys = self
-            .account_keys(inst)
-            .ok_or_else(|| CoreError::Voice("Not signed in yet".into()))?;
+        let keys = self.account_keys(inst).ok_or(CoreError::NotSignedIn)?;
         let users = self.recipients(inst, channel, keys.me);
         self.fetch_devices(inst, &keys, &users, 0).await?;
         Ok(keys_of(&keys, &users))
@@ -656,7 +671,10 @@ impl Core {
             return Vec::new();
         };
         let users = self.recipients(inst, channel, keys.me);
-        let directory = keys.directory.lock().expect("directory");
+        let directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         users
             .into_iter()
             .filter(|user| directory.unseen(*user) > 0)
@@ -669,7 +687,10 @@ impl Core {
             return;
         };
         let users = self.recipients(inst, channel, keys.me);
-        let mut directory = keys.directory.lock().expect("directory");
+        let mut directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for user in users {
             directory.acknowledge(user);
         }
@@ -681,7 +702,10 @@ impl Core {
             return false;
         };
         let users = self.recipients(inst, channel, keys.me);
-        let directory = keys.directory.lock().expect("directory");
+        let directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut others = users.into_iter().filter(|user| *user != keys.me).peekable();
         others.peek().is_some() && others.all(|user| directory.is_verified(user))
     }
@@ -692,7 +716,10 @@ impl Core {
             return;
         };
         let users = self.recipients(inst, channel, keys.me);
-        let mut directory = keys.directory.lock().expect("directory");
+        let mut directory = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for user in users.into_iter().filter(|user| *user != keys.me) {
             directory.set_verified(user, verified);
         }
@@ -701,10 +728,18 @@ impl Core {
     /// Forgets everything this device keeps for an instance's accounts: its keys, the channels'
     /// keys, the search index and whom it has seen.
     pub(crate) fn wipe_local_keys(&self, inst: &str) {
-        let removed = self.inner.accounts.lock().expect("accounts").remove(inst);
+        let removed = self
+            .inner
+            .accounts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(inst);
         // Its file is saved on a thread of its own: a write under way would bring it back.
         if let Some(keys) = removed {
-            keys.directory.lock().expect("directory").flush();
+            keys.directory
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .flush();
         }
         let Some(paths) = self.paths() else {
             return;
@@ -748,7 +783,10 @@ impl Core {
 
 /// The safety number and devices of these people.
 pub(crate) fn keys_of(keys: &AccountKeys, users: &[Id]) -> ConversationKeys {
-    let directory = keys.directory.lock().expect("directory");
+    let directory = keys
+        .directory
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let all: Vec<(Id, Vec<DeviceKeys>)> = users
         .iter()
         .map(|user| {

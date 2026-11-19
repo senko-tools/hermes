@@ -115,9 +115,17 @@ pub enum CoreError {
         pinned: Fingerprint,
         now: Fingerprint,
     },
+    /// Reading or writing a file failed.
     Io(String),
     /// Joining or keeping voice failed.
     Voice(String),
+    /// Encrypting or decrypting failed, or it is not safe to send yet (a new device, keys not
+    /// shared with this device).
+    Encryption(String),
+    /// This instance has no account keys yet: not signed in, or still starting.
+    NotSignedIn,
+    /// Not done on purpose: too large a file, voice needed first.
+    Refused(String),
 }
 
 impl fmt::Display for CoreError {
@@ -144,7 +152,11 @@ impl fmt::Display for CoreError {
                 pinned.colon_hex(),
                 now.colon_hex()
             ),
-            CoreError::Io(e) | CoreError::Voice(e) => f.write_str(e),
+            CoreError::Io(e)
+            | CoreError::Voice(e)
+            | CoreError::Encryption(e)
+            | CoreError::Refused(e) => f.write_str(e),
+            CoreError::NotSignedIn => f.write_str("Not signed in yet"),
         }
     }
 }
@@ -1962,7 +1974,7 @@ impl Core {
             .inner
             .instances
             .lock()
-            .expect("instances")
+            .unwrap_or_else(PoisonError::into_inner)
             .values()
             .cloned()
             .collect();
@@ -1976,7 +1988,7 @@ impl Core {
             .inner
             .instances
             .lock()
-            .expect("instances")
+            .unwrap_or_else(PoisonError::into_inner)
             .values()
             .any(|h| {
                 !h.read_marks

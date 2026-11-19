@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use hermes_proto::ErrorCode;
@@ -274,7 +275,7 @@ pub(crate) struct ChannelKeyCache {
 }
 
 fn locked(err: impl std::fmt::Display) -> CoreError {
-    CoreError::Voice(format!("Could not encrypt: {err}"))
+    CoreError::Encryption(format!("Could not encrypt: {err}"))
 }
 
 impl Core {
@@ -290,7 +291,7 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return said;
         };
-        let mut ring = keys.ring.lock().expect("ring");
+        let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         if said && server_channel {
             ring.remember_instance_sealed();
         }
@@ -299,7 +300,7 @@ impl Core {
     }
 
     fn forget_state(keys: &AccountKeys, channel: Id) {
-        let mut cache = keys.channels.lock().expect("channel keys");
+        let mut cache = keys.channels.lock().unwrap_or_else(PoisonError::into_inner);
         cache.states.remove(&channel);
     }
 
@@ -316,7 +317,7 @@ impl Core {
         if let Some(state) = keys
             .channels
             .lock()
-            .expect("channel keys")
+            .unwrap_or_else(PoisonError::into_inner)
             .states
             .get(&channel)
             .filter(|s| now - s.fetched_at < max_age_ms)
@@ -327,7 +328,11 @@ impl Core {
             .rest(inst)?
             .channel_keys(channel, keys.identity.device_id())
             .await?;
-        let held = keys.ring.lock().expect("ring").epochs(channel);
+        let held = keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .epochs(channel);
         for sealed in &response.keys {
             if !held.contains(&sealed.epoch) {
                 self.open_sealed_key(inst, keys, channel, sealed).await;
@@ -337,13 +342,13 @@ impl Core {
         let loosened = keys
             .ring
             .lock()
-            .expect("ring")
+            .unwrap_or_else(PoisonError::into_inner)
             .pin_policy(channel, &mut policy);
         if loosened
             && keys
                 .channels
                 .lock()
-                .expect("channel keys")
+                .unwrap_or_else(PoisonError::into_inner)
                 .warned
                 .insert(channel)
         {
@@ -361,7 +366,7 @@ impl Core {
         };
         keys.channels
             .lock()
-            .expect("channel keys")
+            .unwrap_or_else(PoisonError::into_inner)
             .states
             .insert(channel, state);
         Ok(state)
@@ -378,7 +383,7 @@ impl Core {
         let known = |keys: &AccountKeys| {
             keys.directory
                 .lock()
-                .expect("directory")
+                .unwrap_or_else(PoisonError::into_inner)
                 .device(sealed.sender_id, &sealed.sender_device)
                 .cloned()
         };
@@ -395,7 +400,7 @@ impl Core {
             Ok(key) => keys
                 .ring
                 .lock()
-                .expect("ring")
+                .unwrap_or_else(PoisonError::into_inner)
                 .insert(channel, sealed.epoch, key),
             Err(err) => tracing::warn!("a key of channel {channel} failed to open: {err}"),
         }
@@ -430,7 +435,10 @@ impl Core {
         let key = e2ee::new_channel_key();
         let mut sealed = Vec::new();
         {
-            let directory = keys.directory.lock().expect("directory");
+            let directory = keys
+                .directory
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             for user in users {
                 for device in directory.live_devices(user) {
                     sealed.push(
@@ -464,9 +472,15 @@ impl Core {
             }
         }
         let rest_of_keys = sealed.split_off(sealed.len().min(MAX_CHANNEL_KEYS));
-        keys.ring.lock().expect("ring").insert(channel, epoch, key);
+        keys.ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(channel, epoch, key);
         if let Err(err) = rest.start_channel_epoch(channel, epoch, sealed).await {
-            keys.ring.lock().expect("ring").remove(channel, epoch);
+            keys.ring
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(channel, epoch);
             Self::forget_state(keys, channel);
             return match err {
                 rest::Error::Api(api) if api.code == ErrorCode::Conflict => Ok(()),
@@ -489,14 +503,18 @@ impl Core {
         channel: Id,
         state: ChannelState,
     ) -> Result<()> {
-        let newest = keys.ring.lock().expect("ring").newest_epoch(channel);
+        let newest = keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .newest_epoch(channel);
         if newest <= state.current {
             return Ok(());
         }
         // A key may have arrived since this was asked.
         let fresh = self.channel_state(inst, keys, channel, 0).await?;
         if newest > fresh.current {
-            return Err(CoreError::Voice(
+            return Err(CoreError::Encryption(
                 "The server offered an older key for this channel than this device has, so nothing \
                  was sent."
                     .to_owned(),
@@ -520,12 +538,16 @@ impl Core {
             self.start_epoch(inst, keys, channel, state).await?;
             state = self.channel_state(inst, keys, channel, 0).await?;
         }
-        let key = keys.ring.lock().expect("ring").get(channel, state.current);
+        let key = keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(channel, state.current);
         match key {
             Some(key) => Ok((state.current, key)),
             None => {
                 self.request_keys(inst, keys, channel).await;
-                Err(CoreError::Voice(
+                Err(CoreError::Encryption(
                     "This channel's keys have not been shared with this device yet".into(),
                 ))
             }
@@ -540,13 +562,22 @@ impl Core {
         channel: Id,
         epoch: u32,
     ) -> Option<Zeroizing<[u8; 32]>> {
-        if let Some(key) = keys.ring.lock().expect("ring").get(channel, epoch) {
+        if let Some(key) = keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(channel, epoch)
+        {
             return Some(key);
         }
         let _ = self
             .channel_state(inst, keys, channel, self.inner.channel_state_max_age_ms)
             .await;
-        let key = keys.ring.lock().expect("ring").get(channel, epoch);
+        let key = keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(channel, epoch);
         if key.is_none() {
             self.request_keys(inst, keys, channel).await;
         }
@@ -557,7 +588,7 @@ impl Core {
     async fn request_keys(&self, inst: &str, keys: &AccountKeys, channel: Id) {
         {
             let now = now_ms();
-            let mut cache = keys.channels.lock().expect("channel keys");
+            let mut cache = keys.channels.lock().unwrap_or_else(PoisonError::into_inner);
             if cache
                 .asked_at
                 .get(&channel)
@@ -660,7 +691,13 @@ impl Core {
             return Ok(());
         }
         let state = self.channel_state(inst, keys, channel, 0).await?;
-        if keys.ring.lock().expect("ring").epochs(channel).is_empty() {
+        if keys
+            .ring
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .epochs(channel)
+            .is_empty()
+        {
             return Ok(());
         }
         if check {
@@ -670,7 +707,7 @@ impl Core {
             }
         }
         if state.policy.handover == KeyHandover::Approved {
-            let mut cache = keys.channels.lock().expect("channel keys");
+            let mut cache = keys.channels.lock().unwrap_or_else(PoisonError::into_inner);
             if !cache.waiting.contains(request) {
                 cache.waiting.push(request.clone());
             }
@@ -709,7 +746,7 @@ impl Core {
         let device = keys
             .directory
             .lock()
-            .expect("directory")
+            .unwrap_or_else(PoisonError::into_inner)
             .live_devices(request.user_id)
             .into_iter()
             .find(|d| d.device_id == request.device);
@@ -717,7 +754,7 @@ impl Core {
             return Ok(());
         };
         let held: Vec<(u32, Zeroizing<[u8; 32]>)> = {
-            let ring = keys.ring.lock().expect("ring");
+            let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             ring.epochs(channel)
                 .into_iter()
                 .filter_map(|epoch| Some((epoch, ring.get(channel, epoch)?)))
@@ -753,26 +790,28 @@ impl Core {
             .inner
             .accounts
             .lock()
-            .expect("accounts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(inst)
             .cloned();
         keys.map_or_else(Vec::new, |keys| {
-            keys.channels.lock().expect("channel keys").waiting.clone()
+            keys.channels
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .waiting
+                .clone()
         })
     }
 
     /// Hands the keys over by hand: the only way in for an approved channel.
     pub async fn approve_key_request(&self, inst: &str, request: &KeyRequest) -> Result<()> {
-        let keys = self
-            .account_keys(inst)
-            .ok_or_else(|| CoreError::Voice("Not signed in yet".into()))?;
+        let keys = self.account_keys(inst).ok_or(CoreError::NotSignedIn)?;
         let state = self
             .channel_state(inst, &keys, request.channel_id, 0)
             .await?;
         self.hand_over(inst, &keys, request, state).await?;
         keys.channels
             .lock()
-            .expect("channel keys")
+            .unwrap_or_else(PoisonError::into_inner)
             .waiting
             .retain(|r| r != request);
         self.changed(inst, [Changed::Channel(request.channel_id)]);
@@ -784,7 +823,7 @@ impl Core {
         if let Some(keys) = self.account_keys(inst) {
             keys.channels
                 .lock()
-                .expect("channel keys")
+                .unwrap_or_else(PoisonError::into_inner)
                 .waiting
                 .retain(|r| r != request);
         }
@@ -808,7 +847,7 @@ impl Core {
                     .get(&space)
                     .map_or_else(Vec::new, |state| state.channels.keys().copied().collect())
             });
-            let mut ring = keys.ring.lock().expect("ring");
+            let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             for channel in channels {
                 ring.unpin_policy(channel);
             }
@@ -821,13 +860,13 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return Vec::new();
         };
-        let ring = keys.ring.lock().expect("ring");
+        let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         ring.pins.saved.iter().rev().cloned().collect()
     }
 
     pub fn is_saved(&self, inst: &str, message: Id) -> bool {
         self.account_keys(inst).is_some_and(|keys| {
-            let ring = keys.ring.lock().expect("ring");
+            let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             ring.pins.saved.iter().any(|s| s.message == message)
         })
     }
@@ -838,7 +877,7 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return false;
         };
-        let mut ring = keys.ring.lock().expect("ring");
+        let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         ring.pins.saved.retain(|s| s.message != message);
         if let Some(saved) = saved {
             ring.pins.saved.push(saved);
@@ -852,7 +891,7 @@ impl Core {
     /// What was being written in a conversation.
     pub fn draft(&self, inst: &str, channel: Id) -> Option<String> {
         let keys = self.account_keys(inst)?;
-        let ring = keys.ring.lock().expect("ring");
+        let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         ring.pins.drafts.get(&channel).cloned()
     }
 
@@ -861,7 +900,7 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return;
         };
-        let mut ring = keys.ring.lock().expect("ring");
+        let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         let changed = if text.trim().is_empty() {
             ring.pins.drafts.remove(&channel).is_some()
         } else if ring.pins.drafts.get(&channel).map(String::as_str) == Some(text) {
@@ -895,7 +934,7 @@ impl Core {
                         })
                         .collect()
                 });
-            let mut ring = keys.ring.lock().expect("ring");
+            let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             if ring.pins.outbox != waiting {
                 ring.pins.outbox = waiting;
                 ring.save();
@@ -909,7 +948,7 @@ impl Core {
             return;
         };
         let waiting = {
-            let mut ring = keys.ring.lock().expect("ring");
+            let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             let waiting = std::mem::take(&mut ring.pins.outbox);
             if !waiting.is_empty() {
                 ring.save();
@@ -931,7 +970,7 @@ impl Core {
     /// My note on someone.
     pub fn note(&self, inst: &str, user: Id) -> Option<String> {
         let keys = self.account_keys(inst)?;
-        let ring = keys.ring.lock().expect("ring");
+        let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         ring.pins.notes.get(&user).cloned()
     }
 
@@ -939,7 +978,7 @@ impl Core {
         let Some(keys) = self.account_keys(inst) else {
             return;
         };
-        let mut ring = keys.ring.lock().expect("ring");
+        let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         if text.trim().is_empty() {
             ring.pins.notes.remove(&user);
         } else {
@@ -951,7 +990,7 @@ impl Core {
     /// The name I gave someone, shown only to me.
     pub fn local_name(&self, inst: &str, user: Id) -> Option<String> {
         let keys = self.account_keys(inst)?;
-        let ring = keys.ring.lock().expect("ring");
+        let ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
         ring.pins.local_names.get(&user).cloned()
     }
 
@@ -960,7 +999,7 @@ impl Core {
             return;
         };
         {
-            let mut ring = keys.ring.lock().expect("ring");
+            let mut ring = keys.ring.lock().unwrap_or_else(PoisonError::into_inner);
             if name.trim().is_empty() {
                 ring.pins.local_names.remove(&user);
             } else {
@@ -979,7 +1018,7 @@ impl Core {
         let names: HashMap<Id, String> = keys
             .ring
             .lock()
-            .expect("ring")
+            .unwrap_or_else(PoisonError::into_inner)
             .pins
             .local_names
             .iter()
@@ -1003,7 +1042,10 @@ impl Core {
             .set_channel_key_policy(channel, policy)
             .await?;
         if let Some(keys) = self.account_keys(inst) {
-            keys.ring.lock().expect("ring").unpin_policy(channel);
+            keys.ring
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unpin_policy(channel);
         }
         Ok(())
     }

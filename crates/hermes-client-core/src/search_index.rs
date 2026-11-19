@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use hermes_proto::api::{HistoryQuery, SearchQuery, SearchResponse, SearchSort};
@@ -284,7 +285,10 @@ impl Core {
     /// Empties this device's search index for an instance; it fills up again by itself.
     pub fn clear_search_index(&self, inst: &str) {
         if let Some(keys) = self.account_keys(inst) {
-            keys.index.lock().expect("index").wipe();
+            keys.index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .wipe();
         }
     }
 
@@ -296,18 +300,24 @@ impl Core {
             text.push_str(&attachment.filename);
         }
         let words = words_of(&text);
-        keys.index.lock().expect("index").apply(Pending::Add {
-            id: message.id,
-            channel: message.channel_id,
-            author: message.author.id,
-            words,
-        });
+        keys.index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .apply(Pending::Add {
+                id: message.id,
+                channel: message.channel_id,
+                author: message.author.id,
+                words,
+            });
     }
 
     /// A message was deleted.
     pub(crate) fn index_remove(&self, inst: &str, id: Id) {
         if let Some(keys) = self.account_keys(inst) {
-            keys.index.lock().expect("index").apply(Pending::Remove(id));
+            keys.index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .apply(Pending::Remove(id));
         }
     }
 
@@ -433,7 +443,7 @@ impl Core {
             let core = self.clone();
             let inst = inst.to_owned();
             tokio::task::spawn_blocking(move || {
-                let mut index = keys.index.lock().expect("index");
+                let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
                 let data = index.load();
                 // No words, only filters: every message noted here, newest first.
                 let ids = if q.q.trim().is_empty() {
@@ -471,7 +481,10 @@ impl Core {
         let (keys, _) = (keys.clone(), ());
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(IDLE_MS as u64 + 1000)).await;
-            keys.index.lock().expect("index").unload_if_idle();
+            keys.index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unload_if_idle();
         });
         found
     }
@@ -479,7 +492,7 @@ impl Core {
     /// Starts the slow pass over the history, once per connection.
     pub(crate) fn start_index_sync(&self, inst: &str, keys: &Arc<AccountKeys>) {
         {
-            let mut index = keys.index.lock().expect("index");
+            let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
             if index.syncing {
                 return;
             }
@@ -495,13 +508,19 @@ impl Core {
     /// Reads every encrypted channel's history it has not seen yet, a page at a time.
     pub async fn index_history(&self, inst: &str) {
         if let Some(keys) = self.account_keys(inst) {
-            keys.index.lock().expect("index").syncing = true;
+            keys.index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .syncing = true;
             self.sync_search_index(inst, &keys).await;
         }
     }
 
     async fn sync_search_index(&self, inst: &str, keys: &Arc<AccountKeys>) {
-        keys.index.lock().expect("index").load();
+        keys.index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .load();
         let channels: Vec<Id> = {
             let store = self.store();
             store.instance(inst).map_or_else(Vec::new, |s| {
@@ -519,7 +538,7 @@ impl Core {
                 tracing::debug!("could not index channel {channel}: {err}");
             }
         }
-        let mut index = keys.index.lock().expect("index");
+        let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
         index.save();
         index.syncing = false;
         index.unload_if_idle();
@@ -533,7 +552,7 @@ impl Core {
     ) -> crate::core::Result<()> {
         let rest = self.rest(inst)?;
         let progress = |keys: &AccountKeys| -> Progress {
-            let mut index = keys.index.lock().expect("index");
+            let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
             index
                 .load()
                 .progress
@@ -577,7 +596,7 @@ impl Core {
             };
             let page = self.index_page(&rest, inst, channel, query).await?;
             if page < SYNC_PAGE as usize {
-                let mut index = keys.index.lock().expect("index");
+                let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
                 index.load().progress.entry(channel).or_default().complete = true;
                 index.dirty = true;
                 break;
@@ -585,7 +604,10 @@ impl Core {
             // Writing the whole index is the slow part, so not after every page.
             pages += 1;
             if pages % SAVE_EVERY_PAGES == 0 {
-                keys.index.lock().expect("index").save();
+                keys.index
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .save();
             }
             tokio::time::sleep(SYNC_PAUSE).await;
         }
@@ -609,7 +631,7 @@ impl Core {
         };
         self.open_messages(inst, &mut page).await;
         if let Some(keys) = self.account_keys(inst) {
-            let mut index = keys.index.lock().expect("index");
+            let mut index = keys.index.lock().unwrap_or_else(PoisonError::into_inner);
             let at = index.load().progress.entry(channel).or_default();
             at.newest = at.newest.max(Some(newest));
             at.oldest = Some(at.oldest.map_or(oldest, |have| have.min(oldest)));

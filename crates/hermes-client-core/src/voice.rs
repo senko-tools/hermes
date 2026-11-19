@@ -215,7 +215,10 @@ impl Voice {
                     let conn = lock(&link).clone();
                     if let Some(conn) = conn {
                         // Nothing leaves in clear: without a key yet, the packet is dropped.
-                        let sealed = crypto.lock().expect("voice crypto").seal_audio(&datagram);
+                        let sealed = crypto
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .seal_audio(&datagram);
                         if let Some(sealed) = sealed {
                             // Never blocks; a full buffer drops the packet.
                             let _ = conn.send_datagram(sealed.into());
@@ -441,7 +444,11 @@ impl Core {
             )
         };
         let keys = self.account_keys(&inst)?;
-        let crypto = self.voice().crypto.lock().expect("voice crypto");
+        let crypto = self
+            .voice()
+            .crypto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let ready = settled && crypto.has_key();
         let mut waiting: Vec<Id> = participants
             .iter()
@@ -1079,7 +1086,7 @@ impl Core {
                     // The guard is a temporary of this statement alone: not held while the
                     // packet is handed on below (nor nested with the state lock).
                     Ok(data) => {
-                        let opened = self.voice().crypto.lock().expect("voice crypto").open_audio(&data);
+                        let opened = self.voice().crypto.lock().unwrap_or_else(PoisonError::into_inner).open_audio(&data);
                         match opened {
                         Some((AudioKind::Voice, sender, plain)) => {
                             self.voice().engine.receive(sender, plain);
@@ -1170,7 +1177,11 @@ impl Core {
             s.inst.clone()
         });
         if me.is_some() {
-            self.voice().crypto.lock().expect("voice crypto").reset();
+            self.voice()
+                .crypto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .reset();
         }
         let Some(inst) = me else {
             return;
@@ -1242,7 +1253,7 @@ impl Core {
         self.voice()
             .crypto
             .lock()
-            .expect("voice crypto")
+            .unwrap_or_else(PoisonError::into_inner)
             .remove_participant(participant_id);
         if let Some(Some((inst, user))) = left {
             self.set_speaking(inst, user, false);
@@ -1290,7 +1301,11 @@ impl Core {
             targets.sort_unstable();
             targets
         };
-        let revision = keys.directory.lock().expect("directory").revision();
+        let revision = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revision();
         if keyed_for.as_ref() == Some(&(targets.clone(), revision)) {
             return;
         }
@@ -1325,9 +1340,17 @@ impl Core {
             });
             return;
         }
-        let revision = keys.directory.lock().expect("directory").revision();
+        let revision = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revision();
         let (key_generation, seed, first) = {
-            let mut crypto = self.voice().crypto.lock().expect("voice crypto");
+            let mut crypto = self
+                .voice()
+                .crypto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let first = !crypto.has_key();
             let (key_generation, seed) = crypto.new_key();
             (key_generation, seed, first)
@@ -1337,7 +1360,7 @@ impl Core {
             let devices = keys
                 .directory
                 .lock()
-                .expect("directory")
+                .unwrap_or_else(PoisonError::into_inner)
                 .live_devices(*user);
             if devices.is_empty() {
                 no_keys.push(*user);
@@ -1387,7 +1410,7 @@ impl Core {
             self.voice()
                 .crypto
                 .lock()
-                .expect("voice crypto")
+                .unwrap_or_else(PoisonError::into_inner)
                 .use_key(key_generation, &seed);
             self.emit(CoreEvent::ScreenShares);
         }
@@ -1414,7 +1437,7 @@ impl Core {
         let known = keys
             .directory
             .lock()
-            .expect("directory")
+            .unwrap_or_else(PoisonError::into_inner)
             .device(sender, &key.device)
             .cloned();
         let device = match known {
@@ -1423,7 +1446,7 @@ impl Core {
                 let _ = self.fetch_devices(&inst, &keys, &[sender], 0).await;
                 keys.directory
                     .lock()
-                    .expect("directory")
+                    .unwrap_or_else(PoisonError::into_inner)
                     .device(sender, &key.device)
                     .cloned()
             }
@@ -1437,7 +1460,7 @@ impl Core {
                 self.voice()
                     .crypto
                     .lock()
-                    .expect("voice crypto")
+                    .unwrap_or_else(PoisonError::into_inner)
                     .add_received(from, key.generation, &seed);
                 // The picture could not be read until now.
                 if watching {
@@ -1534,7 +1557,7 @@ impl Core {
                 .session
                 .as_mut()
                 .filter(|s| s.connected_once)
-                .ok_or_else(|| CoreError::Io("Join a voice channel first".into()))?;
+                .ok_or_else(|| CoreError::Refused("Join a voice channel first".into()))?;
             session.my_share = true;
             session.my_watchers = None;
             session.control.clone()
@@ -1703,7 +1726,7 @@ impl Core {
             .voice()
             .crypto
             .lock()
-            .expect("voice crypto")
+            .unwrap_or_else(PoisonError::into_inner)
             .seal_audio(&datagram);
         if let Some(sealed) = sealed {
             let _ = conn.send_datagram(sealed.into());
@@ -1732,7 +1755,7 @@ impl Core {
             .voice()
             .crypto
             .lock()
-            .expect("voice crypto")
+            .unwrap_or_else(PoisonError::into_inner)
             .seal_video(&header.encode(), &frame.data);
         // Nothing leaves in clear.
         let Some(data) = sealed else {
@@ -1801,7 +1824,7 @@ impl Core {
                     self.voice()
                         .crypto
                         .lock()
-                        .expect("voice crypto")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .open_video(header.sender_id, clear, &data[voice::VIDEO_HEADER_LEN..])
                 });
             let Some(opened) = opened else {

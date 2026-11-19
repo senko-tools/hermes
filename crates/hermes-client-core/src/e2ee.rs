@@ -1555,7 +1555,7 @@ impl VoiceCrypto {
         counter[2..].copy_from_slice(&prefix[1..]);
         self.seen
             .lock()
-            .expect("replay windows")
+            .unwrap_or_else(PoisonError::into_inner)
             .entry((sender, prefix[0], stream as u8))
             .or_default()
             .accept(u64::from_be_bytes(counter))

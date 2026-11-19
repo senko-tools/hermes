@@ -61,7 +61,11 @@ impl TokenStore {
                 }
             }
             TokenStore::File(path) => Ok(read_file(path).remove(&account)),
-            TokenStore::Memory(map) => Ok(map.lock().expect("token lock").get(&account).cloned()),
+            TokenStore::Memory(map) => Ok(map
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&account)
+                .cloned()),
             #[cfg(test)]
             TokenStore::Failing => Err("the credential store is locked".to_owned()),
         }
@@ -108,7 +112,9 @@ impl TokenStore {
             }
             TokenStore::File(path) => remove_from_file(path, &account),
             TokenStore::Memory(map) => {
-                map.lock().expect("token lock").remove(&account);
+                map.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&account);
                 Ok(())
             }
             #[cfg(test)]
