@@ -36,8 +36,8 @@ pub mod voice;
 pub mod volumes;
 
 pub use crate::core::{
-    CertStatus, Core, CoreError, CoreEvent, CoreEvents, CoreOptions, Draft, InstanceId, MAX_QUEUED,
-    Probe, Store, StoreRef, content_type, now_ms, uuid_v4,
+    CertStatus, Core, CoreError, CoreEvent, CoreEvents, CoreOptions, DEFAULT_CHANNEL_STATE_MAX_AGE,
+    Draft, InstanceId, MAX_QUEUED, Probe, Store, StoreRef, content_type, now_ms, uuid_v4,
 };
 pub use hermes_audio as audio;
 pub use hermes_proto as proto;

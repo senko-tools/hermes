@@ -46,8 +46,15 @@ async fn start_with(name: &str, encrypted_channels: bool) -> TestServer {
     }
 }
 
+/// What clients remember of a channel's keys, short so tests can wait it out.
+const CHANNEL_STATE_MAX_AGE: Duration = Duration::from_secs(2);
+
 fn core() -> (Core, CoreEvents) {
-    Core::new(Default::default(), CoreOptions::in_memory("hermes-test"))
+    let options = CoreOptions {
+        channel_state_max_age: CHANNEL_STATE_MAX_AGE,
+        ..CoreOptions::in_memory("hermes-test")
+    };
+    Core::new(Default::default(), options)
 }
 
 /// Waits for an event matching `f`, skipping others.
@@ -1118,7 +1125,7 @@ async fn someone_who_leaves_loses_the_keys_of_what_comes_after() {
 
     alice.rest(&a).unwrap().kick(space, bob_id).await.unwrap();
     // Past what clients remember of the channel's keys.
-    tokio::time::sleep(Duration::from_millis(16_000)).await;
+    tokio::time::sleep(CHANNEL_STATE_MAX_AGE + Duration::from_millis(500)).await;
     say(&alice, &a, channel, "without bob").await;
     let raw = alice
         .rest(&a)

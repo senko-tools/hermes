@@ -25,8 +25,6 @@ use crate::secure::{AccountKeys, DEVICES_MAX_AGE_MS};
 use crate::store::{Changed, HistoryAnchor};
 use crate::view;
 
-/// What the server said about a channel's keys is used for this long.
-const STATE_MAX_AGE_MS: i64 = 15_000;
 /// A device asks for a channel's keys at most this often.
 const REQUEST_EVERY_MS: i64 = 30_000;
 /// How long a member waits, at most, before serving a request: others may be quicker.
@@ -515,7 +513,7 @@ impl Core {
         channel: Id,
     ) -> Result<(u32, Zeroizing<[u8; 32]>)> {
         let mut state = self
-            .channel_state(inst, keys, channel, STATE_MAX_AGE_MS)
+            .channel_state(inst, keys, channel, self.inner.channel_state_max_age_ms)
             .await?;
         self.refuse_rollback(inst, keys, channel, state).await?;
         if state.current == 0 || state.rotate_needed {
@@ -546,7 +544,7 @@ impl Core {
             return Some(key);
         }
         let _ = self
-            .channel_state(inst, keys, channel, STATE_MAX_AGE_MS)
+            .channel_state(inst, keys, channel, self.inner.channel_state_max_age_ms)
             .await;
         let key = keys.ring.lock().expect("ring").get(channel, epoch);
         if key.is_none() {

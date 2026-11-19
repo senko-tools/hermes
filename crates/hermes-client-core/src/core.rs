@@ -268,7 +268,13 @@ pub struct CoreOptions {
     pub user_volumes: UserVolumes,
     /// The audio devices, or a virtual device (voicebot, tests).
     pub audio: Io,
+    /// How long what the server said about a channel's keys is used before asking again.
+    /// [`DEFAULT_CHANNEL_STATE_MAX_AGE`] except in tests that wait it out.
+    pub channel_state_max_age: Duration,
 }
+
+/// [`CoreOptions::channel_state_max_age`] outside tests.
+pub const DEFAULT_CHANNEL_STATE_MAX_AGE: Duration = Duration::from_secs(15);
 
 impl fmt::Debug for CoreOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -294,6 +300,7 @@ impl CoreOptions {
             user_volumes: UserVolumes::load(&paths.user_volumes()),
             audio: Io::Devices,
             paths: Some(paths),
+            channel_state_max_age: DEFAULT_CHANNEL_STATE_MAX_AGE,
         })
     }
 
@@ -306,6 +313,7 @@ impl CoreOptions {
             known_hosts: KnownHosts::in_memory(),
             user_volumes: UserVolumes::in_memory(),
             audio: Io::Devices,
+            channel_state_max_age: DEFAULT_CHANNEL_STATE_MAX_AGE,
         }
     }
 }
@@ -417,6 +425,8 @@ pub(crate) struct Inner {
     pub(crate) accounts: crate::secure::Accounts,
     /// What I have read, kept on this device while syncing read marks is off.
     local_reads: Mutex<LocalReadMarks>,
+    /// [`CoreOptions::channel_state_max_age`], in milliseconds.
+    pub(crate) channel_state_max_age_ms: i64,
 }
 
 /// The client core. Cheap to clone. Must be created inside a tokio runtime.
@@ -528,6 +538,8 @@ impl Core {
         let core = Core {
             inner: Arc::new(Inner {
                 local_reads: Mutex::new(local_reads),
+                channel_state_max_age_ms: i64::try_from(options.channel_state_max_age.as_millis())
+                    .unwrap_or(i64::MAX),
                 client_name: options.client_name,
                 paths: options.paths,
                 config: RwLock::new(config),
