@@ -136,6 +136,61 @@ pub fn nav_item(
         .child(label)
 }
 
+/// A small square button holding an icon. Under the pointer a soft background fades in behind
+/// the icon and the icon turns accent. The caller adds what a click does.
+pub fn icon_button(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    glyph: &'static str,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id = id.into();
+    let hover = SharedString::from(format!("{id:?}-hover"));
+    let to = if shell.is_hovered(&hover) { 1. } else { 0. };
+    // Its own layer, so a background the caller sets (a scrim over video) stays.
+    let face = div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme::radius_small())
+        .with_spring(
+            SharedString::from(format!("{id:?}-face")),
+            spring(to),
+            move |d, t| {
+                let t = t.clamp(0., 1.);
+                d.bg(theme::alpha(theme::hover(), t)).child(icon(
+                    glyph,
+                    18.,
+                    theme::mix(theme::text_secondary(), theme::accent(), t),
+                ))
+            },
+        );
+    div()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
+        .size(px(28.))
+        .rounded(theme::radius_small())
+        .cursor_pointer()
+        .on_hover(shell.track_hover(hover, cx))
+        .child(face)
+}
+
+/// [`icon_button`] that says what it does when hovered.
+pub fn tip_button(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    glyph: &'static str,
+    tip: &'static str,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    icon_button(shell, id, glyph, cx).tooltip(move |window, cx| {
+        gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     /// gpui's `.hover` keeps a stale state for a text colour whose hover style comes and goes

@@ -361,23 +361,27 @@ impl Shell {
         let element_id = SharedString::from(format!("person-{inst}-{id}-{}", kind_key(kind)));
         let target = Target::Member(inst.clone(), None, id);
         let mut buttons: Vec<AnyElement> = Vec::new();
-        let action_button = |key: &str,
-                             glyph: &'static str,
-                             action: Action,
-                             cx: &mut Context<Self>| {
-            let inst = inst.clone();
-            let tip = match key {
-                "accept" => "Accept",
-                "decline" => "Decline",
-                _ => "Cancel",
-            };
-            crate::channel::tip_button(SharedString::from(format!("friend-{key}-{id}")), glyph, tip)
+        let action_button =
+            |key: &str, glyph: &'static str, action: Action, cx: &mut Context<Self>| {
+                let inst = inst.clone();
+                let tip = match key {
+                    "accept" => "Accept",
+                    "decline" => "Decline",
+                    _ => "Cancel",
+                };
+                crate::ui::tip_button(
+                    self,
+                    SharedString::from(format!("friend-{key}-{id}")),
+                    glyph,
+                    tip,
+                    cx,
+                )
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.run_action(Target::Member(inst.clone(), None, id), action, window, cx);
                 }))
                 .into_any_element()
-        };
+            };
         match kind {
             LineKind::Incoming => {
                 buttons.push(action_button(

@@ -854,11 +854,17 @@ impl Shell {
                         )
                         .children(ranges)
                         .child(
-                            crate::channel::tip_button("network-close", assets::CLOSE, "Close")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.close_later("network-in", |s| s.network_open = None, cx);
-                                    cx.notify();
-                                })),
+                            crate::ui::tip_button(
+                                self,
+                                "network-close",
+                                assets::CLOSE,
+                                "Close",
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_later("network-in", |s| s.network_open = None, cx);
+                                cx.notify();
+                            })),
                         ),
                 )
                 .child(div().flex().gap(px(6.)).children(tiles))
@@ -1344,10 +1350,12 @@ impl Shell {
                             .child({
                                 let key = share_key.clone();
                                 let title = format!("{}'s screen", p.name);
-                                crate::channel::tip_button(
+                                crate::ui::tip_button(
+                                    self,
                                     SharedString::from(format!("pop-out-{}", p.user)),
                                     assets::media_icons::FULLSCREEN,
                                     "Open in its own window",
+                                    cx,
                                 )
                                 .bg(theme::scrim())
                                 .on_click(cx.listener(
@@ -1358,10 +1366,12 @@ impl Shell {
                                 ))
                             })
                             .child(
-                                crate::channel::tip_button(
+                                crate::ui::tip_button(
+                                    self,
                                     SharedString::from(format!("stop-watching-{}", p.user)),
                                     assets::CLOSE,
                                     "Stop watching",
+                                    cx,
                                 )
                                 .bg(theme::scrim())
                                 .on_click(cx.listener(

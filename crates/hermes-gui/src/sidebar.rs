@@ -1403,10 +1403,12 @@ impl Shell {
                     .child(avatar)
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     .child(
-                        crate::channel::tip_button(
+                        crate::ui::tip_button(
+                            self,
                             SharedString::from(format!("request-accept-{id}")),
                             assets::CHECK,
                             "Accept",
+                            cx,
                         )
                         .on_click(cx.listener(
                             move |this, _, window, cx| {

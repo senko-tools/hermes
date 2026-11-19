@@ -1411,7 +1411,7 @@ impl Shell {
             })
             .collect();
         let create = can_manage.then(|| {
-            crate::channel::tip_button("role-create", assets::PLUS, "Create a role")
+            crate::ui::tip_button(self, "role-create", assets::PLUS, "Create a role", cx)
                 .on_click(cx.listener(|this, _, _, cx| this.create_role(cx)))
                 .into_any_element()
         });
@@ -1673,22 +1673,30 @@ impl Shell {
                 .flex()
                 .gap(px(2.))
                 .child(
-                    crate::channel::tip_button("channel-create", assets::PLUS, "Create a channel")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_form_create_channel(
-                                channel_inst.clone(),
-                                space,
-                                None,
-                                window,
-                                cx,
-                            );
-                        })),
+                    crate::ui::tip_button(
+                        self,
+                        "channel-create",
+                        assets::PLUS,
+                        "Create a channel",
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_form_create_channel(
+                            channel_inst.clone(),
+                            space,
+                            None,
+                            window,
+                            cx,
+                        );
+                    })),
                 )
                 .child(
-                    crate::channel::tip_button(
+                    crate::ui::tip_button(
+                        self,
                         "category-create",
                         assets::FOLDER_PLUS,
                         "Create a category",
+                        cx,
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_form_create_category(category_inst.clone(), space, window, cx);

@@ -578,7 +578,7 @@ impl Shell {
                     .child("Share your screen"),
             )
             .child(
-                crate::channel::tip_button("share-close", assets::CLOSE, "Close").on_click(
+                crate::ui::tip_button(self, "share-close", assets::CLOSE, "Close", cx).on_click(
                     cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
                         this.close_share_picker(cx);

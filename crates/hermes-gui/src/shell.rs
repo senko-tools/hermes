@@ -1142,7 +1142,7 @@ impl Shell {
             // A voice channel's own chat.
             let (inst, channel) = (inst.clone(), *channel);
             controls.push(
-                crate::channel::tip_button("header-chat", assets::CHAT, "Open the chat")
+                crate::ui::tip_button(self, "header-chat", assets::CHAT, "Open the chat", cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_chat(inst.clone(), channel, window, cx);
                     }))
@@ -1153,10 +1153,12 @@ impl Shell {
             if self.core.channel_is_private(&inst, channel) {
                 let keys_inst = inst.clone();
                 controls.push(
-                    crate::channel::tip_button(
+                    crate::ui::tip_button(
+                        self,
                         "header-keys",
                         assets::LOCK,
                         "End-to-end encrypted: compare safety numbers",
+                        cx,
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.open_keys_dialog(keys_inst.clone(), channel, cx);
@@ -1167,14 +1169,14 @@ impl Shell {
             let (pins_inst, search_inst) = (inst.clone(), inst);
             let date_inst = search_inst.clone();
             controls.push(
-                crate::channel::tip_button("header-pins", assets::PIN, "Pinned messages")
+                crate::ui::tip_button(self, "header-pins", assets::PIN, "Pinned messages", cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_results(Key::Pins(pins_inst.clone(), channel), window, cx);
                     }))
                     .into_any_element(),
             );
             controls.push(
-                crate::channel::tip_button("header-members", assets::USERS, "Member list")
+                crate::ui::tip_button(self, "header-members", assets::USERS, "Member list", cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.toggle_members(cx);
                     }))
@@ -1190,14 +1192,14 @@ impl Shell {
                     .into_any_element(),
             );
             controls.push(
-                crate::channel::tip_button("header-search", assets::SEARCH, "Search")
+                crate::ui::tip_button(self, "header-search", assets::SEARCH, "Search", cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.search_from(search_inst.clone(), channel, window, cx);
                     }))
                     .into_any_element(),
             );
             controls.push(
-                crate::channel::tip_button("header-date", assets::CALENDAR, "Jump to a date")
+                crate::ui::tip_button(self, "header-date", assets::CALENDAR, "Jump to a date", cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_form_jump_to_date(date_inst.clone(), channel, window, cx);
                     }))
@@ -1205,14 +1207,14 @@ impl Shell {
             );
         }
         controls.push(
-            crate::channel::tip_button("header-mentions", assets::AT, "Mentions")
+            crate::ui::tip_button(self, "header-mentions", assets::AT, "Mentions", cx)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_results(Key::Mentions, window, cx);
                 }))
                 .into_any_element(),
         );
         controls.push(
-            crate::channel::tip_button("header-saved", assets::BOOKMARK, "Saved messages")
+            crate::ui::tip_button(self, "header-saved", assets::BOOKMARK, "Saved messages", cx)
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_results(Key::Saved, window, cx);
                 }))
@@ -1274,7 +1276,7 @@ impl Shell {
                 .child(icon(glyph, 16., color))
                 .child(div().flex_1().min_w_0().child(status.text.clone()))
                 .child(
-                    crate::channel::tip_button("status-dismiss", assets::CLOSE, "Dismiss")
+                    crate::ui::tip_button(self, "status-dismiss", assets::CLOSE, "Dismiss", cx)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.close_later("status", |s| s.status = None, cx);
                         })),
@@ -1410,7 +1412,7 @@ impl Shell {
                 .py(px(6.))
                 .bg(theme::accent_soft())
                 .child(
-                    crate::channel::tip_button("update-dismiss", assets::CLOSE, "Not now")
+                    crate::ui::tip_button(self, "update-dismiss", assets::CLOSE, "Not now", cx)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.update = None;
                             cx.notify();
@@ -1461,11 +1463,17 @@ impl Shell {
                 .py(px(6.))
                 .bg(theme::accent_soft())
                 .child(
-                    crate::channel::tip_button("newer-server-dismiss", assets::CLOSE, "Not now")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.newer_server_dismissed = true;
-                            cx.notify();
-                        })),
+                    crate::ui::tip_button(
+                        self,
+                        "newer-server-dismiss",
+                        assets::CLOSE,
+                        "Not now",
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.newer_server_dismissed = true;
+                        cx.notify();
+                    })),
                 )
                 .cursor_pointer()
                 .hover(|d| d.text_color(theme::accent()))

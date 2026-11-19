@@ -1803,10 +1803,12 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let (inst, attachment) = (inst.clone(), a.clone());
-        tip_button(
+        crate::ui::tip_button(
+            self,
             SharedString::from(format!("file-download-{}", a.id)),
             assets::DOWNLOAD,
             "Download",
+            cx,
         )
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
@@ -1966,8 +1968,15 @@ impl Shell {
                                     .child(viewer.attachment.filename.clone()),
                             )
                             .child(
-                                tip_button("viewer-download", assets::DOWNLOAD, "Download")
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                crate::ui::tip_button(
+                                    self,
+                                    "viewer-download",
+                                    assets::DOWNLOAD,
+                                    "Download",
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         cx.stop_propagation();
                                         if let Some(viewer) = &this.viewer {
                                             this.download(
@@ -1976,14 +1985,24 @@ impl Shell {
                                                 cx,
                                             );
                                         }
-                                    })),
+                                    },
+                                )),
                             )
-                            .child(tip_button("viewer-close", assets::CLOSE, "Close").on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.viewer = None;
-                                    cx.notify();
-                                }),
-                            )),
+                            .child(
+                                crate::ui::tip_button(
+                                    self,
+                                    "viewer-close",
+                                    assets::CLOSE,
+                                    "Close",
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.viewer = None;
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
                     )
                     .child({
                         let record = layout.clone();
@@ -2739,11 +2758,10 @@ impl Shell {
                         .child(text),
                 )
                 .child(
-                    tip_button("composer-cancel", assets::CLOSE, "Cancel").on_click(cx.listener(
-                        move |this, _, window, cx| {
+                    crate::ui::tip_button(self, "composer-cancel", assets::CLOSE, "Cancel", cx)
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             this.composer_cancel(&cancel_key, window, cx);
-                        },
-                    )),
+                        })),
                 )
                 // It opens out of the message box instead of pushing it at once.
                 .overflow_hidden()
@@ -2799,13 +2817,19 @@ impl Shell {
                 .child(div().max_w(px(240.)).truncate().child(upload.name.clone()))
                 .child(state)
                 .child(
-                    tip_button(("upload-remove", local as usize), assets::CLOSE, "Remove")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(view) = this.chats.get_mut(&remove) {
-                                view.uploads.retain(|u| u.local != local);
-                            }
-                            cx.notify();
-                        })),
+                    crate::ui::tip_button(
+                        self,
+                        ("upload-remove", local as usize),
+                        assets::CLOSE,
+                        "Remove",
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(view) = this.chats.get_mut(&remove) {
+                            view.uploads.retain(|u| u.local != local);
+                        }
+                        cx.notify();
+                    })),
                 )
         });
         let uploads = (!view.uploads.is_empty()).then(|| {
@@ -2889,7 +2913,7 @@ impl Shell {
                             .items_center()
                             .gap(px(4.))
                             .child(
-                                icon_button("composer-attach", assets::ATTACH)
+                                crate::ui::icon_button(self, "composer-attach", assets::ATTACH, cx)
                                     .tooltip(move |window, cx| {
                                         gpui_kit::component::tooltip::Tooltip::new(
                                             attach_tip.clone(),
@@ -2903,7 +2927,7 @@ impl Shell {
                             .child(div().flex_1().min_w_0().child(input))
                             .children(counter)
                             .child(
-                                icon_button("composer-preview", assets::EYE)
+                                crate::ui::icon_button(self, "composer-preview", assets::EYE, cx)
                                     .when(preview_on, |d| d.bg(theme::selected()))
                                     .tooltip(move |window, cx| {
                                         gpui_kit::component::tooltip::Tooltip::new(if preview_on {
@@ -2922,7 +2946,7 @@ impl Shell {
                             )
                             .child({
                                 let key = emoji_key.clone();
-                                icon_button("composer-emoji", assets::EMOJI)
+                                crate::ui::icon_button(self, "composer-emoji", assets::EMOJI, cx)
                                     .tooltip(|window, cx| {
                                         gpui_kit::component::tooltip::Tooltip::new("Emoji")
                                             .build(window, cx)
@@ -3699,7 +3723,7 @@ impl Shell {
             .occlude()
             .children(buttons)
             .child(
-                tip_button("palette-close", assets::CLOSE, "Close")
+                crate::ui::tip_button(self, "palette-close", assets::CLOSE, "Close", cx)
                     // Like the reactions beside it.
                     .size(px(30.))
                     .hover(|d| d.bg(theme::hover()))
@@ -4403,40 +4427,6 @@ fn new_messages_divider() -> AnyElement {
         .into_any_element()
 }
 
-/// [`icon_button`] that says what it does when hovered.
-pub fn tip_button(
-    id: impl Into<gpui_kit::ElementId>,
-    name: &'static str,
-    tip: &'static str,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    icon_button(id, name).tooltip(move |window, cx| {
-        gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx)
-    })
-}
-
-/// A small square button holding an icon. The caller adds what a click does.
-pub fn icon_button(
-    id: impl Into<gpui_kit::ElementId>,
-    name: &'static str,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(id.into())
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .size(px(28.))
-        .rounded(theme::radius_small())
-        .cursor_pointer()
-        .group(ICON_BUTTON)
-        .child(
-            icon(name, 18., theme::text_secondary())
-                .group_hover(ICON_BUTTON, |s| s.text_color(theme::accent())),
-        )
-}
-
-/// The hover group of [`icon_button`]: the innermost one wins, so one name serves them all.
-const ICON_BUTTON: &str = "icon-button";
 /// The hover group of a picture in the chat: its size shows under the mouse.
 const IMAGE_GROUP: &str = "chat-image";
 

@@ -742,10 +742,12 @@ impl Shell {
                     .gap(px(4.))
                     .child(div().flex_1().min_w_0().child(result_row(n, line, cx)))
                     .child(
-                        crate::channel::tip_button(
+                        crate::ui::tip_button(
+                            self,
                             ("saved-remove", n),
                             crate::assets::CLOSE,
                             "Remove from saved",
+                            cx,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.core.set_saved(&remove_inst, message, None);
