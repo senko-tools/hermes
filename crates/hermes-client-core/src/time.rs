@@ -1,6 +1,7 @@
 //! Local time for message timestamps without a date/time crate (shared by the GUI and TUI): the
 //! UTC offset is read once at startup (`date +%z` on unix, `GetTimeZoneInformation` on Windows),
-//! and `[buffer] timestamp_format` supports `%H %M %S %d %m %Y %y %%`.
+//! and `[buffer] timestamp_format` / `date_format` support `%H %I %M %S %p %d %e %m %B %b %A %a
+//! %Y %y %%`.
 
 /// The local UTC offset in seconds (0 if it cannot be determined).
 pub fn local_offset_secs() -> i64 {
@@ -108,6 +109,7 @@ pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
     let (y, mo, d) = civil(secs.div_euclid(86_400));
     let in_day = secs.rem_euclid(86_400);
     let (h, mi, s) = (in_day / 3600, in_day % 3600 / 60, in_day % 60);
+    let days = secs.div_euclid(86_400);
     // Called for every timestamp drawn: write into one buffer instead of a string per field.
     use std::fmt::Write as _;
     let mut out = String::with_capacity(pattern.len() + 8);
@@ -120,6 +122,14 @@ pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
         // Writing into a `String` cannot fail.
         let _ = match chars.next() {
             Some('H') => write!(out, "{h:02}"),
+            Some('I') => write!(out, "{:02}", (h + 11) % 12 + 1),
+            Some('p') => out.write_str(if h < 12 { "AM" } else { "PM" }),
+            Some('e') => write!(out, "{d}"),
+            Some('B') => out.write_str(MONTHS[(mo as usize).clamp(1, 12) - 1]),
+            Some('b') => out.write_str(&MONTHS[(mo as usize).clamp(1, 12) - 1][..3]),
+            // 1970-01-01 was a Thursday.
+            Some('A') => out.write_str(WEEKDAYS[(days + 4).rem_euclid(7) as usize]),
+            Some('a') => out.write_str(&WEEKDAYS[(days + 4).rem_euclid(7) as usize][..3]),
             Some('M') => write!(out, "{mi:02}"),
             Some('S') => write!(out, "{s:02}"),
             Some('d') => write!(out, "{d:02}"),
@@ -189,6 +199,19 @@ mod tests {
         );
         assert_eq!(parse_day("2026-02-30", 0), None);
         assert_eq!(parse_day("yesterday", 0), None);
+    }
+
+    #[test]
+    fn date_and_twelve_hour_tokens() {
+        // 2026-10-31 13:57:05 UTC, a Saturday.
+        let ms = 1_793_455_025_000;
+        assert_eq!(format(ms, "%I:%M %p", 0), "01:57 PM");
+        assert_eq!(format(ms - 13 * 3_600_000, "%I:%M %p", 0), "12:57 AM");
+        assert_eq!(format(ms - 1_800_000, "%I %p", 0), "01 PM");
+        assert_eq!(format(ms, "%A, %e %B %Y", 0), "Saturday, 31 October 2026");
+        assert_eq!(format(ms, "%a %e %b", 3600 * 11), "Sun 1 Nov");
+        assert_eq!(format(ms, "%B %e, %Y", 0), "October 31, 2026");
+        assert_eq!(format(ms, "%d.%m.%Y", 0), "31.10.2026");
     }
 
     #[test]

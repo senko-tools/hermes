@@ -152,6 +152,8 @@ pub struct General {
     pub download_dir: String,
     /// Ask for a place each time something is downloaded.
     pub ask_where_to_save: bool,
+    /// Settings groups shown folded (by key), e.g. the voice processing details.
+    pub folded_settings: Vec<String>,
 }
 
 impl Default for General {
@@ -173,6 +175,7 @@ impl Default for General {
             animate_pictures: true,
             download_dir: String::new(),
             ask_where_to_save: false,
+            folded_settings: vec!["processing".into()],
         }
     }
 }
@@ -239,6 +242,8 @@ impl Default for Sidebar {
 pub struct Buffer {
     pub show_avatars: bool,
     pub timestamp_format: String,
+    /// The date on the dividers between days (same tokens as the time).
+    pub date_format: String,
     pub group_minutes: u32,
     pub enter_sends: bool,
     pub image_previews: bool,
@@ -260,6 +265,7 @@ impl Default for Buffer {
         Buffer {
             show_avatars: true,
             timestamp_format: "%H:%M".into(),
+            date_format: "%B %e, %Y".into(),
             group_minutes: 7,
             enter_sends: true,
             image_previews: true,

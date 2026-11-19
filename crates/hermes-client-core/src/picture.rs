@@ -8,7 +8,12 @@ use image::imageops::{self, FilterType};
 
 /// Whether any pixel is partly or fully see-through.
 fn has_alpha(pixels: &RgbaImage) -> bool {
-    pixels.as_raw().as_chunks::<4>().0.iter().any(|p| p[3] != u8::MAX)
+    pixels
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|p| p[3] != u8::MAX)
 }
 
 /// Weights each pixel's colour by its alpha.
@@ -69,7 +74,9 @@ pub fn fit(pixels: RgbaImage, side: u32, filter: FilterType) -> RgbaImage {
 pub fn has_soft_alpha(pixels: &RgbaImage) -> bool {
     pixels
         .as_raw()
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[3] != 0 && p[3] != u8::MAX)
 }
 
