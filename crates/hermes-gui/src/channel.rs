@@ -2868,7 +2868,7 @@ impl Shell {
         let preview = (self.config.buffer.composer_preview && self.config.buffer.markdown)
             .then(|| view.input.read(cx).value().to_string())
             .filter(|text| !text.trim().is_empty())
-            .map(|text| self.composer_preview(&key, &text));
+            .map(|text| self.composer_preview(key, &text));
         let preview_on = self.config.buffer.composer_preview;
         let shell = cx.entity().downgrade();
         let input = Textarea::new(&view.input)

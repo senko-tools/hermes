@@ -9,7 +9,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
-use hermes_client_core::proto::api::{SearchHas, SearchQuery};
+use hermes_client_core::proto::api::{SearchHas, SearchQuery, SearchSort};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Message as ChatMessage;
 use hermes_client_core::{InstanceId, time, view};
@@ -18,6 +18,10 @@ use crate::shell::{Page, Shell};
 use crate::theme::{self, px};
 
 pub const PAGE: u32 = 25;
+/// How long typing pauses before the search runs by itself.
+const TYPING_PAUSE: std::time::Duration = std::time::Duration::from_millis(350);
+/// How much text is shown around the first match.
+const SNIPPET_CHARS: usize = 220;
 /// How many mentions are loaded per instance.
 const MENTIONS: u32 = 50;
 
@@ -57,6 +61,9 @@ pub struct Items {
     /// All search matches (the list holds the loaded pages).
     pub total: Option<u64>,
     pub loading_more: bool,
+    /// Best matches first: kept in the server's order, later pages by `next_offset`.
+    pub ranked: bool,
+    pub next_offset: u32,
 }
 
 impl Items {
@@ -79,7 +86,9 @@ impl Items {
                 list.push(item);
             }
         }
-        list.sort_by_key(|(_, m)| std::cmp::Reverse(m.created_at()));
+        if !self.ranked {
+            list.sort_by_key(|(_, m)| std::cmp::Reverse(m.created_at()));
+        }
         self.items = Remote::Ready(list);
     }
 }
@@ -89,6 +98,10 @@ pub struct ResultsPage {
     pub list: Items,
     input: Option<Entity<InputState>>,
     _input_events: Option<Subscription>,
+    /// The order a search asks for.
+    sort: SearchSort,
+    /// Counts what was typed: a search waits for a pause in typing.
+    typed: u64,
 }
 
 /// Loaded results and, for a search, the total number of matches.
@@ -105,6 +118,8 @@ struct Filters {
     /// Only messages newer than this.
     after: Option<Id>,
     has: Option<SearchHas>,
+    /// `from:` and `in:` that match nobody here: searched as words, and said so.
+    unresolved: Vec<String>,
 }
 
 impl Filters {
@@ -181,6 +196,9 @@ fn filters(
                 author = Some(user.id);
                 continue;
             }
+            f.unresolved.push(format!(
+                "Nobody called \u{201c}{name}\u{201d} is known here."
+            ));
         } else if let Some(name) = word.strip_prefix("in:") {
             let name = name.trim_start_matches('#').to_lowercase();
             let found = space.and_then(|id| s.spaces.get(&id)).and_then(|state| {
@@ -193,6 +211,11 @@ fn filters(
                 channel = Some(found.id);
                 continue;
             }
+            f.unresolved.push(if space.is_none() {
+                "in: works when searching one server.".to_owned()
+            } else {
+                format!("No channel called \u{201c}{name}\u{201d} here.")
+            });
         }
         rest.push(word);
     }
@@ -210,11 +233,14 @@ impl Shell {
                 let input = cx
                     .new(|cx| InputState::new(window, cx).placeholder("Search messages… (Enter)"));
                 let event_key = key.clone();
-                let events = cx.subscribe_in(&input, window, move |this, _, event, _, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        this.load_results(event_key.clone(), false, cx);
-                    }
-                });
+                let events =
+                    cx.subscribe_in(&input, window, move |this, _, event, _, cx| match event {
+                        InputEvent::PressEnter { .. } => {
+                            this.load_results(event_key.clone(), false, cx);
+                        }
+                        InputEvent::Change => this.search_after_pause(event_key.clone(), cx),
+                        _ => {}
+                    });
                 (Some(input), Some(events))
             } else {
                 (None, None)
@@ -225,6 +251,8 @@ impl Shell {
                     list: Items::default(),
                     input,
                     _input_events: events,
+                    sort: SearchSort::Newest,
+                    typed: 0,
                 },
             );
         }
@@ -240,6 +268,63 @@ impl Shell {
             self.load_results(key, false, cx);
         }
         cx.notify();
+    }
+
+    /// Searches once typing stops for a moment.
+    fn search_after_pause(&mut self, key: Key, cx: &mut Context<Self>) {
+        let Some(page) = self.results.get_mut(&key) else {
+            return;
+        };
+        page.typed += 1;
+        let typed = page.typed;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TYPING_PAUSE).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.results.get(&key).is_some_and(|p| p.typed == typed) {
+                    this.load_results(key, false, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn set_search_sort(&mut self, key: Key, sort: SearchSort, cx: &mut Context<Self>) {
+        let Some(page) = self.results.get_mut(&key) else {
+            return;
+        };
+        if page.sort == sort {
+            return;
+        }
+        page.sort = sort;
+        self.load_results(key, false, cx);
+    }
+
+    /// Puts a suggested filter in place of the one being typed.
+    fn complete_filter(
+        &mut self,
+        key: &Key,
+        filter: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = self.results.get(key).and_then(|p| p.input.clone()) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let kept = text
+            .rsplit_once(char::is_whitespace)
+            .map_or("", |(before, _)| before);
+        let value = if kept.trim().is_empty() {
+            format!("{filter} ")
+        } else {
+            format!("{} {filter} ", kept.trim_end())
+        };
+        input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+            input.focus(window, cx);
+        });
+        self.search_after_pause(key.clone(), cx);
     }
 
     /// Search in the channel's space, or the whole instance for a DM.
@@ -268,6 +353,7 @@ impl Shell {
         let Some(page) = self.results.get_mut(&key) else {
             return;
         };
+        let sort = page.sort;
         let state = &mut page.list;
         if append {
             state.loading_more = true;
@@ -283,7 +369,13 @@ impl Shell {
                     return;
                 }
                 state.searched = query.clone();
-                let before = if append {
+                let ranked = sort == SearchSort::Relevance;
+                let offset = if append { state.next_offset } else { 0 };
+                if !append {
+                    state.ranked = ranked;
+                    state.next_offset = 0;
+                }
+                let before = if append && !ranked {
                     state
                         .items
                         .ready()
@@ -318,6 +410,8 @@ impl Shell {
                     after: f.after,
                     has: f.has,
                     limit: Some(PAGE),
+                    sort: ranked.then_some(SearchSort::Relevance),
+                    offset: (ranked && offset > 0).then_some(offset),
                 };
                 let core = self.core.clone();
                 let done = key.clone();
@@ -404,6 +498,9 @@ impl Shell {
         state.loading_more = false;
         match result {
             Ok((items, total)) => {
+                if state.ranked {
+                    state.next_offset += PAGE;
+                }
                 // Mentions: the first instance's answer replaces "Loading…".
                 let append = append && matches!(state.items, Remote::Ready(_));
                 state.add(append, items);
@@ -483,7 +580,8 @@ impl Shell {
                             ),
                     ),
             )
-            .children(page.input.as_ref().map(|input| Input::new(input).large()));
+            .children(page.input.as_ref().map(|input| Input::new(input).large()))
+            .children(self.search_aids(&key, page, cx));
 
         let mut list: Vec<AnyElement> = Vec::new();
         let muted = |text: String| {
@@ -495,8 +593,8 @@ impl Shell {
         };
         match &state.items {
             Remote::Idle => list.push(muted(if matches!(key, Key::Search(..)) {
-                "Type words to find and press Enter. Every word must appear (as the start of a \
-                 word)."
+                "Type to search: every word must appear somewhere in the message. Narrow it with \
+                 from:, in:, has:, before:, after: or during:."
                     .to_owned()
             } else {
                 "Loading…".to_owned()
@@ -536,7 +634,8 @@ impl Shell {
                         if total == 1 { "" } else { "s" }
                     )));
                 }
-                let lines = self.result_lines(&key, items);
+                let words = search_words(&state.searched);
+                let lines = self.result_lines(&key, items, &words);
                 for (n, line) in lines.into_iter().enumerate() {
                     list.push(result_row(n, line, cx));
                 }
@@ -602,7 +701,126 @@ impl Shell {
         }
     }
 
-    fn result_lines(&self, key: &Key, items: &[(InstanceId, ChatMessage)]) -> Vec<ResultLine> {
+    /// Under the search field: the order, the filters understood, what matched nobody, and
+    /// filters to finish the one being typed.
+    fn search_aids(
+        &self,
+        key: &Key,
+        page: &ResultsPage,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let Key::Search(inst, space) = key else {
+            return None;
+        };
+        let input = page.input.as_ref()?;
+        let typed = input.read(cx).value().to_string();
+        let store = self.core.store();
+        let s = store.instance(inst)?;
+        let ranks = s.has_feature(hermes_client_core::proto::compat::features::SEARCH_RANK);
+        let f = filters(s, &typed, *space, self.utc_offset);
+        let suggestions = filter_suggestions(s, *space, &typed);
+        drop(store);
+
+        let mut row: Vec<AnyElement> = Vec::new();
+        if ranks {
+            for (n, (sort, name)) in [
+                (SearchSort::Newest, "Newest"),
+                (SearchSort::Relevance, "Best match"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let sort_key = key.clone();
+                row.push(
+                    crate::voice::chip(("search-sort", n), name, page.sort == sort)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_search_sort(sort_key.clone(), sort, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+        }
+        // The filters understood, as they were typed.
+        let understood: Vec<String> = typed
+            .split_whitespace()
+            .filter(|w| is_filter_word(w) && !f.words.split_whitespace().any(|kept| kept == *w))
+            .map(str::to_owned)
+            .collect();
+        if !understood.is_empty() && !row.is_empty() {
+            row.push(
+                div()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .bg(theme::border())
+                    .into_any_element(),
+            );
+        }
+        for (n, word) in understood.into_iter().enumerate() {
+            row.push(
+                div()
+                    .id(("search-filter", n))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(theme::radius_small())
+                    .bg(theme::accent_soft())
+                    .text_size(theme::caption_size())
+                    .text_color(theme::accent())
+                    .child(word)
+                    .into_any_element(),
+            );
+        }
+        for (n, suggestion) in suggestions.into_iter().enumerate() {
+            let complete_key = key.clone();
+            let label = suggestion.clone();
+            row.push(
+                div()
+                    .id(("search-suggest", n))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(theme::radius_small())
+                    .border_1()
+                    .border_color(theme::border())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme::hover()).text_color(theme::accent()))
+                    .text_size(theme::caption_size())
+                    .text_color(theme::text_secondary())
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.complete_filter(&complete_key, suggestion.clone(), window, cx);
+                    }))
+                    .into_any_element(),
+            );
+        }
+        let warnings = f.unresolved.into_iter().map(|text| {
+            div()
+                .text_size(theme::caption_size())
+                .text_color(theme::warning())
+                .child(text)
+        });
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(px(6.))
+                        .children(row),
+                )
+                .children(warnings)
+                .into_any_element(),
+        )
+    }
+
+    fn result_lines(
+        &self,
+        key: &Key,
+        items: &[(InstanceId, ChatMessage)],
+        words: &[String],
+    ) -> Vec<ResultLine> {
         let store = self.core.store();
         items
             .iter()
@@ -618,7 +836,15 @@ impl Shell {
                     (Key::Mentions, None) => format!("{place} · {inst}"),
                     _ => place,
                 };
-                let text = view::plain_text(s, space, &m.content, 300);
+                let text = view::plain_text(s, space, &m.content, 4000);
+                let (text, marks) = if text.is_empty() && !m.attachments.is_empty() {
+                    (
+                        format!("[{} attachment(s)]", m.attachments.len()),
+                        Vec::new(),
+                    )
+                } else {
+                    snippet(&text, words)
+                };
                 Some(ResultLine {
                     inst: inst.clone(),
                     channel: m.channel_id,
@@ -626,11 +852,8 @@ impl Shell {
                     author: s.display_name(space, m.author.id),
                     when: time::format(m.created_at() as i64, "%Y-%m-%d %H:%M", self.utc_offset),
                     place,
-                    text: if text.is_empty() && !m.attachments.is_empty() {
-                        format!("[{} attachment(s)]", m.attachments.len())
-                    } else {
-                        text
-                    },
+                    text,
+                    marks,
                 })
             })
             .collect()
@@ -645,6 +868,8 @@ struct ResultLine {
     when: String,
     place: String,
     text: String,
+    /// Where the searched words are in `text`.
+    marks: Vec<std::ops::Range<usize>>,
 }
 
 fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement {
@@ -656,7 +881,15 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
         when,
         place,
         text,
+        marks,
     } = line;
+    let marked = gpui_kit::HighlightStyle {
+        background_color: Some(theme::alpha(theme::accent(), 0.25).into()),
+        font_weight: Some(FontWeight::BOLD),
+        ..gpui_kit::HighlightStyle::default()
+    };
+    let text = gpui_kit::StyledText::new(text)
+        .with_highlights(marks.into_iter().map(move |range| (range, marked)));
     div()
         .id(("result", n))
         .flex()
@@ -704,6 +937,140 @@ fn result_row(n: usize, line: ResultLine, cx: &mut Context<Shell>) -> AnyElement
         .into_any_element()
 }
 
+/// Whether `word` is one of the search filters (`from:`, `in:`, `has:`, the dates).
+fn is_filter_word(word: &str) -> bool {
+    [
+        "from:", "in:", "has:", "before:", "after:", "during:", "on:",
+    ]
+    .iter()
+    .any(|p| word.len() > p.len() && word.to_lowercase().starts_with(p))
+}
+
+/// The words a search looks for (filters left out), lower case and without punctuation.
+fn search_words(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .filter(|w| !is_filter_word(w))
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Filters finishing the last word typed: names after `from:`, channels after `in:`, kinds after
+/// `has:`; the filters themselves while nothing is typed.
+fn filter_suggestions(
+    s: &hermes_client_core::store::InstanceStore,
+    space: Option<Id>,
+    typed: &str,
+) -> Vec<String> {
+    const MAX: usize = 6;
+    if typed.trim().is_empty() {
+        let mut all = vec!["from:", "has:", "before:", "during:"];
+        if space.is_some() {
+            all.insert(1, "in:");
+        }
+        return all.into_iter().map(str::to_owned).collect();
+    }
+    if typed.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let last = typed.split_whitespace().last().unwrap_or_default();
+    let lower = last.to_lowercase();
+    if let Some(start) = lower.strip_prefix("from:") {
+        let start = start.trim_start_matches('@');
+        let mut names: Vec<String> = s
+            .users
+            .values()
+            .map(|u| u.username.clone())
+            .filter(|n| n.to_lowercase().starts_with(start) && n.to_lowercase() != start)
+            .collect();
+        names.sort();
+        names.truncate(MAX);
+        return names.into_iter().map(|n| format!("from:{n}")).collect();
+    }
+    if let Some(start) = lower.strip_prefix("in:") {
+        let start = start.trim_start_matches('#');
+        let Some(state) = space.and_then(|id| s.spaces.get(&id)) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = state
+            .channels
+            .values()
+            .filter_map(|c| c.name.clone())
+            .filter(|n| n.to_lowercase().starts_with(start) && n.to_lowercase() != start)
+            .collect();
+        names.sort();
+        names.truncate(MAX);
+        return names.into_iter().map(|n| format!("in:{n}")).collect();
+    }
+    if let Some(start) = lower.strip_prefix("has:") {
+        return SearchHas::ALL
+            .into_iter()
+            .map(SearchHas::as_str)
+            .filter(|h| h.starts_with(start) && *h != start)
+            .map(|h| format!("has:{h}"))
+            .collect();
+    }
+    Vec::new()
+}
+
+/// The part of `text` around the first searched word (at most [`SNIPPET_CHARS`]), and where each
+/// searched word is in it.
+fn snippet(text: &str, words: &[String]) -> (String, Vec<std::ops::Range<usize>>) {
+    const BEFORE: usize = 60;
+    let lower = text.to_lowercase();
+    // Lower case of some letters is longer: then no marks, from the start.
+    let same = lower.len() == text.len();
+    let first = if same {
+        words.iter().filter_map(|w| lower.find(w.as_str())).min()
+    } else {
+        None
+    };
+    let mut start = match first {
+        Some(at) if at > BEFORE => text.floor_char_boundary(at - BEFORE),
+        _ => 0,
+    };
+    // Start at a word.
+    if start > 0
+        && let Some(space) = text[start..].find(char::is_whitespace)
+        && start + space < first.unwrap_or(0)
+    {
+        start += space + 1;
+    }
+    let end = text.floor_char_boundary((start + SNIPPET_CHARS).min(text.len()));
+    let prefix = if start > 0 { "\u{2026}" } else { "" };
+    let mut out = format!("{prefix}{}", &text[start..end]);
+    if end < text.len() {
+        out.push('\u{2026}');
+    }
+    if !same {
+        return (out, Vec::new());
+    }
+    let body = &lower[start..end];
+    let mut marks: Vec<std::ops::Range<usize>> = Vec::new();
+    for word in words {
+        let mut from = 0;
+        while let Some(at) = body[from..].find(word.as_str()) {
+            let begin = prefix.len() + from + at;
+            marks.push(begin..begin + word.len());
+            from += at + word.len().max(1);
+        }
+    }
+    marks.sort_by_key(|r| r.start);
+    // Overlapping marks become one.
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
+    for mark in marks {
+        match merged.last_mut() {
+            Some(last) if mark.start <= last.end => last.end = last.end.max(mark.end),
+            _ => merged.push(mark),
+        }
+    }
+    (out, merged)
+}
+
 /// The pages kept while the app runs.
 pub type ResultsPages = HashMap<Key, ResultsPage>;
 
@@ -711,6 +1078,33 @@ pub type ResultsPages = HashMap<Key, ResultsPage>;
 mod tests {
     use super::*;
     use hermes_client_core::proto::models::{MessageKind, User};
+
+    #[test]
+    fn snippets_show_and_mark_the_words() {
+        let words = search_words("Pizza from:bob \"friday!\"");
+        assert_eq!(words, ["pizza", "friday"]);
+        let (text, marks) = snippet("We had PIZZA on Friday, pizza again.", &words);
+        assert_eq!(text, "We had PIZZA on Friday, pizza again.");
+        let marked: Vec<&str> = marks.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(marked, ["PIZZA", "Friday", "pizza"]);
+        // Far into a long text: the snippet starts near the word.
+        let long = format!("{} needle here", "word ".repeat(100));
+        let (text, marks) = snippet(&long, &["needle".to_owned()]);
+        assert!(text.starts_with('\u{2026}'));
+        assert_eq!(&text[marks[0].clone()], "needle");
+        assert!(text.chars().count() <= SNIPPET_CHARS + 2);
+    }
+
+    #[test]
+    fn filters_are_suggested_while_typed() {
+        let s = hermes_client_core::store::InstanceStore::default();
+        assert!(filter_suggestions(&s, None, "").contains(&"from:".to_owned()));
+        assert!(!filter_suggestions(&s, None, "").contains(&"in:".to_owned()));
+        assert_eq!(filter_suggestions(&s, None, "cats has:i"), ["has:image"]);
+        assert!(filter_suggestions(&s, None, "cats has:image ").is_empty());
+        let f = filters(&s, "from:nobody soup", None, 0);
+        assert_eq!(f.unresolved.len(), 1);
+    }
 
     #[test]
     fn search_words_give_filters() {
