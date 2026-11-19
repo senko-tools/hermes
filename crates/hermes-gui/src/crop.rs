@@ -52,12 +52,30 @@ const SQUARE: f32 = 240.;
 /// The largest side of the picture shown while cropping.
 const PREVIEW_SIDE: u32 = 1024;
 
+/// File types the picture picker offers.
+const PICTURE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "apng"];
+/// The same, for people.
+const PICTURE_TYPES: &str = "PNG, JPEG, WebP, GIF or APNG";
+
 /// Why a picture was refused, in words.
 fn too_big() -> String {
     format!("it is larger than {} MB", PICTURE_MAX_BYTES / (1024 * 1024))
 }
 
 impl CropFor {
+    /// What can be uploaded and how it is saved, for a settings hint.
+    pub fn rules(&self) -> String {
+        let shape = self.shape();
+        format!(
+            "{PICTURE_TYPES} up to {} MB. Saved at {}\u{d7}{} ({}\u{d7}{} when animated).",
+            PICTURE_MAX_BYTES / (1024 * 1024),
+            shape.still.0,
+            shape.still.1,
+            shape.moving.0,
+            shape.moving.1,
+        )
+    }
+
     fn shape(&self) -> Shape {
         match self {
             CropFor::Avatar(_) => Shape {
@@ -240,7 +258,7 @@ impl Shell {
             async move {
                 let Some(file) = rfd::AsyncFileDialog::new()
                     .set_title(title)
-                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif", "apng"])
+                    .add_filter("Images", PICTURE_EXTENSIONS)
                     .pick_file()
                     .await
                 else {

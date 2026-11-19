@@ -286,7 +286,7 @@ pub struct Shell {
     /// Counts the picker's openings, so an old refresh loop stops.
     pub share_generation: u64,
     /// The screens that can be shared, primary first.
-    pub screen_names: Vec<String>,
+    pub screen_list: Vec<crate::screen::capture::ScreenInfo>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
     /// My share's sound, while it is sent.
@@ -450,7 +450,7 @@ impl Shell {
             room_area: crate::voice::no_area(),
             share_menu: None,
             share_generation: 0,
-            screen_names: Vec::new(),
+            screen_list: Vec::new(),
             capture: None,
             share_sound: None,
             screens: HashMap::new(),

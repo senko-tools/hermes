@@ -857,9 +857,10 @@ impl Shell {
         let add = rail_icon("rail-add")
             .on_hover(self.track_hover("rail-add", cx))
             .child(icon(assets::PLUS, 24., theme::accent()))
+            .child(self.popup_trigger())
             .on_click(
                 cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu(Target::Instances, event.position(), window, cx);
+                    this.open_menu_from_click(Target::Instances, event.position(), window, cx);
                 }),
             );
         let add = rail_morph("rail-add", add, false, self.is_hovered("rail-add"), None);
@@ -950,9 +951,10 @@ impl Shell {
                             .group_hover("space-header", |s| s.text_color(theme::accent())),
                     )
                     .child(div().flex_1())
+                    .child(self.popup_trigger())
                     .on_click(cx.listener(
                         move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                            this.open_menu(open.clone(), event.position(), window, cx);
+                            this.open_menu_from_click(open.clone(), event.position(), window, cx);
                         },
                     ));
                 // Another server's name fades in with its channels.
@@ -1131,6 +1133,20 @@ impl Shell {
             out
         };
         let mut rows = self.instance_notices(cx);
+        // While a channel is dragged: a place to drop it out of its category.
+        let can_move = tree_rows.iter().any(|row| {
+            matches!(
+                row,
+                Row::Channel {
+                    drag: Some(_),
+                    nested: true,
+                    ..
+                }
+            )
+        });
+        if can_move && cx.has_active_drag() {
+            rows.push(self.render_drop_out(inst.clone(), space, cx));
+        }
         let show_people = self.config.sidebar.show_voice_users;
         let mut tree_rows = tree_rows
             .into_iter()
@@ -1647,6 +1663,71 @@ impl Shell {
         );
     }
 
+    /// The strip at the top of a space's channels while one is dragged: dropped there, a
+    /// channel leaves its category for the top of the list.
+    fn render_drop_out(&self, inst: InstanceId, space: Id, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::AnimationExt as _;
+        let fits = move |dragged: &Item| {
+            dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
+        };
+        let fits_drop = fits.clone();
+        div()
+            .id("drop-out-of-category")
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .h(px(28.))
+            .mx(px(8.))
+            .mt(px(6.))
+            .rounded(theme::radius_small())
+            .border_1()
+            .border_color(theme::border())
+            .text_size(theme::caption_size())
+            .text_color(theme::text_tertiary())
+            .child("Drop here to move out of its category")
+            .drag_over::<Item>(move |style, dragged, _, _| {
+                if !fits(dragged) {
+                    return style;
+                }
+                style
+                    .bg(theme::alpha(theme::accent(), 0.1))
+                    .border_color(theme::accent())
+                    .text_color(theme::accent())
+            })
+            .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
+                if fits_drop(dragged) {
+                    this.drop_out_of_category(dragged.clone(), cx);
+                }
+            }))
+            .with_animation(
+                "drop-out-in",
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(t),
+            )
+            .into_any_element()
+    }
+
+    fn drop_out_of_category(&mut self, dragged: Item, cx: &mut Context<Self>) {
+        let moves = {
+            let store = self.core.store();
+            store
+                .instance(&dragged.inst)
+                .map(|s| view::move_channel_out(s, dragged.space, dragged.id))
+                .unwrap_or_default()
+        };
+        if moves.is_empty() {
+            return;
+        }
+        let space = dragged.space;
+        self.call_status(
+            &dragged.inst,
+            "Channel moved out of its category",
+            move |r| async move { r.reorder_channels(space, &moves).await },
+            cx,
+        );
+    }
+
     /// My name at the bottom: the status menu, the settings and the voice buttons.
     fn render_me(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let inst = match &self.selected {
@@ -1704,9 +1785,10 @@ impl Shell {
                             .child(handle)
                     })),
             )
+            .child(self.popup_trigger())
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu(open.clone(), event.position(), window, cx);
+                    this.open_menu_from_click(open.clone(), event.position(), window, cx);
                 }),
             );
         let me = self.with_menu(me, target, cx);

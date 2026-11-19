@@ -1197,7 +1197,7 @@ impl Shell {
             let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
             rows.push(setting(
                 "Icon",
-                "A square PNG or JPEG works best.",
+                &crate::crop::CropFor::SpaceIcon(inst.clone(), space).rules(),
                 div()
                     .flex()
                     .items_center()

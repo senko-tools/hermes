@@ -21,6 +21,8 @@ pub struct OpenMenu {
     view: Entity<PopupMenu>,
     target: Target,
     position: Point<Pixels>,
+    /// The menu's corner at `position`: top left at the pointer, another beside a button.
+    anchor: gpui_kit::Anchor,
     _dismiss: Subscription,
 }
 
@@ -145,9 +147,32 @@ impl Shell {
             view,
             target,
             position,
+            anchor: gpui_kit::Anchor::TopLeft,
             _dismiss: dismiss,
         });
         cx.notify();
+    }
+
+    /// A menu opened by a left click on a button or header (with a [`Shell::popup_trigger`]):
+    /// it opens beside it instead of over it. Without a trigger there, at the pointer.
+    pub fn open_menu_from_click(
+        &mut self,
+        target: Target,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_menu(target, position, window, cx);
+        let from = self.popup_from(position);
+        if from == crate::modal::PopupFrom::point(position) {
+            return;
+        }
+        let (anchor, at) =
+            crate::modal::menu_beside(from.trigger, self.viewport, crate::theme::scale());
+        if let Some(menu) = &mut self.menu {
+            menu.anchor = anchor;
+            menu.position = at;
+        }
     }
 
     /// Gives a file its own menu instead of its message's. While the mouse is over it, its
@@ -166,6 +191,8 @@ impl Shell {
         // surface has its own (its controls fade with the pointer).
         let element = div()
             .id(SharedString::from(format!("file-{attachment}-hover")))
+            .flex()
+            .min_w_0()
             .child(element)
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 if *hovered {
@@ -356,6 +383,7 @@ impl Shell {
         Some(
             deferred(
                 anchored()
+                    .anchor(menu.anchor)
                     .position(menu.position)
                     .snap_to_window_with_margin(crate::theme::px(8.))
                     .child(

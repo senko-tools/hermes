@@ -1705,7 +1705,7 @@ impl Shell {
                     .unwrap_or_default()
             },
             |this, screens, _, cx| {
-                this.screen_names = screens;
+                this.screen_list = screens;
                 cx.notify();
             },
         );

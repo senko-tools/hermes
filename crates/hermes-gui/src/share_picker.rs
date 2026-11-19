@@ -443,7 +443,7 @@ impl Shell {
                 .into_any_element()
         };
         let resolutions = RESOLUTIONS.into_iter().enumerate().map(|(n, name)| {
-            let label = if name == "native" { "Full size" } else { name };
+            let label = if name == "native" { "Native" } else { name };
             chip(("share-res", n), label, voice.share_resolution == name).on_click(cx.listener(
                 move |this, _, _, cx| {
                     cx.stop_propagation();

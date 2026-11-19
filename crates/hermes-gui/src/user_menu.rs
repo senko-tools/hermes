@@ -497,7 +497,11 @@ impl Shell {
                         .h(px(if banner.is_some() { 119.2 } else { 64. }))
                         .rounded_t(px(9.))
                         .overflow_hidden()
-                        .bg(theme::mix(theme::sidebar(), band, 0.75))
+                        // Not under a banner: each layer fades on its own, so a band there
+                        // would show through the banner while the card goes.
+                        .when(banner.is_none(), |d| {
+                            d.bg(theme::mix(theme::sidebar(), band, 0.75))
+                        })
                         .children(banner.map(|picture| {
                             gpui_kit::img(picture)
                                 .size_full()

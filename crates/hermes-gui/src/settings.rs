@@ -1025,13 +1025,18 @@ impl Shell {
         ));
         let has_avatar = me.user.avatar.is_some();
         let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
-        account_rows.push(setting(
-            "Avatar",
+        let avatar_hint = format!(
+            "{} {}",
             if has_avatar {
                 "Shown next to your messages."
             } else {
                 "No picture yet; your initials are shown."
             },
+            crate::crop::CropFor::Avatar(inst.clone()).rules()
+        );
+        account_rows.push(setting(
+            "Avatar",
+            &avatar_hint,
             div()
                 .flex()
                 .gap(px(8.))
@@ -1067,9 +1072,13 @@ impl Shell {
         ));
         let has_banner = me.user.banner.is_some();
         let (banner_inst, unbanner_inst) = (inst.clone(), inst.clone());
+        let banner_hint = format!(
+            "The wide picture at the top of your profile. {}",
+            crate::crop::CropFor::Banner(inst.clone()).rules()
+        );
         account_rows.push(setting(
             "Banner",
-            "The wide picture at the top of your profile.",
+            &banner_hint,
             div()
                 .flex()
                 .gap(px(8.))
@@ -2421,14 +2430,16 @@ impl Shell {
                 setting("Join a voice channel with", "", wrap().children(join_chips)),
             ],
         );
-        let mut screens = vec![String::new()];
-        screens.extend(self.screen_names.iter().skip(1).cloned());
-        let screen_chips = screens.into_iter().enumerate().map(|(n, screen)| {
-            let name = if screen.is_empty() {
-                "Primary screen".to_owned()
-            } else {
-                screen.trim_start_matches(['\\', '.']).to_owned()
-            };
+        // Before the list has loaded (or where capture is unavailable): the primary screen only.
+        let screens: Vec<(String, String)> = if self.screen_list.is_empty() {
+            vec![(String::new(), "Screen 1 (primary)".to_owned())]
+        } else {
+            self.screen_list
+                .iter()
+                .map(|s| (s.value.clone(), s.label()))
+                .collect()
+        };
+        let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
             chip(("settings-screen", n), name, screen == v.share_screen).on_click(cx.listener(
                 move |this, _, _, cx| {
                     this.persist("voice.share_screen", &toml_string(screen.clone()), cx);
@@ -2436,11 +2447,7 @@ impl Shell {
             ))
         });
         let res_chips = RESOLUTIONS.into_iter().enumerate().map(|(n, value)| {
-            let name = if value == "native" {
-                "Full size (up to 4K)"
-            } else {
-                value
-            };
+            let name = if value == "native" { "Native" } else { value };
             chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
                 move |this, _, _, cx| {
                     this.persist("voice.share_resolution", &toml_string(value.to_owned()), cx);
@@ -2847,95 +2854,103 @@ impl Shell {
     }
 
     fn tab_about(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
+        let header = div()
             .flex()
-            .flex_col()
+            .items_center()
             .gap(px(16.))
-            .max_w(px(640.))
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
-                    .gap(px(16.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(56.))
-                            .rounded(theme::radius_large())
-                            .bg(theme::accent_soft())
-                            .child(icon(assets::FEATHER, 28., theme::accent())),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(theme::heading_size())
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Hermes"),
-                            )
-                            .child(
-                                div()
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(format!("Version {}", env!("CARGO_PKG_VERSION"))),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(theme::secondary_size())
-                    .text_color(theme::text_secondary())
-                    .child(
-                        "Self-hostable chat. GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
-                    ),
+                    .justify_center()
+                    .size(px(56.))
+                    .rounded(theme::radius_large())
+                    .bg(theme::accent_soft())
+                    .child(icon(assets::FEATHER, 28., theme::accent())),
             )
             .child(
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
+                    .flex_col()
+                    .gap(px(2.))
                     .child(
-                        Button::new("about-debug")
-                            .cursor_pointer()
-                            .label(self.copy_label("about-debug", "Copy debug info"))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let text = this.debug_info();
-                                this.copy_from("about-debug", text, "Debug info", cx);
-                            })),
+                        div()
+                            .text_size(theme::heading_size())
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Hermes"),
                     )
                     .child(
-                        Button::new("about-logs")
-                            .cursor_pointer()
-                            .label("Open the logs folder")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(paths) = this.core.paths() {
-                                    let dir = paths.dir.join("logs");
-                                    let _ = std::fs::create_dir_all(&dir);
-                                    if let Err(err) = crate::open::path(&dir) {
-                                        this.error(
-                                            format!("could not open {}: {err}", dir.display()),
-                                            cx,
-                                        );
-                                    }
-                                }
-                            })),
+                        div()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(format!(
+                                "Version {} \u{b7} {} {}",
+                                env!("CARGO_PKG_VERSION"),
+                                std::env::consts::OS,
+                                std::env::consts::ARCH
+                            )),
                     )
                     .child(
-                        Button::new("about-project")
-                            .cursor_pointer()
-                            .label("Project page")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Err(err) = crate::open::url(env!("CARGO_PKG_REPOSITORY")) {
-                                    this.error(format!("could not open the browser: {err}"), cx);
-                                }
-                            })),
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_secondary())
+                            .child("Self-hostable chat with text, voice and screen sharing."),
                     ),
             )
-            .into_any_element()
+            .into_any_element();
+        let licence = setting(
+            "Licence",
+            "The app is GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
+            div(),
+        );
+        let debug = setting(
+            "Debug info",
+            "Version, system and connection state for bug reports. No tokens or messages.",
+            Button::new("about-debug")
+                .cursor_pointer()
+                .label(self.copy_label("about-debug", "Copy"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let text = this.debug_info();
+                    this.copy_from("about-debug", text, "Debug info", cx);
+                })),
+        );
+        let logs = setting(
+            "Logs",
+            "Dated log files from this device.",
+            Button::new("about-logs")
+                .cursor_pointer()
+                .label("Open folder")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Some(paths) = this.core.paths() {
+                        let dir = paths.dir.join("logs");
+                        let _ = std::fs::create_dir_all(&dir);
+                        if let Err(err) = crate::open::path(&dir) {
+                            this.error(format!("could not open {}: {err}", dir.display()), cx);
+                        }
+                    }
+                })),
+        );
+        let project = setting(
+            "Project page",
+            "Source code, issues and releases.",
+            Button::new("about-project")
+                .cursor_pointer()
+                .label("Open")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if let Err(err) = crate::open::url(env!("CARGO_PKG_REPOSITORY")) {
+                        this.error(format!("could not open the browser: {err}"), cx);
+                    }
+                })),
+        );
+        page_body(
+            "About",
+            None,
+            vec![
+                group("Hermes", vec![header, licence]),
+                group("Help", vec![debug, logs, project]),
+            ],
+        )
     }
 }
 

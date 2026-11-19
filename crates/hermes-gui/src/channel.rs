@@ -1480,10 +1480,18 @@ impl Shell {
                 None => text,
             }
         };
+        let too_long = |this: &Self, text: &str| {
+            let store = this.core.store();
+            store.instance(&inst).and_then(|s| s.message_refusal(text))
+        };
         if let Some(message) = view.editing {
             let text = resolve(self, text);
             if text.trim().is_empty() {
                 self.error("A message cannot be empty; delete it instead.", cx);
+                return;
+            }
+            if let Some(refusal) = too_long(self, &text) {
+                self.info(refusal, cx);
                 return;
             }
             if let Some(view) = self.chats.get_mut(&key) {
@@ -1523,6 +1531,13 @@ impl Shell {
                 }
             }
         };
+        if let Some(refusal) = command
+            .message_text()
+            .and_then(|content| too_long(self, &resolve(self, content)))
+        {
+            self.info(refusal, cx);
+            return;
+        }
         let reply_to = view.reply_to;
         if let Some(view) = self.chats.get_mut(&key) {
             view.clear_mode();
@@ -2338,13 +2353,11 @@ impl Shell {
             .filter(|r| matches!(r, Row::Message(_)))
             .count();
         let jump_label = if live && below > 0 {
-            SharedString::from(format!(
-                "{below} newer message{} · Jump to present",
-                if below == 1 { "" } else { "s" }
-            ))
+            SharedString::from(format!("{below} new"))
         } else {
             SharedString::from("Jump to present")
         };
+        let jump_news = live && below > 0;
         // The first new message and how many there are, while the divider is off screen and was
         // not seen yet. My own messages never make a divider (`rows::build`).
         let first_unread = rows::first_new(&view.rows)
@@ -2458,26 +2471,51 @@ impl Shell {
                         )
                 }))
                 .when(!at_end || !live, |d| {
+                    // A small tab on the message box's top edge, out of the way of the messages.
                     d.child(
                         div()
+                            .id("jump-present")
                             .absolute()
-                            .bottom(px(12.))
+                            .bottom_0()
                             .right(px(16.))
-                            .child(
-                                Button::new("jump-present")
-                                    .cursor_pointer()
-                                    .primary()
-                                    .label(jump_label)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.jump_to_present(&jump_key, window, cx);
-                                    })),
-                            )
-                            // It rises from the bottom edge.
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .px(px(10.))
+                            .py(px(3.))
+                            .rounded_t(theme::radius_small())
+                            .bg(theme::raised())
+                            .border_t_1()
+                            .border_l_1()
+                            .border_r_1()
+                            .border_color(theme::border())
+                            .cursor_pointer()
+                            .text_size(theme::caption_size())
+                            .text_color(if jump_news {
+                                theme::accent()
+                            } else {
+                                theme::text_secondary()
+                            })
+                            .hover(|d| d.bg(theme::hover()))
+                            .child(icon(
+                                assets::CHEVRON_DOWN,
+                                12.,
+                                if jump_news {
+                                    theme::accent()
+                                } else {
+                                    theme::text_secondary()
+                                },
+                            ))
+                            .child(jump_label)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.jump_to_present(&jump_key, window, cx);
+                            }))
+                            // It rises out of the message box.
                             .with_animation(
                                 "jump-present-in",
                                 gpui_kit::Animation::new(theme::fade() * 2)
                                     .with_easing(gpui_kit::ease_out_quint()),
-                                |d, t| d.opacity(t).bottom(px(12. * t)),
+                                |d, t| d.opacity(t).bottom(px(-6. * (1. - t))),
                             ),
                     )
                 })
@@ -2799,6 +2837,27 @@ impl Shell {
             Some(mb) => format!("Attach files up to {mb} MB (or drop them here)"),
             None => "Attach files (or drop them here)".to_owned(),
         });
+        let max_length = self
+            .core
+            .store()
+            .instance(&key.0)
+            .and_then(|s| s.max_message_length());
+        let counter = max_length.and_then(|max| {
+            let len = view.input.read(cx).value().chars().count();
+            let (text, over) = length_counter(len, max as usize)?;
+            Some(
+                div()
+                    .flex_shrink_0()
+                    .px(px(4.))
+                    .text_size(theme::caption_size())
+                    .text_color(if over {
+                        theme::danger()
+                    } else {
+                        theme::text_tertiary()
+                    })
+                    .child(text),
+            )
+        });
         let shell = cx.entity().downgrade();
         let input = Textarea::new(&view.input)
             .large()
@@ -2844,6 +2903,7 @@ impl Shell {
                                     })),
                             )
                             .child(div().flex_1().min_w_0().child(input))
+                            .children(counter)
                             .child({
                                 let key = emoji_key.clone();
                                 icon_button("composer-emoji", assets::EMOJI)
@@ -3194,8 +3254,11 @@ impl Shell {
             // A file keeps a little more room from what is above it. When nothing is, the row's
             // own space holds it (`rows::padding`), so the highlight stays even.
             let after_something = !body.is_empty();
+            // A row, so the file is only as wide as it looks: its hover and menu end with it.
             body.push(
                 div()
+                    .flex()
+                    .min_w_0()
                     .when(after_something, |d| d.mt(px(crate::rows::FILE_SPACE)))
                     .child(self.render_attachment(inst, place, attachment, cx))
                     .into_any_element(),
@@ -4287,6 +4350,12 @@ pub(crate) fn reply_text(loaded: Option<&ChatMessage>, excerpt: &str) -> String 
     text.replace('\n', " ")
 }
 
+/// The composer's "X/Y" counter, shown only near the limit (the last tenth of it), and whether
+/// the text is over the limit.
+fn length_counter(len: usize, max: usize) -> Option<(String, bool)> {
+    (max > 0 && len >= max - max / 10).then(|| (format!("{len}/{max}"), len > max))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4421,6 +4490,22 @@ there",
         // A deleted message in the middle.
         assert_eq!(common_ends(&[m(1), m(2), m(3)], &[m(1), m(3)]), (1, 1));
         assert_eq!(common_ends(&[], &[m(1)]), (0, 0));
+    }
+
+    #[test]
+    fn the_length_counter_shows_near_the_limit() {
+        assert_eq!(length_counter(0, 4000), None);
+        assert_eq!(length_counter(3599, 4000), None);
+        assert_eq!(
+            length_counter(3600, 4000),
+            Some(("3600/4000".into(), false))
+        );
+        assert_eq!(
+            length_counter(4000, 4000),
+            Some(("4000/4000".into(), false))
+        );
+        assert_eq!(length_counter(4001, 4000), Some(("4001/4000".into(), true)));
+        assert_eq!(length_counter(5, 0), None);
     }
 
     #[test]

@@ -452,9 +452,44 @@ impl Shell {
     }
 }
 
+/// Where a menu opened by a left click on `trigger` goes, so it never covers what opened it:
+/// below or above a wide thing (a header, the user panel), beside a small one (an icon button).
+/// It turns towards the window's middle; gpui's snapping keeps the window's edge.
+pub(crate) fn menu_beside(
+    trigger: Bounds<Pixels>,
+    viewport: Size<Pixels>,
+    scale: f32,
+) -> (Anchor, Point<Pixels>) {
+    let gap = 4. * scale;
+    let (left, top) = (trigger.origin.x.as_f32(), trigger.origin.y.as_f32());
+    let (right, bottom) = (
+        left + trigger.size.width.as_f32(),
+        top + trigger.size.height.as_f32(),
+    );
+    let (vw, vh) = (viewport.width.as_f32(), viewport.height.as_f32());
+    let upper = (top + bottom) / 2. <= vh / 2.;
+    let lefter = (left + right) / 2. <= vw / 2.;
+    let point = |x: f32, y: f32| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y));
+    if trigger.size.width.as_f32() >= 120. * scale {
+        match (upper, lefter) {
+            (true, true) => (Anchor::TopLeft, point(left, bottom + gap)),
+            (true, false) => (Anchor::TopRight, point(right, bottom + gap)),
+            (false, true) => (Anchor::BottomLeft, point(left, top - gap)),
+            (false, false) => (Anchor::BottomRight, point(right, top - gap)),
+        }
+    } else {
+        match (lefter, upper) {
+            (true, true) => (Anchor::TopLeft, point(right + gap, top)),
+            (true, false) => (Anchor::BottomLeft, point(right + gap, bottom)),
+            (false, true) => (Anchor::TopRight, point(left - gap, top)),
+            (false, false) => (Anchor::BottomRight, point(left - gap, bottom)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Hug, PopupFrom, hug};
+    use super::{Hug, PopupFrom, hug, menu_beside};
     use gpui_kit::{Anchor, Bounds, point, px, size};
 
     fn from(at: (f32, f32), origin: (f32, f32), extent: (f32, f32)) -> PopupFrom {
@@ -469,6 +504,28 @@ mod tests {
 
     fn place(from: PopupFrom, width: f32) -> Hug {
         hug(from, px(width), size(px(1200.), px(800.)), 1.)
+    }
+
+    #[test]
+    fn click_menus_never_cover_their_trigger() {
+        let view = size(px(1200.), px(800.));
+        let b =
+            |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
+        // The server header at the top left: the menu drops below it.
+        let (anchor, at) = menu_beside(b(72., 0., 240., 48.), view, 1.);
+        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(72.), px(52.))));
+        // The user panel at the bottom left: above it.
+        let (anchor, at) = menu_beside(b(72., 740., 240., 60.), view, 1.);
+        assert_eq!((anchor, at), (Anchor::BottomLeft, point(px(72.), px(736.))));
+        // The rail's add button: beside it, to the right.
+        let (anchor, at) = menu_beside(b(12., 300., 48., 48.), view, 1.);
+        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(64.), px(300.))));
+        // A small button at the bottom right: to its left, growing upwards.
+        let (anchor, at) = menu_beside(b(1150., 760., 32., 32.), view, 1.);
+        assert_eq!(
+            (anchor, at),
+            (Anchor::BottomRight, point(px(1146.), px(792.)))
+        );
     }
 
     #[test]

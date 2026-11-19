@@ -373,32 +373,17 @@ pub fn sources(pictures: bool) -> Vec<Shareable> {
     #[cfg(windows)]
     {
         let mut out = Vec::new();
-        if let Ok(monitors) = xcap::Monitor::all() {
-            let mut monitors: Vec<_> = monitors
-                .into_iter()
-                .filter_map(|m| Some((!m.is_primary().unwrap_or(false), m.name().ok()?, m)))
-                .collect();
-            monitors.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-            for (n, (secondary, name, monitor)) in monitors.into_iter().enumerate() {
-                out.push(Shareable {
-                    value: if secondary {
-                        name.clone()
-                    } else {
-                        String::new()
-                    },
-                    title: format!("Screen {}", n + 1),
-                    detail: if secondary {
-                        name.trim_start_matches(['\\', '.']).to_owned()
-                    } else {
-                        "Primary".into()
-                    },
-                    window: false,
-                    minimized: false,
-                    picture: pictures
-                        .then(|| monitor.capture_image().ok().map(thumbnail))
-                        .flatten(),
-                });
-            }
+        for (info, monitor) in ordered_monitors() {
+            out.push(Shareable {
+                title: info.title(),
+                detail: info.detail(),
+                value: info.value,
+                window: false,
+                minimized: false,
+                picture: pictures
+                    .then(|| monitor.capture_image().ok().map(thumbnail))
+                    .flatten(),
+            });
         }
         let Ok(all) = xcap::Window::all() else {
             return out;
@@ -483,19 +468,89 @@ fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
     out
 }
 
-/// The names of the screens, the primary one first (empty where capture is unavailable).
-pub fn screens() -> Vec<String> {
+/// A screen as people see it in settings and in the share picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenInfo {
+    /// The `voice.share_screen` value: empty for the primary screen, else the system name.
+    pub value: String,
+    /// Its place in the list, from 1 (the primary screen).
+    pub number: usize,
+    pub primary: bool,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ScreenInfo {
+    /// "Screen 1", "Screen 2"…
+    pub fn title(&self) -> String {
+        format!("Screen {}", self.number)
+    }
+
+    /// "Screen 1 (primary)", for chips.
+    pub fn label(&self) -> String {
+        if self.primary {
+            format!("{} (primary)", self.title())
+        } else {
+            self.title()
+        }
+    }
+
+    /// "2560×1440 · Primary", under the title in the picker.
+    pub fn detail(&self) -> String {
+        let size = format!("{}\u{d7}{}", self.width, self.height);
+        if self.primary {
+            format!("{size} \u{b7} Primary")
+        } else {
+            size
+        }
+    }
+}
+
+/// The screens in a stable order: the primary one first, then left to right, top to bottom.
+#[cfg(windows)]
+fn ordered_monitors() -> Vec<(ScreenInfo, xcap::Monitor)> {
+    let Ok(monitors) = xcap::Monitor::all() else {
+        return Vec::new();
+    };
+    let mut keyed: Vec<_> = monitors
+        .into_iter()
+        .filter_map(|m| {
+            let name = m.name().ok()?;
+            let primary = m.is_primary().unwrap_or(false);
+            let key = (
+                !primary,
+                m.x().unwrap_or(0),
+                m.y().unwrap_or(0),
+                name.clone(),
+            );
+            Some((key, name, m))
+        })
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    keyed
+        .into_iter()
+        .enumerate()
+        .map(|(n, ((secondary, ..), name, m))| {
+            let info = ScreenInfo {
+                value: if secondary { name } else { String::new() },
+                number: n + 1,
+                primary: !secondary,
+                width: m.width().unwrap_or(0),
+                height: m.height().unwrap_or(0),
+            };
+            (info, m)
+        })
+        .collect()
+}
+
+/// The screens, the primary one first (empty where capture is unavailable).
+pub fn screens() -> Vec<ScreenInfo> {
     #[cfg(windows)]
     {
-        let Ok(monitors) = xcap::Monitor::all() else {
-            return Vec::new();
-        };
-        let mut named: Vec<(bool, String)> = monitors
-            .iter()
-            .filter_map(|m| Some((!m.is_primary().unwrap_or(false), m.name().ok()?)))
-            .collect();
-        named.sort();
-        named.into_iter().map(|(_, name)| name).collect()
+        ordered_monitors()
+            .into_iter()
+            .map(|(info, _)| info)
+            .collect()
     }
     #[cfg(not(windows))]
     Vec::new()
