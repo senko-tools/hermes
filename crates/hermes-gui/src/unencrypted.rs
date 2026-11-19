@@ -91,12 +91,12 @@ impl Shell {
                     .into_iter()
                     .enumerate()
                     .map(|(n, (value, label))| {
-                        crate::voice::chip((id, n), label, value == current).on_click(cx.listener(
-                            move |this, _, _, cx| {
+                        crate::ui::chip(self, (id, n), label, value == current, cx).on_click(
+                            cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 this.set_warn_unencrypted(value, cx);
-                            },
-                        ))
+                            }),
+                        )
                     }),
             )
             .into_any_element()

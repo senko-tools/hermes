@@ -1,0 +1,180 @@
+//! Controls used all over the app, built once so they look and move the same everywhere.
+//!
+//! Rule: a control that changes colour under the pointer notes its hover with
+//! [`Shell::track_hover`] and springs to it. gpui's own text-colour `.hover` keeps a stale
+//! "hovered" when the control's hover style comes and goes (a chip while it is chosen), so the
+//! text stayed the hover colour once it was unchosen (improvements.md #19). A plain `.hover`
+//! that is always attached is fine; one inside `.when(..)` is not, and a test keeps it out.
+
+use gpui_kit::prelude::*;
+use gpui_kit::{AnimationExt as _, Context, SharedString, div};
+
+use crate::assets::icon;
+use crate::shell::Shell;
+use crate::theme::{self, px};
+
+/// The spring every hover and choice follows.
+fn spring(to: f32) -> gpui_kit::SpringAnimation<f32> {
+    gpui_kit::SpringAnimation::new(theme::paced(crate::hover::HOVER_SPRING)).to(to)
+}
+
+/// Where a control rests: 0 at rest, 1 under the pointer, 2 chosen. One spring between them
+/// moves its colours together, so choosing one under the pointer flows on from its hover.
+fn state(hovered: bool, chosen: bool) -> f32 {
+    if chosen {
+        2.
+    } else if hovered {
+        1.
+    } else {
+        0.
+    }
+}
+
+/// A choice among a few, highlighted when chosen. The caller adds what a click does.
+pub fn chip(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    label: impl Into<SharedString>,
+    chosen: bool,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id = id.into();
+    let hover = SharedString::from(format!("{id:?}-hover"));
+    let to = state(shell.is_hovered(&hover), chosen);
+    let face = div()
+        .id("face")
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(theme::radius_small())
+        .truncate()
+        .child(label.into())
+        .with_spring(
+            SharedString::from(format!("{id:?}-chosen")),
+            spring(to),
+            |d, t| {
+                let t = t.clamp(0., 2.);
+                // Rest to hover: the text turns accent. Hover to chosen: the accent fills in.
+                let hover = t.min(1.);
+                let fill = (t - 1.).max(0.);
+                let text = theme::mix(theme::text_secondary(), theme::accent(), hover);
+                d.bg(theme::mix(theme::selected(), theme::accent(), fill))
+                    .text_color(theme::mix(text, theme::on_accent(), fill))
+            },
+        );
+    div()
+        .id(id)
+        .rounded(theme::radius_small())
+        .cursor_pointer()
+        .max_w_full()
+        .overflow_hidden()
+        .text_size(theme::secondary_size())
+        .on_hover(shell.track_hover(hover, cx))
+        .child(face)
+}
+
+/// An entry of a page's navigation column (settings tabs, server settings tabs). The caller
+/// adds what a click does.
+pub fn nav_item(
+    shell: &Shell,
+    glyph: &str,
+    name: &str,
+    selected: bool,
+    id: String,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let hover = SharedString::from(format!("{id}-hover"));
+    let hovered = shell.is_hovered(&hover);
+    // The chosen tab's background flows out of the last one and into the new one.
+    let pill = div()
+        .absolute()
+        .inset_0()
+        .rounded(theme::row_radius())
+        .with_spring(
+            SharedString::from(format!("{id}-pill")),
+            spring(if selected { 1. } else { 0. }),
+            |d, t| {
+                let t = t.clamp(0., 1.);
+                // It grows from the left edge as it fills in.
+                d.bg(theme::alpha(theme::selected(), t))
+                    .right(gpui_kit::relative(0.3 * (1. - t)))
+            },
+        );
+    // Under the pointer the text and icon turn accent; the chosen one keeps its own colours.
+    let glyph = glyph.to_owned();
+    let name = SharedString::from(name.to_owned());
+    let label = div().flex().items_center().gap(px(8.)).with_spring(
+        SharedString::from(format!("{id}-text")),
+        spring(state(hovered, selected)),
+        move |d, t| {
+            let t = t.clamp(0., 2.);
+            let hover = t.min(1.);
+            let chosen = (t - 1.).max(0.);
+            let text = theme::mix(theme::text_secondary(), theme::accent(), hover);
+            let glyph_color = theme::mix(theme::text_tertiary(), theme::accent(), hover);
+            d.text_color(theme::mix(text, theme::text(), chosen))
+                .child(icon(
+                    &glyph,
+                    18.,
+                    theme::mix(glyph_color, theme::text_tertiary(), chosen),
+                ))
+                .child(name.clone())
+        },
+    );
+    div()
+        .id(SharedString::from(id))
+        .relative()
+        .child(pill)
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .h(px(34.))
+        .px(px(8.))
+        .rounded(theme::row_radius())
+        .cursor_pointer()
+        .text_size(theme::body_size())
+        .on_hover(shell.track_hover(hover, cx))
+        .child(label)
+}
+
+#[cfg(test)]
+mod tests {
+    /// gpui's `.hover` keeps a stale state for a text colour whose hover style comes and goes
+    /// (see the module docs): no text-colour `.hover` may sit inside a `.when(..)`.
+    #[test]
+    fn no_text_colour_hovers_that_come_and_go() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let lines: Vec<&str> = text.lines().collect();
+                    let indent = |l: &str| l.len() - l.trim_start().len();
+                    for (n, line) in lines.iter().enumerate() {
+                        if !(line.contains(".hover(") && line.contains("text_color")) {
+                            continue;
+                        }
+                        // On the same line as a `.when(`, or under one opened just above it.
+                        let inside_when = line.contains(".when(")
+                            || lines[n.saturating_sub(4)..n].iter().any(|above| {
+                                above.contains(".when(")
+                                    && above.trim_end().ends_with('{')
+                                    && indent(above) < indent(line)
+                            });
+                        if inside_when {
+                            found.push(format!("{}:{}", path.display(), n + 1));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "use Shell::track_hover instead: {found:#?}"
+        );
+    }
+}

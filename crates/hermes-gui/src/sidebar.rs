@@ -1505,6 +1505,13 @@ impl Shell {
         let reach = self.row_reach();
         let timer = connected.then(|| self.time_in_voice(&inst)).flatten();
         let indent = if nested && !in_block { 10. } else { 0. };
+        let rest_text = if muted {
+            theme::text_tertiary()
+        } else if strong {
+            theme::text()
+        } else {
+            theme::channel_text()
+        };
         let element = bare_row(row_key.clone(), selected, theme::ROW_HEIGHT)
             .relative()
             .overflow_hidden()
@@ -1525,7 +1532,16 @@ impl Shell {
             })
             // Plain, unread and mention rows brighten their text and icon under the pointer; the
             // open one and the voice channel I am in stay as they are (their tint may deepen).
-            .when(!lit_still, |d| d.hover(|d| d.text_color(theme::accent())))
+            // The hover is always attached (lit rows "hover" to their own colour): gpui keeps a
+            // stale hover for a row whose hover style comes and goes, and the row that was open
+            // stayed accent after another one opened (improvements.md #19).
+            .hover(move |d| {
+                d.text_color(if lit_still {
+                    rest_text
+                } else {
+                    theme::accent()
+                })
+            })
             // Inside a highlighted block: a pill of the block's own hue beside the bar, the text
             // where it was.
             .when_some(block, |d, block| {

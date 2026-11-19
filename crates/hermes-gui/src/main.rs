@@ -53,6 +53,7 @@ mod syntax;
 mod tests;
 mod theme;
 mod tree;
+mod ui;
 mod unencrypted;
 mod updater_window;
 mod user_menu;

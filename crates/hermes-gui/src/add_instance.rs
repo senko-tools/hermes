@@ -523,8 +523,9 @@ impl Shell {
                     div()
                         .flex()
                         .gap(px(6.))
-                        .child(tab_button("Sign in", Tab::SignIn, tab, true, cx))
+                        .child(tab_button(self, "Sign in", Tab::SignIn, tab, true, cx))
                         .child(tab_button(
+                            self,
                             "Create account",
                             Tab::Register,
                             tab,
@@ -616,42 +617,30 @@ fn fingerprint_line(name: &'static str, value: String) -> AnyElement {
 }
 
 fn tab_button(
+    shell: &Shell,
     name: &'static str,
     which: Tab,
     current: Tab,
     enabled: bool,
-    cx: &mut Context<Shell>,
+    cx: &Context<Shell>,
 ) -> AnyElement {
-    let selected = which == current;
-    div()
-        .id(name)
-        .px(px(12.))
-        .py(px(6.))
-        .rounded(theme::radius_small())
-        .text_size(theme::secondary_size())
-        .when(selected, |d| d.bg(theme::selected()))
-        .when(!selected && enabled, |d| {
-            d.cursor_pointer()
-                .text_color(theme::text_secondary())
-                .hover(|d| d.text_color(theme::accent()))
-        })
-        .when(!enabled, |d| d.text_color(theme::text_tertiary()))
-        .child(name)
-        .when(enabled, |d| {
-            d.on_click(cx.listener(move |this, _, _, cx| {
-                if let Some(AddInstance {
-                    step: Step::Account(account),
-                    error,
-                    ..
-                }) = &mut this.add_instance
-                {
-                    account.tab = which;
-                    *error = None;
-                }
-                cx.notify();
-            }))
-        })
-        .into_any_element()
+    let chip = crate::ui::chip(shell, name, name, which == current, cx);
+    if !enabled {
+        return chip.opacity(0.5).cursor_default().into_any_element();
+    }
+    chip.on_click(cx.listener(move |this, _, _, cx| {
+        if let Some(AddInstance {
+            step: Step::Account(account),
+            error,
+            ..
+        }) = &mut this.add_instance
+        {
+            account.tab = which;
+            *error = None;
+        }
+        cx.notify();
+    }))
+    .into_any_element()
 }
 
 /// Parses `input`, trusts an invite's `#fp=` for a new host (section 13), probes the server

@@ -1491,13 +1491,13 @@ impl Shell {
         let form = self.form.as_ref()?;
         let mut content: Vec<AnyElement> = vec![heading(form.title.clone()).into_any_element()];
         if let Some(switch) = &form.profile_switch {
-            content.push(profile_switch_chips(switch, cx));
+            content.push(profile_switch_chips(self, switch, cx));
         }
         if !form.text.is_empty() {
             content.push(paragraph(form.text.clone()).into_any_element());
         }
         for (i, field) in form.fields.iter().enumerate() {
-            content.push(render_field(i, field, cx));
+            content.push(render_field(self, i, field, cx));
         }
         if let Some(error) = &form.error {
             content.push(error_line(error.clone()).into_any_element());
@@ -1544,7 +1544,11 @@ impl Shell {
 
 /// "Everywhere" and "In <server>": which of my profiles the form edits; the other one replaces
 /// the form.
-fn profile_switch_chips(switch: &ProfileSwitch, cx: &mut Context<Shell>) -> AnyElement {
+fn profile_switch_chips(
+    shell: &Shell,
+    switch: &ProfileSwitch,
+    cx: &mut Context<Shell>,
+) -> AnyElement {
     let choices = [
         (true, "Everywhere".to_owned()),
         (false, format!("In {}", switch.space_name)),
@@ -1558,29 +1562,35 @@ fn profile_switch_chips(switch: &ProfileSwitch, cx: &mut Context<Shell>) -> AnyE
                 .enumerate()
                 .map(|(n, (everywhere, name))| {
                     let (inst, space) = (switch.inst.clone(), switch.space);
-                    crate::voice::chip(("profile-switch", n), name, switch.everywhere == everywhere)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let current = this
-                                .form
-                                .as_ref()
-                                .and_then(|f| f.profile_switch.as_ref())
-                                .map(|s| s.everywhere);
-                            if current == Some(everywhere) {
-                                return;
-                            }
-                            let me = this.core.store().instance(&inst).and_then(|s| s.me_id());
-                            if everywhere {
-                                this.open_form_profile_in(inst.clone(), Some(space), window, cx);
-                            } else if let Some(me) = me {
-                                this.open_form_nickname(inst.clone(), space, me, window, cx);
-                            }
-                        }))
+                    crate::ui::chip(
+                        shell,
+                        ("profile-switch", n),
+                        name,
+                        switch.everywhere == everywhere,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let current = this
+                            .form
+                            .as_ref()
+                            .and_then(|f| f.profile_switch.as_ref())
+                            .map(|s| s.everywhere);
+                        if current == Some(everywhere) {
+                            return;
+                        }
+                        let me = this.core.store().instance(&inst).and_then(|s| s.me_id());
+                        if everywhere {
+                            this.open_form_profile_in(inst.clone(), Some(space), window, cx);
+                        } else if let Some(me) = me {
+                            this.open_form_nickname(inst.clone(), space, me, window, cx);
+                        }
+                    }))
                 }),
         )
         .into_any_element()
 }
 
-fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement {
+fn render_field(shell: &Shell, i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement {
     let hint_line = |hint: &str| {
         (!hint.is_empty()).then(|| {
             div()
@@ -1610,10 +1620,12 @@ fn render_field(i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement 
         } => {
             let chips = options.iter().enumerate().map(|(n, option)| {
                 let chosen = n == *selected;
-                crate::voice::chip(
+                crate::ui::chip(
+                    shell,
                     SharedString::from(format!("form-{i}-{n}")),
                     option.clone(),
                     chosen,
+                    cx,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(Field::Choice { selected, .. }) =

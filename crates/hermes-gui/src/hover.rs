@@ -27,7 +27,7 @@ impl Shell {
     pub fn track_hover(
         &self,
         key: impl Into<SharedString>,
-        cx: &mut Context<Self>,
+        cx: &Context<Self>,
     ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
         let key = key.into();
         self.hover_tracked.borrow_mut().insert(key.clone());

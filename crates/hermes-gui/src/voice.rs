@@ -791,10 +791,12 @@ impl Shell {
             .collect::<Vec<_>>();
         let graph = self.render_graph(&graphs[chosen], &shown, hovered, range, cx);
         let ranges = NET_RANGES.into_iter().map(|seconds| {
-            chip(
+            crate::ui::chip(
+                self,
                 ("net-range", seconds),
                 format!("{} min", seconds / 60),
                 self.net_range == seconds,
+                cx,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.net_range = seconds;
@@ -1702,17 +1704,22 @@ impl Shell {
             .flex()
             .gap(px(4.))
             .children(PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
-                chip(("preference", n), preference.label(), preference == current).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        let value = preference.config_value();
-                        this.set_config(|c| c.voice.share_preference = value, cx);
-                        if let Some(capture) = &this.capture {
-                            capture.set_preference(preference);
-                        }
-                        cx.notify();
-                    }),
+                crate::ui::chip(
+                    self,
+                    ("preference", n),
+                    preference.label(),
+                    preference == current,
+                    cx,
                 )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    let value = preference.config_value();
+                    this.set_config(|c| c.voice.share_preference = value, cx);
+                    if let Some(capture) = &this.capture {
+                        capture.set_preference(preference);
+                    }
+                    cx.notify();
+                }))
             }))
             .into_any_element()
     }
@@ -1759,43 +1766,6 @@ impl Shell {
                 .into_any_element(),
         )
     }
-}
-
-/// A choice among a few, highlighted when chosen. The caller adds what a click does.
-pub fn chip(
-    id: impl Into<gpui_kit::ElementId>,
-    label: impl Into<SharedString>,
-    chosen: bool,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let id = id.into();
-    let key = SharedString::from(format!("{id:?}-chosen"));
-    // Choosing it: the accent flows in, and out of the one chosen before.
-    let face = div()
-        .id("face")
-        .px(px(10.))
-        .py(px(5.))
-        .rounded(theme::radius_small())
-        .truncate()
-        .when(!chosen, |d| d.hover(|d| d.text_color(theme::accent())))
-        .child(label.into())
-        .with_spring(
-            key,
-            gpui_kit::SpringAnimation::new(crate::theme::paced(crate::hover::HOVER_SPRING))
-                .to(chosen),
-            |d, phase| {
-                let t = phase.0.clamp(0., 1.);
-                d.bg(theme::mix(theme::selected(), theme::accent(), t))
-                    .text_color(theme::mix(theme::text_secondary(), theme::on_accent(), t))
-            },
-        );
-    div()
-        .id(id)
-        .rounded(theme::radius_small())
-        .cursor_pointer()
-        .max_w_full()
-        .overflow_hidden()
-        .text_size(theme::secondary_size())
-        .child(face)
 }
 
 /// The colours of a voice button: its icon at rest and under the pointer, and while it is on.

@@ -19,7 +19,6 @@ use crate::settings::{group, muted, page_body, setting, wrap};
 use crate::shell::Shell;
 use crate::space_settings::SpacePage;
 use crate::theme::{self, px};
-use crate::voice::chip;
 
 /// What the Encryption tab shows.
 #[derive(Default)]
@@ -52,6 +51,7 @@ fn message_channels(s: &InstanceStore, space: Id) -> Vec<(Id, String)> {
 
 /// Two or three choices, side by side. Without `run`, they only show which one holds.
 fn choices<T: Copy + PartialEq + 'static>(
+    shell: &Shell,
     id: &str,
     options: &[(&'static str, T)],
     current: T,
@@ -62,10 +62,12 @@ fn choices<T: Copy + PartialEq + 'static>(
     let chips = options.iter().map(|(label, value)| {
         let value = *value;
         let run = run.clone();
-        let element = chip(
+        let element = crate::ui::chip(
+            shell,
             SharedString::from(format!("{id}-{label}")),
             *label,
             value == current,
+            cx,
         );
         if enabled {
             element
@@ -236,6 +238,7 @@ impl Shell {
                      server that lies about who is a member could get them. Approved: someone \
                      with Manage Server lets each new device in, which stops that too.",
                     choices(
+                        self,
                         "server-handover",
                         &handover_options,
                         policy.handover,
@@ -251,6 +254,7 @@ impl Shell {
                     "New members can read earlier messages",
                     "When this is off, each new member starts a new key and gets only that one.",
                     choices(
+                        self,
                         "server-history",
                         &history_options,
                         policy.new_members_read_history,
@@ -385,6 +389,7 @@ impl Shell {
                     .child(format!("#{name}")),
             )
             .child(choices(
+                self,
                 &format!("channel-handover-{channel}"),
                 &handover_options,
                 own.handover,
@@ -396,6 +401,7 @@ impl Shell {
                 },
             ))
             .child(choices(
+                self,
                 &format!("channel-history-{channel}"),
                 &history_options,
                 own.new_members_read_history,

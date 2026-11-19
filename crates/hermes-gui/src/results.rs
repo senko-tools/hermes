@@ -816,7 +816,7 @@ impl Shell {
             {
                 let sort_key = key.clone();
                 row.push(
-                    crate::voice::chip(("search-sort", n), name, page.sort == sort)
+                    crate::ui::chip(self, ("search-sort", n), name, page.sort == sort, cx)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.set_search_sort(sort_key.clone(), sort, cx);
                         }))

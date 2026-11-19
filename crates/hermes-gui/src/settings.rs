@@ -27,7 +27,6 @@ use crate::results::Remote;
 use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, ShareResolution};
 use crate::shell::Shell;
 use crate::theme::{self, Theme, px};
-use crate::voice::chip;
 
 /// The level meter and the voice activity slider share this range (dBFS).
 pub const METER_MIN: f32 = -70.0;
@@ -979,9 +978,16 @@ impl Shell {
         let admin = self.is_instance_admin();
         let item = |(tab, glyph, name): &NavTab, cx: &mut Context<Self>| {
             let tab = *tab;
-            nav_item(glyph, name, page.tab == tab, format!("settings-tab-{name}"))
-                .on_click(cx.listener(move |this, _, _, cx| this.settings_open_tab(tab, cx)))
-                .into_any_element()
+            crate::ui::nav_item(
+                self,
+                glyph,
+                name,
+                page.tab == tab,
+                format!("settings-tab-{name}"),
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.settings_open_tab(tab, cx)))
+            .into_any_element()
         };
         let mut nav: Vec<AnyElement> = vec![
             div()
@@ -1072,14 +1078,14 @@ impl Shell {
             let chips = instances.iter().enumerate().map(|(n, inst)| {
                 let chosen = Some(inst) == selected.as_ref();
                 let inst = inst.clone();
-                chip(("account-inst", n), inst.clone(), chosen).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                crate::ui::chip(self, ("account-inst", n), inst.clone(), chosen, cx).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         if let Some(page) = &mut this.settings {
                             page.account_inst = Some(inst.clone());
                         }
                         this.load_sessions(cx);
-                    },
-                ))
+                    }),
+                )
             });
             account_rows.push(setting(
                 "Instance",
@@ -1396,10 +1402,12 @@ impl Shell {
                             .into_iter()
                             .enumerate()
                             .map(|(n, (extra, name))| {
-                                chip(
+                                crate::ui::chip(
+                                    self,
                                     ("heading-extra", n),
                                     name,
                                     config.font.heading_extra == extra,
+                                    cx,
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -1421,9 +1429,14 @@ impl Shell {
             let value = *value;
             let chosen =
                 (config.font.ui_scale - value).abs() < 0.001 && self.ui_scale_draft.is_none();
-            chip(("scale-preset", n), format!("{:.0}%", value * 100.), chosen).on_click(
-                cx.listener(move |this, _, window, cx| this.set_ui_scale(value, window, cx)),
+            crate::ui::chip(
+                self,
+                ("scale-preset", n),
+                format!("{:.0}%", value * 100.),
+                chosen,
+                cx,
             )
+            .on_click(cx.listener(move |this, _, window, cx| this.set_ui_scale(value, window, cx)))
         });
         let position_chips = [
             (config::SidebarPosition::Left, "Left"),
@@ -1432,10 +1445,12 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            chip(
+            crate::ui::chip(
+                self,
                 ("sidebar-position", n),
                 name,
                 config.sidebar.position == value,
+                cx,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_config(|c| c.sidebar.position = value, cx);
@@ -1593,10 +1608,12 @@ impl Shell {
                             "Status line stays",
                             &format!("{} seconds", self.config.general.status_seconds),
                             wrap().children([3, 5, 10].into_iter().enumerate().map(|(n, secs)| {
-                                chip(
+                                crate::ui::chip(
+                                    self,
                                     ("status-seconds", n),
                                     format!("{secs} s"),
                                     self.config.general.status_seconds == secs,
+                                    cx,
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -1620,8 +1637,15 @@ impl Shell {
                                     .into_iter()
                                     .enumerate()
                                     .map(|(n, (format, name))| {
-                                        chip(("clock", n), name, b.timestamp_format == format)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                        crate::ui::chip(
+                                            self,
+                                            ("clock", n),
+                                            name,
+                                            b.timestamp_format == format,
+                                            cx,
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
                                                 this.set_config(
                                                     |c| {
                                                         c.buffer.timestamp_format =
@@ -1629,7 +1653,8 @@ impl Shell {
                                                     },
                                                     cx,
                                                 );
-                                            }))
+                                            }),
+                                        )
                                     }),
                             ),
                         ),
@@ -1648,13 +1673,21 @@ impl Shell {
                                         format,
                                         self.utc_offset,
                                     );
-                                    chip(("date-format", n), name, b.date_format == format)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                    crate::ui::chip(
+                                        self,
+                                        ("date-format", n),
+                                        name,
+                                        b.date_format == format,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
                                             this.set_config(
                                                 |c| c.buffer.date_format = format.to_owned(),
                                                 cx,
                                             );
-                                        }))
+                                        },
+                                    ))
                                 },
                             )),
                         ),
@@ -1690,10 +1723,12 @@ impl Shell {
                     "How long things take to slide and fade.",
                     wrap().children(theme::MOTION_SPEEDS.into_iter().enumerate().map(
                         |(n, (value, label, _))| {
-                            crate::voice::chip(
+                            crate::ui::chip(
+                                self,
                                 ("settings-motion", n),
                                 label,
                                 g.motion_speed == value,
+                                cx,
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
@@ -1793,10 +1828,12 @@ impl Shell {
                             .into_iter()
                             .enumerate()
                             .map(|(n, (scale, name))| {
-                                chip(
+                                crate::ui::chip(
+                                    self,
                                     ("media-scale", n),
                                     name,
                                     self.config.buffer.media_scale == scale,
+                                    cx,
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
@@ -2015,8 +2052,8 @@ impl Shell {
         .enumerate()
         .map(|(n, (mode, name))| {
             let inst = inst.clone();
-            chip(("registration", n), name, current == Some(mode)).on_click(cx.listener(
-                move |this, _, _, cx| {
+            crate::ui::chip(self, ("registration", n), name, current == Some(mode), cx).on_click(
+                cx.listener(move |this, _, _, cx| {
                     let core = this.core.clone();
                     let inst = inst.clone();
                     this.run(
@@ -2034,8 +2071,8 @@ impl Shell {
                             Err(err) => this.error(err, cx),
                         },
                     );
-                },
-            ))
+                }),
+            )
         });
         let mut users: Vec<AnyElement> = Vec::new();
         match &page.admin_users {
@@ -2196,8 +2233,8 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            chip(("dm-from", n), name, privacy.dm_from == value).on_click(cx.listener(
-                move |this, _, _, cx| {
+            crate::ui::chip(self, ("dm-from", n), name, privacy.dm_from == value, cx).on_click(
+                cx.listener(move |this, _, _, cx| {
                     this.set_privacy(
                         UpdatePrivacyRequest {
                             dm_from: Some(value),
@@ -2205,8 +2242,8 @@ impl Shell {
                         },
                         cx,
                     );
-                },
-            ))
+                }),
+            )
         });
         let privacy_rows = vec![
             setting(
@@ -2359,13 +2396,21 @@ impl Shell {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(n, (minutes, name))| {
-                                    chip(("idle-after", n), name, g.auto_idle_minutes == minutes)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                    crate::ui::chip(
+                                        self,
+                                        ("idle-after", n),
+                                        name,
+                                        g.auto_idle_minutes == minutes,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
                                             this.set_config(
                                                 |c| c.general.auto_idle_minutes = minutes,
                                                 cx,
                                             );
-                                        }))
+                                        },
+                                    ))
                                 }),
                         ),
                     ),
@@ -2418,12 +2463,17 @@ impl Shell {
                 .collect()
         };
         let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
-            chip(("settings-screen", n), name, screen == v.share_screen).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    let screen = screen.clone();
-                    this.set_config(|c| c.voice.share_screen = screen, cx);
-                },
-            ))
+            crate::ui::chip(
+                self,
+                ("settings-screen", n),
+                name,
+                screen == v.share_screen,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                let screen = screen.clone();
+                this.set_config(|c| c.voice.share_screen = screen, cx);
+            }))
         });
         let res_chips = ShareResolution::ALL
             .iter()
@@ -2434,17 +2484,24 @@ impl Shell {
                     ShareResolution::Native => "Native",
                     _ => value.as_str(),
                 };
-                chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.set_config(|c| c.voice.share_resolution = value, cx);
-                    },
-                ))
+                crate::ui::chip(
+                    self,
+                    ("settings-res", n),
+                    name,
+                    v.share_resolution == value,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.set_config(|c| c.voice.share_resolution = value, cx);
+                }))
             });
         let fps_chips = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
-            chip(
+            crate::ui::chip(
+                self,
                 ("settings-fps", n),
                 format!("{fps} fps"),
                 v.share_fps == fps,
+                cx,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_config(|c| c.voice.share_fps = fps, cx);
@@ -2452,10 +2509,12 @@ impl Shell {
         });
         let current = Preference::from_config(v.share_preference);
         let pref_chips = PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
-            chip(
+            crate::ui::chip(
+                self,
                 ("settings-pref", n),
                 preference.label(),
                 preference == current,
+                cx,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_config(|c| c.voice.share_preference = preference.config_value(), cx);
@@ -2550,11 +2609,11 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            chip(("voice-mode", n), name, v.mode == value).on_click(cx.listener(
-                move |this, _, _, cx| {
+            crate::ui::chip(self, ("voice-mode", n), name, v.mode == value, cx).on_click(
+                cx.listener(move |this, _, _, cx| {
                     this.change_voice(cx, move |voice| voice.mode = value);
-                },
-            ))
+                }),
+            )
         });
         // The bar moves smoothly; it is green while the microphone would go through, as the
         // input mode decides: above the line, or while push-to-talk is held.
@@ -2751,11 +2810,11 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            chip(("join-on", n), name, v.join_on == value).on_click(cx.listener(
-                move |this, _, _, cx| {
+            crate::ui::chip(self, ("join-on", n), name, v.join_on == value, cx).on_click(
+                cx.listener(move |this, _, _, cx| {
                     this.set_config(|c| c.voice.join_on = value, cx);
-                },
-            ))
+                }),
+            )
         })
         .collect::<Vec<_>>();
         let sounds = self.fold_group(
@@ -3419,58 +3478,6 @@ pub fn muted(text: impl Into<SharedString>) -> AnyElement {
         .text_color(theme::text_tertiary())
         .child(text.into())
         .into_any_element()
-}
-
-const NAV_ITEM: &str = "nav-item";
-
-/// An entry of a page's navigation column. The caller adds what a click does.
-pub fn nav_item(
-    glyph: &str,
-    name: &str,
-    selected: bool,
-    id: String,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    // The chosen tab's background flows out of the last one and into the new one.
-    let pill = div()
-        .absolute()
-        .inset_0()
-        .rounded(theme::row_radius())
-        .with_spring(
-            SharedString::from(format!("{id}-pill")),
-            gpui_kit::SpringAnimation::new(crate::theme::paced(crate::hover::HOVER_SPRING))
-                .to(selected),
-            |d, phase| {
-                let t = phase.0.clamp(0., 1.);
-                // It grows from the left edge as it fills in.
-                d.bg(theme::alpha(theme::selected(), t))
-                    .right(gpui_kit::relative(0.3 * (1. - t)))
-            },
-        );
-    div()
-        .id(SharedString::from(id))
-        .relative()
-        .child(pill)
-        .flex()
-        .flex_shrink_0()
-        .items_center()
-        .gap(px(8.))
-        .h(px(34.))
-        .px(px(8.))
-        .rounded(theme::row_radius())
-        .cursor_pointer()
-        .text_size(theme::body_size())
-        .text_color(if selected {
-            theme::text()
-        } else {
-            theme::text_secondary()
-        })
-        .group(NAV_ITEM)
-        .when(!selected, |d| d.hover(|d| d.text_color(theme::accent())))
-        .child(
-            icon(glyph, 18., theme::text_tertiary())
-                .group_hover(NAV_ITEM, |s| s.text_color(theme::accent())),
-        )
-        .child(SharedString::from(name.to_owned()))
 }
 
 /// A page over the whole window: navigation, content and a way back.

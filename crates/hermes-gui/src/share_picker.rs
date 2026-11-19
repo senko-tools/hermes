@@ -19,7 +19,6 @@ use image::Frame;
 use crate::assets::{self, icon};
 use crate::shell::Shell;
 use crate::theme::{self, px};
-use crate::voice::chip;
 
 /// How often the pictures are taken again while the picker is open.
 const REFRESH: Duration = Duration::from_millis(2500);
@@ -447,18 +446,25 @@ impl Shell {
                     ShareResolution::Native => "Native",
                     _ => value.as_str(),
                 };
-                chip(("share-res", n), label, voice.share_resolution == value).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.set_config(|c| c.voice.share_resolution = value, cx);
-                    }),
+                crate::ui::chip(
+                    self,
+                    ("share-res", n),
+                    label,
+                    voice.share_resolution == value,
+                    cx,
                 )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.set_config(|c| c.voice.share_resolution = value, cx);
+                }))
             });
         let rates = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
-            chip(
+            crate::ui::chip(
+                self,
                 ("share-fps", n),
                 format!("{fps} fps"),
                 voice.share_fps == fps,
+                cx,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();

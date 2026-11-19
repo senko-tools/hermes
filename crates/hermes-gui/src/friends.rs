@@ -13,7 +13,6 @@ use crate::assets;
 use crate::menu_entries::{Action, Target};
 use crate::shell::Shell;
 use crate::theme::{self, px};
-use crate::voice::chip;
 
 /// What the Friends page lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -245,12 +244,12 @@ impl Shell {
                 } else {
                     t.label().to_owned()
                 };
-                chip(("friends-tab", n), label, t == tab).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                crate::ui::chip(self, ("friends-tab", n), label, t == tab, cx).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         this.friends_tab = t;
                         cx.notify();
-                    },
-                ))
+                    }),
+                )
             })
             .collect();
         let shown: Vec<Line> = lines

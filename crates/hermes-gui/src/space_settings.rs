@@ -26,10 +26,9 @@ use crate::assets::{self, icon};
 use crate::drag::{Ghost, Item, Kind};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
-use crate::settings::{frame, group, muted, nav_item, page_body, setting, wrap};
+use crate::settings::{frame, group, muted, page_body, setting, wrap};
 use crate::shell::Shell;
 use crate::theme::{self, px};
-use crate::voice::chip;
 
 const AUDIT_PAGE: u32 = 50;
 /// At most this many member rows are built; the search narrows bigger spaces.
@@ -1132,11 +1131,13 @@ impl Shell {
         let nav: Vec<AnyElement> = Tab::available(s, page.space)
             .into_iter()
             .map(|tab| {
-                nav_item(
+                crate::ui::nav_item(
+                    self,
                     tab.icon(),
                     tab.title(),
                     page.tab == tab,
                     format!("space-tab-{}", tab.title()),
+                    cx,
                 )
                 .on_click(cx.listener(move |this, _, _, cx| this.set_space_tab(tab, false, cx)))
                 .into_any_element()
@@ -1831,14 +1832,14 @@ impl Shell {
             } else {
                 role.name.clone()
             };
-            chip(("override-role", n), name, current == Some(id)).on_click(cx.listener(
-                move |this, _, _, cx| {
+            crate::ui::chip(self, ("override-role", n), name, current == Some(id), cx).on_click(
+                cx.listener(move |this, _, _, cx| {
                     if let Some(page) = this.open_page() {
                         page.override_role = Some(id);
                     }
                     cx.notify();
-                },
-            ))
+                }),
+            )
         });
         col.push(wrap().children(chips).into_any_element());
         if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
@@ -1895,10 +1896,12 @@ impl Shell {
                         let mut toggle = |tri: Tri, text: &'static str, cx: &mut Context<Self>| {
                             let allowed = override_change_allowed(access, ov, flag, tri);
                             limited |= access.is_some() && !allowed;
-                            chip(
+                            crate::ui::chip(
+                                self,
                                 SharedString::from(format!("{}-{text}", info.name)),
                                 text,
                                 state == tri,
+                                cx,
                             )
                             .when(allowed, |d| {
                                 d.on_click(cx.listener(move |this, _, _, cx| {
