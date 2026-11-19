@@ -106,7 +106,7 @@ impl Shell {
                     "Names of your friends and people you share a server with, separated by commas (name or name#1234).",
                 ))
                 .child(Input::new(&state.input).large())
-                .children(state.error.clone().map(error_line))
+                .children(state.error.clone().map(|e| error_line(self, "new-dm-error", e, cx)))
                 .child(
                     div()
                         .flex()

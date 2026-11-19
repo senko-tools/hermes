@@ -186,6 +186,49 @@ pub fn list_row(
         .child(fill)
 }
 
+/// An error's text, selectable like any text, with a copy button that shows a check mark for
+/// a moment once used (improvements.md #18). The caller sets the colour and size around it.
+pub fn error_text(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    text: impl Into<SharedString>,
+    cx: &Context<Shell>,
+) -> gpui_kit::Div {
+    let id: SharedString = id.into();
+    let text: SharedString = text.into();
+    let button = format!("{id}-copy");
+    let copied = shell.copied.as_deref() == Some(button.as_str());
+    let glyph = if copied {
+        crate::assets::CHECK
+    } else {
+        crate::assets::COPY
+    };
+    let tip = if copied { "Copied" } else { "Copy" };
+    let copy_text = text.to_string();
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.))
+        .min_w_0()
+        .child(
+            div().flex_1().min_w_0().child(
+                gpui_kit::component::text::TextView::markdown(
+                    SharedString::from(format!("{id}-text")),
+                    text,
+                )
+                .selectable(true),
+            ),
+        )
+        .child(
+            tip_button(shell, SharedString::from(button.clone()), glyph, tip, cx).on_click(
+                cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.copy_quietly(button.clone(), copy_text.clone(), cx);
+                }),
+            ),
+        )
+}
+
 /// A small square button holding an icon. Under the pointer a soft background fades in behind
 /// the icon and the icon turns accent. The caller adds what a click does.
 pub fn icon_button(

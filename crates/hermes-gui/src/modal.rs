@@ -31,11 +31,15 @@ pub fn paragraph(text: impl Into<SharedString>) -> Div {
 }
 
 /// An error line for a dialog.
-pub fn error_line(text: impl Into<SharedString>) -> Div {
-    div()
+pub fn error_line(
+    shell: &Shell,
+    id: &str,
+    text: impl Into<SharedString>,
+    cx: &Context<Shell>,
+) -> Div {
+    crate::ui::error_text(shell, id.to_owned(), text, cx)
         .text_size(theme::secondary_size())
         .text_color(theme::danger())
-        .child(text.into())
 }
 
 /// How long a dialog or popup takes to come in, and to go.

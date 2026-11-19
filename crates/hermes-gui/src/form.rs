@@ -1500,7 +1500,7 @@ impl Shell {
             content.push(render_field(self, i, field, cx));
         }
         if let Some(error) = &form.error {
-            content.push(error_line(error.clone()).into_any_element());
+            content.push(error_line(self, "form-error", error.clone(), cx).into_any_element());
         }
         let cancel = Button::new("form-cancel")
             .cursor_pointer()

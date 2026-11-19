@@ -410,10 +410,9 @@ impl Shell {
                 body.push(paragraph("Paste an invite link or an address.").into_any_element());
                 body.push(Input::new(&dialog_state.address).large().into_any_element());
                 body.extend(
-                    dialog_state
-                        .error
-                        .clone()
-                        .map(|e| error_line(e).into_any_element()),
+                    dialog_state.error.clone().map(|e| {
+                        error_line(self, "add-instance-error-0", e, cx).into_any_element()
+                    }),
                 );
                 let go = Button::new("add-go")
                     .cursor_pointer()
@@ -467,10 +466,9 @@ impl Shell {
                     body.push(fingerprint_line("SHA-256", probe.fingerprint.colon_hex()));
                 }
                 body.extend(
-                    dialog_state
-                        .error
-                        .clone()
-                        .map(|e| error_line(e).into_any_element()),
+                    dialog_state.error.clone().map(|e| {
+                        error_line(self, "add-instance-error-1", e, cx).into_any_element()
+                    }),
                 );
                 let trust = Button::new("add-trust")
                     .cursor_pointer()
@@ -554,10 +552,9 @@ impl Shell {
                     );
                 }
                 body.extend(
-                    dialog_state
-                        .error
-                        .clone()
-                        .map(|e| error_line(e).into_any_element()),
+                    dialog_state.error.clone().map(|e| {
+                        error_line(self, "add-instance-error-2", e, cx).into_any_element()
+                    }),
                 );
                 let go = Button::new("add-submit")
                     .cursor_pointer()

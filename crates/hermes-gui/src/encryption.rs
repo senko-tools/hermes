@@ -81,7 +81,9 @@ impl Shell {
                 .child(paragraph("Asking for the latest keys…"))
                 .child(theme::skeleton("keys", 3))
                 .into_any_element(),
-            Some(Err(err)) => error_line(err.clone()).into_any_element(),
+            Some(Err(err)) => {
+                error_line(self, "encryption-error", err.clone(), cx).into_any_element()
+            }
             Some(Ok(keys)) => div()
                 .flex()
                 .flex_col()

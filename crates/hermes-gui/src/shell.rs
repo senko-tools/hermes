@@ -946,6 +946,24 @@ impl Shell {
         .detach();
     }
 
+    /// Copies `text` from a copy button named `button` without a status line (the button
+    /// shows it worked): an error's own copy button must not replace the error.
+    pub fn copy_quietly(&mut self, button: String, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        self.copied = Some(button.clone());
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.copied.as_deref() == Some(button.as_str()) {
+                    this.copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// A copy button's label: `label`, or "Copied" just after it was used.
     pub fn copy_label(&self, button: &str, label: &'static str) -> &'static str {
         if self.copied.as_deref() == Some(button) {
@@ -1274,7 +1292,19 @@ impl Shell {
                 .text_size(theme::secondary_size())
                 .text_color(color)
                 .child(icon(glyph, 16., color))
-                .child(div().flex_1().min_w_0().child(status.text.clone()))
+                .child(div().flex_1().min_w_0().map(|d| {
+                    if status.level == Level::Info {
+                        d.child(status.text.clone())
+                    } else {
+                        // Warnings and errors can be selected and copied (#18).
+                        d.child(crate::ui::error_text(
+                            self,
+                            format!("status-{serial}"),
+                            status.text.clone(),
+                            cx,
+                        ))
+                    }
+                }))
                 .child(
                     crate::ui::tip_button(self, "status-dismiss", assets::CLOSE, "Dismiss", cx)
                         .on_click(cx.listener(|this, _, _, cx| {
