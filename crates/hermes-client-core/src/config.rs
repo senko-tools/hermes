@@ -252,6 +252,8 @@ pub struct Buffer {
     pub markdown: bool,
     /// Compact messages: time, a small picture, the name and the text on one line.
     pub compact: bool,
+    /// What is being written shows formatted above the message box.
+    pub composer_preview: bool,
     /// Pictures and videos in the chat, in percent of their normal size.
     pub media_scale: u32,
     /// The reactions offered first, separated by spaces.
@@ -272,6 +274,7 @@ impl Default for Buffer {
             show_typing: true,
             markdown: true,
             compact: false,
+            composer_preview: false,
             media_scale: 100,
             quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
             recent_emoji: String::new(),
