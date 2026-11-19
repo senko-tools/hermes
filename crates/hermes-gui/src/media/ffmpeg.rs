@@ -179,6 +179,30 @@ pub fn still(url: &str, at_ms: u64, width: u32, height: u32) -> Result<Child, St
         .map_err(missing)
 }
 
+/// The first picture of the file at `path` as a PNG: for picture formats the app cannot read
+/// itself (AVIF, HEIC, JPEG XL), when FFmpeg can.
+pub fn picture_as_png(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let out = command("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "png",
+            "pipe:1",
+        ])
+        .stdout(Stdio::piped())
+        .output()
+        .map_err(missing)?;
+    if !out.status.success() || out.stdout.is_empty() {
+        return Err("FFmpeg could not read this picture".into());
+    }
+    Ok(out.stdout)
+}
+
 /// Decodes the sound from `from_ms` as interleaved stereo `f32` at `rate`.
 pub fn audio(url: &str, from_ms: u64, rate: u32) -> Result<Child, String> {
     command("ffmpeg")

@@ -53,9 +53,54 @@ const SQUARE: f32 = 240.;
 const PREVIEW_SIDE: u32 = 1024;
 
 /// File types the picture picker offers.
-const PICTURE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "apng"];
+const PICTURE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "gif", "apng", "bmp", "tif", "tiff", "ico", "svg", "avif",
+    "heic", "heif", "jxl",
+];
 /// The same, for people.
-const PICTURE_TYPES: &str = "PNG, JPEG, WebP, GIF or APNG";
+const PICTURE_TYPES: &str = "PNG, JPEG, WebP, GIF, APNG, SVG, AVIF, HEIC and more,";
+/// Picture types read through FFmpeg (made into a PNG first).
+const FFMPEG_PICTURES: &[&str] = &["avif", "heic", "heif", "jxl"];
+/// The long side an SVG is drawn at before cropping.
+const SVG_SIDE: f32 = 1024.;
+
+/// The picked file as something the cropper reads: an SVG drawn, an AVIF, HEIC or JPEG XL made
+/// into a PNG by FFmpeg, anything else as it is. Blocks.
+fn croppable(path: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext == "svg" {
+        return svg_to_png(&bytes);
+    }
+    if FFMPEG_PICTURES.contains(&ext.as_str()) {
+        return crate::media::ffmpeg::picture_as_png(path);
+    }
+    Ok(bytes)
+}
+
+/// Draws an SVG into a PNG, its long side [`SVG_SIDE`] pixels.
+fn svg_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use resvg::{tiny_skia, usvg};
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+    let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("not an SVG: {e}"))?;
+    let size = tree.size();
+    let scale = SVG_SIDE / size.width().max(size.height());
+    let (w, h) = (
+        ((size.width() * scale).round() as u32).max(1),
+        ((size.height() * scale).round() as u32).max(1),
+    );
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the SVG has no size")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().map_err(|e| e.to_string())
+}
 
 /// Why a picture was refused, in words.
 fn too_big() -> String {
@@ -180,31 +225,58 @@ struct Output {
     content_type: &'static str,
 }
 
-/// Crops the picture: every frame of an animated one into a GIF, else a PNG.
+/// How many bytes of cropped frames an animated PNG is put together from; past it, a GIF is
+/// made instead (it is written frame by frame).
+const APNG_BUDGET: usize = 160 << 20;
+
+/// Crops the picture: every frame of an animated one into an animated PNG when it has soft
+/// see-through edges (a GIF has only clear or solid pixels) or a GIF, else a PNG.
 fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result<Output, String> {
+    use hermes_client_core::picture;
+    use image::imageops::FilterType;
     let err = |e: image::ImageError| e.to_string();
     let first = image::load_from_memory(file).map_err(err)?;
     let (x, y, w, h) = crop_rect(shape, (first.width(), first.height()), zoom, offset);
     if let Some(frames) = animated_frames(file)? {
         let (ow, oh) = output_size((w, h), shape.moving);
+        let scale = |frame: &image::RgbaImage| {
+            let cropped = image::imageops::crop_imm(frame, x, y, w, h).to_image();
+            picture::resize(&cropped, ow, oh, FilterType::Triangle)
+        };
+        let mut frames = frames.map(|f| f.map_err(err));
+        // Frames are kept while they could still become an animated PNG.
+        let mut kept: Vec<(image::RgbaImage, image::Delay)> = Vec::new();
+        let mut soft = false;
+        let mut used = 0usize;
+        for frame in frames.by_ref() {
+            let frame = frame?;
+            let scaled = scale(frame.buffer());
+            soft |= picture::has_soft_alpha(&scaled);
+            used += scaled.as_raw().len();
+            kept.push((scaled, frame.delay()));
+            if used > APNG_BUDGET {
+                break;
+            }
+        }
+        if soft && used <= APNG_BUDGET {
+            return Ok(Output {
+                bytes: apng(&kept, ow, oh)?,
+                filename: "picture.apng",
+                content_type: "image/apng",
+            });
+        }
         let mut bytes = Vec::new();
         {
             let mut encoder = image::codecs::gif::GifEncoder::new_with_speed(&mut bytes, 10);
             encoder
                 .set_repeat(image::codecs::gif::Repeat::Infinite)
                 .map_err(err)?;
-            for frame in frames {
-                let frame = frame.map_err(err)?;
-                let delay = frame.delay();
-                let cropped = image::imageops::crop_imm(frame.buffer(), x, y, w, h).to_image();
-                let scaled = image::imageops::resize(
-                    &cropped,
-                    ow,
-                    oh,
-                    image::imageops::FilterType::Triangle,
-                );
+            let rest = frames.map(|frame| frame.map(|f| (scale(f.buffer()), f.delay())));
+            for frame in kept.into_iter().map(Ok).chain(rest) {
+                let (pixels, delay) = frame?;
+                // The encoder clears each frame before the next (no ghosting).
                 encoder
-                    .encode_frame(image::Frame::from_parts(scaled, 0, 0, delay))
+                    .encode_frame(image::Frame::from_parts(pixels, 0, 0, delay))
                     .map_err(err)?;
             }
         }
@@ -215,10 +287,8 @@ fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result
         });
     }
     let (ow, oh) = output_size((w, h), shape.still);
-    let cropped =
-        first
-            .crop_imm(x, y, w, h)
-            .resize_exact(ow, oh, image::imageops::FilterType::Lanczos3);
+    let cropped = image::imageops::crop_imm(&first.to_rgba8(), x, y, w, h).to_image();
+    let cropped = picture::resize(&cropped, ow, oh, FilterType::Lanczos3);
     let mut bytes = Vec::new();
     cropped
         .write_to(
@@ -231,6 +301,37 @@ fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result
         filename: "picture.png",
         content_type: "image/png",
     })
+}
+
+/// `frames`, all `width` × `height`, as an animated PNG that plays forever.
+fn apng(
+    frames: &[(image::RgbaImage, image::Delay)],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let err = |e: png::EncodingError| e.to_string();
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Balanced);
+    encoder
+        .set_animated(u32::try_from(frames.len()).unwrap_or(u32::MAX), 0)
+        .map_err(err)?;
+    let mut writer = encoder.write_header().map_err(err)?;
+    for (pixels, delay) in frames {
+        // Each frame is whole: it replaces the one before instead of being laid over it.
+        writer.set_blend_op(png::BlendOp::Source).map_err(err)?;
+        writer.set_dispose_op(png::DisposeOp::None).map_err(err)?;
+        let (num, den) = delay.numer_denom_ms();
+        let ms = (f64::from(num) / f64::from(den.max(1)))
+            .round()
+            .clamp(0., 65535.) as u16;
+        writer.set_frame_delay(ms, 1000).map_err(err)?;
+        writer.write_image_data(pixels.as_raw()).map_err(err)?;
+    }
+    writer.finish().map_err(err)?;
+    Ok(bytes)
 }
 
 /// The frames of an animated GIF, WebP or PNG, as they come; `None` for a still picture.
@@ -274,7 +375,9 @@ impl Shell {
                 let bytes = tokio::fs::read(file.path())
                     .await
                     .map_err(|e| e.to_string())?;
+                let path = file.path().to_owned();
                 tokio::task::spawn_blocking(move || {
+                    let bytes = croppable(&path, bytes)?;
                     let size = image::ImageReader::new(std::io::Cursor::new(&bytes))
                         .with_guessed_format()
                         .map_err(|e| e.to_string())?
@@ -304,16 +407,20 @@ impl Shell {
         self.run(
             cx,
             async move {
-                tokio::task::spawn_blocking(move || crate::images::decode_animation(&bytes))
-                    .await
-                    .map_err(|e| e.to_string())?
+                tokio::task::spawn_blocking(move || {
+                    crate::images::decode_animation_sized(&bytes, PREVIEW_SIDE)
+                })
+                .await
+                .map_err(|e| e.to_string())?
             },
-            move |this, result: Result<_, String>, _, _| {
+            move |this, result: Result<_, String>, _, cx| {
                 if let Ok(Some(moving)) = result
                     && let Some(crop) = &mut this.crop
                     && Arc::ptr_eq(&crop.bytes, &picked)
                 {
                     crop.preview.moving = Some(moving);
+                    // Drawn now, not at the next thing that happens to redraw.
+                    cx.notify();
                 }
             },
         );
@@ -628,6 +735,43 @@ mod tests {
 
     fn square() -> Shape {
         CropFor::Avatar(String::new()).shape()
+    }
+
+    #[test]
+    fn svg_pictures_are_drawn_for_cropping() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+            <rect width="10" height="10" fill="red"/></svg>"#;
+        let png = croppable(std::path::Path::new("logo.SVG"), svg.to_vec()).unwrap();
+        let image = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(image.dimensions(), (1024, 512));
+        assert_eq!(image.get_pixel(10, 10).0, [255, 0, 0, 255]);
+        // The undrawn half stays see-through.
+        assert_eq!(image.get_pixel(1000, 10).0[3], 0);
+        // Other files pass as they are.
+        assert_eq!(
+            croppable(std::path::Path::new("a.png"), vec![1, 2]).unwrap(),
+            [1, 2]
+        );
+    }
+
+    #[test]
+    fn soft_animations_are_cropped_into_a_playing_png() {
+        let frame = |shade: u8| {
+            (
+                image::RgbaImage::from_pixel(4, 4, image::Rgba([shade, 0, 0, 128])),
+                image::Delay::from_numer_denom_ms(50, 1),
+            )
+        };
+        let bytes = apng(&[frame(10), frame(200), frame(90)], 4, 4).unwrap();
+        let frames: Vec<_> = crate::images::animation_decoder(&bytes)
+            .unwrap()
+            .expect("an animated PNG")
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(frames.len(), 3);
+        // Each frame stands on its own, half see-through, not laid over the one before.
+        assert_eq!(frames[1].buffer().get_pixel(0, 0).0, [200, 0, 0, 128]);
+        assert_eq!(frames[2].delay().numer_denom_ms(), (50, 1));
     }
 
     #[test]

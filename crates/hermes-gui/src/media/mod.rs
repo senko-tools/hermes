@@ -10,10 +10,13 @@ pub mod waveform;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-const SOUNDS: [&str; 9] = [
-    "mp3", "ogg", "oga", "opus", "wav", "flac", "m4a", "aac", "weba",
+// What FFmpeg plays; the type sent along may be generic (`application/octet-stream`).
+const SOUNDS: [&str; 12] = [
+    "mp3", "ogg", "oga", "opus", "wav", "flac", "m4a", "aac", "weba", "wma", "aiff", "alac",
 ];
-const VIDEOS: [&str; 6] = ["mp4", "m4v", "mkv", "mov", "webm", "avi"];
+const VIDEOS: [&str; 12] = [
+    "mp4", "m4v", "mkv", "mov", "webm", "avi", "ogv", "wmv", "flv", "ts", "m2ts", "3gp",
+];
 
 fn extension(filename: &str) -> String {
     filename

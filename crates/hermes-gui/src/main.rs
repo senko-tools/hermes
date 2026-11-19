@@ -59,6 +59,7 @@ mod updater_window;
 mod user_menu;
 mod voice;
 mod watchdog;
+mod webp_anim;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

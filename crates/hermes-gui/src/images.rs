@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, RenderImage, SharedString, Window, div, img};
 use hermes_client_core::InstanceId;
+use hermes_client_core::picture;
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::Attachment;
 use hermes_client_core::proto::models::{Status, User};
@@ -162,13 +163,10 @@ fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Pictur
         });
     }
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
-    let image = match max {
-        Some(max) if image.width() > max || image.height() > max => {
-            image.resize(max, max, image::imageops::FilterType::Lanczos3)
-        }
-        _ => image,
-    };
     let mut pixels = image.to_rgba8();
+    if let Some(max) = max {
+        pixels = picture::fit(pixels, max, image::imageops::FilterType::Lanczos3);
+    }
     to_bgra(&mut pixels);
     Ok(Picture {
         still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
@@ -180,12 +178,10 @@ fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Pictur
 /// is shown right after picking a file. See [`decode_animation`] for the rest of it.
 pub fn decode_first_frame(bytes: &[u8], max: u32) -> Result<Picture, String> {
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
-    let image = if image.width() > max || image.height() > max {
-        image.thumbnail(max, max)
-    } else {
-        image
-    };
     let mut pixels = image.to_rgba8();
+    if pixels.width() > max || pixels.height() > max {
+        pixels = picture::thumbnail(&pixels, max, max);
+    }
     to_bgra(&mut pixels);
     Ok(Picture {
         still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
@@ -193,9 +189,10 @@ pub fn decode_first_frame(bytes: &[u8], max: u32) -> Result<Picture, String> {
     })
 }
 
-/// All frames of an animated picture at preview size; `None` for a still one.
-pub fn decode_animation(bytes: &[u8]) -> Result<Option<Arc<RenderImage>>, String> {
-    let frames = frames_within(bytes, Some(ANIMATED_PREVIEW), PREVIEW_ANIMATION_BUDGET)?;
+/// All frames of an animated picture at most `side` pixels on a side, for a picture looked at
+/// closely for a while (the crop view): the larger budget of the viewer.
+pub fn decode_animation_sized(bytes: &[u8], side: u32) -> Result<Option<Arc<RenderImage>>, String> {
+    let frames = frames_within(bytes, Some(side), ANIMATION_BUDGET)?;
     Ok(frames.map(|frames| Arc::new(RenderImage::new(frames))))
 }
 
@@ -216,13 +213,11 @@ pub fn animation_decoder(bytes: &[u8]) -> Result<Option<image::Frames<'_>>, Stri
         image::ImageFormat::Gif => image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
             .map_err(err)?
             .into_frames(),
-        image::ImageFormat::WebP => {
-            let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(bytes)).map_err(err)?;
-            if !decoder.has_animation() {
-                return Ok(None);
-            }
-            decoder.into_frames()
-        }
+        // Put together here: `image-webp` leaves disposed frames behind (see `webp_anim`).
+        image::ImageFormat::WebP => match crate::webp_anim::frames(bytes) {
+            Some(frames) => frames,
+            None => return Ok(None),
+        },
         image::ImageFormat::Png => {
             let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes)).map_err(err)?;
             if !decoder.is_apng().map_err(err)? {
@@ -275,16 +270,7 @@ fn frames_within(
 
 /// `pixels` made to fit `side` on its long side, keeping its shape.
 fn fit(pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
-    let (w, h) = pixels.dimensions();
-    if w <= side && h <= side {
-        return pixels;
-    }
-    let scale = side as f32 / w.max(h) as f32;
-    let (nw, nh) = (
-        ((w as f32 * scale).round() as u32).max(1),
-        ((h as f32 * scale).round() as u32).max(1),
-    );
-    image::imageops::resize(&pixels, nw, nh, image::imageops::FilterType::Triangle)
+    picture::fit(pixels, side, image::imageops::FilterType::Triangle)
 }
 
 impl Shell {
@@ -641,8 +627,16 @@ pub(crate) mod tests {
         let first = decode_first_frame(&moving, 32).unwrap();
         assert!(first.moving.is_none());
         assert_eq!(first.still.size(0).width.0, 32);
-        assert!(decode_animation(&moving).unwrap().is_some());
-        assert!(decode_animation(&gif(1, 64)).unwrap().is_none());
+        assert!(
+            decode_animation_sized(&moving, ANIMATED_PREVIEW)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            decode_animation_sized(&gif(1, 64), ANIMATED_PREVIEW)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
