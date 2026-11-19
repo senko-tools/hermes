@@ -446,48 +446,10 @@ pub fn author_color(s: &InstanceStore, space: Id, user: Id) -> Option<u32> {
         .find_map(|r| r.color)
 }
 
-/// A day divider's text: `Today`, `Yesterday`, the weekday within the last week, else the
-/// date (`October 31, 2026`). `day` and `today` count days since 1970-01-01.
-pub fn day_label(day: i64, today: i64) -> String {
-    const WEEKDAYS: [&str; 7] = [
-        "Sunday",
-        "Monday",
-        "Tuesday",
-        "Wednesday",
-        "Thursday",
-        "Friday",
-        "Saturday",
-    ];
-    const MONTHS: [&str; 12] = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    match today - day {
-        0 => "Today".to_owned(),
-        1 => "Yesterday".to_owned(),
-        // 1970-01-01 was a Thursday.
-        2..=6 => WEEKDAYS[(day + 4).rem_euclid(7) as usize].to_owned(),
-        _ => {
-            let date = time::format(day * 86_400_000, "%Y %m %d", 0);
-            let mut parts = date.split(' ').map(|p| p.parse::<usize>().unwrap_or(1));
-            let (y, m, d) = (
-                parts.next().unwrap_or(1970),
-                parts.next().unwrap_or(1),
-                parts.next().unwrap_or(1),
-            );
-            format!("{} {d}, {y}", MONTHS[(m - 1).min(11)])
-        }
-    }
+/// A day divider's text: the date in `[buffer] date_format`. `day` counts days since
+/// 1970-01-01 (local).
+pub fn day_label(day: i64, format: &str) -> String {
+    time::format(day * 86_400_000, format, 0)
 }
 
 /// The token being typed before byte offset `cursor` of `text`: from the last whitespace to the
@@ -3002,14 +2964,11 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .child("Loading older messages…")
                 .into_any_element(),
-            Row::Day { day, .. } => {
-                let today = time::day(now_ms(), self.utc_offset);
-                divider(
-                    day_label(*day, today),
-                    theme::text_tertiary(),
-                    theme::border(),
-                )
-            }
+            Row::Day { day, .. } => divider(
+                day_label(*day, &self.config.buffer.date_format),
+                theme::text_tertiary(),
+                theme::border(),
+            ),
             Row::NewMessages => {
                 // Notes when the divider is on screen, so the button leading to it goes.
                 let seen = self.chats.get(&key).map(|v| v.divider_seen.clone());

@@ -1,6 +1,8 @@
-//! The settings page (PLAN.md section 15.1), shown over the whole window: Account, Appearance,
-//! Chat, Voice & Audio, Notifications, Keybinds and About. Every change is written to
-//! `config.toml`.
+//! The settings page, shown over the whole window: its tabs in sections (You, App, Voice &
+//! video, Advanced), a search over every setting, and long groups that fold. Every change is
+//! written to `config.toml`.
+
+use std::cell::{Cell, RefCell};
 
 use gpui_kit::AnimationExt as _;
 use gpui_kit::component::IndexPath;
@@ -34,30 +36,67 @@ const SCALE_PRESETS: [f64; 5] = [0.9, 1.0, 1.1, 1.25, 1.5];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
     Account,
+    Privacy,
     #[default]
     Appearance,
     Chat,
-    Voice,
     Notifications,
-    Privacy,
+    Window,
     Keybinds,
-    Admin,
+    Voice,
+    ScreenShare,
     Diagnostics,
+    Admin,
     About,
 }
 
-const TABS: [(Tab, &str, &str); 10] = [
-    (Tab::Account, assets::ACCOUNT, "Account"),
-    (Tab::Appearance, assets::PALETTE, "Appearance"),
-    (Tab::Chat, assets::CHAT, "Chat"),
-    (Tab::Voice, assets::MIC, "Voice & Audio"),
-    (Tab::Notifications, assets::BELL, "Notifications"),
-    (Tab::Privacy, assets::LOCK, "Privacy"),
-    (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
-    (Tab::Admin, assets::SERVER, "Instance"),
-    (Tab::Diagnostics, assets::PULSE, "Diagnostics"),
-    (Tab::About, assets::INFO, "About"),
+/// A tab in the navigation: the tab, its icon and its name.
+type NavTab = (Tab, &'static str, &'static str);
+
+/// The navigation: sections of tabs. About stands apart at the bottom.
+const SECTIONS: [(&str, &[NavTab]); 4] = [
+    (
+        "You",
+        &[
+            (Tab::Account, assets::ACCOUNT, "Account"),
+            (Tab::Privacy, assets::LOCK, "Privacy & safety"),
+        ],
+    ),
+    (
+        "App",
+        &[
+            (Tab::Appearance, assets::PALETTE, "Appearance"),
+            (Tab::Chat, assets::CHAT, "Chat"),
+            (Tab::Notifications, assets::BELL, "Notifications"),
+            (Tab::Window, assets::COG, "Window & startup"),
+            (Tab::Keybinds, assets::KEYBOARD, "Keybinds"),
+        ],
+    ),
+    (
+        "Voice & video",
+        &[
+            (Tab::Voice, assets::MIC, "Voice & Audio"),
+            (Tab::ScreenShare, assets::MONITOR_SHARE, "Screen sharing"),
+        ],
+    ),
+    (
+        "Advanced",
+        &[
+            (Tab::Diagnostics, assets::PULSE, "Diagnostics"),
+            (Tab::Admin, assets::SERVER, "Instance"),
+        ],
+    ),
 ];
+const ABOUT: NavTab = (Tab::About, assets::INFO, "About");
+
+/// Every tab in the navigation's order, with its name.
+fn all_tabs() -> impl Iterator<Item = (Tab, &'static str)> {
+    SECTIONS
+        .iter()
+        .flat_map(|(_, tabs)| tabs.iter())
+        .chain(std::iter::once(&ABOUT))
+        .map(|(tab, _, name)| (*tab, *name))
+}
 
 /// The keybind groups, in the order shown. Pane keys come with split panes.
 const KEY_GROUPS: [(&str, &[Action]); 3] = [
@@ -219,6 +258,9 @@ pub struct SettingsPage {
     font: Entity<SelectState<Vec<DeviceChoice>>>,
     mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
+    date_format: Entity<InputState>,
+    /// Searching every setting by name and hint.
+    search: Entity<InputState>,
     ptt_key: Entity<InputState>,
     sliders: Vec<(SliderKind, Entity<SliderState>)>,
     _events: Vec<Subscription>,
@@ -317,8 +359,32 @@ impl Shell {
             window,
             cx,
         );
+        let date_format = text_field(
+            self.config.buffer.date_format.clone(),
+            "%B %e, %Y",
+            window,
+            cx,
+        );
         let ptt_key = text_field(voice.ptt_key.clone(), "e.g. Mouse4", window, cx);
+        let search = text_field(String::new(), "Search settings", window, cx);
         let mut events = vec![
+            cx.subscribe_in(&search, window, |this, _, event, window, cx| match event {
+                InputEvent::Change => cx.notify(),
+                // Enter opens the first thing found.
+                InputEvent::PressEnter { .. } => {
+                    if let Some((tab, found)) = this.settings_found(cx).into_iter().next() {
+                        this.open_found(tab, found, window, cx);
+                    }
+                }
+                _ => {}
+            }),
+            cx.subscribe_in(&date_format, window, |this, input, event, _, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    let value = input.read(cx).value().to_string();
+                    this.persist("buffer.date_format", &toml_string(value), cx);
+                    this.info("Date format saved", cx);
+                }
+            }),
             font_events,
             mono_events,
             cx.subscribe_in(&time_format, window, |this, input, event, _, cx| {
@@ -467,6 +533,8 @@ impl Shell {
             font: font_input,
             mono_font: mono_input,
             time_format,
+            date_format,
+            search,
             ptt_key,
             sliders,
             _events: events,
@@ -499,6 +567,7 @@ impl Shell {
             return;
         };
         page.tab = tab;
+        reset_page_scroll();
         page.fine_timers = (tab == Tab::Voice).then(crate::desktop::window::FineTimers::new);
         // Diagnostics listen to the microphone for a moment of their own.
         let listening = self
@@ -892,35 +961,75 @@ impl Shell {
     pub fn render_settings(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let page = self.settings.as_ref()?;
         let admin = self.is_instance_admin();
-        let nav: Vec<AnyElement> = TABS
-            .iter()
-            .filter(|(tab, _, _)| *tab != Tab::Admin || admin)
-            .map(|(tab, glyph, name)| {
-                let tab = *tab;
-                nav_item(glyph, name, page.tab == tab, format!("settings-tab-{name}"))
-                    .on_click(cx.listener(move |this, _, _, cx| this.settings_open_tab(tab, cx)))
-                    .into_any_element()
-            })
-            .collect();
-        let content = match page.tab {
-            Tab::Account => self.tab_account(page, cx),
-            Tab::Appearance => self.tab_appearance(page, cx),
-            Tab::Chat => self.tab_chat(page, cx),
-            Tab::Voice => self.tab_voice(page, cx),
-            Tab::Notifications => self.tab_notifications(cx),
-            Tab::Privacy => self.tab_privacy(cx),
-            Tab::Admin => self.tab_admin(page, cx),
-            Tab::Keybinds => self.tab_keybinds(page, cx),
-            Tab::Diagnostics => self.tab_diagnostics(cx),
-            Tab::About => self.tab_about(cx),
+        let item = |(tab, glyph, name): &NavTab, cx: &mut Context<Self>| {
+            let tab = *tab;
+            nav_item(glyph, name, page.tab == tab, format!("settings-tab-{name}"))
+                .on_click(cx.listener(move |this, _, _, cx| this.settings_open_tab(tab, cx)))
+                .into_any_element()
+        };
+        let mut nav: Vec<AnyElement> = vec![
+            div()
+                .flex_shrink_0()
+                .mb(px(4.))
+                .child(
+                    Input::new(&page.search)
+                        .small()
+                        .prefix(icon(assets::SEARCH, 14., theme::text_tertiary()))
+                        .cleanable(true),
+                )
+                .into_any_element(),
+        ];
+        for (title, tabs) in SECTIONS {
+            let tabs: Vec<_> = tabs
+                .iter()
+                .filter(|(tab, ..)| *tab != Tab::Admin || admin)
+                .collect();
+            if tabs.is_empty() {
+                continue;
+            }
+            nav.push(nav_section(title));
+            nav.extend(tabs.into_iter().map(|t| item(t, cx)));
+        }
+        // About stays at the bottom, under a line.
+        nav.push(div().flex_1().min_h(px(12.)).into_any_element());
+        nav.push(
+            div()
+                .flex_shrink_0()
+                .h(px(1.))
+                .mx(px(8.))
+                .mb(px(6.))
+                .bg(theme::border())
+                .into_any_element(),
+        );
+        nav.push(item(&ABOUT, cx));
+        let query = page.search.read(cx).value().trim().to_owned();
+        let content = if !query.is_empty() {
+            self.search_results(&query, cx)
+        } else {
+            match page.tab {
+                Tab::Account => self.tab_account(page, cx),
+                Tab::Privacy => self.tab_privacy(cx),
+                Tab::Appearance => self.tab_appearance(page, cx),
+                Tab::Chat => self.tab_chat(page, cx),
+                Tab::Notifications => self.tab_notifications(cx),
+                Tab::Window => self.tab_window(cx),
+                Tab::Keybinds => self.tab_keybinds(page, cx),
+                Tab::Voice => self.tab_voice(page, cx),
+                Tab::ScreenShare => self.tab_screen_share(cx),
+                Tab::Diagnostics => self.tab_diagnostics(cx),
+                Tab::Admin => self.tab_admin(page, cx),
+                Tab::About => self.tab_about(cx),
+            }
+        };
+        let key = if query.is_empty() {
+            format!("settings-{:?}", page.tab)
+        } else {
+            "settings-search".to_owned()
         };
         Some(frame(
             "User settings".into(),
             nav,
-            theme::enter(
-                SharedString::from(format!("settings-{:?}", page.tab)),
-                content,
-            ),
+            theme::enter(SharedString::from(key), content),
             cx.listener(|this, _, _, cx| this.close_settings(cx)),
         ))
     }
@@ -937,13 +1046,10 @@ impl Shell {
             );
         }
         let selected = self.account_instance();
-        let (me, privacy) = {
+        let me = {
             let store = self.core.store();
             let s = selected.as_ref().and_then(|i| store.instance(i));
-            (
-                s.and_then(|s| s.me.clone()),
-                s.map(|s| s.privacy).unwrap_or_default(),
-            )
+            s.and_then(|s| s.me.clone())
         };
         let mut account_rows = Vec::new();
         if instances.len() > 1 {
@@ -1127,66 +1233,6 @@ impl Shell {
                 })),
         ));
 
-        let dm_chips = [
-            (DmFrom::Everyone, "Everyone"),
-            (DmFrom::Spaces, "People in my servers"),
-            (DmFrom::Nobody, "Nobody"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name))| {
-            chip(("dm-from", n), name, privacy.dm_from == value).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.set_privacy(
-                        UpdatePrivacyRequest {
-                            dm_from: Some(value),
-                            ..UpdatePrivacyRequest::default()
-                        },
-                        cx,
-                    );
-                },
-            ))
-        });
-        let privacy_rows = vec![
-            setting(
-                "Direct messages from",
-                "Who can start a conversation with you.",
-                wrap().children(dm_chips),
-            ),
-            setting(
-                "Message requests",
-                "Messages from anyone else wait in Requests. Off: they cannot message you.",
-                Switch::new("allow-requests")
-                    .cursor_pointer()
-                    .checked(privacy.message_requests)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.set_privacy(
-                            UpdatePrivacyRequest {
-                                message_requests: Some(*on),
-                                ..UpdatePrivacyRequest::default()
-                            },
-                            cx,
-                        );
-                    })),
-            ),
-            setting(
-                "Show when I was last online",
-                "On your profile, for people who share a server with you and your friends.",
-                Switch::new("show-last-online")
-                    .cursor_pointer()
-                    .checked(privacy.show_last_online)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.set_privacy(
-                            UpdatePrivacyRequest {
-                                show_last_online: Some(*on),
-                                ..UpdatePrivacyRequest::default()
-                            },
-                            cx,
-                        );
-                    })),
-            ),
-        ];
-
         let mut device_rows: Vec<AnyElement> = Vec::new();
         match &page.sessions {
             Remote::Idle | Remote::Loading => device_rows.push(theme::skeleton("devices", 3)),
@@ -1242,21 +1288,8 @@ impl Shell {
             None,
             vec![
                 group("Account", account_rows),
-                group("Privacy", privacy_rows),
                 group("Signed-in devices", device_rows),
                 self.security_group(page, &inst, cx),
-                group(
-                    "End-to-end encryption",
-                    vec![setting(
-                        "This device",
-                        "Only your and their devices can read DMs, files and calls.",
-                        muted(
-                            self.core.my_device_id(&inst).map_or_else(String::new, |d| {
-                                d.chars().take(16).collect::<String>()
-                            }),
-                        ),
-                    )],
-                ),
             ],
         )
     }
@@ -1463,6 +1496,11 @@ impl Shell {
             &b.timestamp_format,
             self.utc_offset,
         );
+        let date_preview = time::format(
+            hermes_client_core::now_ms(),
+            &b.date_format,
+            self.utc_offset,
+        );
         page_body(
             "Chat",
             None,
@@ -1575,6 +1613,34 @@ impl Shell {
                             "Time format",
                             &format!("Now: {preview}. Enter saves."),
                             Input::new(&page.time_format),
+                        ),
+                        setting(
+                            "Date",
+                            "On the line between days.",
+                            wrap().children(DATE_FORMATS.into_iter().enumerate().map(
+                                |(n, format)| {
+                                    let name = time::format(
+                                        hermes_client_core::now_ms(),
+                                        format,
+                                        self.utc_offset,
+                                    );
+                                    chip(("date-format", n), name, b.date_format == format)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.persist(
+                                                "buffer.date_format",
+                                                &toml_string(format.to_owned()),
+                                                cx,
+                                            );
+                                        }))
+                                },
+                            )),
+                        ),
+                        setting(
+                            "Date format",
+                            &format!(
+                                "Now: {date_preview}. %e is the day, %B the month, %A the                                  weekday, %Y the year. Enter saves."
+                            ),
+                            Input::new(&page.date_format),
                         ),
                     ],
                 ),
@@ -2110,54 +2176,330 @@ impl Shell {
         );
     }
 
+    /// The account's server-side privacy and this device's keys, for the Privacy tab; empty when
+    /// not signed in.
+    fn account_privacy_groups(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(inst) = self.account_instance() else {
+            return Vec::new();
+        };
+        let privacy = {
+            let store = self.core.store();
+            match store.instance(&inst) {
+                Some(s) if s.me.is_some() => s.privacy,
+                _ => return Vec::new(),
+            }
+        };
+        let many = self.core.instance_ids().len() > 1;
+        let dm_chips = [
+            (DmFrom::Everyone, "Everyone"),
+            (DmFrom::Spaces, "People in my servers"),
+            (DmFrom::Nobody, "Nobody"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (value, name))| {
+            chip(("dm-from", n), name, privacy.dm_from == value).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.set_privacy(
+                        UpdatePrivacyRequest {
+                            dm_from: Some(value),
+                            ..UpdatePrivacyRequest::default()
+                        },
+                        cx,
+                    );
+                },
+            ))
+        });
+        let privacy_rows = vec![
+            setting(
+                "Direct messages from",
+                "Who can start a conversation with you.",
+                wrap().children(dm_chips),
+            ),
+            setting(
+                "Message requests",
+                "Messages from anyone else wait in Requests. Off: they cannot message you.",
+                Switch::new("allow-requests")
+                    .cursor_pointer()
+                    .checked(privacy.message_requests)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        this.set_privacy(
+                            UpdatePrivacyRequest {
+                                message_requests: Some(*on),
+                                ..UpdatePrivacyRequest::default()
+                            },
+                            cx,
+                        );
+                    })),
+            ),
+            setting(
+                "Show when I was last online",
+                "On your profile, for people who share a server with you and your friends.",
+                Switch::new("show-last-online")
+                    .cursor_pointer()
+                    .checked(privacy.show_last_online)
+                    .on_click(cx.listener(|this, on: &bool, _, cx| {
+                        this.set_privacy(
+                            UpdatePrivacyRequest {
+                                show_last_online: Some(*on),
+                                ..UpdatePrivacyRequest::default()
+                            },
+                            cx,
+                        );
+                    })),
+            ),
+        ];
+        let title = if many {
+            format!("Who can reach you on {inst}")
+        } else {
+            "Who can reach you".to_owned()
+        };
+        vec![
+            group(&title, privacy_rows),
+            group(
+                "End-to-end encryption",
+                vec![setting(
+                    "This device",
+                    "Only your and their devices can read DMs, files and calls.",
+                    muted(
+                        self.core
+                            .my_device_id(&inst)
+                            .map_or_else(String::new, |d| d.chars().take(16).collect::<String>()),
+                    ),
+                )],
+            ),
+        ]
+    }
+
     fn tab_privacy(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = &self.config.privacy;
+        let mut groups = self.account_privacy_groups(cx);
+        let device = group(
+            "What this device tells the server",
+            vec![
+                self.flag(
+                    "Show others when I am typing",
+                    "",
+                    p.send_typing,
+                    "privacy.send_typing",
+                    cx,
+                ),
+                self.flag(
+                    "Sync what I have read",
+                    "Off: the server is not told, and your other devices will not know either.",
+                    p.send_read_marks,
+                    "privacy.send_read_marks",
+                    cx,
+                ),
+                setting(
+                    "Close the microphone while muted",
+                    "The system then shows it as unused. Unmuting takes a moment longer.",
+                    Switch::new("close-mic")
+                        .cursor_pointer()
+                        .checked(self.config.voice.close_mic_when_muted)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
+                        })),
+                ),
+                self.flag(
+                    "Search on this device only",
+                    "Older unencrypted messages are then not found.",
+                    p.local_search_only,
+                    "privacy.local_search_only",
+                    cx,
+                ),
+                setting(
+                    "Warn about unencrypted chats",
+                    "A popup when opening a chat the server can read. The note above \
+                        the message box is always there.",
+                    self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
+                ),
+            ],
+        );
+        // Before the keys: what the server is told comes with who can reach you.
+        let at = groups.len().min(1);
+        groups.insert(at, device);
+        page_body("Privacy & safety", None, groups)
+    }
+
+    fn tab_window(&self, cx: &mut Context<Self>) -> AnyElement {
+        let g = &self.config.general;
         page_body(
-            "Privacy",
+            "Window & startup",
             None,
             vec![group(
-                "What this device tells the server",
+                "Window",
                 vec![
                     self.flag(
-                        "Show others when I am typing",
-                        "",
-                        p.send_typing,
-                        "privacy.send_typing",
-                        cx,
-                    ),
-                    self.flag(
-                        "Sync what I have read",
-                        "Off: the server is not told, and your other devices will not know either.",
-                        p.send_read_marks,
-                        "privacy.send_read_marks",
+                        "Close to the tray",
+                        "Closing the window keeps Hermes running in the tray.",
+                        g.close_to_tray,
+                        "general.close_to_tray",
                         cx,
                     ),
                     setting(
-                        "Close the microphone while muted",
-                        "The system then shows it as unused. Unmuting takes a moment longer.",
-                        Switch::new("close-mic")
+                        "Start when I sign in",
+                        "Hermes opens by itself when you sign in to this computer.",
+                        Switch::new("start-on-login")
                             .cursor_pointer()
-                            .checked(self.config.voice.close_mic_when_muted)
+                            .checked(g.start_on_login)
                             .on_click(cx.listener(|this, on: &bool, _, cx| {
                                 let on = *on;
-                                this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
+                                match crate::desktop::set_start_on_login(on) {
+                                    Ok(()) => {
+                                        this.persist("general.start_on_login", &on.to_string(), cx)
+                                    }
+                                    Err(err) => this.error(err, cx),
+                                }
                             })),
                     ),
+                    setting(
+                        "Go idle after",
+                        "With nothing touched for this long.",
+                        wrap().children(
+                            [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(n, (minutes, name))| {
+                                    chip(("idle-after", n), name, g.auto_idle_minutes == minutes)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.persist(
+                                                "general.auto_idle_minutes",
+                                                &minutes.to_string(),
+                                                cx,
+                                            );
+                                        }))
+                                }),
+                        ),
+                    ),
                     self.flag(
-                        "Search on this device only",
-                        "Older unencrypted messages are then not found.",
-                        p.local_search_only,
-                        "privacy.local_search_only",
+                        "Start minimized to the tray",
+                        "",
+                        g.start_minimized,
+                        "general.start_minimized",
+                        cx,
+                    ),
+                    self.flag(
+                        "Check for updates on start",
+                        "",
+                        g.check_for_updates,
+                        "general.check_for_updates",
+                        cx,
+                    ),
+                    self.flag(
+                        "Install updates by themselves",
+                        "A newer version found on start is downloaded (only what changed) \
+                             and Hermes restarts into it.",
+                        g.auto_update,
+                        "general.auto_update",
                         cx,
                     ),
                     setting(
-                        "Warn about unencrypted chats",
-                        "A popup when opening a chat the server can read. The note above \
-                        the message box is always there.",
-                        self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
+                        "Check for updates now",
+                        "",
+                        Button::new("update-now")
+                            .cursor_pointer()
+                            .label("Check")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.check_for_update_now(cx);
+                            })),
                     ),
                 ],
             )],
+        )
+    }
+
+    fn tab_screen_share(&self, cx: &mut Context<Self>) -> AnyElement {
+        let v = &self.config.voice;
+        // Before the list has loaded (or where capture is unavailable): the primary screen only.
+        let screens: Vec<(String, String)> = if self.screen_list.is_empty() {
+            vec![(String::new(), "Screen 1 (primary)".to_owned())]
+        } else {
+            self.screen_list
+                .iter()
+                .map(|s| (s.value.clone(), s.label()))
+                .collect()
+        };
+        let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
+            chip(("settings-screen", n), name, screen == v.share_screen).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.persist("voice.share_screen", &toml_string(screen.clone()), cx);
+                },
+            ))
+        });
+        let res_chips = RESOLUTIONS.into_iter().enumerate().map(|(n, value)| {
+            let name = if value == "native" { "Native" } else { value };
+            chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.persist("voice.share_resolution", &toml_string(value.to_owned()), cx);
+                },
+            ))
+        });
+        let fps_chips = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
+            chip(
+                ("settings-fps", n),
+                format!("{fps} fps"),
+                v.share_fps == fps,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.persist("voice.share_fps", &fps.to_string(), cx);
+            }))
+        });
+        let current = Preference::from_config(&v.share_preference);
+        let pref_chips = PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
+            chip(
+                ("settings-pref", n),
+                preference.label(),
+                preference == current,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.persist(
+                    "voice.share_preference",
+                    &toml_string(preference.config_value().to_owned()),
+                    cx,
+                );
+                if let Some(capture) = &this.capture {
+                    capture.set_preference(preference);
+                }
+            }))
+        });
+        let sharing = group(
+            "What you share",
+            vec![
+                setting("Screen to share", "", wrap().children(screen_chips)),
+                setting(
+                    "Resolution",
+                    "From your next share",
+                    wrap().children(res_chips),
+                ),
+                setting(
+                    "Frame rate",
+                    "From your next share",
+                    wrap().children(fps_chips),
+                ),
+                setting(
+                    "Share sound",
+                    "Others hear what your computer plays, but not this call. From your next \
+                    share; needs Windows 10 version 2004 or later.",
+                    Switch::new("share-sound")
+                        .cursor_pointer()
+                        .checked(v.share_sound)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            this.persist("voice.share_sound", &on.to_string(), cx);
+                        })),
+                ),
+                setting(
+                    "When it cannot keep up",
+                    "What your share keeps when it falls behind",
+                    wrap().children(pref_chips),
+                ),
+            ],
+        );
+        page_body(
+            "Screen sharing",
+            Some("These are also chosen in the share picker each time you share."),
+            vec![sharing],
         )
     }
 
@@ -2328,7 +2670,8 @@ impl Shell {
                     this.change_voice(cx, move |voice| set(voice, on));
                 }))
         };
-        let processing = group(
+        let processing = self.fold_group(
+            "processing",
             "Processing",
             vec![
                 setting(
@@ -2399,6 +2742,7 @@ impl Shell {
                     self.slider(page, SliderKind::AgcTarget),
                 ),
             ],
+            cx,
         );
         let join_chips = [
             ("double_click", "Double-click"),
@@ -2414,7 +2758,8 @@ impl Shell {
             ))
         })
         .collect::<Vec<_>>();
-        let sounds = group(
+        let sounds = self.fold_group(
+            "sounds",
             "Sounds and joining",
             vec![
                 setting(
@@ -2429,90 +2774,7 @@ impl Shell {
                 ),
                 setting("Join a voice channel with", "", wrap().children(join_chips)),
             ],
-        );
-        // Before the list has loaded (or where capture is unavailable): the primary screen only.
-        let screens: Vec<(String, String)> = if self.screen_list.is_empty() {
-            vec![(String::new(), "Screen 1 (primary)".to_owned())]
-        } else {
-            self.screen_list
-                .iter()
-                .map(|s| (s.value.clone(), s.label()))
-                .collect()
-        };
-        let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
-            chip(("settings-screen", n), name, screen == v.share_screen).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.persist("voice.share_screen", &toml_string(screen.clone()), cx);
-                },
-            ))
-        });
-        let res_chips = RESOLUTIONS.into_iter().enumerate().map(|(n, value)| {
-            let name = if value == "native" { "Native" } else { value };
-            chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
-                move |this, _, _, cx| {
-                    this.persist("voice.share_resolution", &toml_string(value.to_owned()), cx);
-                },
-            ))
-        });
-        let fps_chips = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
-            chip(
-                ("settings-fps", n),
-                format!("{fps} fps"),
-                v.share_fps == fps,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.persist("voice.share_fps", &fps.to_string(), cx);
-            }))
-        });
-        let current = Preference::from_config(&v.share_preference);
-        let pref_chips = PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
-            chip(
-                ("settings-pref", n),
-                preference.label(),
-                preference == current,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.persist(
-                    "voice.share_preference",
-                    &toml_string(preference.config_value().to_owned()),
-                    cx,
-                );
-                if let Some(capture) = &this.capture {
-                    capture.set_preference(preference);
-                }
-            }))
-        });
-        let sharing = group(
-            "Screen sharing",
-            vec![
-                setting("Screen to share", "", wrap().children(screen_chips)),
-                setting(
-                    "Resolution",
-                    "From your next share",
-                    wrap().children(res_chips),
-                ),
-                setting(
-                    "Frame rate",
-                    "From your next share",
-                    wrap().children(fps_chips),
-                ),
-                setting(
-                    "Share sound",
-                    "Others hear what your computer plays, but not this call. From your next \
-                    share; needs Windows 10 version 2004 or later.",
-                    Switch::new("share-sound")
-                        .cursor_pointer()
-                        .checked(v.share_sound)
-                        .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            this.persist("voice.share_sound", &on.to_string(), cx);
-                        })),
-                ),
-                setting(
-                    "When it cannot keep up",
-                    "What your share keeps when it falls behind",
-                    wrap().children(pref_chips),
-                ),
-            ],
+            cx,
         );
         page_body(
             "Voice & Audio",
@@ -2523,226 +2785,135 @@ impl Shell {
                 group("Input", input_rows),
                 processing,
                 sounds,
-                sharing,
             ],
         )
     }
 
     fn tab_notifications(&self, cx: &mut Context<Self>) -> AnyElement {
         let n = &self.config.notifications;
-        let g = &self.config.general;
         page_body(
             "Notifications",
             Some("Per server and channel: right-click it, Notifications."),
-            vec![
-                group(
-                    "Desktop notifications",
-                    vec![
-                        self.flag(
-                            "Show notifications",
-                            "",
-                            n.enabled,
-                            "notifications.enabled",
-                            cx,
-                        ),
-                        self.flag(
-                            "Show the message text",
-                            "Off: only who wrote, and where.",
-                            n.show_preview,
-                            "notifications.show_preview",
-                            cx,
-                        ),
-                        self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
-                        setting(
-                            "Test sounds",
-                            "Messages and DMs play the softer one, mentions the ping.",
-                            div()
-                                .flex()
-                                .gap(px(8.))
-                                .child(
-                                    Button::new("test-sound-message")
-                                        .cursor_pointer()
-                                        .label("Message")
-                                        .on_click(cx.listener(|this, _, _, _| {
-                                            this.core.play_sound(Sound::Message);
-                                        })),
-                                )
-                                .child(
-                                    Button::new("test-sound-mention")
-                                        .cursor_pointer()
-                                        .label("Mention")
-                                        .on_click(cx.listener(|this, _, _, _| {
-                                            this.core.play_sound(Sound::Ping);
-                                        })),
-                                ),
-                        ),
-                        setting(
-                            "Quiet hours",
-                            &if n.quiet_from.is_empty() {
-                                "None".to_owned()
-                            } else {
-                                format!("{} to {}", n.quiet_from, n.quiet_to)
-                            },
-                            Button::new("quiet-hours")
-                                .cursor_pointer()
-                                .label("Change")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_form_quiet_hours(window, cx);
-                                })),
-                        ),
-                        setting(
-                            "Words that notify me",
-                            &if n.keywords.is_empty() {
-                                "None".to_owned()
-                            } else {
-                                n.keywords.clone()
-                            },
-                            Button::new("keywords")
-                                .cursor_pointer()
-                                .label("Change")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_form_keywords(window, cx);
-                                })),
-                        ),
-                        self.flag(
-                            "Pop up for DMs",
-                            "",
-                            n.toast_dms,
-                            "notifications.toast_dms",
-                            cx,
-                        ),
-                        self.flag(
-                            "Pop up for mentions",
-                            "",
-                            n.toast_mentions,
-                            "notifications.toast_mentions",
-                            cx,
-                        ),
-                        self.flag(
-                            "Pop up for other messages",
-                            "",
-                            n.toast_other,
-                            "notifications.toast_other",
-                            cx,
-                        ),
-                        self.flag(
-                            "Sound for DMs",
-                            "",
-                            n.sound_dms,
-                            "notifications.sound_dms",
-                            cx,
-                        ),
-                        self.flag(
-                            "Sound for mentions",
-                            "",
-                            n.sound_mentions,
-                            "notifications.sound_mentions",
-                            cx,
-                        ),
-                        self.flag(
-                            "Sound for other messages",
-                            "",
-                            n.sound_other,
-                            "notifications.sound_other",
-                            cx,
-                        ),
-                        self.flag(
-                            "Flash the taskbar button",
-                            "",
-                            n.flash_taskbar,
-                            "notifications.flash_taskbar",
-                            cx,
-                        ),
-                    ],
-                ),
-                group(
-                    "Window",
-                    vec![
-                        self.flag(
-                            "Close to the tray",
-                            "Closing the window keeps Hermes running in the tray.",
-                            g.close_to_tray,
-                            "general.close_to_tray",
-                            cx,
-                        ),
-                        setting(
-                            "Start when I sign in",
-                            "Hermes opens by itself when you sign in to this computer.",
-                            Switch::new("start-on-login")
-                                .cursor_pointer()
-                                .checked(g.start_on_login)
-                                .on_click(cx.listener(|this, on: &bool, _, cx| {
-                                    let on = *on;
-                                    match crate::desktop::set_start_on_login(on) {
-                                        Ok(()) => this.persist(
-                                            "general.start_on_login",
-                                            &on.to_string(),
-                                            cx,
-                                        ),
-                                        Err(err) => this.error(err, cx),
-                                    }
-                                })),
-                        ),
-                        setting(
-                            "Go idle after",
-                            "With nothing touched for this long.",
-                            wrap().children(
-                                [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")]
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(n, (minutes, name))| {
-                                        chip(
-                                            ("idle-after", n),
-                                            name,
-                                            g.auto_idle_minutes == minutes,
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.persist(
-                                                    "general.auto_idle_minutes",
-                                                    &minutes.to_string(),
-                                                    cx,
-                                                );
-                                            }),
-                                        )
-                                    }),
+            vec![group(
+                "Desktop notifications",
+                vec![
+                    self.flag(
+                        "Show notifications",
+                        "",
+                        n.enabled,
+                        "notifications.enabled",
+                        cx,
+                    ),
+                    self.flag(
+                        "Show the message text",
+                        "Off: only who wrote, and where.",
+                        n.show_preview,
+                        "notifications.show_preview",
+                        cx,
+                    ),
+                    self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
+                    setting(
+                        "Test sounds",
+                        "Messages and DMs play the softer one, mentions the ping.",
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(
+                                Button::new("test-sound-message")
+                                    .cursor_pointer()
+                                    .label("Message")
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.core.play_sound(Sound::Message);
+                                    })),
+                            )
+                            .child(
+                                Button::new("test-sound-mention")
+                                    .cursor_pointer()
+                                    .label("Mention")
+                                    .on_click(cx.listener(|this, _, _, _| {
+                                        this.core.play_sound(Sound::Ping);
+                                    })),
                             ),
-                        ),
-                        self.flag(
-                            "Start minimized to the tray",
-                            "",
-                            g.start_minimized,
-                            "general.start_minimized",
-                            cx,
-                        ),
-                        self.flag(
-                            "Check for updates on start",
-                            "",
-                            g.check_for_updates,
-                            "general.check_for_updates",
-                            cx,
-                        ),
-                        self.flag(
-                            "Install updates by themselves",
-                            "A newer version found on start is downloaded (only what changed) \
-                             and Hermes restarts into it.",
-                            g.auto_update,
-                            "general.auto_update",
-                            cx,
-                        ),
-                        setting(
-                            "Check for updates now",
-                            "",
-                            Button::new("update-now")
-                                .cursor_pointer()
-                                .label("Check")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.check_for_update_now(cx);
-                                })),
-                        ),
-                    ],
-                ),
-            ],
+                    ),
+                    setting(
+                        "Quiet hours",
+                        &if n.quiet_from.is_empty() {
+                            "None".to_owned()
+                        } else {
+                            format!("{} to {}", n.quiet_from, n.quiet_to)
+                        },
+                        Button::new("quiet-hours")
+                            .cursor_pointer()
+                            .label("Change")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_form_quiet_hours(window, cx);
+                            })),
+                    ),
+                    setting(
+                        "Words that notify me",
+                        &if n.keywords.is_empty() {
+                            "None".to_owned()
+                        } else {
+                            n.keywords.clone()
+                        },
+                        Button::new("keywords")
+                            .cursor_pointer()
+                            .label("Change")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_form_keywords(window, cx);
+                            })),
+                    ),
+                    self.flag(
+                        "Pop up for DMs",
+                        "",
+                        n.toast_dms,
+                        "notifications.toast_dms",
+                        cx,
+                    ),
+                    self.flag(
+                        "Pop up for mentions",
+                        "",
+                        n.toast_mentions,
+                        "notifications.toast_mentions",
+                        cx,
+                    ),
+                    self.flag(
+                        "Pop up for other messages",
+                        "",
+                        n.toast_other,
+                        "notifications.toast_other",
+                        cx,
+                    ),
+                    self.flag(
+                        "Sound for DMs",
+                        "",
+                        n.sound_dms,
+                        "notifications.sound_dms",
+                        cx,
+                    ),
+                    self.flag(
+                        "Sound for mentions",
+                        "",
+                        n.sound_mentions,
+                        "notifications.sound_mentions",
+                        cx,
+                    ),
+                    self.flag(
+                        "Sound for other messages",
+                        "",
+                        n.sound_other,
+                        "notifications.sound_other",
+                        cx,
+                    ),
+                    self.flag(
+                        "Flash the taskbar button",
+                        "",
+                        n.flash_taskbar,
+                        "notifications.flash_taskbar",
+                        cx,
+                    ),
+                ],
+            )],
         )
     }
 
@@ -2853,6 +3024,202 @@ impl Shell {
         )
     }
 
+    /// Every setting of every tab (name, hint, group), in the order shown: the tabs are built
+    /// with their rows noted instead of drawn.
+    fn settings_index(&self, cx: &mut Context<Self>) -> Vec<(Tab, Found)> {
+        let Some(page) = self.settings.as_ref() else {
+            return Vec::new();
+        };
+        let admin = self.is_instance_admin();
+        let mut out = Vec::new();
+        for (tab, _) in all_tabs() {
+            if (tab == Tab::Admin && !admin) || tab == Tab::Diagnostics {
+                continue;
+            }
+            RECORDING.with(|r| *r.borrow_mut() = Some(Recording::default()));
+            let _ = match tab {
+                Tab::Account => self.tab_account(page, cx),
+                Tab::Privacy => self.tab_privacy(cx),
+                Tab::Appearance => self.tab_appearance(page, cx),
+                Tab::Chat => self.tab_chat(page, cx),
+                Tab::Notifications => self.tab_notifications(cx),
+                Tab::Window => self.tab_window(cx),
+                Tab::Keybinds => self.tab_keybinds(page, cx),
+                Tab::Voice => self.tab_voice(page, cx),
+                Tab::ScreenShare => self.tab_screen_share(cx),
+                Tab::Admin => self.tab_admin(page, cx),
+                Tab::About => self.tab_about(cx),
+                Tab::Diagnostics => div().into_any_element(),
+            };
+            let found = RECORDING
+                .with(|r| r.borrow_mut().take())
+                .unwrap_or_default();
+            out.extend(found.found.into_iter().map(|f| (tab, f)));
+        }
+        out
+    }
+
+    /// The settings matching what is typed in the search: every word somewhere in the tab,
+    /// group, name or hint; those with all words in the name first.
+    fn settings_found(&self, cx: &mut Context<Self>) -> Vec<(Tab, Found)> {
+        let Some(page) = self.settings.as_ref() else {
+            return Vec::new();
+        };
+        let query = page.search.read(cx).value().trim().to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let mut found: Vec<(bool, Tab, Found)> = self
+            .settings_index(cx)
+            .into_iter()
+            .filter_map(|(tab, f)| {
+                let name = f.name.to_lowercase();
+                let all = format!(
+                    "{} {} {name} {}",
+                    tab_name(tab).to_lowercase(),
+                    f.group.to_lowercase(),
+                    f.hint.to_lowercase()
+                );
+                words
+                    .iter()
+                    .all(|w| all.contains(w))
+                    .then(|| (!words.iter().all(|w| name.contains(w)), tab, f))
+            })
+            .collect();
+        found.sort_by_key(|(weaker, ..)| *weaker);
+        found.into_iter().map(|(_, tab, f)| (tab, f)).collect()
+    }
+
+    fn search_results(&self, query: &str, cx: &mut Context<Self>) -> AnyElement {
+        let found = self.settings_found(cx);
+        let count = match found.len() {
+            0 => format!("Nothing found for \u{201c}{query}\u{201d}."),
+            1 => "1 setting".to_owned(),
+            n => format!("{n} settings"),
+        };
+        let rows = found
+            .into_iter()
+            .enumerate()
+            .map(|(n, (tab, f))| {
+                let place = format!("{} \u{203a} {}", tab_name(tab), f.group);
+                let (name, hint) = (f.name.clone(), f.hint.clone());
+                div()
+                    .id(("settings-found", n))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .px(px(10.))
+                    .py(px(8.))
+                    .rounded(theme::row_radius())
+                    .cursor_pointer()
+                    .hover(|d| d.bg(theme::hover()))
+                    .child(div().text_size(theme::body_size()).child(name))
+                    .child(
+                        div()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::accent())
+                            .child(place),
+                    )
+                    .when(!hint.is_empty(), |d| d.child(muted(hint)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_found(tab, f.clone(), window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        let list = div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap(px(2.))
+            .max_w(px(760.))
+            .children(rows)
+            .into_any_element();
+        page_body("Search", Some(&count), vec![list])
+    }
+
+    /// Goes to a setting found by the search: its tab opens on its group (unfolded), and the row
+    /// lights up for a moment.
+    fn open_found(&mut self, tab: Tab, found: Found, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(page) = &self.settings {
+            page.search
+                .update(cx, |input, cx| input.set_value("", window, cx));
+        }
+        if let Some(key) = found.fold
+            && self.config.general.folded_settings.iter().any(|k| k == key)
+        {
+            self.set_folded(key, false, cx);
+        }
+        self.settings_open_tab(tab, cx);
+        LIT.with(|l| *l.borrow_mut() = Some((found.name, std::time::Instant::now())));
+        SCROLL_TO.with(|s| s.set(Some(found.index)));
+        cx.notify();
+    }
+
+    fn set_folded(&mut self, key: &str, folded: bool, cx: &mut Context<Self>) {
+        let mut keys = self.config.general.folded_settings.clone();
+        keys.retain(|k| k != key);
+        if folded {
+            keys.push(key.to_owned());
+        }
+        let value = toml::Value::Array(keys.into_iter().map(toml::Value::String).collect());
+        self.persist("general.folded_settings", &value.to_string(), cx);
+    }
+
+    /// A group of settings that folds into its title (remembered under `key`): for long groups
+    /// most people never change.
+    fn fold_group(
+        &self,
+        key: &'static str,
+        title: &str,
+        rows: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let folded = self.config.general.folded_settings.iter().any(|k| k == key);
+        let count = rows.len();
+        let toggle = div()
+            .id(SharedString::from(format!("fold-{key}")))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .cursor_pointer()
+            .text_size(theme::caption_size())
+            .text_color(theme::text_tertiary())
+            .hover(|d| d.text_color(theme::accent()))
+            .child(if folded {
+                format!("Show {count}")
+            } else {
+                "Hide".to_owned()
+            })
+            .child(
+                icon(assets::CHEVRON_DOWN, 14., theme::text_tertiary()).with_transformation(
+                    gpui_kit::Transformation::rotate(gpui_kit::radians(if folded {
+                        -std::f32::consts::FRAC_PI_2
+                    } else {
+                        0.
+                    })),
+                ),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_folded(key, !folded, cx);
+            }))
+            .into_any_element();
+        let note_fold = || {
+            RECORDING.with(|r| {
+                if let Some(r) = r.borrow_mut().as_mut() {
+                    r.fold_last(key);
+                }
+            });
+        };
+        if folded && !recording() {
+            return group_with(title, toggle, Vec::new());
+        }
+        let shown = group_with(title, toggle, rows);
+        note_fold();
+        shown
+    }
+
     fn tab_about(&self, cx: &mut Context<Self>) -> AnyElement {
         let header = div()
             .flex()
@@ -2952,6 +3319,107 @@ impl Shell {
             ],
         )
     }
+}
+
+/// The date formats offered as chips on the day dividers.
+const DATE_FORMATS: [&str; 5] = [
+    "%B %e, %Y",
+    "%e %B %Y",
+    "%A, %e %B %Y",
+    "%Y-%m-%d",
+    "%d.%m.%Y",
+];
+
+/// A tab's name in the navigation.
+fn tab_name(tab: Tab) -> &'static str {
+    all_tabs()
+        .find(|(t, _)| *t == tab)
+        .map_or("", |(_, name)| name)
+}
+
+/// A setting as the search finds it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Found {
+    pub group: String,
+    /// The group's place among the page's groups, for scrolling to it.
+    pub index: usize,
+    pub name: String,
+    pub hint: String,
+    /// The group folds under this key.
+    pub fold: Option<&'static str>,
+}
+
+/// What [`setting`] and [`group_with`] noted while a tab was built for the search.
+#[derive(Default)]
+struct Recording {
+    /// Rows of the group being built (its rows come before its title).
+    rows: Vec<(String, String)>,
+    groups: usize,
+    found: Vec<Found>,
+}
+
+impl Recording {
+    fn row(&mut self, name: &str, hint: &str) {
+        self.rows.push((name.to_owned(), hint.to_owned()));
+    }
+
+    fn group(&mut self, title: &str) {
+        let index = self.groups;
+        self.groups += 1;
+        for (name, hint) in self.rows.drain(..) {
+            self.found.push(Found {
+                group: title.to_owned(),
+                index,
+                name,
+                hint,
+                fold: None,
+            });
+        }
+    }
+
+    /// The group just noted folds under `key`.
+    fn fold_last(&mut self, key: &'static str) {
+        let last = self.groups.saturating_sub(1);
+        for f in self.found.iter_mut().filter(|f| f.index == last) {
+            f.fold = Some(key);
+        }
+    }
+}
+
+thread_local! {
+    /// Set while the search notes every tab's rows.
+    static RECORDING: RefCell<Option<Recording>> = const { RefCell::new(None) };
+    /// The row the search went to, lit for a moment.
+    static LIT: RefCell<Option<(String, std::time::Instant)>> = const { RefCell::new(None) };
+    /// The settings page's scroll; the search moves it to a group.
+    static PAGE_SCROLL: gpui_kit::ScrollHandle = gpui_kit::ScrollHandle::new();
+    /// The group a page scrolls to when it is next drawn.
+    static SCROLL_TO: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+fn recording() -> bool {
+    RECORDING.with(|r| r.borrow().is_some())
+}
+
+/// How long a row found by the search stays lit.
+const LIT_FOR: std::time::Duration = std::time::Duration::from_millis(1800);
+
+/// Starts a page at its top (a new tab does not keep the last one's scroll).
+pub(crate) fn reset_page_scroll() {
+    PAGE_SCROLL.with(|h| h.set_offset(gpui_kit::point(px(0.), px(0.))));
+}
+
+/// A section's caption in the navigation.
+fn nav_section(title: &str) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .px(px(8.))
+        .pt(px(12.))
+        .pb(px(4.))
+        .text_size(theme::caption_size())
+        .text_color(theme::text_tertiary())
+        .child(title.to_uppercase())
+        .into_any_element()
 }
 
 // ---- parts, also used by the space settings ---------------------------------------------------
@@ -3080,8 +3548,16 @@ pub fn frame(
 
 /// A tab's content: title, optional text and groups, scrolling.
 pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> AnyElement {
+    let scroll = PAGE_SCROLL.with(|h| h.clone());
+    if !recording()
+        && let Some(index) = SCROLL_TO.with(Cell::take)
+    {
+        // The title and the text come before the groups.
+        scroll.scroll_to_item(index + 1 + usize::from(text.is_some()));
+    }
     div()
         .id("page-body")
+        .track_scroll(&scroll)
         .flex()
         .flex_col()
         .gap(px(20.))
@@ -3105,6 +3581,11 @@ pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
 
 /// A titled group of settings, with something on the title's right.
 pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> AnyElement {
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.group(title);
+        }
+    });
     div()
         .flex()
         .flex_col()
@@ -3125,22 +3606,36 @@ pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> An
                 )
                 .child(actions),
         )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(14.))
-                .p(px(14.))
-                .rounded(theme::radius_large())
-                .bg(theme::sidebar())
-                .children(rows),
-        )
+        // Folded: the title alone.
+        .when(!rows.is_empty(), |d| {
+            d.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .p(px(14.))
+                    .rounded(theme::radius_large())
+                    .bg(theme::sidebar())
+                    .children(rows),
+            )
+        })
         .into_any_element()
 }
 
 /// A row: name and hint on the left, the control on the right.
 pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
-    div()
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.row(name, hint);
+        }
+    });
+    // Just found by the search: it glows and fades back.
+    let lit = LIT.with(|l| {
+        l.borrow()
+            .as_ref()
+            .is_some_and(|(found, at)| found == name && at.elapsed() < LIT_FOR)
+    });
+    let row = div()
         .flex()
         .flex_wrap()
         .items_center()
@@ -3174,6 +3669,15 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 .flex_1()
                 .min_w_0()
                 .child(control),
+        );
+    if !lit {
+        return row.into_any_element();
+    }
+    row.rounded(theme::radius_small())
+        .with_animation(
+            SharedString::from(format!("lit-{name}")),
+            gpui_kit::Animation::new(LIT_FOR).with_easing(gpui_kit::ease_in_out),
+            |d, t| d.bg(theme::alpha(theme::accent(), 0.22 * (1. - t))),
         )
         .into_any_element()
 }

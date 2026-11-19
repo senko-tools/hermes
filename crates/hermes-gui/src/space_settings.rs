@@ -531,6 +531,7 @@ impl Shell {
             return;
         };
         page.tab = tab;
+        crate::settings::reset_page_scroll();
         match tab {
             Tab::Encryption => self.load_key_settings(done, cx),
             Tab::Invites => {
