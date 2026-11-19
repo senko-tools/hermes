@@ -466,7 +466,7 @@ impl Shell {
     fn media_mute(&mut self, cx: &mut Context<Self>) {
         let muted = !self.config.voice.media_muted;
         self.config.voice.media_muted = muted;
-        self.persist("voice.media_muted", &muted.to_string(), cx);
+        self.set_config(|c| c.voice.media_muted = muted, cx);
     }
 
     /// Ctrl+wheel over a card, or the wheel in a full view, changes the volume of every file, and
@@ -501,8 +501,13 @@ impl Shell {
                 this.media.volume_shown = None;
                 let voice = &this.config.voice;
                 let (volume, muted) = (voice.media_volume, voice.media_muted);
-                this.persist("voice.media_volume", &format!("{volume:.3}"), cx);
-                this.persist("voice.media_muted", &muted.to_string(), cx);
+                this.set_config(
+                    |c| {
+                        c.voice.media_volume = (volume * 1000.0).round() / 1000.0;
+                        c.voice.media_muted = muted;
+                    },
+                    cx,
+                );
             });
         })
         .detach();

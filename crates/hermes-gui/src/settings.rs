@@ -15,6 +15,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::audio::{AudioDevices, Sound};
+use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
@@ -178,6 +179,21 @@ struct DeviceChoice {
     name: SharedString,
 }
 
+/// A switch row for a `bool` in the config, naming the field once so what the switch shows and
+/// what it changes cannot differ: `flag!(self, cx, "Name", "Hint", buffer.compact)`.
+macro_rules! flag {
+    ($shell:expr, $cx:expr, $name:expr, $hint:expr, $($field:ident).+) => {
+        $shell.flag(
+            $name,
+            $hint,
+            $shell.config.$($field).+,
+            stringify!($($field).+),
+            |c: &mut ClientConfig, on: bool| c.$($field).+ = on,
+            $cx,
+        )
+    };
+}
+
 impl SelectItem for DeviceChoice {
     type Value = String;
 
@@ -335,7 +351,7 @@ impl Shell {
         let mut installed = cx.text_system().all_font_names();
         installed.sort();
         installed.dedup();
-        let mut font_select = |current: &str, key: &'static str| {
+        let mut font_select = |current: &str, field: fn(&mut ClientConfig) -> &mut String| {
             let (choices, selected) = font_choices(&installed, current);
             let state =
                 cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
@@ -343,7 +359,8 @@ impl Shell {
                 &state,
                 move |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
                     if let SelectEvent::Confirm(Some(value)) = event {
-                        this.persist(key, &toml_string(value.clone()), cx);
+                        let value = value.clone();
+                        this.set_config(|c| *field(c) = value, cx);
                         this.reload_theme(cx);
                         this.remeasure_chats();
                     }
@@ -351,8 +368,8 @@ impl Shell {
             );
             (state, events)
         };
-        let (font_input, font_events) = font_select(&font.family, "font.family");
-        let (mono_input, mono_events) = font_select(&font.mono_family, "font.mono_family");
+        let (font_input, font_events) = font_select(&font.family, |c| &mut c.font.family);
+        let (mono_input, mono_events) = font_select(&font.mono_family, |c| &mut c.font.mono_family);
         let time_format = text_field(
             self.config.buffer.timestamp_format.clone(),
             "%H:%M",
@@ -381,7 +398,7 @@ impl Shell {
             cx.subscribe_in(&date_format, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
-                    this.persist("buffer.date_format", &toml_string(value), cx);
+                    this.set_config(|c| c.buffer.date_format = value, cx);
                     this.info("Date format saved", cx);
                 }
             }),
@@ -390,7 +407,7 @@ impl Shell {
             cx.subscribe_in(&time_format, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
-                    this.persist("buffer.timestamp_format", &toml_string(value), cx);
+                    this.set_config(|c| c.buffer.timestamp_format = value, cx);
                     this.info("Time format saved", cx);
                 }
             }),
@@ -400,7 +417,7 @@ impl Shell {
                     if !text.is_empty() && crate::ptt::virtual_keys(&text).is_none() {
                         this.error(format!("{text:?} is not a key Hermes knows"), cx);
                     } else {
-                        this.persist("voice.ptt_key", &toml_string(text), cx);
+                        this.set_config(|c| c.voice.ptt_key = text, cx);
                         this.info("Push-to-talk key saved", cx);
                     }
                 }
@@ -729,8 +746,8 @@ impl Shell {
     fn slider_released(&mut self, kind: SliderKind, window: &mut Window, cx: &mut Context<Self>) {
         match kind {
             SliderKind::FontSize => {
-                let value = self.config.font.size.to_string();
-                self.persist("font.size", &value, cx);
+                let size = self.config.font.size;
+                self.set_config(|c| c.font.size = size, cx);
                 self.reload_theme(cx);
                 self.remeasure_chats();
             }
@@ -740,16 +757,16 @@ impl Shell {
                 }
             }
             SliderKind::GroupMinutes => {
-                let value = self.config.buffer.group_minutes.to_string();
-                self.persist("buffer.group_minutes", &value, cx);
+                let minutes = self.config.buffer.group_minutes;
+                self.set_config(|c| c.buffer.group_minutes = minutes, cx);
             }
             SliderKind::MediaVolume => {
-                let value = format!("{:.3}", self.config.voice.media_volume);
-                self.persist("voice.media_volume", &value, cx);
+                let volume = (self.config.voice.media_volume * 1000.0).round() / 1000.0;
+                self.set_config(|c| c.voice.media_volume = volume, cx);
             }
             SliderKind::ScrollSpeed => {
-                let value = format!("{:.2}", self.config.general.scroll_speed);
-                self.persist("general.scroll_speed", &value, cx);
+                let speed = (self.config.general.scroll_speed * 100.0).round() / 100.0;
+                self.set_config(|c| c.general.scroll_speed = speed, cx);
             }
             _ => {
                 let voice = self.config.voice.clone();
@@ -762,7 +779,7 @@ impl Shell {
     pub fn set_ui_scale(&mut self, scale: f64, window: &mut Window, cx: &mut Context<Self>) {
         self.ui_scale_draft = None;
         let scale = ((scale * 100.0).round() / 100.0).clamp(theme::MIN_SCALE, theme::MAX_SCALE);
-        self.persist("font.ui_scale", &format!("{scale:.2}"), cx);
+        self.set_config(|c| c.font.ui_scale = scale, cx);
         self.reload_theme(cx);
         window.set_rem_size(gpui_kit::px(16. * scale as f32));
         self.remeasure_chats();
@@ -850,7 +867,7 @@ impl Shell {
     }
 
     fn set_theme(&mut self, name: String, cx: &mut Context<Self>) {
-        self.persist("general.theme", &toml_string(name), cx);
+        self.set_config(|c| c.general.theme = name, cx);
         self.reload_theme(cx);
     }
 
@@ -1387,7 +1404,7 @@ impl Shell {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.persist("font.heading_extra", &extra.to_string(), cx);
+                                        this.set_config(|c| c.font.heading_extra = extra, cx);
                                     },
                                 ))
                             }),
@@ -1419,7 +1436,7 @@ impl Shell {
                     config.sidebar.position.eq_ignore_ascii_case(value),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.persist("sidebar.position", &toml_string(value.to_owned()), cx);
+                    this.set_config(|c| c.sidebar.position = value.to_owned(), cx);
                 }))
             });
         let layout_group = group(
@@ -1451,8 +1468,13 @@ impl Shell {
                         .cursor_pointer()
                         .label("Reset")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.persist("sidebar.width", "240", cx);
-                            this.persist("sidebar.member_list_width", "232", cx);
+                            this.set_config(
+                                |c| {
+                                    c.sidebar.width = 240;
+                                    c.sidebar.member_list_width = 232;
+                                },
+                                cx,
+                            );
                         })),
                 ),
             ],
@@ -1469,22 +1491,25 @@ impl Shell {
         )
     }
 
+    /// A switch row for a `bool` in the config; use [`flag!`], which names the field once.
     fn flag(
         &self,
         name: &'static str,
         hint: &'static str,
         on: bool,
-        key: &'static str,
+        id: &'static str,
+        set: fn(&mut ClientConfig, bool),
         cx: &mut Context<Self>,
     ) -> AnyElement {
         setting(
             name,
             hint,
-            Switch::new(SharedString::from(key))
+            Switch::new(SharedString::from(id))
                 .cursor_pointer()
                 .checked(on)
                 .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                    this.persist(key, if *on { "true" } else { "false" }, cx);
+                    let on = *on;
+                    this.set_config(|c| set(c, on), cx);
                 })),
         )
     }
@@ -1508,57 +1533,39 @@ impl Shell {
                 group(
                     "Messages",
                     vec![
-                        self.flag(
-                            "Show avatars",
-                            "",
-                            b.show_avatars,
-                            "buffer.show_avatars",
+                        flag!(self, cx, "Show avatars", "", buffer.show_avatars),
+                        flag!(self, cx, "Show image previews", "", buffer.image_previews),
+                        flag!(self, cx, "Show who is typing", "", buffer.show_typing),
+                        flag!(
+                            self,
                             cx,
-                        ),
-                        self.flag(
-                            "Show image previews",
-                            "",
-                            b.image_previews,
-                            "buffer.image_previews",
-                            cx,
-                        ),
-                        self.flag(
-                            "Show who is typing",
-                            "",
-                            b.show_typing,
-                            "buffer.show_typing",
-                            cx,
-                        ),
-                        self.flag(
                             "Format messages",
                             "Off: bold, code blocks and the like show as they were typed.",
-                            b.markdown,
-                            "buffer.markdown",
-                            cx,
+                            buffer.markdown
                         ),
-                        self.flag(
+                        flag!(
+                            self,
+                            cx,
                             "Link previews",
                             "Show the title and picture of linked pages. This computer fetches \
                             them itself, so the site sees your address (the Hermes server never \
                             fetches them).",
-                            b.link_previews,
-                            "buffer.link_previews",
-                            cx,
+                            buffer.link_previews
                         ),
-                        self.flag(
+                        flag!(
+                            self,
+                            cx,
                             "Preview while writing",
                             "The message shows formatted above the message box. Also the eye \
                             button next to it.",
-                            b.composer_preview,
-                            "buffer.composer_preview",
-                            cx,
+                            buffer.composer_preview
                         ),
-                        self.flag(
+                        flag!(
+                            self,
+                            cx,
                             "Enter sends",
                             "Shift+Enter starts a new line.",
-                            b.enter_sends,
-                            "buffer.enter_sends",
-                            cx,
+                            buffer.enter_sends
                         ),
                     ],
                 ),
@@ -1591,21 +1598,17 @@ impl Shell {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.persist(
-                                            "general.status_seconds",
-                                            &secs.to_string(),
-                                            cx,
-                                        );
+                                        this.set_config(|c| c.general.status_seconds = secs, cx);
                                     },
                                 ))
                             })),
                         ),
-                        self.flag(
+                        flag!(
+                            self,
+                            cx,
                             "Compact messages",
                             "Time, a small picture, the name and the text on one line.",
-                            b.compact,
-                            "buffer.compact",
-                            cx,
+                            buffer.compact
                         ),
                         setting(
                             "Clock",
@@ -1617,9 +1620,11 @@ impl Shell {
                                     .map(|(n, (format, name))| {
                                         chip(("clock", n), name, b.timestamp_format == format)
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.persist(
-                                                    "buffer.timestamp_format",
-                                                    &toml_string(format.to_owned()),
+                                                this.set_config(
+                                                    |c| {
+                                                        c.buffer.timestamp_format =
+                                                            format.to_owned()
+                                                    },
                                                     cx,
                                                 );
                                             }))
@@ -1643,9 +1648,8 @@ impl Shell {
                                     );
                                     chip(("date-format", n), name, b.date_format == format)
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.persist(
-                                                "buffer.date_format",
-                                                &toml_string(format.to_owned()),
+                                            this.set_config(
+                                                |c| c.buffer.date_format = format.to_owned(),
                                                 cx,
                                             );
                                         }))
@@ -1672,12 +1676,12 @@ impl Shell {
         group(
             "Motion",
             vec![
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Reduce motion",
                     "No sliding or fading.",
-                    g.reduce_motion,
-                    "general.reduce_motion",
-                    cx,
+                    general.reduce_motion
                 ),
                 setting(
                     "Motion speed",
@@ -1691,9 +1695,8 @@ impl Shell {
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
-                                    this.persist(
-                                        "general.motion_speed",
-                                        &toml_string(value.to_owned()),
+                                    this.set_config(
+                                        |c| c.general.motion_speed = value.to_owned(),
                                         cx,
                                     );
                                 },
@@ -1701,54 +1704,47 @@ impl Shell {
                         },
                     )),
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Smooth scrolling",
                     "The mouse wheel glides instead of jumping.",
-                    g.smooth_scroll,
-                    "general.smooth_scroll",
-                    cx,
+                    general.smooth_scroll
                 ),
                 setting(
                     "Scroll speed",
                     &format!("{:.2} x", g.scroll_speed),
                     self.slider(page, SliderKind::ScrollSpeed),
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Animate pictures",
                     "GIFs move while the window has the focus.",
-                    g.animate_pictures,
-                    "general.animate_pictures",
-                    cx,
+                    general.animate_pictures
                 ),
             ],
         )
     }
 
     fn sidebar_group(&self, cx: &mut Context<Self>) -> AnyElement {
-        let s = &self.config.sidebar;
         group(
             "Sidebar",
             vec![
-                self.flag(
-                    "Show unread dots",
-                    "",
-                    s.show_unread_dots,
-                    "sidebar.show_unread_dots",
+                flag!(self, cx, "Show unread dots", "", sidebar.show_unread_dots),
+                flag!(
+                    self,
                     cx,
-                ),
-                self.flag(
                     "Show mention counts",
                     "",
-                    s.show_mention_counts,
-                    "sidebar.show_mention_counts",
-                    cx,
+                    sidebar.show_mention_counts
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Show who is in voice channels",
                     "",
-                    s.show_voice_users,
-                    "sidebar.show_voice_users",
-                    cx,
+                    sidebar.show_voice_users
                 ),
             ],
         )
@@ -1786,11 +1782,7 @@ impl Shell {
                                 .cursor_pointer()
                                 .label("Reset")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.persist(
-                                        "general.download_dir",
-                                        &toml_string(String::new()),
-                                        cx,
-                                    );
+                                    this.set_config(|c| c.general.download_dir.clear(), cx);
                                 })),
                         ),
                 ),
@@ -1809,7 +1801,7 @@ impl Shell {
                                 )
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
-                                        this.persist("buffer.media_scale", &scale.to_string(), cx);
+                                        this.set_config(|c| c.buffer.media_scale = scale, cx);
                                     },
                                 ))
                             }),
@@ -1840,12 +1832,12 @@ impl Shell {
                                 })),
                         ),
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Ask where to save",
                     "Choose a place for each download.",
-                    g.ask_where_to_save,
-                    "general.ask_where_to_save",
-                    cx,
+                    general.ask_where_to_save
                 ),
             ],
         )
@@ -1862,7 +1854,7 @@ impl Shell {
             },
             |this, picked, _, cx| {
                 if let Some(folder) = picked {
-                    this.persist("general.download_dir", &toml_string(folder), cx);
+                    this.set_config(|c| c.general.download_dir = folder, cx);
                 }
             },
         );
@@ -2289,24 +2281,23 @@ impl Shell {
     }
 
     fn tab_privacy(&self, cx: &mut Context<Self>) -> AnyElement {
-        let p = &self.config.privacy;
         let mut groups = self.account_privacy_groups(cx);
         let device = group(
             "What this device tells the server",
             vec![
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Show others when I am typing",
                     "",
-                    p.send_typing,
-                    "privacy.send_typing",
-                    cx,
+                    privacy.send_typing
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Sync what I have read",
                     "Off: the server is not told, and your other devices will not know either.",
-                    p.send_read_marks,
-                    "privacy.send_read_marks",
-                    cx,
+                    privacy.send_read_marks
                 ),
                 setting(
                     "Close the microphone while muted",
@@ -2319,12 +2310,12 @@ impl Shell {
                             this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
                         })),
                 ),
-                self.flag(
+                flag!(
+                    self,
+                    cx,
                     "Search on this device only",
                     "Older unencrypted messages are then not found.",
-                    p.local_search_only,
-                    "privacy.local_search_only",
-                    cx,
+                    privacy.local_search_only
                 ),
                 setting(
                     "Warn about unencrypted chats",
@@ -2348,12 +2339,12 @@ impl Shell {
             vec![group(
                 "Window",
                 vec![
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Close to the tray",
                         "Closing the window keeps Hermes running in the tray.",
-                        g.close_to_tray,
-                        "general.close_to_tray",
-                        cx,
+                        general.close_to_tray
                     ),
                     setting(
                         "Start when I sign in",
@@ -2365,7 +2356,7 @@ impl Shell {
                                 let on = *on;
                                 match crate::desktop::set_start_on_login(on) {
                                     Ok(()) => {
-                                        this.persist("general.start_on_login", &on.to_string(), cx)
+                                        this.set_config(|c| c.general.start_on_login = on, cx)
                                     }
                                     Err(err) => this.error(err, cx),
                                 }
@@ -2381,36 +2372,35 @@ impl Shell {
                                 .map(|(n, (minutes, name))| {
                                     chip(("idle-after", n), name, g.auto_idle_minutes == minutes)
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.persist(
-                                                "general.auto_idle_minutes",
-                                                &minutes.to_string(),
+                                            this.set_config(
+                                                |c| c.general.auto_idle_minutes = minutes,
                                                 cx,
                                             );
                                         }))
                                 }),
                         ),
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Start minimized to the tray",
                         "",
-                        g.start_minimized,
-                        "general.start_minimized",
-                        cx,
+                        general.start_minimized
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Check for updates on start",
                         "",
-                        g.check_for_updates,
-                        "general.check_for_updates",
-                        cx,
+                        general.check_for_updates
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Install updates by themselves",
                         "A newer version found on start is downloaded (only what changed) \
                              and Hermes restarts into it.",
-                        g.auto_update,
-                        "general.auto_update",
-                        cx,
+                        general.auto_update
                     ),
                     setting(
                         "Check for updates now",
@@ -2441,7 +2431,8 @@ impl Shell {
         let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
             chip(("settings-screen", n), name, screen == v.share_screen).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    this.persist("voice.share_screen", &toml_string(screen.clone()), cx);
+                    let screen = screen.clone();
+                    this.set_config(|c| c.voice.share_screen = screen, cx);
                 },
             ))
         });
@@ -2449,7 +2440,7 @@ impl Shell {
             let name = if value == "native" { "Native" } else { value };
             chip(("settings-res", n), name, v.share_resolution == value).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    this.persist("voice.share_resolution", &toml_string(value.to_owned()), cx);
+                    this.set_config(|c| c.voice.share_resolution = value.to_owned(), cx);
                 },
             ))
         });
@@ -2460,7 +2451,7 @@ impl Shell {
                 v.share_fps == fps,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.persist("voice.share_fps", &fps.to_string(), cx);
+                this.set_config(|c| c.voice.share_fps = fps, cx);
             }))
         });
         let current = Preference::from_config(&v.share_preference);
@@ -2471,9 +2462,8 @@ impl Shell {
                 preference == current,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.persist(
-                    "voice.share_preference",
-                    &toml_string(preference.config_value().to_owned()),
+                this.set_config(
+                    |c| c.voice.share_preference = preference.config_value().to_owned(),
                     cx,
                 );
                 if let Some(capture) = &this.capture {
@@ -2503,7 +2493,7 @@ impl Shell {
                         .cursor_pointer()
                         .checked(v.share_sound)
                         .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            this.persist("voice.share_sound", &on.to_string(), cx);
+                            this.set_config(|c| c.voice.share_sound = *on, cx);
                         })),
                 ),
                 setting(
@@ -2770,7 +2760,7 @@ impl Shell {
         .map(|(n, (value, name))| {
             chip(("join-on", n), name, v.join_on == value).on_click(cx.listener(
                 move |this, _, _, cx| {
-                    this.persist("voice.join_on", &toml_string(value.to_owned()), cx);
+                    this.set_config(|c| c.voice.join_on = value.to_owned(), cx);
                 },
             ))
         })
@@ -2814,21 +2804,15 @@ impl Shell {
             vec![group(
                 "Desktop notifications",
                 vec![
-                    self.flag(
-                        "Show notifications",
-                        "",
-                        n.enabled,
-                        "notifications.enabled",
+                    flag!(self, cx, "Show notifications", "", notifications.enabled),
+                    flag!(
+                        self,
                         cx,
-                    ),
-                    self.flag(
                         "Show the message text",
                         "Off: only who wrote, and where.",
-                        n.show_preview,
-                        "notifications.show_preview",
-                        cx,
+                        notifications.show_preview
                     ),
-                    self.flag("Play a sound", "", n.sound, "notifications.sound", cx),
+                    flag!(self, cx, "Play a sound", "", notifications.sound),
                     setting(
                         "Test sounds",
                         "Messages and DMs play the softer one, mentions the ping.",
@@ -2880,54 +2864,42 @@ impl Shell {
                                 this.open_form_keywords(window, cx);
                             })),
                     ),
-                    self.flag(
-                        "Pop up for DMs",
-                        "",
-                        n.toast_dms,
-                        "notifications.toast_dms",
+                    flag!(self, cx, "Pop up for DMs", "", notifications.toast_dms),
+                    flag!(
+                        self,
                         cx,
-                    ),
-                    self.flag(
                         "Pop up for mentions",
                         "",
-                        n.toast_mentions,
-                        "notifications.toast_mentions",
-                        cx,
+                        notifications.toast_mentions
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Pop up for other messages",
                         "",
-                        n.toast_other,
-                        "notifications.toast_other",
-                        cx,
+                        notifications.toast_other
                     ),
-                    self.flag(
-                        "Sound for DMs",
-                        "",
-                        n.sound_dms,
-                        "notifications.sound_dms",
+                    flag!(self, cx, "Sound for DMs", "", notifications.sound_dms),
+                    flag!(
+                        self,
                         cx,
-                    ),
-                    self.flag(
                         "Sound for mentions",
                         "",
-                        n.sound_mentions,
-                        "notifications.sound_mentions",
-                        cx,
+                        notifications.sound_mentions
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Sound for other messages",
                         "",
-                        n.sound_other,
-                        "notifications.sound_other",
-                        cx,
+                        notifications.sound_other
                     ),
-                    self.flag(
+                    flag!(
+                        self,
+                        cx,
                         "Flash the taskbar button",
                         "",
-                        n.flash_taskbar,
-                        "notifications.flash_taskbar",
-                        cx,
+                        notifications.flash_taskbar
                     ),
                 ],
             )],
@@ -2965,7 +2937,7 @@ impl Shell {
         if let Some(title) = taken {
             self.warn(format!("{combo} was already used for {title}"), cx);
         }
-        self.persist(&format!("keys.{name}"), &toml_string(combo), cx);
+        self.set_config(|c| _ = c.keys.insert(name.to_owned(), combo), cx);
         true
     }
 
@@ -3006,9 +2978,13 @@ impl Shell {
                                         .cursor_pointer()
                                         .label("Reset")
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.persist(
-                                                &format!("keys.{name}"),
-                                                &toml_string(default.to_owned()),
+                                            this.set_config(
+                                                |c| {
+                                                    c.keys.insert(
+                                                        name.to_owned(),
+                                                        default.to_owned(),
+                                                    );
+                                                },
                                                 cx,
                                             );
                                         })),
@@ -3180,8 +3156,7 @@ impl Shell {
         if folded {
             keys.push(key.to_owned());
         }
-        let value = toml::Value::Array(keys.into_iter().map(toml::Value::String).collect());
-        self.persist("general.folded_settings", &value.to_string(), cx);
+        self.set_config(|c| c.general.folded_settings = keys, cx);
     }
 
     /// A group of settings that folds into its title (remembered under `key`): for long groups
@@ -3440,10 +3415,6 @@ fn nav_section(title: &str) -> AnyElement {
 }
 
 // ---- parts, also used by the space settings ---------------------------------------------------
-
-pub(crate) fn toml_string(value: String) -> String {
-    toml::Value::String(value).to_string()
-}
 
 pub fn wrap() -> gpui_kit::Div {
     div().flex().flex_wrap().w_full().gap(px(4.))

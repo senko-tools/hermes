@@ -1297,34 +1297,23 @@ impl Shell {
             }
             Purpose::QuickReactions => {
                 let value = form.value(0, cx);
-                self.persist(
-                    "buffer.quick_reactions",
-                    &toml::Value::String(value).to_string(),
-                    cx,
-                );
+                self.set_config(|c| c.buffer.quick_reactions = value, cx);
                 self.form_call(cx, async { Ok("Saved".to_owned()) });
             }
             Purpose::QuietHours => {
                 let (from, to) = (form.value(0, cx), form.value(1, cx));
-                self.persist(
-                    "notifications.quiet_from",
-                    &toml::Value::String(from).to_string(),
-                    cx,
-                );
-                self.persist(
-                    "notifications.quiet_to",
-                    &toml::Value::String(to).to_string(),
+                self.set_config(
+                    |c| {
+                        c.notifications.quiet_from = from;
+                        c.notifications.quiet_to = to;
+                    },
                     cx,
                 );
                 self.form_call(cx, async { Ok("Saved".to_owned()) });
             }
             Purpose::Keywords => {
                 let value = form.value(0, cx);
-                self.persist(
-                    "notifications.keywords",
-                    &toml::Value::String(value).to_string(),
-                    cx,
-                );
+                self.set_config(|c| c.notifications.keywords = value, cx);
                 self.form_call(cx, async { Ok("Saved".to_owned()) });
             }
             Purpose::Note { inst, user } => {

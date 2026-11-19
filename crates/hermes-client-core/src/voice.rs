@@ -375,12 +375,9 @@ impl Core {
 
     /// Applies new audio settings and saves them to `[voice]` in `config.toml`.
     pub fn set_audio_settings(&self, settings: AudioSettings) -> Result<()> {
-        {
-            let mut config = self.inner.config.write().expect("config lock");
-            store_settings(&mut config.voice, &settings);
-        }
+        self.update_config(|config| store_settings(&mut config.voice, &settings))?;
         self.apply_audio_settings();
-        self.save_config()
+        Ok(())
     }
 
     /// Hands `[voice]` (forcing push-to-talk where voice activity is not allowed) to the engine.

@@ -850,8 +850,13 @@ impl Shell {
     }
 
     /// Writes a setting to `config.toml` and applies it.
-    pub fn persist(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
-        if let Err(err) = self.core.set_setting(key, value) {
+    /// Changes the config and saves it: `self.set_config(|c| c.buffer.compact = on, cx)`.
+    pub fn set_config(
+        &mut self,
+        change: impl FnOnce(&mut hermes_client_core::config::ClientConfig),
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(err) = self.core.update_config(change) {
             self.error(format!("setting not saved: {err}"), cx);
         }
         self.apply_config(cx);
@@ -903,13 +908,13 @@ impl Shell {
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
         let shown = !self.show_members;
         self.show_members = shown;
-        self.persist("sidebar.show_members", &shown.to_string(), cx);
+        self.set_config(|c| c.sidebar.show_members = shown, cx);
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         let shown = !self.sidebar_visible;
         self.sidebar_visible = shown;
-        self.persist("sidebar.visible", &shown.to_string(), cx);
+        self.set_config(|c| c.sidebar.visible = shown, cx);
     }
 
     /// Puts text on the clipboard; `what` names it for the status line.
@@ -1489,7 +1494,7 @@ impl Shell {
                 MouseButton::Left,
                 cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
                     if event.click_count >= 2 {
-                        this.persist("sidebar.width", "240", cx);
+                        this.set_config(|c| c.sidebar.width = 240, cx);
                         return;
                     }
                     let width = f32::from(this.config.sidebar.width);
@@ -1522,11 +1527,11 @@ impl Shell {
     fn end_resize(&mut self, cx: &mut Context<Self>) {
         if self.resizing.take().is_some() {
             if std::mem::take(&mut self.resizing_members) {
-                let width = self.config.sidebar.member_list_width.to_string();
-                self.persist("sidebar.member_list_width", &width, cx);
+                let width = self.config.sidebar.member_list_width;
+                self.set_config(|c| c.sidebar.member_list_width = width, cx);
             } else {
-                let width = self.config.sidebar.width.to_string();
-                self.persist("sidebar.width", &width, cx);
+                let width = self.config.sidebar.width;
+                self.set_config(|c| c.sidebar.width = width, cx);
             }
         }
     }

@@ -2922,9 +2922,8 @@ impl Shell {
                                         .build(window, cx)
                                     })
                                     .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.persist(
-                                            "buffer.composer_preview",
-                                            &(!preview_on).to_string(),
+                                        this.set_config(
+                                            |c| c.buffer.composer_preview = !preview_on,
                                             cx,
                                         );
                                     })),

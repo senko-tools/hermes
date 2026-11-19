@@ -192,11 +192,7 @@ impl Shell {
         let Some(picked) = self.share_menu.as_ref().map(|p| p.selected.clone()) else {
             return;
         };
-        self.set_share_setting(
-            "voice.share_screen",
-            &crate::settings::toml_string(picked),
-            cx,
-        );
+        self.set_config(|c| c.voice.share_screen = picked, cx);
         self.close_share_picker(cx);
         self.start_share(cx);
     }
@@ -447,7 +443,7 @@ impl Shell {
             chip(("share-res", n), label, voice.share_resolution == name).on_click(cx.listener(
                 move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.set_share_setting("voice.share_resolution", &format!("{name:?}"), cx);
+                    this.set_config(|c| c.voice.share_resolution = name.to_owned(), cx);
                 },
             ))
         });
@@ -459,7 +455,7 @@ impl Shell {
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
-                this.set_share_setting("voice.share_fps", &fps.to_string(), cx);
+                this.set_config(|c| c.voice.share_fps = fps, cx);
             }))
         });
         let option = |name: &'static str, choices: AnyElement| {
@@ -485,7 +481,7 @@ impl Shell {
                         .cursor_pointer()
                         .checked(voice.share_sound)
                         .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            this.set_share_setting("voice.share_sound", &on.to_string(), cx);
+                            this.set_config(|c| c.voice.share_sound = *on, cx);
                         })),
                 )
                 .when(no_sound, |d| {

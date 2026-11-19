@@ -900,6 +900,40 @@ pub fn watch(
 mod tests {
     use super::*;
 
+    /// A setting changed in code is written exactly like the same setting typed as text, so
+    /// moving the GUI to typed changes left `config.toml` as it was.
+    #[test]
+    fn typed_and_text_changes_write_the_same_file() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = "# mine
+[buffer]
+compact = false # keep this comment
+[unknown]
+x = 1
+";
+        let (by_text, by_code) = (dir.join("text.toml"), dir.join("code.toml"));
+        std::fs::write(&by_text, start).unwrap();
+        std::fs::write(&by_code, start).unwrap();
+        let config: ClientConfig = toml::from_str(start).unwrap();
+
+        let mut text = set_value(&config, "buffer.compact", "true").unwrap();
+        text = set_value(&text, "sidebar.width", "300").unwrap();
+        text = set_value(&text, "buffer.date_format", "%e %B").unwrap();
+        save(&by_text, &text).unwrap();
+        let mut code = config.clone();
+        code.buffer.compact = true;
+        code.sidebar.width = 300;
+        code.buffer.date_format = "%e %B".into();
+        save(&by_code, &code).unwrap();
+
+        let written = std::fs::read_to_string(&by_code).unwrap();
+        assert_eq!(std::fs::read_to_string(&by_text).unwrap(), written);
+        assert!(written.contains("# keep this comment") && written.contains("[unknown]"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn defaults_match_the_plan() {
         let c = ClientConfig::default();

@@ -694,8 +694,7 @@ impl Shell {
         let other = if up { at.checked_sub(1) } else { Some(at + 1) };
         if let Some(other) = other.filter(|o| *o < keys.len()) {
             keys.swap(at, other);
-            let list = toml::Value::Array(keys.into_iter().map(toml::Value::String).collect());
-            self.persist("sidebar.server_order", &list.to_string(), cx);
+            self.set_config(|c| c.sidebar.server_order = keys, cx);
         }
     }
 

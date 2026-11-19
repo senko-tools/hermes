@@ -26,7 +26,7 @@ impl Shell {
                 gpui_kit::MouseButton::Left,
                 cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
                     if event.click_count >= 2 {
-                        this.persist("sidebar.member_list_width", "232", cx);
+                        this.set_config(|c| c.sidebar.member_list_width = 232, cx);
                         return;
                     }
                     let width = f32::from(this.config.sidebar.member_list_width);

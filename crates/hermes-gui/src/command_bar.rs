@@ -208,7 +208,7 @@ impl Shell {
             Some(Command::MessageUser(inst, user)) => self.message_user(inst, user, window, cx),
             Some(Command::Action(action)) => self.key_action(action, window, cx),
             Some(Command::Theme(name)) => {
-                self.persist("general.theme", &toml::Value::String(name).to_string(), cx);
+                self.set_config(|c| c.general.theme = name, cx);
                 self.reload_theme(cx);
             }
             Some(Command::AddInstance) => self.open_add_instance(String::new(), window, cx),

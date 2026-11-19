@@ -686,7 +686,21 @@ impl Core {
         Ok(())
     }
 
-    /// Changes one setting (`:set buffer.group_minutes 10`) and writes `config.toml`.
+    /// Changes the config in code (`|c| c.buffer.compact = true`) and writes `config.toml`.
+    /// Comments and unknown keys in the file stay as they were.
+    pub fn update_config(&self, change: impl FnOnce(&mut ClientConfig)) -> Result<()> {
+        change(
+            &mut self
+                .inner
+                .config
+                .write()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        self.save_config()
+    }
+
+    /// Changes one setting given as text (`:set buffer.group_minutes 10`, the TUI) and writes
+    /// `config.toml`. Code that knows the setting uses [`Core::update_config`].
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let new = config::set_value(&self.config(), key, value)?;
         *self
@@ -982,16 +996,10 @@ impl Core {
             username: username.to_owned(),
             autoconnect: true,
         };
-        {
-            let mut config = self
-                .inner
-                .config
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
+        self.update_config(|config| {
             config.instances.retain(|i| i.id != id);
             config.instances.push(entry.clone());
-        }
-        self.save_config()?;
+        })?;
         self.connect(&entry, token)?;
         Ok(id)
     }
@@ -1087,13 +1095,7 @@ impl Core {
             self.logout(inst).await?;
         }
         self.wipe_local_keys(inst);
-        self.inner
-            .config
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .instances
-            .retain(|i| i.id != inst);
-        self.save_config()
+        self.update_config(|config| config.instances.retain(|i| i.id != inst))
     }
 
     /// Asks who I have blocked: the server does not put that in `ready`.
@@ -2057,17 +2059,11 @@ impl Core {
 
     /// Whether this instance connects when Hermes starts.
     pub fn set_autoconnect(&self, inst: &str, autoconnect: bool) -> Result<()> {
-        {
-            let mut config = self
-                .inner
-                .config
-                .write()
-                .unwrap_or_else(PoisonError::into_inner);
+        self.update_config(|config| {
             for entry in config.instances.iter_mut().filter(|e| e.id == inst) {
                 entry.autoconnect = autoconnect;
             }
-        }
-        self.save_config()
+        })
     }
 
     /// Tells others I am typing (at most every 8 s per channel).

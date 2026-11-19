@@ -79,19 +79,14 @@ impl Shell {
             warned.push(key);
             let over = warned.len().saturating_sub(WARNED_MAX);
             warned.drain(..over);
-            let value = toml::Value::Array(warned.into_iter().map(toml::Value::String).collect());
-            self.persist("privacy.warned_unencrypted", &value.to_string(), cx);
+            self.set_config(|c| c.privacy.warned_unencrypted = warned, cx);
         }
         cx.notify();
     }
 
     /// Sets `privacy.warn_unencrypted`, from the popup or from settings.
     pub fn set_warn_unencrypted(&mut self, value: &'static str, cx: &mut Context<Self>) {
-        self.persist(
-            "privacy.warn_unencrypted",
-            &crate::settings::toml_string(value.to_owned()),
-            cx,
-        );
+        self.set_config(|c| c.privacy.warn_unencrypted = value.to_owned(), cx);
     }
 
     /// The choices as a row of chips; `id` keeps the popup's apart from the setting's.

@@ -1711,11 +1711,6 @@ impl Shell {
         );
     }
 
-    /// Saves a choice of the share picker, which also stands as the setting.
-    pub fn set_share_setting(&mut self, key: &str, value: &str, cx: &mut Context<Self>) {
-        self.persist(key, value, cx);
-    }
-
     /// What my share keeps when it cannot keep up; a running share follows at once.
     pub fn render_preference_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::screen::capture::{PREFERENCES, Preference};
@@ -1727,8 +1722,8 @@ impl Shell {
                 chip(("preference", n), preference.label(), preference == current).on_click(
                     cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
-                        let value = format!("\"{}\"", preference.config_value());
-                        this.set_share_setting("voice.share_preference", &value, cx);
+                        let value = preference.config_value().to_owned();
+                        this.set_config(|c| c.voice.share_preference = value, cx);
                         if let Some(capture) = &this.capture {
                             capture.set_preference(preference);
                         }

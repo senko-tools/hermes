@@ -167,11 +167,7 @@ impl Shell {
         recent.retain(|e| *e != emoji);
         recent.insert(0, emoji);
         recent.truncate(RECENT);
-        self.persist(
-            "buffer.recent_emoji",
-            &crate::settings::toml_string(recent.join(" ")),
-            cx,
-        );
+        self.set_config(|c| c.buffer.recent_emoji = recent.join(" "), cx);
         self.close_emoji_picker(cx);
     }
 
