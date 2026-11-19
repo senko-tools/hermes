@@ -264,6 +264,19 @@ impl InstanceStore {
         })
     }
 
+    /// The longest message this server takes, in characters.
+    pub fn max_message_length(&self) -> Option<u32> {
+        self.instance.as_ref().map(|i| i.limits.max_message_length)
+    }
+
+    /// Why a message of `text` cannot be sent here, if it is longer than the server takes.
+    /// Counted like the server does: in characters.
+    pub fn message_refusal(&self, text: &str) -> Option<String> {
+        let max = self.max_message_length()? as usize;
+        let len = text.chars().count();
+        (len > max).then(|| format!("This message is {len} characters; the limit here is {max}."))
+    }
+
     pub fn max_upload_mb(&self) -> Option<u32> {
         self.instance.as_ref().map(|i| i.limits.max_upload_mb)
     }

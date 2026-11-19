@@ -108,8 +108,6 @@ pub fn move_channel(
     moved: Id,
     onto: Id,
 ) -> Vec<hermes_proto::api::ChannelPosition> {
-    use hermes_proto::api::ChannelPosition;
-
     let Some(state) = store.spaces.get(&space) else {
         return Vec::new();
     };
@@ -134,6 +132,39 @@ pub fn move_channel(
     if anchor == Some(moved) {
         return Vec::new();
     }
+    place_channel(state, m, parent, anchor)
+}
+
+/// The new positions after taking channel `moved` out of its category: first at the top level,
+/// above everything. Empty for a category, or a channel already there.
+pub fn move_channel_out(
+    store: &InstanceStore,
+    space: Id,
+    moved: Id,
+) -> Vec<hermes_proto::api::ChannelPosition> {
+    let Some(state) = store.spaces.get(&space) else {
+        return Vec::new();
+    };
+    let Some(m) = state.channels.get(&moved) else {
+        return Vec::new();
+    };
+    if m.kind == ChannelKind::Category {
+        return Vec::new();
+    }
+    place_channel(state, m, None, None)
+}
+
+/// `m` among the children of `parent`: at `anchor`'s place, or first without one.
+fn place_channel(
+    state: &crate::store::SpaceState,
+    m: &Channel,
+    parent: Option<Id>,
+    anchor: Option<Id>,
+) -> Vec<hermes_proto::api::ChannelPosition> {
+    use hermes_proto::api::ChannelPosition;
+
+    let moved = m.id;
+    let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
     let mut siblings: Vec<&Channel> = state
         .channels
         .values()
@@ -915,6 +946,26 @@ mod tests {
         assert_eq!(names(&s)[3].0, "general");
 
         assert!(move_channel(&s, Id(10), Id(22), Id(22)).is_empty());
+
+        // Out of the category: first at the top level.
+        let moves = move_channel_out(&s, Id(10), Id(22));
+        assert_eq!(
+            moves.iter().find(|p| p.id == Id(22)).unwrap().parent_id,
+            Some(None)
+        );
+        apply(&mut s, moves);
+        assert_eq!(names(&s)[0], ("memes".to_owned(), 0));
+        assert!(
+            move_channel_out(&s, Id(10), Id(22)).is_empty(),
+            "already out"
+        );
+        assert!(
+            move_channel_out(&s, Id(10), Id(20)).is_empty(),
+            "a category"
+        );
+        // Back into the category for the steps below.
+        let moves = move_channel(&s, Id(10), Id(22), Id(21));
+        apply(&mut s, moves);
 
         // One step up and down among siblings.
         let moves = step_channel(&s, Id(10), Id(22), -1);
