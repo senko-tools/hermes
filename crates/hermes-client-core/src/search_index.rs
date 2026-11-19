@@ -111,11 +111,25 @@ impl Data {
             .collect()
     }
 
-    /// The messages with every word, each as the start of a word, newest first.
+    /// The messages holding a word with `part` anywhere in it (a pass over every word known).
+    fn with_part(&self, part: &str) -> BTreeSet<Id> {
+        self.words
+            .iter()
+            .filter(|(word, _)| word.contains(part))
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect()
+    }
+
+    /// The messages with every word: a word of three letters or more anywhere in a word (like
+    /// the server's search), a shorter one as the start of a word. Newest first.
     fn find(&self, query: &str) -> Vec<Id> {
         let mut found: Option<BTreeSet<Id>> = None;
         for word in words_of(query) {
-            let ids = self.with_prefix(&word);
+            let ids = if word.chars().count() >= 3 {
+                self.with_part(&word)
+            } else {
+                self.with_prefix(&word)
+            };
             found = Some(match found {
                 Some(have) => have.intersection(&ids).copied().collect(),
                 None => ids,
@@ -629,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn every_word_has_to_match_as_the_start_of_a_word() {
+    fn every_word_has_to_match_somewhere_in_a_word() {
         let data = data(&[
             (1, "encrypted channels"),
             (2, "encrypted files"),
@@ -637,7 +651,13 @@ mod tests {
         ]);
         assert_eq!(data.find("encr"), vec![Id(2), Id(1)]);
         assert_eq!(data.find("ENCRYPTED chan"), vec![Id(1)]);
-        assert_eq!(data.find("crypted"), Vec::<Id>::new());
+        assert_eq!(data.find("crypted"), vec![Id(2), Id(1)], "parts of words");
+        assert_eq!(data.find("nnel"), vec![Id(3), Id(1)]);
+        assert_eq!(
+            data.find("ls"),
+            Vec::<Id>::new(),
+            "short: only the start of a word"
+        );
         assert_eq!(data.find("  "), Vec::<Id>::new());
     }
 
