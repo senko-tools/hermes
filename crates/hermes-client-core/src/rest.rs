@@ -744,10 +744,6 @@ impl Rest {
             .await
     }
 
-    pub async fn admin_user_detail(&self, user: Id) -> Result<hermes_proto::api::AdminUserDetail> {
-        self.get(&format!("/admin/users/{user}/detail")).await
-    }
-
     /// `seconds` of only being able to read; 0 ends it.
     pub async fn timeout(&self, space: Id, user: Id, seconds: u32) -> Result<()> {
         self.empty(
@@ -1199,10 +1195,6 @@ impl Rest {
 
     pub async fn voice_join(&self, req: &VoiceJoinRequest) -> Result<VoiceJoinResponse> {
         self.call(Method::POST, "/voice/join", Some(req)).await
-    }
-
-    pub async fn voice_leave(&self) -> Result<()> {
-        self.empty::<()>(Method::POST, "/voice/leave", None).await
     }
 
     pub async fn voice_self_state(&self, req: &VoiceSelfStateRequest) -> Result<()> {

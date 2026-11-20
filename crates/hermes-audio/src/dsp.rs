@@ -11,7 +11,7 @@ use rubato::{
     WindowFunction,
 };
 
-use crate::{FRAME, SAMPLE_RATE};
+use crate::FRAME;
 
 /// Resampler for one mono stream, or a passthrough when the rates match.
 pub type MonoResampler = Resampler;
@@ -362,11 +362,6 @@ impl Gate {
 /// Whole 20 ms frames in `d`.
 fn frames(d: Duration) -> u32 {
     (d.as_millis() / 20) as u32
-}
-
-/// Duration of `samples` at 48 kHz.
-pub fn duration_of(samples: usize) -> Duration {
-    Duration::from_micros(samples as u64 * 1_000_000 / u64::from(SAMPLE_RATE))
 }
 
 /// Soft clipping: linear-ish near zero, never beyond ±1.

@@ -1223,11 +1223,6 @@ impl Directory {
         self.fetched.get(&user).copied()
     }
 
-    /// Makes the next look at `user` ask the server again.
-    pub fn forget_fetch(&mut self, user: Id) {
-        self.fetched.remove(&user);
-    }
-
     pub fn device(&self, user: Id, device: &str) -> Option<&DeviceKeys> {
         self.users.get(&user)?.devices.get(device)
     }
