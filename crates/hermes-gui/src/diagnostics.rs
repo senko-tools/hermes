@@ -220,7 +220,24 @@ impl Shell {
                     .on_click(cx.listener(|this, _, _, _| this.core.play_sound(Sound::Join))),
             )
             .into_any_element();
-        let mut groups = vec![buttons];
+        let developer = self.config.general.developer_mode;
+        let mut groups = vec![
+            group(
+                "Developer",
+                vec![crate::settings::setting(
+                    "Developer mode",
+                    "Menus also offer copying the IDs of servers, channels, messages and people.",
+                    gpui_kit::component::switch::Switch::new("developer-mode")
+                        .cursor_pointer()
+                        .checked(developer)
+                        .on_click(cx.listener(|this, on: &bool, _, cx| {
+                            let on = *on;
+                            this.set_config(|c| c.general.developer_mode = on, cx);
+                        })),
+                )],
+            ),
+            buttons,
+        ];
         if let Some(run) = run {
             for (heading, checks) in &run.groups {
                 let rows = match checks {

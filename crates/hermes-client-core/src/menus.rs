@@ -288,13 +288,19 @@ impl Action {
             Action::NotifyAll
             | Action::NotifyMentions
             | Action::NotifyNothing
-            | Action::NotifyDefault
-            | Action::MuteFor15Minutes
+            | Action::NotifyDefault => Some("Notifications"),
+            Action::MuteFor15Minutes
             | Action::MuteForHour
             | Action::MuteFor8Hours
             | Action::MuteForDay
             | Action::Mute
-            | Action::Unmute => Some("Notifications"),
+            | Action::Unmute => Some("Mute"),
+            // What a message's menu offers less often.
+            Action::QuoteText
+            | Action::MarkUnreadHere
+            | Action::CopyLink
+            | Action::SelectMessage
+            | Action::Report => Some("More"),
             Action::CreateChannel | Action::CreateCategory => Some("Create"),
             Action::SetOnline | Action::SetIdle | Action::SetDnd | Action::SetInvisible => {
                 Some("Status")
@@ -445,6 +451,8 @@ pub struct Extra {
     pub locally_muted: bool,
     /// The message is in my saved messages (a message's menu).
     pub saved: bool,
+    /// Developer mode: menus offer copying IDs.
+    pub developer: bool,
 }
 
 /// The entries for `target`; `status` is the instance's connection status and `s` its store.
@@ -495,7 +503,9 @@ pub fn entries_with(
             out.push(None);
             notification_entries(s, *space, Some(NotificationLevel::Mentions), &mut out);
             out.push(None);
-            push(&mut out, [Action::CopySpaceId]);
+            if extra.developer {
+                push(&mut out, [Action::CopySpaceId]);
+            }
             let owner = s
                 .spaces
                 .get(space)
@@ -533,7 +543,9 @@ pub fn entries_with(
                     if create || manage {
                         out.push(None);
                     }
-                    push(&mut out, [Action::CopyChannelId]);
+                    if extra.developer {
+                        push(&mut out, [Action::CopyChannelId]);
+                    }
                     if manage {
                         push(&mut out, [Action::DeleteChannel]);
                     }
@@ -551,7 +563,9 @@ pub fn entries_with(
                     if c.kind == ChannelKind::GroupDm {
                         push(&mut out, [Action::RenameGroup]);
                     }
-                    push(&mut out, [Action::CopyChannelId]);
+                    if extra.developer {
+                        push(&mut out, [Action::CopyChannelId]);
+                    }
                     if c.kind == ChannelKind::GroupDm {
                         push(&mut out, [Action::LeaveGroup]);
                     } else {
@@ -571,7 +585,9 @@ pub fn entries_with(
                         push(&mut out, [Action::EditChannel, Action::ChannelPermissions]);
                     }
                     out.push(None);
-                    push(&mut out, [Action::CopyChannelId]);
+                    if extra.developer {
+                        push(&mut out, [Action::CopyChannelId]);
+                    }
                     if manage {
                         push(&mut out, [Action::DeleteChannel]);
                     }
@@ -596,9 +612,6 @@ pub fn entries_with(
             if own {
                 push(&mut out, [Action::Edit]);
             }
-            if can_send {
-                push(&mut out, [Action::QuoteText]);
-            }
             push(&mut out, [Action::CopyText]);
             push(
                 &mut out,
@@ -608,20 +621,31 @@ pub fn entries_with(
                     Action::Save
                 }],
             );
-            if manage {
-                push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
-            }
             if msg.is_some_and(|m| !m.content.is_empty() || !m.attachments.is_empty()) {
                 push(&mut out, [Action::Forward]);
             }
+            if manage {
+                push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
+            }
+            // More ▸
+            if can_send {
+                push(&mut out, [Action::QuoteText]);
+            }
             push(&mut out, [Action::MarkUnreadHere, Action::CopyLink]);
+            if deletable {
+                push(&mut out, [Action::SelectMessage]);
+            }
             if !own {
                 push(&mut out, [Action::Report]);
             }
-            out.push(None);
-            push(&mut out, [Action::CopyMessageId]);
+            if extra.developer || deletable {
+                out.push(None);
+            }
+            if extra.developer {
+                push(&mut out, [Action::CopyMessageId]);
+            }
             if deletable {
-                push(&mut out, [Action::SelectMessage, Action::DeleteMessage]);
+                push(&mut out, [Action::DeleteMessage]);
             }
         }
         Target::Member(_, space, user) => {
@@ -655,7 +679,10 @@ pub fn entries_with(
                 voice_entries(s, *user, extra.locally_muted, &mut out);
             }
             out.push(None);
-            push(&mut out, [Action::CopyUsername, Action::CopyUserId]);
+            push(&mut out, [Action::CopyUsername]);
+            if extra.developer {
+                push(&mut out, [Action::CopyUserId]);
+            }
             if let Some(s) = s
                 && s.me.as_ref().is_some_and(|m| m.instance_admin)
                 && let Some(them) = s.user(*user)
@@ -935,13 +962,10 @@ mod tests {
                 Grouped::Separator,
                 Grouped::Submenu {
                     label: "Notifications",
-                    entries: vec![
-                        entry(Action::NotifyAll),
-                        entry(Action::NotifyNothing),
-                        None,
-                        entry(Action::Mute),
-                    ],
+                    entries: vec![entry(Action::NotifyAll), entry(Action::NotifyNothing)],
                 },
+                // The mutes have a submenu of their own; one alone is a plain entry.
+                Grouped::Entry(Action::Mute.into()),
                 Grouped::Separator,
                 Grouped::Entry(Action::CreateChannel.into()),
                 Grouped::Entry(Action::EditChannel.into()),
@@ -998,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mutes_share_one_separator() {
+    fn the_mutes_get_a_submenu_beside_the_levels() {
         let entry = |action: Action| Some(Entry::from(action));
         let lines = grouped(&[
             entry(Action::NotifyAll),
@@ -1007,17 +1031,55 @@ mod tests {
             entry(Action::MuteForHour),
             entry(Action::Mute),
         ]);
-        let [Grouped::Submenu { entries, .. }] = lines.as_slice() else {
+        let [
+            Grouped::Submenu {
+                label: "Notifications",
+                entries: levels,
+            },
+            Grouped::Submenu {
+                label: "Mute",
+                entries: mutes,
+            },
+        ] = lines.as_slice()
+        else {
             panic!("{lines:?}");
         };
-        assert_eq!(
-            entries.iter().filter(|e| e.is_none()).count(),
-            1,
-            "{entries:?}"
-        );
-        assert_eq!(entries[2], None);
+        assert_eq!(levels.len(), 2);
+        assert_eq!(mutes.len(), 3, "no separator inside: {mutes:?}");
         assert_eq!(Action::MuteForDay.mute_minutes(), Some(24 * 60));
         assert_eq!(Action::Mute.mute_minutes(), None);
+    }
+
+    #[test]
+    fn ids_need_developer_mode_and_rare_message_actions_go_under_more() {
+        let s = crate::testing::fixtures::store();
+        let target = Target::Channel("h".into(), Id(11));
+        let plain = actions(&entries_with(
+            &target,
+            &ConnStatus::Connected,
+            Some(&s),
+            Extra::default(),
+        ));
+        assert!(!plain.contains(&Action::CopyChannelId), "{plain:?}");
+        let dev = actions(&entries_with(
+            &target,
+            &ConnStatus::Connected,
+            Some(&s),
+            Extra {
+                developer: true,
+                ..Extra::default()
+            },
+        ));
+        assert!(dev.contains(&Action::CopyChannelId), "{dev:?}");
+        for more in [
+            Action::QuoteText,
+            Action::MarkUnreadHere,
+            Action::CopyLink,
+            Action::SelectMessage,
+            Action::Report,
+        ] {
+            assert_eq!(more.group(), Some("More"), "{more:?}");
+        }
     }
 
     fn member_entries(s: &InstanceStore, locally_muted: bool) -> Vec<Action> {
@@ -1026,6 +1088,7 @@ mod tests {
             presence: None,
             locally_muted,
             saved: false,
+            developer: true,
         };
         actions(&entries_with(
             &target,

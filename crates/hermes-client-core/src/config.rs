@@ -280,6 +280,8 @@ pub struct General {
     pub ask_where_to_save: bool,
     /// Settings groups shown folded (by key), e.g. the voice processing details.
     pub folded_settings: Vec<String>,
+    /// Shows what only developers and admins need, such as copying IDs from menus.
+    pub developer_mode: bool,
 }
 
 impl Default for General {
@@ -302,6 +304,7 @@ impl Default for General {
             download_dir: String::new(),
             ask_where_to_save: false,
             folded_settings: vec!["processing".into()],
+            developer_mode: false,
         }
     }
 }

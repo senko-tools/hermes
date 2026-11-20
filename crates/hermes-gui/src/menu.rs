@@ -294,6 +294,7 @@ impl Shell {
                 Target::Message(inst, _, message) => self.core.is_saved(inst, *message),
                 _ => false,
             },
+            developer: self.config.general.developer_mode,
         };
         let entries = {
             let store = self.core.store();
