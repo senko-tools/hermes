@@ -1060,6 +1060,113 @@ impl Shell {
         ))
     }
 
+    /// My avatar and banner, each with its picture, a button to change it and one to remove
+    /// it: the profile editor's first rows (#20).
+    pub(crate) fn profile_picture_rows(
+        &self,
+        inst: &InstanceId,
+        user: &hermes_client_core::proto::models::User,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let inst = inst.clone();
+        let mut rows = Vec::new();
+        let has_avatar = user.avatar.is_some();
+        let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
+        let avatar_hint = format!(
+            "{} {}",
+            if has_avatar {
+                "Shown next to your messages."
+            } else {
+                "No picture yet; your initials are shown."
+            },
+            crate::crop::CropFor::Avatar(inst.clone()).rules()
+        );
+        rows.push(picture_row(
+            "Avatar",
+            &avatar_hint,
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(self.avatar(&inst, Some(user), user.name(), 36.))
+                .child(
+                    Button::new("account-avatar")
+                        .cursor_pointer()
+                        .label(if has_avatar { "Change…" } else { "Upload…" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_avatar(pick_inst.clone(), cx);
+                        })),
+                )
+                .when(has_avatar, |d| {
+                    d.child(
+                        Button::new("account-avatar-remove")
+                            .cursor_pointer()
+                            .label("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.call_status(
+                                    &remove_inst,
+                                    "Avatar removed",
+                                    |r| async move {
+                                        r.update_me(&UpdateMeRequest {
+                                            avatar_id: Some(None),
+                                            ..UpdateMeRequest::default()
+                                        })
+                                        .await
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                }),
+        ));
+        let has_banner = user.banner.is_some();
+        let (banner_inst, unbanner_inst) = (inst.clone(), inst.clone());
+        let banner_hint = format!(
+            "The wide picture at the top of your profile. {}",
+            crate::crop::CropFor::Banner(inst.clone()).rules()
+        );
+        rows.push(picture_row(
+            "Banner",
+            &banner_hint,
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(
+                    Button::new("account-banner")
+                        .cursor_pointer()
+                        .label(if has_banner { "Change…" } else { "Upload…" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_picture(
+                                crate::crop::CropFor::Banner(banner_inst.clone()),
+                                cx,
+                            );
+                        })),
+                )
+                .when(has_banner, |d| {
+                    d.child(
+                        Button::new("account-banner-remove")
+                            .cursor_pointer()
+                            .label("Remove")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.call_status(
+                                    &unbanner_inst,
+                                    "Banner removed",
+                                    |r| async move {
+                                        r.update_me(&UpdateMeRequest {
+                                            banner_id: Some(None),
+                                            ..UpdateMeRequest::default()
+                                        })
+                                        .await
+                                    },
+                                    cx,
+                                );
+                            })),
+                    )
+                }),
+        ));
+        rows
+    }
+
     /// Every account (an instance signed in to), with signing in and out, going offline and
     /// removing it, and adding another: these left the menus (#17).
     fn accounts_group(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1220,98 +1327,6 @@ impl Shell {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_form_profile(profile_inst.clone(), window, cx);
                 })),
-        ));
-        let has_avatar = me.user.avatar.is_some();
-        let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
-        let avatar_hint = format!(
-            "{} {}",
-            if has_avatar {
-                "Shown next to your messages."
-            } else {
-                "No picture yet; your initials are shown."
-            },
-            crate::crop::CropFor::Avatar(inst.clone()).rules()
-        );
-        account_rows.push(setting(
-            "Avatar",
-            &avatar_hint,
-            div()
-                .flex()
-                .gap(px(8.))
-                .child(
-                    Button::new("account-avatar")
-                        .cursor_pointer()
-                        .label(if has_avatar { "Change…" } else { "Upload…" })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_avatar(pick_inst.clone(), cx);
-                        })),
-                )
-                .when(has_avatar, |d| {
-                    d.child(
-                        Button::new("account-avatar-remove")
-                            .cursor_pointer()
-                            .label("Remove")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.call_status(
-                                    &remove_inst,
-                                    "Avatar removed",
-                                    |r| async move {
-                                        r.update_me(&UpdateMeRequest {
-                                            avatar_id: Some(None),
-                                            ..UpdateMeRequest::default()
-                                        })
-                                        .await
-                                    },
-                                    cx,
-                                );
-                            })),
-                    )
-                }),
-        ));
-        let has_banner = me.user.banner.is_some();
-        let (banner_inst, unbanner_inst) = (inst.clone(), inst.clone());
-        let banner_hint = format!(
-            "The wide picture at the top of your profile. {}",
-            crate::crop::CropFor::Banner(inst.clone()).rules()
-        );
-        account_rows.push(setting(
-            "Banner",
-            &banner_hint,
-            div()
-                .flex()
-                .gap(px(8.))
-                .child(
-                    Button::new("account-banner")
-                        .cursor_pointer()
-                        .label(if has_banner { "Change…" } else { "Upload…" })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_picture(
-                                crate::crop::CropFor::Banner(banner_inst.clone()),
-                                cx,
-                            );
-                        })),
-                )
-                .when(has_banner, |d| {
-                    d.child(
-                        Button::new("account-banner-remove")
-                            .cursor_pointer()
-                            .label("Remove")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.call_status(
-                                    &unbanner_inst,
-                                    "Banner removed",
-                                    |r| async move {
-                                        r.update_me(&UpdateMeRequest {
-                                            banner_id: Some(None),
-                                            ..UpdateMeRequest::default()
-                                        })
-                                        .await
-                                    },
-                                    cx,
-                                );
-                            })),
-                    )
-                }),
         ));
         let password_inst = inst.clone();
         account_rows.push(setting(
@@ -3808,6 +3823,42 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
 /// How long a hint may be and still show in full under its setting; a longer one shows its
 /// start and the rest in the (i) next to the name.
 const HINT_CHARS: usize = 72;
+
+/// A row of the profile editor: the name and a one-line hint (all of it on hover), and the
+/// controls on the same line however narrow the dialog is.
+fn picture_row(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    let tip = SharedString::from(hint.to_owned());
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .child(
+            div()
+                .id(SharedString::from(format!("picture-row-{name}")))
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(theme::body_size())
+                        .child(SharedString::from(name.to_owned())),
+                )
+                .child(
+                    div()
+                        .text_size(theme::secondary_size())
+                        .text_color(theme::text_tertiary())
+                        .truncate()
+                        .child(tip.clone()),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                }),
+        )
+        .child(div().flex_none().child(control))
+        .into_any_element()
+}
 
 /// A row: the name and a one-line hint on the left, the control on the right. A hint too long
 /// for one line puts all of it in the (i) beside the name.

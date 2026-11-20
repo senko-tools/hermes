@@ -1535,6 +1535,17 @@ impl Shell {
         if !form.text.is_empty() {
             content.push(paragraph(form.text.clone()).into_any_element());
         }
+        // The whole profile in one place: avatar and banner first (#20).
+        if let Purpose::EditProfile { inst, .. } = &form.purpose {
+            let me = self
+                .core
+                .store()
+                .instance(inst)
+                .and_then(|s| s.me.as_ref().map(|m| m.user.clone()));
+            if let Some(me) = me {
+                content.extend(self.profile_picture_rows(inst, &me, cx));
+            }
+        }
         for (i, field) in form.fields.iter().enumerate() {
             content.push(render_field(self, i, field, cx));
         }
