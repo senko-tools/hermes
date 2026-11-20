@@ -623,7 +623,10 @@ fn piece_style(p: &Piece, system: bool, revealed: bool) -> HighlightStyle {
 /// starts (past the avatar column) and stop as far from the right edge, so they sit inside the
 /// chat's content and the date stays centred in the chat whatever the messages' widths.
 fn divider(text: String, color: gpui_kit::Rgba, line: gpui_kit::Rgba) -> AnyElement {
+    // A list row is as wide as its content unless it says otherwise: without the full width
+    // the two lines (which only fill what is left) would have none.
     div()
+        .w_full()
         .flex()
         .items_center()
         .gap(px(12.))
@@ -645,6 +648,7 @@ fn divider(text: String, color: gpui_kit::Rgba, line: gpui_kit::Rgba) -> AnyElem
 /// Where the unread messages start: a red line ending in a NEW tag, apart from the day lines.
 fn new_messages_divider() -> AnyElement {
     div()
+        .w_full()
         .flex()
         .items_center()
         .px(px(16.))

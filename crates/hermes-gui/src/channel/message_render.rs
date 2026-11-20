@@ -86,6 +86,7 @@ impl Shell {
             .flatten();
         let element = match row {
             Row::Older => div()
+                .w_full()
                 .flex()
                 .justify_center()
                 .py(px(8.))
@@ -104,6 +105,7 @@ impl Shell {
                 let viewport = self.selection.list.clone();
                 let shell = cx.entity_id();
                 div()
+                    .w_full()
                     .relative()
                     .child(new_messages_divider())
                     .child(
