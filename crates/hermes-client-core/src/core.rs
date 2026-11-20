@@ -397,9 +397,12 @@ struct Outbox {
     wake: Notify,
 }
 
+type HistoryRequests = HashMap<(Id, HistoryAnchor), tokio::sync::watch::Sender<Option<Result<()>>>>;
+
 #[derive(Debug)]
 struct InstanceHandle {
     username: String,
+    history: Mutex<HistoryRequests>,
     rest: Rest,
     gateway: Gateway,
     status: Mutex<ConnStatus>,
@@ -767,6 +770,17 @@ impl Core {
 
     // ---- instances ------------------------------------------------------------------------
 
+    /// Signed-in usernames by host, for scoping desktop media caches.
+    pub fn connected_accounts(&self) -> HashMap<InstanceId, String> {
+        self.inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(host, handle)| (host.clone(), handle.username.clone()))
+            .collect()
+    }
+
     pub fn instance_ids(&self) -> Vec<InstanceId> {
         self.config().instances.into_iter().map(|i| i.id).collect()
     }
@@ -830,18 +844,69 @@ impl Core {
             if !entry.autoconnect {
                 continue;
             }
-            match self.inner.tokens.get(&entry.id, &entry.username) {
-                Some(token) => {
-                    if let Err(err) = self.connect(&entry, &token) {
-                        self.emit(CoreEvent::Error(format!("{}: {err}", entry.id)));
-                    }
-                }
-                None => self.emit(CoreEvent::InstanceStatus {
-                    inst: entry.id.clone(),
-                    status: ConnStatus::LoggedOut,
-                }),
-            }
+            self.start_saved(&entry);
         }
+    }
+
+    fn start_saved(&self, entry: &InstanceEntry) {
+        match self.inner.tokens.get(&entry.id, &entry.username) {
+            Some(token) => {
+                if self.handle(&entry.id).is_some()
+                    || self.config().instance(&entry.id) != Some(entry)
+                {
+                    return;
+                }
+                if let Err(err) = self.connect(entry, &token) {
+                    self.emit(CoreEvent::Error(format!("{}: {err}", entry.id)));
+                }
+            }
+            None => self.emit(CoreEvent::InstanceStatus {
+                inst: entry.id.clone(),
+                status: ConnStatus::LoggedOut,
+            }),
+        }
+    }
+
+    /// Begin credential lookups on blocking workers. A launch link can await just its host.
+    pub fn start_desktop_accounts(
+        &self,
+        preferred: Option<InstanceId>,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        use futures_util::StreamExt;
+        let mut entries = self.config().instances;
+        entries.retain(|entry| entry.autoconnect);
+        entries.sort_by_key(|entry| Some(&entry.id) != preferred.as_ref());
+        let (ready, receiver) = tokio::sync::oneshot::channel();
+        let mut ready = Some(ready);
+        let jobs: Vec<_> = entries
+            .into_iter()
+            .map(|entry| {
+                let signal = if Some(&entry.id) == preferred.as_ref() {
+                    ready.take()
+                } else {
+                    None
+                };
+                (entry, signal)
+            })
+            .collect();
+        drop(ready);
+        let core = self.clone();
+        tokio::spawn(async move {
+            futures_util::stream::iter(jobs)
+                .for_each_concurrent(2, |(entry, signal)| {
+                    let core = core.clone();
+                    async move {
+                        let setup =
+                            tokio::task::spawn_blocking(move || core.start_saved(&entry)).await;
+                        if let Err(err) = setup {
+                            tracing::error!("saved account setup failed: {err}");
+                        }
+                        drop(signal);
+                    }
+                })
+                .await;
+        });
+        receiver
     }
 
     /// `GET /instance` plus the certificate, before adding an instance.
@@ -1046,6 +1111,7 @@ impl Core {
         let (connected, _) = tokio::sync::watch::channel(false);
         let handle = Arc::new(InstanceHandle {
             username: entry.username.clone(),
+            history: Mutex::default(),
             rest,
             gateway,
             status: Mutex::new(ConnStatus::Connecting),
@@ -1513,7 +1579,58 @@ impl Core {
     // ---- messages -------------------------------------------------------------------------
 
     pub async fn load_history(&self, inst: &str, channel: Id, anchor: HistoryAnchor) -> Result<()> {
-        let rest = self.rest(inst)?;
+        let handle = self.handle_or_err(inst)?;
+        let key = (channel, anchor);
+        let mut result = {
+            let mut active = handle
+                .history
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(sender) = active.get(&key) {
+                sender.subscribe()
+            } else {
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                active.insert(key, sender);
+                let core = self.clone();
+                let handle = handle.clone();
+                let inst = inst.to_owned();
+                tokio::spawn(async move {
+                    use futures_util::FutureExt as _;
+                    // A panic still ends the request, or every later load of it would wait forever.
+                    let fetched = std::panic::AssertUnwindSafe(
+                        core.fetch_history(&inst, &handle, channel, anchor),
+                    )
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(CoreError::Io("loading history failed".into())));
+                    if let Some(sender) = handle
+                        .history
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&key)
+                    {
+                        sender.send_replace(Some(fetched));
+                    }
+                });
+                receiver
+            }
+        };
+        result
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|e| CoreError::Io(e.to_string()))?
+            .clone()
+            .unwrap()
+    }
+
+    async fn fetch_history(
+        &self,
+        inst: &str,
+        handle: &Arc<InstanceHandle>,
+        channel: Id,
+        anchor: HistoryAnchor,
+    ) -> Result<()> {
+        let rest = &handle.rest;
         let mut query = HistoryQuery {
             limit: Some(PAGE),
             ..HistoryQuery::default()
@@ -1526,6 +1643,12 @@ impl Core {
         }
         let mut page = rest.messages(channel, &query).await?;
         self.open_messages(inst, &mut page).await;
+        if !self
+            .handle(inst)
+            .is_some_and(|current| Arc::ptr_eq(&current, handle))
+        {
+            return Err(CoreError::NotSignedIn);
+        }
         self.with_store(inst, |s| s.merge_history(channel, anchor, page, PAGE));
         self.changed(inst, [Changed::Messages(channel)]);
         Ok(())

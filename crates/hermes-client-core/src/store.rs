@@ -53,7 +53,7 @@ pub struct PendingMessage {
 }
 
 /// Where to load history from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HistoryAnchor {
     /// The newest page (opening a channel, jump to present).
     Latest,
