@@ -908,10 +908,16 @@ impl Shell {
             }
             Selected::Home => None,
         };
+        self.drop_out_strip.set(None);
         let rows = match self.selected.clone() {
             Selected::Home => self.home_rows(cx),
             Selected::Space(inst, space) => self.space_rows(inst, space, cx),
         };
+        let strip = self
+            .drop_out_strip
+            .take()
+            .filter(|_| cx.has_active_drag())
+            .map(|(inst, space)| self.render_drop_out(inst, space, cx));
 
         div()
             .flex()
@@ -958,36 +964,49 @@ impl Shell {
                 )
             }))
             .child(
+                // The rows scroll; the drop strip stays over their left edge.
                 div()
-                    .id("sidebar-rows")
+                    .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(8.))
-                    .pt(px(8.))
-                    .gap(px(2.))
-                    .children(rows)
-                    .child({
-                        // Under a server's channels: making more of them. Under the DMs: the
-                        // instances.
-                        let empty = div().id("sidebar-empty").flex_1().min_h(px(48.));
-                        match &self.selected {
-                            Selected::Space(inst, space) => {
-                                self.with_menu(empty, Target::ChannelArea(inst.clone(), *space), cx)
-                            }
-                            Selected::Home => self.with_instances_menu(empty, cx),
-                        }
-                    })
-                    // Another server's channels fade in.
-                    .relative()
-                    .with_animation(
-                        SharedString::from(format!("sidebar-{:?}", self.selected)),
-                        gpui_kit::Animation::new(theme::fade())
-                            .with_easing(gpui_kit::ease_out_quint()),
-                        |d, t| d.opacity(t),
-                    ),
+                    .child(self.sidebar_rows(rows, cx))
+                    .children(strip),
+            )
+    }
+
+    /// The scrolling rows of the sidebar, and the empty space under them.
+    fn sidebar_rows(&self, rows: Vec<AnyElement>, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::AnimationExt as _;
+        div()
+            .id("sidebar-rows")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(8.))
+            .pt(px(8.))
+            .gap(px(2.))
+            .children(rows)
+            .child({
+                // Under a server's channels: making more of them. Under the DMs: the
+                // instances.
+                let empty = div().id("sidebar-empty").flex_1().min_h(px(48.));
+                match &self.selected {
+                    Selected::Space(inst, space) => {
+                        self.with_menu(empty, Target::ChannelArea(inst.clone(), *space), cx)
+                    }
+                    Selected::Home => self.with_instances_menu(empty, cx),
+                }
+            })
+            // Another server's channels fade in.
+            .relative()
+            .with_animation(
+                SharedString::from(format!("sidebar-{:?}", self.selected)),
+                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
+                |d, t| d.opacity(t),
             )
     }
 
@@ -1126,7 +1145,7 @@ impl Shell {
             out
         };
         let mut rows = self.instance_notices(cx);
-        // While a channel is dragged: a place to drop it out of its category.
+        // While a channel is dragged: the list's left edge takes it out of its category.
         let can_move = tree_rows.iter().any(|row| {
             matches!(
                 row,
@@ -1137,9 +1156,8 @@ impl Shell {
                 }
             )
         });
-        if can_move && cx.has_active_drag() {
-            rows.push(self.render_drop_out(inst.clone(), space, cx));
-        }
+        self.drop_out_strip
+            .set(can_move.then(|| (inst.clone(), space)));
         let show_people = self.config.sidebar.show_voice_users;
         let mut tree_rows = tree_rows
             .into_iter()
@@ -1676,46 +1694,42 @@ impl Shell {
 
     /// The strip at the top of a space's channels while one is dragged: dropped there, a
     /// channel leaves its category for the top of the list.
+    /// While a channel inside a category is dragged: a strip over the list's left edge. Dropped
+    /// there, it leaves its category (#13). Nothing in the list moves for it; it lights up with
+    /// an accent bar while the channel is over it.
     fn render_drop_out(&self, inst: InstanceId, space: Id, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_kit::AnimationExt as _;
         let fits = move |dragged: &Item| {
             dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
         };
         let fits_drop = fits.clone();
         div()
             .id("drop-out-of-category")
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .justify_center()
-            .h(px(28.))
-            .mx(px(8.))
-            .mt(px(6.))
-            .rounded(theme::radius_small())
-            .border_1()
-            .border_color(theme::border())
-            .text_size(theme::caption_size())
-            .text_color(theme::text_tertiary())
-            .child("Drop here to move out of its category")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .w(px(18.))
+            .occlude()
             .drag_over::<Item>(move |style, dragged, _, _| {
                 if !fits(dragged) {
                     return style;
                 }
                 style
-                    .bg(theme::alpha(theme::accent(), 0.1))
+                    .bg(theme::alpha(theme::accent(), 0.12))
+                    .border_l_3()
                     .border_color(theme::accent())
-                    .text_color(theme::accent())
             })
             .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
                 if fits_drop(dragged) {
                     this.drop_out_of_category(dragged.clone(), cx);
                 }
             }))
-            .with_animation(
-                "drop-out-in",
-                gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
-                |d, t| d.opacity(t),
-            )
+            .tooltip(|window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(
+                    "Drop here to take it out of its category",
+                )
+                .build(window, cx)
+            })
             .into_any_element()
     }
 

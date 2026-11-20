@@ -168,6 +168,9 @@ pub struct Shell {
     /// Bordered bars (the user panel, the voice panel, the page header): a menu over or under
     /// something inside one clears the whole bar, border included (#14).
     pub popup_bars: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
+    /// The server whose channels could be dragged out of a category this frame (the sidebar's
+    /// left-edge drop strip).
+    pub drop_out_strip: std::cell::Cell<Option<(InstanceId, Id)>>,
     /// The pointer is over a letter of selectable text: the root shows the text cursor.
     pub pointer_over_text: bool,
     /// The profile card that is open.
@@ -400,6 +403,7 @@ impl Shell {
             popup_triggers: Default::default(),
             popup_bars: Default::default(),
             pointer_over_text: false,
+            drop_out_strip: Default::default(),
             profile: None,
             confirm: None,
             add_instance: None,
