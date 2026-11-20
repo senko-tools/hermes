@@ -142,8 +142,11 @@ mod tests {
 
     /// A 2 s clip of 160x90 at 10 fps with a tone, made by FFmpeg; `None` without FFmpeg.
     fn clip() -> Option<Vec<u8>> {
+        // Its own file per call: tests run side by side.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
-            std::env::temp_dir().join(format!("hermes-media-test-{}.mkv", std::process::id()));
+            std::env::temp_dir().join(format!("hermes-media-test-{}-{n}.mkv", std::process::id()));
         let made = std::process::Command::new("ffmpeg")
             .args([
                 "-v",

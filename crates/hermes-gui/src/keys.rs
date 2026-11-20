@@ -42,7 +42,7 @@ impl Shell {
             cx.notify();
             return;
         }
-        if key == "escape" && plain && self.close_top() {
+        if key == "escape" && plain && self.close_top(cx) {
             cx.stop_propagation();
             cx.notify();
             return;
@@ -106,24 +106,10 @@ impl Shell {
     }
 
     /// Closes the top dialog, menu or page. `false` if none is open.
-    fn close_top(&mut self) -> bool {
-        if self.keys_dialog.take().is_some()
-            || self.crop.take().is_some()
-            || self.close_media_full()
-        {
-            return true;
-        }
-        if self.viewer.take().is_some()
-            || self.volume_menu.take().is_some()
-            || self.take_share_picker()
-            || self.network_open.take().is_some()
-            || self.menu.take().is_some()
-            || self.command_bar.take().is_some()
-            || self.confirm.take().is_some()
-            || self.form.take().is_some()
-            || self.new_dm.take().is_some()
-            || self.add_instance.take().is_some()
-        {
+    fn close_top(&mut self, cx: &mut Context<Self>) -> bool {
+        // What is open over the window first, in its order (`overlay.rs`).
+        if let Some(top) = self.top_overlay() {
+            self.close_overlay(top, cx);
             return true;
         }
         if self.open_space_page.take().is_some() {
@@ -148,19 +134,6 @@ impl Shell {
             return true;
         }
         false
-    }
-
-    /// Whether a dialog covers the window.
-    pub fn dialog_open(&self) -> bool {
-        self.viewer.is_some()
-            || self.crop.is_some()
-            || self.confirm.is_some()
-            || self.form.is_some()
-            || self.new_dm.is_some()
-            || self.add_instance.is_some()
-            || self.command_bar.is_some()
-            || self.volume_menu.is_some()
-            || self.share_menu.is_some()
     }
 
     fn command_bar_key(&mut self, key: &str, plain: bool) -> bool {

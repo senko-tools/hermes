@@ -36,6 +36,7 @@ use hermes_client_core::menus as menu_entries;
 mod modal;
 mod new_dm;
 mod open;
+mod overlay;
 mod ptt;
 mod results;
 mod rows;

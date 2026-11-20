@@ -529,6 +529,11 @@ impl Shell {
         true
     }
 
+    /// Whether a video is in the full view.
+    pub fn media_full_open(&self) -> bool {
+        self.media.items.values().any(|item| item.full)
+    }
+
     /// Closes the full view, if one is open. `false` if none was.
     pub fn close_media_full(&mut self) -> bool {
         let mut closed = false;
