@@ -6,7 +6,7 @@ use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::{InstanceId, view};
 
-use crate::keybinds::Action;
+use crate::keybinds::KeyAction;
 use crate::menu_entries::{Action as MenuAction, Target};
 use crate::results::Key;
 use crate::shell::{Page, Selected, Shell};
@@ -230,27 +230,27 @@ impl Shell {
         }
     }
 
-    pub fn key_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn key_action(&mut self, action: KeyAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
-            Action::CommandBar => self.open_command_bar(window, cx),
-            Action::NextChannel => self.step_channel(1, false, window, cx),
-            Action::PrevChannel => self.step_channel(-1, false, window, cx),
-            Action::NextUnread => self.step_channel(1, true, window, cx),
-            Action::PrevUnread => self.step_channel(-1, true, window, cx),
+            KeyAction::CommandBar => self.open_command_bar(window, cx),
+            KeyAction::NextChannel => self.step_channel(1, false, window, cx),
+            KeyAction::PrevChannel => self.step_channel(-1, false, window, cx),
+            KeyAction::NextUnread => self.step_channel(1, true, window, cx),
+            KeyAction::PrevUnread => self.step_channel(-1, true, window, cx),
             // Split panes come later.
-            Action::FocusNextPane
-            | Action::FocusPrevPane
-            | Action::SplitRight
-            | Action::SplitDown
-            | Action::ClosePane
-            | Action::MaximizePane => {}
-            Action::ToggleMemberList => self.toggle_members(cx),
-            Action::ToggleSidebar => self.toggle_sidebar(cx),
-            Action::Settings => self.open_settings(window, cx),
-            Action::ZoomIn => self.set_ui_scale(self.config.font.ui_scale + 0.1, window, cx),
-            Action::ZoomOut => self.set_ui_scale(self.config.font.ui_scale - 0.1, window, cx),
-            Action::ZoomReset => self.set_ui_scale(1.0, window, cx),
-            Action::MarkRead => {
+            KeyAction::FocusNextPane
+            | KeyAction::FocusPrevPane
+            | KeyAction::SplitRight
+            | KeyAction::SplitDown
+            | KeyAction::ClosePane
+            | KeyAction::MaximizePane => {}
+            KeyAction::ToggleMemberList => self.toggle_members(cx),
+            KeyAction::ToggleSidebar => self.toggle_sidebar(cx),
+            KeyAction::Settings => self.open_settings(window, cx),
+            KeyAction::ZoomIn => self.set_ui_scale(self.config.font.ui_scale + 0.1, window, cx),
+            KeyAction::ZoomOut => self.set_ui_scale(self.config.font.ui_scale - 0.1, window, cx),
+            KeyAction::ZoomReset => self.set_ui_scale(1.0, window, cx),
+            KeyAction::MarkRead => {
                 if let Some((inst, channel)) = self.open_channel() {
                     self.run_action(
                         Target::Channel(inst, channel),
@@ -260,7 +260,7 @@ impl Shell {
                     );
                 }
             }
-            Action::Search => match self.open_channel() {
+            KeyAction::Search => match self.open_channel() {
                 Some((inst, channel)) => self.search_from(inst, channel, window, cx),
                 None => {
                     if let Some(inst) = self.core.instance_ids().first().cloned() {
@@ -268,8 +268,8 @@ impl Shell {
                     }
                 }
             },
-            Action::ToggleMute => self.toggle_mute(cx),
-            Action::ToggleDeafen => self.toggle_deafen(cx),
+            KeyAction::ToggleMute => self.toggle_mute(cx),
+            KeyAction::ToggleDeafen => self.toggle_deafen(cx),
         }
         cx.notify();
     }

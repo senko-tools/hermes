@@ -11,7 +11,7 @@ use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::proto::permissions::Permissions;
 use hermes_client_core::{InstanceId, Store, view};
 
-use crate::keybinds::{ACTIONS, Action, Keybinds};
+use crate::keybinds::{ACTIONS, KeyAction, Keybinds};
 use crate::menu_entries::{Action as M, Target};
 use crate::results::Key;
 use crate::shell::Shell;
@@ -25,7 +25,7 @@ pub enum Command {
     Open(InstanceId, Id),
     /// Open (or start) the DM with a user.
     MessageUser(InstanceId, Id),
-    Action(Action),
+    KeyAction(KeyAction),
     Theme(String),
     AddInstance,
     JoinVoice(InstanceId, Id),
@@ -206,7 +206,7 @@ impl Shell {
         match command {
             Some(Command::Open(inst, channel)) => self.select(inst, channel, window, cx),
             Some(Command::MessageUser(inst, user)) => self.message_user(inst, user, window, cx),
-            Some(Command::Action(action)) => self.key_action(action, window, cx),
+            Some(Command::KeyAction(action)) => self.key_action(action, window, cx),
             Some(Command::Theme(name)) => {
                 self.set_config(|c| c.general.theme = name, cx);
                 self.reload_theme(cx);
@@ -512,21 +512,21 @@ pub fn entries(
         // Split panes come later.
         if matches!(
             action,
-            Action::CommandBar
-                | Action::MarkRead
-                | Action::FocusNextPane
-                | Action::FocusPrevPane
-                | Action::SplitRight
-                | Action::SplitDown
-                | Action::ClosePane
-                | Action::MaximizePane
+            KeyAction::CommandBar
+                | KeyAction::MarkRead
+                | KeyAction::FocusNextPane
+                | KeyAction::FocusPrevPane
+                | KeyAction::SplitRight
+                | KeyAction::SplitDown
+                | KeyAction::ClosePane
+                | KeyAction::MaximizePane
         ) {
             continue;
         }
         out.push(Entry {
             label: title.to_owned(),
             detail: Keybinds::combo_text(keys, action).unwrap_or_default(),
-            command: Command::Action(action),
+            command: Command::KeyAction(action),
         });
     }
     out.push(Entry {

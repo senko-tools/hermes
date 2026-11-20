@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use gpui_kit::Keystroke;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Action {
+pub enum KeyAction {
     CommandBar,
     NextUnread,
     PrevUnread,
@@ -33,99 +33,112 @@ pub enum Action {
 }
 
 /// Every action: config name, default combo and the name shown in the command bar.
-pub const ACTIONS: [(Action, &str, &str, &str); 21] = [
-    (Action::CommandBar, "command_bar", "Ctrl+K", "Command bar"),
+pub const ACTIONS: [(KeyAction, &str, &str, &str); 21] = [
     (
-        Action::NextUnread,
+        KeyAction::CommandBar,
+        "command_bar",
+        "Ctrl+K",
+        "Command bar",
+    ),
+    (
+        KeyAction::NextUnread,
         "next_unread",
         "Alt+Shift+Down",
         "Next unread channel",
     ),
     (
-        Action::PrevUnread,
+        KeyAction::PrevUnread,
         "prev_unread",
         "Alt+Shift+Up",
         "Previous unread channel",
     ),
     (
-        Action::NextChannel,
+        KeyAction::NextChannel,
         "next_channel",
         "Alt+Down",
         "Next channel",
     ),
     (
-        Action::PrevChannel,
+        KeyAction::PrevChannel,
         "prev_channel",
         "Alt+Up",
         "Previous channel",
     ),
     (
-        Action::FocusNextPane,
+        KeyAction::FocusNextPane,
         "focus_next_pane",
         "Ctrl+Tab",
         "Focus next pane",
     ),
     (
-        Action::FocusPrevPane,
+        KeyAction::FocusPrevPane,
         "focus_prev_pane",
         "Ctrl+Shift+Tab",
         "Focus previous pane",
     ),
     (
-        Action::SplitRight,
+        KeyAction::SplitRight,
         "split_right",
         "Ctrl+\\",
         "Split pane right",
     ),
     (
-        Action::SplitDown,
+        KeyAction::SplitDown,
         "split_down",
         "Ctrl+Shift+\\",
         "Split pane down",
     ),
-    (Action::ClosePane, "close_pane", "Ctrl+W", "Close pane"),
+    (KeyAction::ClosePane, "close_pane", "Ctrl+W", "Close pane"),
     (
-        Action::MaximizePane,
+        KeyAction::MaximizePane,
         "maximize_pane",
         "Ctrl+Shift+F",
         "Maximize or restore pane",
     ),
     (
-        Action::ToggleMemberList,
+        KeyAction::ToggleMemberList,
         "toggle_member_list",
         "Ctrl+U",
         "Toggle member list",
     ),
     (
-        Action::ToggleSidebar,
+        KeyAction::ToggleSidebar,
         "toggle_sidebar",
         "Ctrl+B",
         "Toggle sidebar",
     ),
-    (Action::Search, "search", "Ctrl+F", "Search"),
-    (Action::MarkRead, "mark_read", "Escape", "Mark channel read"),
+    (KeyAction::Search, "search", "Ctrl+F", "Search"),
     (
-        Action::ToggleMute,
+        KeyAction::MarkRead,
+        "mark_read",
+        "Escape",
+        "Mark channel read",
+    ),
+    (
+        KeyAction::ToggleMute,
         "toggle_mute",
         "Ctrl+Shift+M",
         "Toggle mute",
     ),
     (
-        Action::ToggleDeafen,
+        KeyAction::ToggleDeafen,
         "toggle_deafen",
         "Ctrl+Shift+D",
         "Toggle deafen",
     ),
-    (Action::Settings, "settings", "Ctrl+,", "Open settings"),
-    (Action::ZoomIn, "zoom_in", "Ctrl+=", "Zoom in"),
-    (Action::ZoomOut, "zoom_out", "Ctrl+-", "Zoom out"),
-    (Action::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
+    (KeyAction::Settings, "settings", "Ctrl+,", "Open settings"),
+    (KeyAction::ZoomIn, "zoom_in", "Ctrl+=", "Zoom in"),
+    (KeyAction::ZoomOut, "zoom_out", "Ctrl+-", "Zoom out"),
+    (KeyAction::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
 ];
 
 /// Extra combos an action also answers to while `[keys]` leaves it at its default. On Nordic and
 /// German layouts `+` is a key of its own and `=` needs Shift, so `Ctrl+=` could not be pressed
 /// there; `Ctrl+Shift+=` is the same key press as `Ctrl++` on a US keyboard.
-const ALIASES: [(Action, &str); 2] = [(Action::ZoomIn, "Ctrl++"), (Action::ZoomIn, "Ctrl+Shift+=")];
+const ALIASES: [(KeyAction, &str); 2] = [
+    (KeyAction::ZoomIn, "Ctrl++"),
+    (KeyAction::ZoomIn, "Ctrl+Shift+="),
+];
 
 /// `[keys]` entry of the global mute key (unbound by default). It is registered system-wide with
 /// `global-hotkey` instead of being a window keybind (see `crate::ptt`).
@@ -217,7 +230,7 @@ fn key_name(text: &str) -> Option<String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keybinds {
-    binds: Vec<(Combo, Action)>,
+    binds: Vec<(Combo, KeyAction)>,
 }
 
 impl Keybinds {
@@ -260,7 +273,7 @@ impl Keybinds {
         (Keybinds { binds }, warnings)
     }
 
-    pub fn action(&self, keystroke: &Keystroke) -> Option<Action> {
+    pub fn action(&self, keystroke: &Keystroke) -> Option<KeyAction> {
         self.binds
             .iter()
             .find(|(combo, _)| combo.matches(keystroke))
@@ -268,7 +281,7 @@ impl Keybinds {
     }
 
     /// The combo bound to `action`, for display.
-    pub fn combo_text(keys: &BTreeMap<String, String>, action: Action) -> Option<String> {
+    pub fn combo_text(keys: &BTreeMap<String, String>, action: KeyAction) -> Option<String> {
         let (_, name, default, _) = ACTIONS.iter().find(|(a, ..)| *a == action)?;
         let text = keys.get(*name).map_or(*default, String::as_str);
         (!text.trim().is_empty()).then(|| text.to_owned())
@@ -300,8 +313,8 @@ mod tests {
     fn actions_come_from_defaults_and_config() {
         let (binds, warnings) = Keybinds::from_config(&BTreeMap::new());
         assert!(warnings.is_empty());
-        assert_eq!(binds.action(&key("ctrl-k")), Some(Action::CommandBar));
-        assert_eq!(binds.action(&key("alt-down")), Some(Action::NextChannel));
+        assert_eq!(binds.action(&key("ctrl-k")), Some(KeyAction::CommandBar));
+        assert_eq!(binds.action(&key("alt-down")), Some(KeyAction::NextChannel));
         assert_eq!(binds.action(&key("k")), None);
 
         let mut keys = BTreeMap::new();
@@ -310,7 +323,7 @@ mod tests {
         keys.insert("nope".to_owned(), "Ctrl+Q".to_owned());
         let (binds, warnings) = Keybinds::from_config(&keys);
         assert_eq!(warnings.len(), 1, "the unknown action");
-        assert_eq!(binds.action(&key("ctrl-p")), Some(Action::CommandBar));
+        assert_eq!(binds.action(&key("ctrl-p")), Some(KeyAction::CommandBar));
         assert_eq!(binds.action(&key("ctrl-k")), None);
         assert_eq!(binds.action(&key("ctrl-f")), None, "an empty value unbinds");
     }
@@ -318,17 +331,17 @@ mod tests {
     #[test]
     fn zoom_in_also_answers_to_the_plus_key() {
         let (binds, _) = Keybinds::from_config(&BTreeMap::new());
-        assert_eq!(binds.action(&key("ctrl-=")), Some(Action::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl-=")), Some(KeyAction::ZoomIn));
         // Nordic and German layouts: `+` has a key of its own.
-        assert_eq!(binds.action(&key("ctrl-+")), Some(Action::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl-+")), Some(KeyAction::ZoomIn));
         // US: Ctrl+Shift+= is "Ctrl++".
-        assert_eq!(binds.action(&key("ctrl-shift-=")), Some(Action::ZoomIn));
-        assert_eq!(binds.action(&key("ctrl--")), Some(Action::ZoomOut));
+        assert_eq!(binds.action(&key("ctrl-shift-=")), Some(KeyAction::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl--")), Some(KeyAction::ZoomOut));
 
         let mut keys = BTreeMap::new();
         keys.insert("zoom_in".to_owned(), "Ctrl+I".to_owned());
         let (binds, _) = Keybinds::from_config(&keys);
-        assert_eq!(binds.action(&key("ctrl-i")), Some(Action::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl-i")), Some(KeyAction::ZoomIn));
         assert_eq!(
             binds.action(&key("ctrl-+")),
             None,
@@ -340,9 +353,9 @@ mod tests {
         let (binds, _) = Keybinds::from_config(&keys);
         assert_eq!(
             binds.action(&key("ctrl-+")),
-            Some(Action::ZoomReset),
+            Some(KeyAction::ZoomReset),
             "a combo of the config wins over an extra one"
         );
-        assert_eq!(binds.action(&key("ctrl-=")), Some(Action::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl-=")), Some(KeyAction::ZoomIn));
     }
 }

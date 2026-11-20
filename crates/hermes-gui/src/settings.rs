@@ -22,7 +22,7 @@ use hermes_client_core::proto::models::DmFrom;
 use hermes_client_core::{InstanceId, time};
 
 use crate::assets::{self, icon};
-use crate::keybinds::{ACTIONS, Action, Keybinds};
+use crate::keybinds::{ACTIONS, KeyAction, Keybinds};
 use crate::results::Remote;
 use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, ShareResolution};
 use crate::shell::Shell;
@@ -99,29 +99,29 @@ fn all_tabs() -> impl Iterator<Item = (Tab, &'static str)> {
 }
 
 /// The keybind groups, in the order shown. Pane keys come with split panes.
-const KEY_GROUPS: [(&str, &[Action]); 3] = [
+const KEY_GROUPS: [(&str, &[KeyAction]); 3] = [
     (
         "Navigation",
         &[
-            Action::CommandBar,
-            Action::Search,
-            Action::NextUnread,
-            Action::PrevUnread,
-            Action::NextChannel,
-            Action::PrevChannel,
-            Action::MarkRead,
-            Action::ToggleMemberList,
-            Action::ToggleSidebar,
+            KeyAction::CommandBar,
+            KeyAction::Search,
+            KeyAction::NextUnread,
+            KeyAction::PrevUnread,
+            KeyAction::NextChannel,
+            KeyAction::PrevChannel,
+            KeyAction::MarkRead,
+            KeyAction::ToggleMemberList,
+            KeyAction::ToggleSidebar,
         ],
     ),
-    ("Voice", &[Action::ToggleMute, Action::ToggleDeafen]),
+    ("Voice", &[KeyAction::ToggleMute, KeyAction::ToggleDeafen]),
     (
         "App",
         &[
-            Action::Settings,
-            Action::ZoomIn,
-            Action::ZoomOut,
-            Action::ZoomReset,
+            KeyAction::Settings,
+            KeyAction::ZoomIn,
+            KeyAction::ZoomOut,
+            KeyAction::ZoomReset,
         ],
     ),
 ];

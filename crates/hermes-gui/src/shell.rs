@@ -1174,7 +1174,7 @@ impl Shell {
             .child(
                 crate::keybinds::Keybinds::combo_text(
                     &self.config.keys,
-                    crate::keybinds::Action::CommandBar,
+                    crate::keybinds::KeyAction::CommandBar,
                 )
                 .unwrap_or_default(),
             )
