@@ -98,15 +98,27 @@ pub fn voice_in_space(store: &InstanceStore, space: Id) -> VoiceHere {
     here
 }
 
-/// The new positions after dropping channel `moved` onto `onto` in the space's tree (for
-/// `PUT /spaces/{id}/channels/order`): `moved` takes `onto`'s place among its siblings. A channel
-/// dropped on a category goes first into it; a category dropped inside a category takes that
-/// category's place. Only entries whose position or parent change are returned.
+/// Where a dragged channel lands on the row it is dropped on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Place {
+    /// Just above the row.
+    Before,
+    /// Just below the row (below a category's channels for a category).
+    After,
+    /// First inside the category the row is (a channel only; a category takes it as `Before`).
+    Into,
+}
+
+/// The new positions after dropping channel `moved` at `place` of `onto` in the space's tree
+/// (for `PUT /spaces/{id}/channels/order`). A category stays at the top level: dropped next to
+/// a channel inside a category, it goes after that category. Only entries whose position or
+/// parent change are returned.
 pub fn move_channel(
     store: &InstanceStore,
     space: Id,
     moved: Id,
     onto: Id,
+    place: Place,
 ) -> Vec<hermes_proto::api::ChannelPosition> {
     let Some(state) = store.spaces.get(&space) else {
         return Vec::new();
@@ -119,17 +131,22 @@ pub fn move_channel(
     }
     let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
     let (parent, anchor) = if m.kind == ChannelKind::Category {
-        // Categories live at the top level; aim at the item there.
-        match parent_of(t) {
-            Some(p) => (None, Some(p)),
-            None => (None, Some(onto)),
+        match (parent_of(t), place) {
+            (Some(p), _) => (None, Some((p, Place::After))),
+            (None, Place::Into) => (None, Some((onto, Place::Before))),
+            (None, place) => (None, Some((onto, place))),
         }
-    } else if t.kind == ChannelKind::Category {
+    } else if t.kind == ChannelKind::Category && place == Place::Into {
         (Some(onto), None)
     } else {
-        (parent_of(t), Some(onto))
+        let place = if place == Place::Into {
+            Place::Before
+        } else {
+            place
+        };
+        (parent_of(t), Some((onto, place)))
     };
-    if anchor == Some(moved) {
+    if anchor.is_some_and(|(a, _)| a == moved) {
         return Vec::new();
     }
     place_channel(state, m, parent, anchor)
@@ -154,12 +171,12 @@ pub fn move_channel_out(
     place_channel(state, m, None, None)
 }
 
-/// `m` among the children of `parent`: at `anchor`'s place, or first without one.
+/// `m` among the children of `parent`: before or after `anchor`, or first without one.
 fn place_channel(
     state: &crate::store::SpaceState,
     m: &Channel,
     parent: Option<Id>,
-    anchor: Option<Id>,
+    anchor: Option<(Id, Place)>,
 ) -> Vec<hermes_proto::api::ChannelPosition> {
     use hermes_proto::api::ChannelPosition;
 
@@ -173,11 +190,9 @@ fn place_channel(
     siblings.sort_by(|a, b| order(a, b));
     let index = match anchor {
         None => 0,
-        Some(anchor) => {
+        Some((anchor, place)) => {
             let at = siblings.iter().position(|c| c.id == anchor).unwrap_or(0);
-            // Moving down within the same list lands after the anchor.
-            let was_before = parent_of(m) == parent && order(m, &state.channels[&anchor]).is_lt();
-            if was_before { at + 1 } else { at }
+            if place == Place::After { at + 1 } else { at }
         }
     };
     siblings.insert(index.min(siblings.len()), m);
@@ -1019,14 +1034,14 @@ mod tests {
                 .collect()
         };
 
-        // memes onto general: memes goes first.
-        let moves = move_channel(&s, Id(10), Id(22), general);
+        // memes before general: memes goes first.
+        let moves = move_channel(&s, Id(10), Id(22), general, Place::Before);
         apply(&mut s, moves);
         assert_eq!(names(&s)[0].0, "memes");
         assert_eq!(names(&s)[1].0, "general");
 
-        // memes onto the category: into it, first.
-        let moves = move_channel(&s, Id(10), Id(22), Id(20));
+        // memes into the category: first in it.
+        let moves = move_channel(&s, Id(10), Id(22), Id(20), Place::Into);
         assert_eq!(
             moves.iter().find(|p| p.id == Id(22)).unwrap().parent_id,
             Some(Some(Id(20)))
@@ -1042,19 +1057,19 @@ mod tests {
             ]
         );
 
-        // Moving down inside the category lands after the target.
-        let moves = move_channel(&s, Id(10), Id(22), Id(21));
+        // After the last channel of the category.
+        let moves = move_channel(&s, Id(10), Id(22), Id(21), Place::After);
         apply(&mut s, moves);
         assert_eq!(names(&s)[2].0, "Lounge");
         assert_eq!(names(&s)[3].0, "memes");
 
-        // The category onto general: it goes first, children follow it.
-        let moves = move_channel(&s, Id(10), Id(20), general);
+        // The category before general: it goes first, children follow it.
+        let moves = move_channel(&s, Id(10), Id(20), general, Place::Before);
         apply(&mut s, moves);
         assert_eq!(names(&s)[0].0, "Voice");
         assert_eq!(names(&s)[3].0, "general");
 
-        assert!(move_channel(&s, Id(10), Id(22), Id(22)).is_empty());
+        assert!(move_channel(&s, Id(10), Id(22), Id(22), Place::After).is_empty());
 
         // Out of the category: first at the top level.
         let moves = move_channel_out(&s, Id(10), Id(22));
@@ -1073,7 +1088,7 @@ mod tests {
             "a category"
         );
         // Back into the category for the steps below.
-        let moves = move_channel(&s, Id(10), Id(22), Id(21));
+        let moves = move_channel(&s, Id(10), Id(22), Id(21), Place::Before);
         apply(&mut s, moves);
 
         // One step up and down among siblings.
@@ -1092,6 +1107,16 @@ mod tests {
             "the category moved below general"
         );
         assert_eq!(names(&s)[1].0, "Voice");
+
+        // general after the category, the last row at the top level: it goes to the very end.
+        let moves = move_channel(&s, Id(10), general, Id(20), Place::After);
+        apply(&mut s, moves);
+        assert_eq!(names(&s).last().unwrap(), &("general".to_owned(), 0));
+        // A category dropped next to a channel inside a category goes after that category.
+        assert!(
+            move_channel(&s, Id(10), Id(20), Id(21), Place::Before).is_empty(),
+            "next to its own channel"
+        );
     }
 
     #[test]
