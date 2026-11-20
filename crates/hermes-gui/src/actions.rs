@@ -422,9 +422,12 @@ impl Shell {
         if self.run_message_action(&target, action, window, cx)
             || self.run_space_action(&target, action, window, cx)
             || self.run_member_action(&target, action, window, cx)
+            || self.run_results_action(&target, action, window, cx)
         {
             return;
         }
+        // A menu offered something nothing does: a mistake to see at once while developing.
+        debug_assert!(false, "menu action {action:?} does not apply to {target:?}");
         tracing::warn!("menu action {action:?} does not apply to {target:?}");
     }
 

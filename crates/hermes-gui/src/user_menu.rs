@@ -89,6 +89,20 @@ impl Shell {
             channel_id: None,
         };
         match action {
+            Action::Mention => {
+                let username = self
+                    .core
+                    .store()
+                    .instance(&inst)
+                    .and_then(|s| s.user(user).map(|u| u.username.clone()));
+                let open = self.open_channel().filter(|(i, _)| *i == inst);
+                match (username, open) {
+                    (Some(name), Some(key)) => {
+                        self.insert_text(&key, &format!("@{name} "), window, cx);
+                    }
+                    _ => self.info("Open a channel first to mention someone", cx),
+                }
+            }
             Action::Profile => {
                 let at = self.menu_from;
                 self.show_profile(inst, space, user, at, cx);

@@ -2338,19 +2338,6 @@ impl Shell {
                     self.insert_text(&key, &quote, window, cx);
                 }
             }
-            (Target::Member(inst, _, user), Action::Mention) => {
-                let username = core
-                    .store()
-                    .instance(&inst)
-                    .and_then(|s| s.user(user).map(|u| u.username.clone()));
-                let open = self.open_channel().filter(|(i, _)| *i == inst);
-                match (username, open) {
-                    (Some(name), Some(key)) => {
-                        self.insert_text(&key, &format!("@{name} "), window, cx);
-                    }
-                    _ => self.info("Open a channel first to mention someone", cx),
-                }
-            }
             _ => return false,
         }
         true

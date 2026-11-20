@@ -1160,6 +1160,28 @@ fn snippet(text: &str, words: &[String]) -> (String, Vec<std::ops::Range<usize>>
 /// The pages kept while the app runs.
 pub type ResultsPages = HashMap<Key, ResultsPage>;
 
+impl Shell {
+    /// The menu actions that open a list of results: search, pins, mentions. `false` for any
+    /// other.
+    pub fn run_results_action(
+        &mut self,
+        target: &crate::menu_entries::Target,
+        action: crate::menu_entries::Action,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> bool {
+        use crate::menu_entries::{Action, Target};
+        let key = match (target.clone(), action) {
+            (Target::Space(inst, space), Action::SearchSpace) => Key::Search(inst, Some(space)),
+            (Target::Channel(inst, channel), Action::ShowPins) => Key::Pins(inst, channel),
+            (Target::Me(_), Action::ShowMentions) => Key::Mentions,
+            _ => return false,
+        };
+        self.open_results(key, window, cx);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

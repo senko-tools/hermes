@@ -1052,15 +1052,6 @@ impl Shell {
             (Target::Space(inst, space), Action::SpaceSettings) => {
                 self.open_space_settings(inst, space, Tab::Overview, window, cx);
             }
-            (Target::Space(inst, space), Action::SearchSpace) => {
-                self.open_results(crate::results::Key::Search(inst, Some(space)), window, cx);
-            }
-            (Target::Channel(inst, channel), Action::ShowPins) => {
-                self.open_results(crate::results::Key::Pins(inst, channel), window, cx);
-            }
-            (Target::Me(_), Action::ShowMentions) => {
-                self.open_results(crate::results::Key::Mentions, window, cx);
-            }
             (Target::Channel(inst, channel), Action::ChannelPermissions) => {
                 let space = self
                     .core
