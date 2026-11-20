@@ -3235,7 +3235,6 @@ impl Shell {
             let time = div()
                 .id(SharedString::from(format!("time-{id}")))
                 .relative()
-                .cursor_text()
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
                 .child(time)
@@ -3553,8 +3552,8 @@ impl Shell {
                         ),
                 )
             })
-            // Text can be selected from anywhere in the row; names, links and files keep their own.
-            .cursor_text()
+            // The text cursor shows over text only (the root follows the pointer, #2); a press
+            // in the row's empty space still starts a selection from the nearest text.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
@@ -3813,7 +3812,6 @@ impl Shell {
                     .child(
                         div()
                             .relative()
-                            .cursor_text()
                             .p(px(8.))
                             .rounded(theme::radius_small())
                             .bg(theme::code_background())
@@ -3960,7 +3958,6 @@ impl Shell {
         let (styled, record) = self.selectable(inst, channel, part, text, highlights);
         let body = div()
             .relative()
-            .cursor_text()
             .text_size(theme::body_size())
             .when(system, |d| d.text_color(theme::text_secondary()));
         if links.is_empty() {
@@ -4168,7 +4165,6 @@ impl Shell {
                     .child(
                         div()
                             .relative()
-                            .cursor_text()
                             .truncate()
                             .text_size(theme::secondary_size())
                             .text_color(theme::link())

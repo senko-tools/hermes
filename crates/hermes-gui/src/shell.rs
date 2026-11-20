@@ -168,6 +168,8 @@ pub struct Shell {
     /// Bordered bars (the user panel, the voice panel, the page header): a menu over or under
     /// something inside one clears the whole bar, border included (#14).
     pub popup_bars: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
+    /// The pointer is over a letter of selectable text: the root shows the text cursor.
+    pub pointer_over_text: bool,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
     /// A destructive menu action waiting for confirmation.
@@ -397,6 +399,7 @@ impl Shell {
             menu_from: crate::modal::PopupFrom::point(Point::default()),
             popup_triggers: Default::default(),
             popup_bars: Default::default(),
+            pointer_over_text: false,
             profile: None,
             confirm: None,
             add_instance: None,
@@ -1867,7 +1870,19 @@ impl Render for Shell {
             .child(self.smooth_scroll.catcher())
             .children(self.media_scrub_catcher(cx))
             .children(self.selection_catcher(cx))
-            .when(self.selection.dragging(), |d| d.cursor_text())
+            // The text cursor: while selecting, and over letters of selectable text (#2).
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {
+                    let over = this.selection.over_text(event.position);
+                    if over != this.pointer_over_text {
+                        this.pointer_over_text = over;
+                        cx.notify();
+                    }
+                }),
+            )
+            .when(self.selection.dragging() || self.pointer_over_text, |d| {
+                d.cursor_text()
+            })
             .when(on_right, |d| d.flex_row_reverse())
             .child(left)
             .child(body)

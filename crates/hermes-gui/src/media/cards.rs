@@ -1263,7 +1263,6 @@ impl Shell {
                             .child(
                                 div()
                                     .relative()
-                                    .cursor_text()
                                     .flex_1()
                                     .min_w_0()
                                     .truncate()
@@ -1364,7 +1363,6 @@ impl Shell {
             .child(
                 div()
                     .relative()
-                    .when(place.is_some(), |d| d.cursor_text())
                     .flex_1()
                     .min_w_0()
                     .truncate()

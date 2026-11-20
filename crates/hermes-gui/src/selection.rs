@@ -144,6 +144,14 @@ impl TextSelection {
         covered(from, to, part, len)
     }
 
+    /// Whether `at` is over a letter of selectable text (not the empty space beside or under
+    /// it): where the text cursor shows (#2). Uses the last frame's layout.
+    pub fn over_text(&self, at: Point<Pixels>) -> bool {
+        self.laid.borrow().values().any(|(bounds, layout, _)| {
+            bounds.contains(&at) && layout.index_for_position(at).is_ok()
+        })
+    }
+
     /// The spot of the text under `at`, if there is any.
     fn spot_under(&self, at: Point<Pixels>) -> Option<Spot> {
         let laid = self.laid.borrow();
