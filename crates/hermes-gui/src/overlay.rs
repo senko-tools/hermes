@@ -90,7 +90,13 @@ impl Shell {
                 self.close_media_full();
             }
             Overlay::Viewer => self.viewer = None,
-            Overlay::Profile => self.close_later("profile-card-in", |s| s.profile = None, cx),
+            Overlay::Profile => {
+                // Escape while a text of my card is being changed puts it back; the next one
+                // closes the card.
+                if !self.cancel_profile_field(cx) {
+                    self.close_later("profile-card-in", |s| s.profile = None, cx);
+                }
+            }
             Overlay::EmojiPicker => {
                 self.close_later("emoji-picker-in", |s| s.emoji_picker = None, cx);
             }

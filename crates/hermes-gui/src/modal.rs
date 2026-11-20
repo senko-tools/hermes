@@ -137,6 +137,8 @@ pub enum PopupKey {
     ),
     Emoji(crate::emoji_picker::PickFor),
     Network,
+    /// The menu of a part of my own profile card.
+    ProfilePart(crate::user_menu::ProfilePart),
 }
 
 /// The dimmed backdrop with `card` in the middle. `id` names the dialog. The backdrop darkens

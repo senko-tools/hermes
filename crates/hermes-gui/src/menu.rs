@@ -19,7 +19,8 @@ use crate::shell::Shell;
 
 pub struct OpenMenu {
     view: Entity<PopupMenu>,
-    target: Target,
+    /// What opened it, so pressing that again closes it.
+    key: crate::modal::PopupKey,
     position: Point<Pixels>,
     /// The menu's corner at `position`: top left at the pointer, another beside a button.
     anchor: gpui_kit::Anchor,
@@ -36,6 +37,8 @@ pub(crate) enum Line {
         checked: bool,
         /// Drawn in red: it removes or ends something.
         danger: bool,
+        /// A coloured dot before the label (a presence status).
+        dot: Option<gpui_kit::Rgba>,
         run: RunLine,
     },
     Submenu {
@@ -169,15 +172,54 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.dismissed_by_this_press(&crate::modal::PopupKey::Menu(target.clone())) {
+        let key = crate::modal::PopupKey::Menu(target.clone());
+        if self.dismissed_by_this_press(&key) {
             return;
         }
         let lines = self.menu_lines(&target);
         if lines.is_empty() {
             return;
         }
-        self.menu_at = position;
         self.menu_from = self.popup_from(position);
+        let place = self.menu_place(position);
+        self.show_menu(key, lines, position, place, window, cx);
+    }
+
+    /// Opens a menu of `lines` built by the caller (`key` says what opened it), beside
+    /// `trigger`, the thing clicked at `position`.
+    pub(crate) fn open_lines(
+        &mut self,
+        key: crate::modal::PopupKey,
+        lines: Vec<Line>,
+        position: Point<Pixels>,
+        trigger: gpui_kit::Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dismissed_by_this_press(&key) {
+            return;
+        }
+        self.menu_from = crate::modal::PopupFrom {
+            at: position,
+            trigger,
+        };
+        let place = crate::modal::menu_beside(trigger, None, self.viewport, crate::theme::scale());
+        self.show_menu(key, lines, position, Some(place), window, cx);
+    }
+
+    fn show_menu(
+        &mut self,
+        key: crate::modal::PopupKey,
+        lines: Vec<Line>,
+        position: Point<Pixels>,
+        place: Option<(gpui_kit::Anchor, Point<Pixels>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if lines.is_empty() {
+            return;
+        }
+        self.menu_at = position;
         let shell = cx.entity().downgrade();
         let view = build_menu(shell, lines, window, cx);
         view.focus_handle(cx).focus(window, cx);
@@ -185,18 +227,16 @@ impl Shell {
             if let Some(open) = &this.menu
                 && !crate::modal::closing("menu")
             {
-                this.note_dismissed(crate::modal::PopupKey::Menu(open.target.clone()));
+                this.note_dismissed(open.key.clone());
             }
             this.close_later("menu", |s| s.menu = None, cx);
             cx.notify();
         });
         self.cancel_closing("menu");
-        let (anchor, position) = self
-            .menu_place(position)
-            .unwrap_or((gpui_kit::Anchor::TopLeft, position));
+        let (anchor, position) = place.unwrap_or((gpui_kit::Anchor::TopLeft, position));
         self.menu = Some(OpenMenu {
             view,
-            target,
+            key,
             position,
             anchor,
             _dismiss: dismiss,
@@ -397,6 +437,7 @@ impl Shell {
                 label: "Create a server…".into(),
                 checked: false,
                 danger: false,
+                dot: None,
                 run: create(only.clone()),
             }),
             several => lines.push(Line::Submenu {
@@ -407,6 +448,7 @@ impl Shell {
                         label: format!("On {inst}…").into(),
                         checked: false,
                         danger: false,
+                        dot: None,
                         run: create(inst.clone()),
                     })
                     .collect(),
@@ -416,6 +458,7 @@ impl Shell {
             label: "Join a server…".into(),
             checked: false,
             danger: false,
+            dot: None,
             run: Rc::new(|this, window, cx| this.open_form_join_server(window, cx)),
         });
         lines.push(Line::Separator);
@@ -423,6 +466,7 @@ impl Shell {
             label: "Add an account…".into(),
             checked: false,
             danger: false,
+            dot: None,
             run: Rc::new(|this, window, cx| this.open_add_instance(String::new(), window, cx)),
         });
         lines
@@ -505,6 +549,7 @@ pub(crate) fn run_line(
         label: label.into(),
         checked: false,
         danger: false,
+        dot: None,
         run: Rc::new(run),
     }
 }
@@ -536,6 +581,7 @@ fn action_line(target: &Target, entry: Entry, label: &'static str) -> Line {
         label,
         checked: entry.checked,
         danger: action.is_negative(),
+        dot: None,
         run: Rc::new(move |this, window, cx| {
             this.menu_action(target.clone(), action, window, cx);
         }),
@@ -575,6 +621,7 @@ fn add_lines(
                 label,
                 checked,
                 danger,
+                dot,
                 run,
             } => {
                 let shell = shell.clone();
@@ -585,8 +632,16 @@ fn add_lines(
                         .flex_1()
                         .self_stretch()
                         .items_center()
+                        .gap(crate::theme::px(8.))
                         .cursor_pointer()
                         .when(danger, |d| d.text_color(crate::theme::danger()))
+                        .children(dot.map(|color| {
+                            div()
+                                .flex_shrink_0()
+                                .size(crate::theme::px(10.))
+                                .rounded_full()
+                                .bg(color)
+                        }))
                         .child(label.clone())
                 });
                 menu.item(row.checked(checked).on_click(move |_, window, cx| {

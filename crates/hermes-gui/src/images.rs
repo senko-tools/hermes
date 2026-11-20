@@ -575,8 +575,7 @@ impl Shell {
         status: Status,
         ground: gpui_kit::Rgba,
     ) -> AnyElement {
-        use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
-        let dot = (size / 3.).max(10.);
+        let dot = presence_dot_size(size);
         let who = user.map_or_else(|| name.to_owned(), |u| u.id.to_string());
         div()
             .relative()
@@ -584,41 +583,63 @@ impl Shell {
             .size(px(size))
             .child(self.avatar(inst, user, name, size))
             .child(
-                // A box of the dot's size, so the dot grows from its middle.
                 div()
                     .absolute()
                     .bottom(px(-1.))
                     .right(px(-1.))
-                    .size(px(dot))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .with_spring(
+                    .child(presence_dot(
                         SharedString::from(format!("presence-{inst}-{who}-{status:?}")),
-                        SpringAnimation::new(crate::theme::paced(SpringConfig::new(520., 22., 1.)))
-                            .to(true)
-                            .from(false),
-                        move |d, phase| {
-                            let grown = dot * (0.55 + 0.45 * phase.0.max(0.));
-                            d.child(
-                                div()
-                                    .flex_shrink_0()
-                                    .size(px(grown))
-                                    .rounded(px(grown / 2.))
-                                    .border_2()
-                                    .border_color(ground)
-                                    .bg(theme::status(status))
-                                    .overflow_hidden()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .children(presence_shape(status, grown, ground)),
-                            )
-                        },
-                    ),
+                        status,
+                        dot,
+                        ground,
+                    )),
             )
             .into_any_element()
     }
+}
+
+/// How large the presence dot on an avatar `size` across is.
+pub(crate) fn presence_dot_size(size: f32) -> f32 {
+    (size / 3.).max(10.)
+}
+
+/// A presence dot `dot` across in a ring of `ground` (the colour around it), which its
+/// cut-outs take too so they read as holes. It pops when `key` (with the status in it) is new.
+pub(crate) fn presence_dot(
+    key: SharedString,
+    status: Status,
+    dot: f32,
+    ground: gpui_kit::Rgba,
+) -> gpui_kit::Div {
+    use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
+    // A box of the dot's size, so the dot grows from its middle.
+    div()
+        .size(px(dot))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div().with_spring(
+                key,
+                SpringAnimation::new(crate::theme::paced(SpringConfig::new(520., 22., 1.)))
+                    .to(true)
+                    .from(false),
+                move |d, phase| {
+                    let grown = dot * (0.55 + 0.45 * phase.0.max(0.));
+                    d.flex_shrink_0()
+                        .size(px(grown))
+                        .rounded(px(grown / 2.))
+                        .border_2()
+                        .border_color(ground)
+                        .bg(theme::status(status))
+                        .overflow_hidden()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .children(presence_shape(status, grown, ground))
+                },
+            ),
+        )
 }
 
 /// What is cut out of a presence dot, so that a status never depends on its colour alone:
