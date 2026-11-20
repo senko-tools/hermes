@@ -35,3 +35,7 @@ The developer's requests are what to build.
 ## Git
 - Commit messages: `area: what changed` (e.g. `server: add login endpoint`, `proto: add Message model`).
 - Push to the `dev` branch only; the developer reviews and merges the pull request from `dev` into `main`.
+- Push `dev` to GitHub and to the mirror on git.8w.fi over HTTPS:
+  `git push origin dev && git push https://git.8w.fi/fides/hermes.git dev` (signed in through Git
+  Credential Manager). The `forgejo` SSH remote is not expected to work; if the HTTPS push fails,
+  ask the developer to push to the mirror.
