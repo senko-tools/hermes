@@ -5,7 +5,8 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnimationExt as _, AnyElement, Context, Div, FontWeight, SharedString, Stateful, div,
+    AnimationExt as _, AnyElement, Context, Div, DragMoveEvent, FontWeight, SharedString, Stateful,
+    div,
 };
 use hermes_client_core::gateway::ConnStatus;
 use hermes_client_core::proto::id::Id;
@@ -14,7 +15,7 @@ use hermes_client_core::{InstanceId, view};
 
 use crate::assets::{self, icon};
 use crate::collapsed::Node;
-use crate::drag::{Ghost, Item, Kind};
+use crate::drag::{self, Ghost, Item, Kind, Place, Shape};
 use crate::menu_entries::Target;
 use crate::shell::{Page, Selected, Shell};
 use crate::theme::{self, px};
@@ -1166,17 +1167,23 @@ impl Shell {
         // The category last opened by a click, and how many of its rows came so far: they fade
         // in one after another.
         let mut opening: Option<(Id, u32)> = None;
-        // The order rows are shown in, for where a drop lands.
+        // What each row is, for where a drop on it lands: a category is open when its channels
+        // show under it.
         {
-            let mut order = self.sidebar_order.borrow_mut();
-            order.clear();
-            for (n, row) in tree_rows.clone().enumerate() {
+            let mut shapes = self.sidebar_order.borrow_mut();
+            shapes.clear();
+            let mut category = None;
+            for row in tree_rows.clone() {
                 match row {
                     Row::Category { id, .. } => {
-                        order.insert(id, (n, true));
+                        shapes.insert(id, Shape::Category { open: false });
+                        category = Some(id);
                     }
-                    Row::Channel { id, .. } => {
-                        order.insert(id, (n, false));
+                    Row::Channel { id, nested, .. } => {
+                        shapes.insert(id, Shape::Channel);
+                        if let Some(c) = category.take().filter(|_| nested) {
+                            shapes.insert(c, Shape::Category { open: true });
+                        }
                     }
                     _ => {}
                 }
@@ -1634,50 +1641,99 @@ impl Shell {
         let Some(item) = drag else {
             return element;
         };
+        let shape = self
+            .sidebar_order
+            .borrow()
+            .get(&item.id)
+            .copied()
+            .unwrap_or(Shape::Channel);
+        self.channel_drag(element, item, shape, name, cx)
+    }
+
+    /// Lets a channel list row (sidebar or space settings) be dragged, and take drops: the
+    /// pointer's place on the row it is over decides where the channel lands (`shape` is what
+    /// this row is), shown by an accent line on that edge or, into a category, a tinted row.
+    pub(crate) fn channel_drag(
+        &self,
+        element: Stateful<Div>,
+        item: Item,
+        shape: Shape,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let target = item.clone();
         let over = item.clone();
-        let order = self.sidebar_order.clone();
+        let drop_at = self.drop_at.clone();
+        // Where a drag over this row would land, while one is: a line on that edge, or the whole
+        // row tinted when it goes into the category.
+        let place = drop_at
+            .get()
+            .filter(|(id, _)| *id == item.id && cx.has_active_drag())
+            .map(|(_, place)| place);
+        let line = |top: bool| {
+            div()
+                .absolute()
+                .left(px(4.))
+                .right(px(4.))
+                .h(px(2.))
+                .rounded_full()
+                .bg(theme::accent())
+                .when(top, |d| d.top(px(-1.)))
+                .when(!top, |d| d.bottom(px(-1.)))
+        };
         element
+            .relative()
+            .children(match place {
+                Some(Place::Before) => Some(line(true)),
+                Some(Place::After) => Some(line(false)),
+                _ => None,
+            })
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
-            .drag_over::<Item>(move |style, dragged, _, _| {
+            .on_drag_move::<Item>(cx.listener(move |this, ev: &DragMoveEvent<Item>, _, cx| {
+                let at = ev.event.position;
+                if !ev.bounds.contains(&at) {
+                    return;
+                }
+                let dragged = ev.drag(cx);
                 if !dragged.can_drop_on(&over) {
-                    return style;
+                    return;
                 }
-                // Where it would land: a line on that edge, over a light accent tint. Dragged
-                // down it goes after the row, up before it, onto a category into it.
-                let order = order.borrow();
-                let after = match (order.get(&dragged.id), order.get(&over.id)) {
-                    (_, Some((_, true))) => true,
-                    (Some((from, _)), Some((to, _))) => from < to,
-                    _ => true,
-                };
-                let style = style
-                    .bg(theme::alpha(theme::accent(), 0.1))
-                    .border_color(theme::accent());
-                if after {
-                    style.border_b_2()
-                } else {
-                    style.border_t_2()
+                let category = this
+                    .core
+                    .store()
+                    .instance(&dragged.inst)
+                    .and_then(|s| s.channel(dragged.id))
+                    .is_some_and(|c| c.kind == ChannelKind::Category);
+                let frac = (at.y - ev.bounds.top()) / ev.bounds.size.height;
+                let place = drag::place_for(frac, shape, category);
+                let now = Some((over.id, place));
+                if this.drop_at.replace(now) != now {
+                    cx.notify();
                 }
+            }))
+            .drag_over::<Item>(move |style, _, _, _| match place {
+                Some(Place::Into) => style.bg(theme::alpha(theme::accent(), 0.14)),
+                _ => style,
             })
             .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
+                let place = drop_at
+                    .take()
+                    .filter(|(id, _)| *id == target.id)
+                    .map_or(Place::Before, |(_, place)| place);
                 if dragged.can_drop_on(&target) {
-                    this.drop_item(dragged.clone(), target.clone(), cx);
+                    this.drop_item(dragged.clone(), target.clone(), place, cx);
                 }
+                cx.notify();
             }))
     }
 
-    /// A row was dropped on another: reorders the channels (the roles' list has its own).
-    pub fn drop_item(&mut self, dragged: Item, target: Item, cx: &mut Context<Self>) {
-        if dragged.kind != Kind::Channel {
-            self.drop_role(dragged, target, cx);
-            return;
-        }
+    /// A channel was dropped at `place` of another: reorders the channels.
+    pub fn drop_item(&mut self, dragged: Item, target: Item, place: Place, cx: &mut Context<Self>) {
         let moves = {
             let store = self.core.store();
             store
                 .instance(&dragged.inst)
-                .map(|s| view::move_channel(s, dragged.space, dragged.id, target.id))
+                .map(|s| view::move_channel(s, dragged.space, dragged.id, target.id, place))
                 .unwrap_or_default()
         };
         if moves.is_empty() {

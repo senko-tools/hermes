@@ -23,7 +23,7 @@ use hermes_client_core::store::InstanceStore;
 use hermes_client_core::{CoreError, InstanceId, now_ms, time, view};
 
 use crate::assets::{self, icon};
-use crate::drag::{Ghost, Item, Kind};
+use crate::drag::{Ghost, Item, Kind, Shape};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
 use crate::settings::{frame, group, muted, page_body, setting, wrap};
@@ -1633,9 +1633,22 @@ impl Shell {
         let space = page.space;
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
-        let rows: Vec<AnyElement> = view::channel_tree(s, space)
+        let tree = view::channel_tree(s, space);
+        // A category is open when channels follow it (this list never folds).
+        let shapes: Vec<Shape> = tree
+            .iter()
+            .enumerate()
+            .map(|(n, c)| match c.kind {
+                ChannelKind::Category => Shape::Category {
+                    open: tree.get(n + 1).is_some_and(|next| next.depth > 0),
+                },
+                _ => Shape::Channel,
+            })
+            .collect();
+        let rows: Vec<AnyElement> = tree
             .into_iter()
-            .map(|c| {
+            .zip(shapes)
+            .map(|(c, shape)| {
                 let id = c.id;
                 let glyph = match c.kind {
                     ChannelKind::Category => assets::CHEVRON_DOWN,
@@ -1655,7 +1668,13 @@ impl Shell {
                     this.select_settings_channel(id, cx);
                 }));
                 let element = if manage {
-                    self.with_list_drag(element, page, Kind::Channel, id, c.name.clone(), cx)
+                    let item = Item {
+                        inst: page.inst.clone(),
+                        space,
+                        kind: Kind::Channel,
+                        id,
+                    };
+                    self.channel_drag(element, item, shape, c.name.clone(), cx)
                 } else {
                     element
                 };
@@ -2656,7 +2675,7 @@ impl Shell {
         page_body("Audit log", None, rows)
     }
 
-    /// Lets a settings list row be dragged onto another of the list.
+    /// Lets a role row be dragged onto another of the roles' list.
     fn with_list_drag(
         &self,
         element: gpui_kit::Stateful<gpui_kit::Div>,
@@ -2685,7 +2704,7 @@ impl Shell {
             })
             .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
                 if dragged.can_drop_on(&target) {
-                    this.drop_item(dragged.clone(), target.clone(), cx);
+                    this.drop_role(dragged.clone(), target.clone(), cx);
                 }
             }))
     }

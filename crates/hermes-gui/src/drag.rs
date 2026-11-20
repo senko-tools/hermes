@@ -3,6 +3,7 @@
 
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::id::Id;
+pub use hermes_client_core::view::Place;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -26,6 +27,38 @@ impl Item {
             && self.kind == target.kind
             && self.inst == target.inst
             && self.space == target.space
+    }
+}
+
+/// What a channel list row is, for where a drop on it lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Channel,
+    /// A category; `open` when its channels show under it.
+    Category {
+        open: bool,
+    },
+}
+
+/// Where a channel dropped on a row lands, from how far down the row the pointer is (`frac`,
+/// 0 at its top, 1 at its bottom): the upper half before it, the lower half after it. On a
+/// category a channel goes into it, except near its top edge (before it) and, while it is
+/// closed, near its bottom edge (after it and its channels).
+pub fn place_for(frac: f32, target: Shape, dragging_category: bool) -> Place {
+    match target {
+        Shape::Category { open } if !dragging_category => {
+            if frac < 0.3 {
+                Place::Before
+            } else if !open && frac > 0.7 {
+                Place::After
+            } else {
+                Place::Into
+            }
+        }
+        // A category lands after an open one's channels: not under its header.
+        Shape::Category { open: true } => Place::Before,
+        _ if frac < 0.5 => Place::Before,
+        _ => Place::After,
     }
 }
 
@@ -68,5 +101,26 @@ impl gpui_kit::Render for Ghost {
                 gpui_kit::Animation::new(theme::fade()).with_easing(gpui_kit::ease_out_quint()),
                 |d, t| d.opacity(0.6 + 0.32 * t),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_pointer_half_decides_where_a_channel_lands() {
+        assert_eq!(place_for(0.2, Shape::Channel, false), Place::Before);
+        assert_eq!(place_for(0.8, Shape::Channel, false), Place::After);
+        let (open, closed) = (
+            Shape::Category { open: true },
+            Shape::Category { open: false },
+        );
+        assert_eq!(place_for(0.1, open, false), Place::Before);
+        assert_eq!(place_for(0.5, open, false), Place::Into);
+        assert_eq!(place_for(0.9, open, false), Place::Into);
+        assert_eq!(place_for(0.9, closed, false), Place::After);
+        assert_eq!(place_for(0.9, open, true), Place::Before);
+        assert_eq!(place_for(0.9, closed, true), Place::After);
     }
 }

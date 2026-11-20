@@ -148,8 +148,10 @@ pub struct Shell {
     /// Instances whose connection banner showed: `None` while it does, then when the
     /// connection came back (the banner says so for a moment).
     pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
-    /// Each sidebar row's place in the list as last drawn, and whether it is a category.
-    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, (usize, bool)>>>,
+    /// What each channel list row in the sidebar is, as last drawn: a channel or a category.
+    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, crate::drag::Shape>>>,
+    /// The row a dragged channel is over and where on it it would land.
+    pub drop_at: std::rc::Rc<std::cell::Cell<Option<(Id, crate::drag::Place)>>>,
     /// The voice panel's height as last painted, in window pixels.
     pub voice_panel_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Chat text selected with the mouse.
@@ -391,6 +393,7 @@ impl Shell {
             reactions_seen: Default::default(),
             reconnect_banner: Default::default(),
             sidebar_order: Default::default(),
+            drop_at: Default::default(),
             voice_panel_height: Default::default(),
             shown_page: None,
             leaving: None,
