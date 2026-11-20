@@ -762,11 +762,11 @@ pub fn entries_with(
                     until: None,
                 }));
             }
+            // Settings, Mentions and the profile have their own buttons and card (#16).
             out.push(None);
             if inst.is_some() {
-                push(&mut out, [Action::EditProfile, Action::CopyUsername]);
+                push(&mut out, [Action::CopyUsername]);
             }
-            push(&mut out, [Action::ShowMentions, Action::OpenSettings]);
         }
     }
     // No separator first, last or twice.

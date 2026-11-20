@@ -42,7 +42,12 @@ impl Shell {
         if self.dismissed_by_this_press(&crate::modal::PopupKey::Profile(inst.clone(), user)) {
             return;
         }
-        let at = self.popup_from(position);
+        let mut at = self.popup_from(position);
+        // Clicked inside a bordered bar (my own user panel): the card goes beside the whole
+        // bar, not over its other buttons.
+        if let Some(bar) = self.bar_around(at.trigger) {
+            at.trigger = bar;
+        }
         self.show_profile(inst, space, user, at, cx);
     }
 
@@ -416,6 +421,28 @@ impl Shell {
         let message_inst = inst.clone();
         let volume_inst = inst.clone();
         let (edit_inst, edit_space) = (inst.clone(), card.space);
+        let status_row = mine.then(|| {
+            use hermes_client_core::proto::models::PresenceStatus as P;
+            let current = self.core.presence();
+            crate::settings::wrap().justify_start().children(
+                [
+                    (P::Online, "Online"),
+                    (P::Idle, "Idle"),
+                    (P::Dnd, "Do not disturb"),
+                    (P::Invisible, "Invisible"),
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(n, (status, label))| {
+                    crate::ui::chip(self, ("my-status", n), label, current == status, cx).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            this.core.set_presence(status);
+                            cx.notify();
+                        }),
+                    )
+                }),
+            )
+        });
         let edit = mine.then(|| {
             Button::new("profile-edit")
                 .cursor_pointer()
@@ -566,6 +593,7 @@ impl Shell {
                                 .children(details)
                         })
                         .children(buttons)
+                        .children(status_row)
                         .children(edit),
                 ),
         ))

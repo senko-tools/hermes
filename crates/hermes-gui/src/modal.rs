@@ -459,27 +459,38 @@ impl Shell {
 /// Where a menu opened by a left click on `trigger` goes, so it never covers what opened it:
 /// below or above a wide thing (a header, the user panel), beside a small one (an icon button).
 /// It turns towards the window's middle; gpui's snapping keeps the window's edge.
+/// Above or below, it clears `bar` (a bordered bar the trigger sits in) instead of the trigger
+/// alone, so it never lies on the bar's border.
 pub(crate) fn menu_beside(
     trigger: Bounds<Pixels>,
+    bar: Option<Bounds<Pixels>>,
     viewport: Size<Pixels>,
     scale: f32,
 ) -> (Anchor, Point<Pixels>) {
-    let gap = 4. * scale;
+    let gap = 6. * scale;
     let (left, top) = (trigger.origin.x.as_f32(), trigger.origin.y.as_f32());
     let (right, bottom) = (
         left + trigger.size.width.as_f32(),
         top + trigger.size.height.as_f32(),
     );
+    // Vertically, the bar's edges stand for the trigger's.
+    let (clear_top, clear_bottom) = bar.map_or((top, bottom), |b| {
+        let bar_top = b.origin.y.as_f32();
+        (
+            bar_top.min(top),
+            (bar_top + b.size.height.as_f32()).max(bottom),
+        )
+    });
     let (vw, vh) = (viewport.width.as_f32(), viewport.height.as_f32());
     let upper = (top + bottom) / 2. <= vh / 2.;
     let lefter = (left + right) / 2. <= vw / 2.;
     let point = |x: f32, y: f32| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y));
     if trigger.size.width.as_f32() >= 120. * scale {
         match (upper, lefter) {
-            (true, true) => (Anchor::TopLeft, point(left, bottom + gap)),
-            (true, false) => (Anchor::TopRight, point(right, bottom + gap)),
-            (false, true) => (Anchor::BottomLeft, point(left, top - gap)),
-            (false, false) => (Anchor::BottomRight, point(right, top - gap)),
+            (true, true) => (Anchor::TopLeft, point(left, clear_bottom + gap)),
+            (true, false) => (Anchor::TopRight, point(right, clear_bottom + gap)),
+            (false, true) => (Anchor::BottomLeft, point(left, clear_top - gap)),
+            (false, false) => (Anchor::BottomRight, point(right, clear_top - gap)),
         }
     } else {
         match (lefter, upper) {
@@ -516,19 +527,24 @@ mod tests {
         let b =
             |x: f32, y: f32, w: f32, h: f32| Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
         // The server header at the top left: the menu drops below it.
-        let (anchor, at) = menu_beside(b(72., 0., 240., 48.), view, 1.);
-        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(72.), px(52.))));
+        let (anchor, at) = menu_beside(b(72., 0., 240., 48.), None, view, 1.);
+        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(72.), px(54.))));
         // The user panel at the bottom left: above it.
-        let (anchor, at) = menu_beside(b(72., 740., 240., 60.), view, 1.);
-        assert_eq!((anchor, at), (Anchor::BottomLeft, point(px(72.), px(736.))));
+        let (anchor, at) = menu_beside(b(72., 740., 240., 60.), None, view, 1.);
+        assert_eq!((anchor, at), (Anchor::BottomLeft, point(px(72.), px(734.))));
+        // The name inside the user panel's bar (bordered, from y 730): above the whole bar,
+        // so the menu never lies on its border (#14).
+        let bar = Some(b(0., 730., 320., 70.));
+        let (anchor, at) = menu_beside(b(80., 738., 160., 40.), bar, view, 1.);
+        assert_eq!((anchor, at), (Anchor::BottomLeft, point(px(80.), px(724.))));
         // The rail's add button: beside it, to the right.
-        let (anchor, at) = menu_beside(b(12., 300., 48., 48.), view, 1.);
-        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(64.), px(300.))));
+        let (anchor, at) = menu_beside(b(12., 300., 48., 48.), None, view, 1.);
+        assert_eq!((anchor, at), (Anchor::TopLeft, point(px(66.), px(300.))));
         // A small button at the bottom right: to its left, growing upwards.
-        let (anchor, at) = menu_beside(b(1150., 760., 32., 32.), view, 1.);
+        let (anchor, at) = menu_beside(b(1150., 760., 32., 32.), None, view, 1.);
         assert_eq!(
             (anchor, at),
-            (Anchor::BottomRight, point(px(1146.), px(792.)))
+            (Anchor::BottomRight, point(px(1144.), px(792.)))
         );
     }
 

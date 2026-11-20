@@ -165,6 +165,9 @@ pub struct Shell {
     /// What popups can hug, as last painted: every element with a menu, and the buttons that
     /// open popups. Filled while painting, emptied at the start of each frame.
     pub popup_triggers: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
+    /// Bordered bars (the user panel, the voice panel, the page header): a menu over or under
+    /// something inside one clears the whole bar, border included (#14).
+    pub popup_bars: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
     /// A destructive menu action waiting for confirmation.
@@ -393,6 +396,7 @@ impl Shell {
             menu_at: Point::default(),
             menu_from: crate::modal::PopupFrom::point(Point::default()),
             popup_triggers: Default::default(),
+            popup_bars: Default::default(),
             profile: None,
             confirm: None,
             add_instance: None,
@@ -1671,6 +1675,7 @@ impl Render for Shell {
         self.viewport = window.viewport_size();
         // This frame paints them again.
         self.popup_triggers.borrow_mut().clear();
+        self.popup_bars.borrow_mut().clear();
         self.forget_vanished_hovers();
         let title = self.page_title();
         if title != self.title {

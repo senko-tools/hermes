@@ -1797,9 +1797,16 @@ impl Shell {
                     })),
             )
             .child(self.popup_trigger())
+            // A left click shows my profile card, as on anyone else (#16); the right click
+            // keeps the status menu.
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                    this.open_menu_from_click(open.clone(), event.position(), window, cx);
+                    match this.my_profile_target(&open) {
+                        Some(card) => this.open_profile(&card, event.position(), cx),
+                        None => {
+                            this.open_menu_from_click(open.clone(), event.position(), window, cx)
+                        }
+                    }
                 }),
             );
         let me = self.with_menu(me, target, cx);
@@ -1810,13 +1817,29 @@ impl Shell {
             .gap(px(2.))
             .h(px(theme::FOOTER_HEIGHT))
             .px(px(8.))
+            .relative()
             .bg(theme::footer())
             .border_t_1()
             .border_color(theme::border())
             .text_size(theme::body_size())
+            .child(self.popup_bar())
             .child(me)
             .child(self.render_connection_icon(cx))
             .children(self.render_me_buttons(cx))
+    }
+
+    /// My profile card's target for the user panel's `target`: on the open server, else
+    /// without one. `None` before I am signed in.
+    fn my_profile_target(&self, target: &Target) -> Option<Target> {
+        let Target::Me(Some(inst)) = target else {
+            return None;
+        };
+        let me = self.core.store().instance(inst)?.me_id()?;
+        let space = match &self.selected {
+            Selected::Space(i, space) if i == inst => Some(*space),
+            _ => None,
+        };
+        Some(Target::Member(inst.clone(), space, me))
     }
 
     /// Between my name and the buttons: how the connection to the instances is. Its slot never

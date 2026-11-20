@@ -88,6 +88,54 @@ impl Shell {
         .into_any_element()
     }
 
+    /// Notes its parent as a bordered bar for menus to clear (see `Shell::popup_bars`).
+    pub fn popup_bar(&self) -> AnyElement {
+        let bars = self.popup_bars.clone();
+        gpui_kit::canvas(
+            move |bounds, _, _| bars.borrow_mut().push(bounds),
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .into_any_element()
+    }
+
+    /// The bordered bar around `trigger`, if it is inside one.
+    pub fn bar_around(
+        &self,
+        trigger: gpui_kit::Bounds<Pixels>,
+    ) -> Option<gpui_kit::Bounds<Pixels>> {
+        self.popup_bars
+            .borrow()
+            .iter()
+            .copied()
+            .find(|bar| bar.contains(&trigger.center()))
+    }
+
+    /// Where a menu for what is under `position` goes: beside or over/under what was clicked,
+    /// never on it; on a wide thing (a message), beside the pointer. `None`: at the pointer.
+    fn menu_place(&self, position: Point<Pixels>) -> Option<(gpui_kit::Anchor, Point<Pixels>)> {
+        let from = self.popup_from(position);
+        if from == crate::modal::PopupFrom::point(position) {
+            return None;
+        }
+        let scale = crate::theme::scale();
+        if from.trigger.size.width.as_f32() > 360. * scale {
+            // A message row: beside the pointer, so the line clicked stays readable.
+            let at = gpui_kit::point(position.x + gpui_kit::px(8. * scale), position.y);
+            return Some((gpui_kit::Anchor::TopLeft, at));
+        }
+        let bar = self.bar_around(from.trigger);
+        Some(crate::modal::menu_beside(
+            from.trigger,
+            bar,
+            self.viewport,
+            scale,
+        ))
+    }
+
     /// `element` (a button that opens a popup) with a [`Shell::popup_trigger`].
     pub fn hug_target(&self, element: AnyElement) -> AnyElement {
         div()
@@ -143,11 +191,14 @@ impl Shell {
             cx.notify();
         });
         self.cancel_closing("menu");
+        let (anchor, position) = self
+            .menu_place(position)
+            .unwrap_or((gpui_kit::Anchor::TopLeft, position));
         self.menu = Some(OpenMenu {
             view,
             target,
             position,
-            anchor: gpui_kit::Anchor::TopLeft,
+            anchor,
             _dismiss: dismiss,
         });
         cx.notify();
@@ -162,17 +213,8 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Placed like any menu (see `menu_place`).
         self.open_menu(target, position, window, cx);
-        let from = self.popup_from(position);
-        if from == crate::modal::PopupFrom::point(position) {
-            return;
-        }
-        let (anchor, at) =
-            crate::modal::menu_beside(from.trigger, self.viewport, crate::theme::scale());
-        if let Some(menu) = &mut self.menu {
-            menu.anchor = anchor;
-            menu.position = at;
-        }
     }
 
     /// Gives a file its own menu instead of its message's. While the mouse is over it, its
