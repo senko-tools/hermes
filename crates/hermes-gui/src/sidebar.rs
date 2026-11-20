@@ -1429,11 +1429,19 @@ impl Shell {
                         && self.core.store().instance(&inst).is_some_and(|s| {
                             !s.typing(id, hermes_client_core::now_ms()).is_empty()
                         });
+                // A 1:1 conversation with someone offline is dimmed, like the member list (#15).
+                let offline = peer.is_some_and(|peer| {
+                    self.core.store().instance(&inst).is_some_and(|s| {
+                        s.status(peer) == hermes_client_core::proto::models::Status::Offline
+                    })
+                }) && !selected
+                    && !(badge.unread || badge.mentions > 0);
                 let element = crate::ui::list_row(self, format!("dm-{id}"), selected, 44., cx)
                     .when(badge.unread || badge.mentions > 0, |d| {
                         d.text_color(theme::text())
                     })
-                    .child(avatar)
+                    .when(offline, |d| d.text_color(theme::text_tertiary()))
+                    .child(div().when(offline, |d| d.opacity(0.45)).child(avatar))
                     .child(div().flex_1().min_w_0().truncate().child(name))
                     // They are writing something: dots beside their name.
                     .when(typing, |d| {

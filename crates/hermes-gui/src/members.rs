@@ -3,8 +3,9 @@
 //! topic sits at its top, as the header has no room for text.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, SharedString, div};
+use gpui_kit::{AnimationExt as _, AnyElement, Context, SharedString, div};
 use hermes_client_core::proto::id::Id;
+use hermes_client_core::proto::models::Status;
 use hermes_client_core::{InstanceId, view};
 
 use crate::menu_entries::Target;
@@ -68,8 +69,10 @@ impl Shell {
                 let groups = self
                     .member_groups_cache
                     .borrow_mut()
-                    .entry((inst.clone(), space))
-                    .or_insert_with(|| std::rc::Rc::new(view::member_groups(s, space)))
+                    .entry((inst.clone(), channel))
+                    .or_insert_with(|| {
+                        std::rc::Rc::new(view::member_groups(s, space, Some(channel)))
+                    })
                     .clone();
                 for group in groups.iter().cloned() {
                     content.push(heading(format!(
@@ -87,15 +90,15 @@ impl Shell {
                             member.status,
                         );
                         let color = member.color.map_or(theme::text_secondary(), theme::rgb_u32);
-                        content.push(self.member_row(
-                            inst,
-                            Some(space),
-                            member.user_id,
-                            member.name,
+                        let line = MemberLine {
+                            space: Some(space),
+                            user: member.user_id,
+                            name: member.name,
                             color,
                             avatar,
-                            cx,
-                        ));
+                            offline: member.status == Status::Offline,
+                        };
+                        content.push(self.member_row(inst, line, cx));
                     }
                 }
             }
@@ -110,15 +113,15 @@ impl Shell {
                         theme::AVATAR_SMALL,
                         s.status(user.id),
                     );
-                    content.push(self.member_row(
-                        inst,
-                        None,
-                        user.id,
-                        user.name().to_owned(),
-                        theme::text_secondary(),
+                    let line = MemberLine {
+                        space: None,
+                        user: user.id,
+                        name: user.name().to_owned(),
+                        color: theme::text_secondary(),
                         avatar,
-                        cx,
-                    ));
+                        offline: s.status(user.id) == Status::Offline,
+                    };
+                    content.push(self.member_row(inst, line, cx));
                 }
             }
         }
@@ -148,34 +151,51 @@ impl Shell {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// A person in the member list. Someone offline is dimmed (#15); the pointer brings them
+    /// most of the way back, and a change of presence fades, on the hover spring.
     fn member_row(
         &self,
         inst: &InstanceId,
-        space: Option<Id>,
-        user: Id,
-        name: String,
-        color: gpui_kit::Rgba,
-        avatar: AnyElement,
+        line: MemberLine,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let MemberLine {
+            space,
+            user,
+            name,
+            color,
+            avatar,
+            offline,
+        } = line;
         let target = Target::Member(inst.clone(), space, user);
         let open = target.clone();
-        let element = div()
-            .id(SharedString::from(format!("member-{user}")))
+        let id = format!("member-{user}");
+        let hovered = self.is_hovered(&format!("{id}-hover"));
+        let dim = match (offline, hovered) {
+            (false, _) => 1.,
+            (true, false) => 0.45,
+            (true, true) => 0.8,
+        };
+        let content = div()
             .flex()
-            .flex_shrink_0()
+            .flex_1()
+            .min_w_0()
             .items_center()
             .gap(px(8.))
-            .h(px(44.))
-            .px(px(8.))
-            .rounded(theme::row_radius())
-            .cursor_pointer()
-            .hover(|d| d.bg(theme::hover()))
-            .text_size(theme::body_size())
-            .text_color(color)
             .child(avatar)
             .child(div().flex_1().min_w_0().truncate().child(name))
+            .with_spring(
+                SharedString::from(format!("{id}-dim")),
+                gpui_kit::SpringAnimation::new(theme::paced(crate::hover::HOVER_SPRING)).to(dim),
+                |d, t: f32| d.opacity(t.clamp(0., 1.)),
+            );
+        let element = crate::ui::list_row(self, id, false, 44., cx)
+            .text_color(if offline {
+                theme::text_tertiary()
+            } else {
+                color
+            })
+            .child(content)
             .on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     this.open_profile(&open, event.position(), cx);
@@ -195,4 +215,15 @@ fn heading(text: String) -> AnyElement {
         .text_color(theme::text_tertiary())
         .child(text)
         .into_any_element()
+}
+
+/// What a member list row shows.
+struct MemberLine {
+    /// `None` in a DM.
+    space: Option<Id>,
+    user: Id,
+    name: String,
+    color: gpui_kit::Rgba,
+    avatar: AnyElement,
+    offline: bool,
 }

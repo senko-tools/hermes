@@ -296,7 +296,7 @@ impl App {
             return Vec::new();
         };
         match s.space_of(*channel) {
-            Some(space) => view::member_groups(s, space)
+            Some(space) => view::member_groups(s, space, Some(*channel))
                 .into_iter()
                 .flat_map(|g| g.members.into_iter().map(|m| m.user_id))
                 .collect(),

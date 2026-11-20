@@ -350,9 +350,23 @@ pub struct MemberGroup {
 
 /// Members grouped like section 16.1: online members under their highest hoisted role, then
 /// other online members, then everyone offline. Sorted by name inside each group.
-pub fn member_groups(store: &InstanceStore, space: Id) -> Vec<MemberGroup> {
+pub fn member_groups(store: &InstanceStore, space: Id, channel: Option<Id>) -> Vec<MemberGroup> {
     let Some(state) = store.spaces.get(&space) else {
         return Vec::new();
+    };
+    // In a channel, only the people who can see it (improvements.md #3).
+    let channel = channel.and_then(|c| state.channels.get(&c));
+    let sees = |member: &hermes_proto::models::Member| {
+        channel.is_none_or(|c| {
+            hermes_proto::permissions::compute_for(
+                &state.space,
+                &state.roles,
+                member.user.id,
+                &member.role_ids,
+                Some(c),
+            )
+            .contains(Permissions::VIEW_CHANNEL)
+        })
     };
     // Roles are sorted highest first.
     let hoisted: Vec<_> = state
@@ -369,7 +383,7 @@ pub fn member_groups(store: &InstanceStore, space: Id) -> Vec<MemberGroup> {
         .collect();
     let mut online = Vec::new();
     let mut offline = Vec::new();
-    for member in state.members.values() {
+    for member in state.members.values().filter(|m| sees(m)) {
         let status = store.status(member.user.id);
         let color = role_color(store, space, member.user.id);
         let row = MemberRow {
@@ -844,6 +858,43 @@ pub fn human_size(bytes: u64) -> String {
 mod tests {
 
     #[test]
+    fn a_channel_lists_only_who_can_see_it() {
+        use hermes_proto::models::Override;
+        let mut s = crate::testing::fixtures::store();
+        let (space, chess) = (Id(10), Id(13));
+        let names = |s: &InstanceStore, channel| -> Vec<String> {
+            member_groups(s, space, channel)
+                .into_iter()
+                .flat_map(|g| g.members.into_iter().map(|m| m.name))
+                .collect()
+        };
+        assert_eq!(
+            names(&s, Some(chess)).len(),
+            2,
+            "everyone sees #chess at first"
+        );
+        // @everyone may not see #chess: Bobby is gone, the owner (me) still sees it.
+        s.spaces
+            .get_mut(&space)
+            .unwrap()
+            .channels
+            .get_mut(&chess)
+            .unwrap()
+            .overrides
+            .push(Override {
+                role_id: space,
+                allow: Permissions::empty(),
+                deny: Permissions::VIEW_CHANNEL,
+            });
+        assert_eq!(names(&s, Some(chess)), ["me"]);
+        assert_eq!(
+            names(&s, None).len(),
+            2,
+            "the server as a whole still lists both"
+        );
+    }
+
+    #[test]
     fn sizes_and_typing_read_naturally() {
         assert_eq!(human_size(12), "12 B");
         assert_eq!(human_size(820 * 1024), "820 KB");
@@ -1121,7 +1172,7 @@ mod tests {
             );
         }
         // ready() has user 2 online.
-        let groups = member_groups(&s, Id(10));
+        let groups = member_groups(&s, Id(10), None);
         let flat: Vec<(String, Vec<String>)> = groups
             .iter()
             .map(|g| {

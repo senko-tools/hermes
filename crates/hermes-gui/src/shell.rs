@@ -101,6 +101,7 @@ const RECENT_CHANNELS: usize = 10;
 /// How long an info line stays: `general.status_seconds`.
 static INFO_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
 
+/// The member list of each (instance, channel) shown.
 type MemberGroupsCache = std::cell::RefCell<
     HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
 >;
@@ -702,7 +703,8 @@ impl Shell {
                 if people_changed || matches!(what, Changed::Channel(_) | Changed::Dms) {
                     self.markup_cache.borrow_mut().clear();
                 }
-                if people_changed || matches!(what, Changed::Presence(_)) {
+                // Per channel: who can see it changes with its permissions too.
+                if people_changed || matches!(what, Changed::Presence(_) | Changed::Channel(_)) {
                     self.member_groups_cache.borrow_mut().clear();
                 }
                 match what {
