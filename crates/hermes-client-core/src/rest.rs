@@ -248,10 +248,19 @@ impl Rest {
     }
 
     async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        let (http, req) = req.build_split();
+        let req = req.map_err(network)?;
+        // The name is looked up before reqwest's connect timeout starts, which a slow DNS server
+        // would otherwise use up (see `net`); reqwest's own lookup then answers from memory.
+        if let Some(host) = req.url().domain() {
+            crate::net::warm(host)
+                .await
+                .map_err(|err| Error::Network(format!("could not look up {host}: {err}")))?;
+        }
         // A connect error means the request never left, so it can be sent again; by then the
         // host's other address family goes first (see `net`).
         let again = req.try_clone();
-        let res = match req.send().await {
+        let res = match http.execute(req).await {
             Ok(res) => res,
             Err(err) if err.is_connect() => {
                 let host = err
@@ -262,7 +271,7 @@ impl Rest {
                 let first = network(err);
                 crate::net::connect_failed(&host, &first.to_string());
                 match again {
-                    Some(again) => again.send().await.map_err(network)?,
+                    Some(again) => http.execute(again).await.map_err(network)?,
                     // A streamed body cannot be sent twice.
                     None => return Err(first),
                 }

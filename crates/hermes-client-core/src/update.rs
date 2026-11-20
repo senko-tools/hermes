@@ -121,6 +121,7 @@ pub async fn check(current: &str) -> Result<Option<Update>, String> {
         crate::tls::client_config(crate::tls::Trust::Ca, true).map_err(|e| e.to_string())?;
     let http = reqwest::Client::builder()
         .use_preconfigured_tls((*config).clone())
+        .dns_resolver(crate::net::Resolver)
         .timeout(Duration::from_secs(15))
         .user_agent(concat!("hermes-client/", env!("CARGO_PKG_VERSION")))
         .build()

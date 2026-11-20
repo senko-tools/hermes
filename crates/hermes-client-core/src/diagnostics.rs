@@ -94,6 +94,32 @@ pub fn report(groups: &[(String, Vec<Check>)]) -> String {
     out
 }
 
+/// How long the system takes to look `host` up now, skipping the answers Hermes remembers.
+async fn lookup_speed(host: &str) -> Check {
+    const SLOW: std::time::Duration = std::time::Duration::from_secs(1);
+    let (found, took) = crate::net::lookup_uncached(host).await;
+    let ms = took.as_millis();
+    match found {
+        Ok(_) if took <= SLOW => Check::new("Lookup speed", Level::Working, format!("{ms} ms")),
+        Ok(_) => Check::new(
+            "Lookup speed",
+            Level::Warning,
+            format!("Looking up {host} took {ms} ms"),
+        )
+        .hint(
+            "A DNS server answers slowly or not at all, often a VPN's. Hermes keeps using the \
+             addresses it last found, but signing in after a restart can be slow. Check the DNS \
+             servers of your network adapters.",
+        ),
+        Err(e) => Check::new(
+            "Lookup speed",
+            Level::Warning,
+            format!("Looking up {host} again failed after {ms} ms: {}", short(e)),
+        )
+        .hint("The DNS server stopped answering. Hermes keeps using the addresses it found."),
+    }
+}
+
 fn family(addr: &SocketAddr) -> &'static str {
     if addr.is_ipv6() { "IPv6" } else { "IPv4" }
 }
@@ -193,6 +219,7 @@ impl Core {
             .collect::<Vec<_>>()
             .join(", ");
         checks.push(Check::new("Address lookup", Level::Working, list));
+        checks.push(lookup_speed(&host.host).await);
 
         // 2 and 3. HTTPS and the certificate, on each address.
         let mut https = Vec::new();

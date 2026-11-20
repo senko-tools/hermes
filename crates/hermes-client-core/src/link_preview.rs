@@ -102,6 +102,7 @@ fn client(timeout: Duration) -> Result<reqwest::Client, String> {
         crate::tls::client_config(crate::tls::Trust::Ca, true).map_err(|e| e.to_string())?;
     reqwest::Client::builder()
         .use_preconfigured_tls((*config).clone())
+        .dns_resolver(crate::net::Resolver)
         .timeout(timeout)
         .user_agent(concat!(
             "hermes-client/",

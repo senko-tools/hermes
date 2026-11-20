@@ -247,6 +247,10 @@ impl Task {
         let config = tls::client_config(self.trust, false).map_err(|e| e.to_string())?;
         let connector = tokio_tungstenite::Connector::Rustls(config);
         let (host, port) = (self.host.host.as_str(), self.host.port);
+        // Looked up before the handshake timeout starts, which a slow DNS server would use up.
+        crate::net::warm(host)
+            .await
+            .map_err(|e| format!("could not look up {host}: {e}"))?;
         let handshake = async {
             // Our own connect, so the gateway skips an address family that does not answer
             // like HTTPS does (see `net`).

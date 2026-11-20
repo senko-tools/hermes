@@ -735,6 +735,7 @@ async fn diagnostics_find_a_working_server_working() {
         names,
         [
             "Address lookup",
+            "Lookup speed",
             "HTTPS (text, files)",
             "Certificate",
             "Live connection",
@@ -747,9 +748,9 @@ async fn diagnostics_find_a_working_server_working() {
         assert_eq!(check.level, Level::Working, "{check:?}");
     }
     assert!(
-        checks[1].detail.starts_with("IPv4 127.0.0.1: "),
+        checks[2].detail.starts_with("IPv4 127.0.0.1: "),
         "{:?}",
-        checks[1]
+        checks[2]
     );
     assert_eq!(core.diagnose_storage().level, Level::Warning, "in memory");
 }
