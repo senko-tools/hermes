@@ -154,6 +154,11 @@ choice! {
 }
 
 choice! {
+    /// `general.avatar_shape`: how people's pictures are cut, everywhere they show.
+    AvatarShape, default Circle { Circle = "circle", Squircle = "squircle" }
+}
+
+choice! {
     /// `sidebar.position`.
     SidebarPosition, default Left { Left = "left", Right = "right" }
 }
@@ -268,6 +273,8 @@ pub struct General {
     pub reduce_motion: bool,
     /// How long things take to slide and fade: `snappy`, `normal` or `calm`.
     pub motion_speed: MotionSpeed,
+    /// How people's pictures are cut: `circle` or `squircle` (a rounded square).
+    pub avatar_shape: AvatarShape,
     /// The mouse wheel glides instead of jumping.
     pub smooth_scroll: bool,
     /// How far a wheel notch goes, as a multiple of the plain distance.
@@ -298,6 +305,7 @@ impl Default for General {
             presence: "online".into(),
             reduce_motion: false,
             motion_speed: MotionSpeed::Normal,
+            avatar_shape: AvatarShape::Circle,
             smooth_scroll: true,
             scroll_speed: 1.25,
             animate_pictures: true,

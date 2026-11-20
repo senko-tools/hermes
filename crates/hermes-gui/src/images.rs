@@ -519,7 +519,8 @@ impl Shell {
         );
     }
 
-    /// A round avatar: the user's picture, else the first letter of their name.
+    /// An avatar in the chosen shape (round or a squircle): the user's picture, else the first
+    /// letter of their name.
     pub fn avatar(&self, inst: &str, user: Option<&User>, name: &str, size: f32) -> AnyElement {
         let picture = user
             .and_then(|u| u.avatar.as_ref())
@@ -528,7 +529,7 @@ impl Shell {
             return img(picture.shown(self.animating()))
                 .flex_shrink_0()
                 .size(px(size))
-                .rounded(px(size / 2.))
+                .rounded(px(theme::avatar_radius(size)))
                 .object_fit(gpui_kit::ObjectFit::Cover)
                 // An id lets gpui step through an animation's frames.
                 .id(SharedString::from(format!(
@@ -543,7 +544,7 @@ impl Shell {
             .items_center()
             .justify_center()
             .size(px(size))
-            .rounded(px(size / 2.))
+            .rounded(px(theme::avatar_radius(size)))
             .bg(theme::selected())
             .text_color(theme::text())
             .text_size(px((size * 0.45).max(12.)))

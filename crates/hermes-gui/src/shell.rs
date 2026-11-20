@@ -905,6 +905,7 @@ impl Shell {
     fn apply_motion(&self, cx: &mut Context<Self>) {
         let general = &self.config.general;
         theme::set_motion_speed(general.motion_speed);
+        theme::set_avatar_shape(general.avatar_shape);
         cx.set_reduce_motion(general.reduce_motion || self.system_reduce_motion);
         INFO_SECONDS.store(
             u64::from(general.status_seconds.max(1)),

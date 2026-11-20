@@ -1114,9 +1114,10 @@ impl Shell {
                 }),
             )
             .child(
+                // The ring around the picture, in its shape (22 px and a 2 px border).
                 div()
                     .flex_shrink_0()
-                    .rounded_full()
+                    .rounded(px(theme::avatar_radius(26.)))
                     .border_2()
                     .child(avatar)
                     .with_spring(

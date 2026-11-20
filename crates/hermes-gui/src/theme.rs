@@ -556,6 +556,27 @@ pub fn set_motion_speed(speed: MotionSpeed) {
     MOTION.store(scale.to_bits(), std::sync::atomic::Ordering::Relaxed);
 }
 
+/// `general.avatar_shape` is a squircle (a rounded square), not a circle.
+static SQUIRCLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Follows `general.avatar_shape`.
+pub fn set_avatar_shape(shape: hermes_client_core::config::AvatarShape) {
+    SQUIRCLE.store(
+        shape == hermes_client_core::config::AvatarShape::Squircle,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The corner radius of a person's picture `size` across, in the chosen avatar shape. Anything
+/// drawn around a picture (a ring, a frame) takes the radius for its own size, so it follows.
+pub fn avatar_radius(size: f32) -> f32 {
+    if SQUIRCLE.load(std::sync::atomic::Ordering::Relaxed) {
+        size * 0.3
+    } else {
+        size / 2.
+    }
+}
+
 /// How much longer than snappy things take now.
 pub fn motion() -> f32 {
     f32::from_bits(MOTION.load(std::sync::atomic::Ordering::Relaxed))

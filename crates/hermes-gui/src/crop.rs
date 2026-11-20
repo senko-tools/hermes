@@ -105,7 +105,7 @@ impl CropFor {
             CropFor::Avatar(_) => Shape {
                 width: SQUARE,
                 height: SQUARE,
-                radius: SQUARE / 2.,
+                radius: theme::avatar_radius(SQUARE),
                 still: (512, 512),
                 moving: (256, 256),
             },

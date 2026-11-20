@@ -148,6 +148,24 @@ impl Shell {
                 this.set_config(|c| c.sidebar.position = value, cx);
             }))
         });
+        let shape_chips = [
+            (config::AvatarShape::Circle, "Circle"),
+            (config::AvatarShape::Squircle, "Squircle"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(n, (value, name))| {
+            crate::ui::chip(
+                self,
+                ("avatar-shape", n),
+                name,
+                config.general.avatar_shape == value,
+                cx,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_config(|c| c.general.avatar_shape = value, cx);
+            }))
+        });
         let layout_group = group(
             "Layout",
             vec![
@@ -167,6 +185,11 @@ impl Shell {
                         .child(self.slider(page, SliderKind::UiScale)),
                 ),
                 setting("Sidebar position", "", wrap().children(position_chips)),
+                setting(
+                    "Avatar shape",
+                    "How people's pictures are cut, everywhere.",
+                    wrap().children(shape_chips),
+                ),
                 setting(
                     "Panel widths",
                     &format!(
