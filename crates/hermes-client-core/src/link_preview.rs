@@ -21,6 +21,9 @@ pub struct LinkPreview {
     pub description: Option<String>,
     /// The picture's address, made absolute.
     pub image: Option<String>,
+    /// The page asks for its picture large (`twitter:card` `summary_large_image`); otherwise
+    /// it is a small thumbnail beside the text.
+    pub large_image: bool,
 }
 
 impl LinkPreview {
@@ -236,12 +239,14 @@ pub fn parse(html: &str, base: &Url, url: &str) -> LinkPreview {
     .filter(previewable)
     .map(String::from);
     let site = pick(&["og:site_name"]).or_else(|| base.host_str().map(str::to_owned));
+    let large_image = pick(&["twitter:card"]).is_some_and(|c| c == "summary_large_image");
     LinkPreview {
         url: url.to_owned(),
         site,
         title,
         description,
         image,
+        large_image,
     }
 }
 
@@ -388,6 +393,13 @@ mod tests {
         );
         assert_eq!(p.image.as_deref(), Some("https://example.org/pics/fox.png"));
         assert_eq!(p.site.as_deref(), Some("Den"));
+        assert!(!p.large_image, "a thumbnail unless the page asks");
+        let large = parse(
+            r#"<head><meta name="twitter:card" content="summary_large_image"></head>"#,
+            &base,
+            "https://example.org/story/1",
+        );
+        assert!(large.large_image);
 
         let p = parse("<title>Just   a\n title</title>", &base, "x");
         assert_eq!(p.title.as_deref(), Some("Just a title"));

@@ -23,8 +23,12 @@ pub enum LinkCard {
 
 /// Previews kept while the app runs; the oldest go first.
 const MAX_CARDS: usize = 300;
-/// The picture's largest side.
+/// The picture's largest side, as decoded.
 const PICTURE_SIDE: u32 = 400;
+/// A thumbnail's side, beside the text (#10: the picture was as large as the card).
+const THUMB_SIDE: f32 = 80.;
+/// A large picture's box, for pages that ask for one.
+const LARGE: (f32, f32) = (360., 180.);
 
 impl Shell {
     /// Starts fetching the preview of the first link in `text`, if previews are on and it is not
@@ -108,21 +112,31 @@ impl Shell {
                     }
                 }))
         });
-        let picture = match picture {
-            Img::Ready(picture) => Some(
-                img(picture.shown(self.animating()))
-                    .max_w(px(PICTURE_SIDE as f32))
-                    .max_h(px(220.))
-                    .rounded(theme::radius_small())
-                    .object_fit(gpui_kit::ObjectFit::Contain),
-            ),
+        let shown = match picture {
+            Img::Ready(picture) => Some(picture.shown(self.animating())),
             _ => None,
         };
+        let large = preview.large_image;
+        let big_picture = shown.clone().filter(|_| large).map(|picture| {
+            img(picture)
+                .max_w(px(LARGE.0))
+                .max_h(px(LARGE.1))
+                .rounded(theme::radius_small())
+                .object_fit(gpui_kit::ObjectFit::Contain)
+        });
+        let thumbnail = shown.filter(|_| !large).map(|picture| {
+            img(picture)
+                .flex_shrink_0()
+                .size(px(THUMB_SIDE))
+                .rounded(theme::radius_small())
+                .object_fit(gpui_kit::ObjectFit::Cover)
+        });
+        let text = div().flex().flex_col().flex_1().min_w_0().gap(px(4.));
         Some(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(4.))
+                .items_start()
+                .gap(px(12.))
                 .max_w(px(440.))
                 .pl(px(10.))
                 .pr(px(12.))
@@ -131,21 +145,24 @@ impl Shell {
                 .bg(theme::sidebar())
                 .border_l_4()
                 .border_color(theme::accent())
-                .children(preview.site.clone().map(|site| {
-                    div()
-                        .text_size(theme::caption_size())
-                        .text_color(theme::text_tertiary())
-                        .child(site)
-                }))
-                .children(title)
-                .children(preview.description.clone().map(|text| {
-                    div()
-                        .text_size(theme::secondary_size())
-                        .text_color(theme::text_secondary())
-                        .line_clamp(3)
-                        .child(text)
-                }))
-                .children(picture)
+                .child(
+                    text.children(preview.site.clone().map(|site| {
+                        div()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(site)
+                    }))
+                    .children(title)
+                    .children(preview.description.clone().map(|text| {
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_secondary())
+                            .line_clamp(3)
+                            .child(text)
+                    }))
+                    .children(big_picture),
+                )
+                .children(thumbnail)
                 .into_any_element(),
         )
     }
