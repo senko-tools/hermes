@@ -1652,7 +1652,7 @@ impl Shell {
         // Gone once faded, so nothing invisible is left under the mouse.
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(theme::fade() + std::time::Duration::from_millis(20))
+                .timer(theme::page_out() + std::time::Duration::from_millis(20))
                 .await;
             let _ = this.update(cx, |this, cx| {
                 if this.leaving.as_ref().is_some_and(|(_, s)| *s == serial) {
@@ -1715,10 +1715,10 @@ impl Render for Shell {
                 .child(self.render_page(page, cx))
                 .with_animation(
                     gpui_kit::SharedString::from(format!("page-leave-{serial}")),
-                    // It holds on while the new page comes in over it, and goes at the end,
-                    // so the two never both show faint.
-                    gpui_kit::Animation::new(theme::fade()),
-                    |d, t| d.opacity(1. - t * t * t),
+                    // It fades to the background before the new page starts to come in: the
+                    // two never show at once (#4).
+                    gpui_kit::Animation::new(theme::page_out()),
+                    |d, t| d.opacity(1. - t),
                 )
         });
         let main = self.render_page(self.page.clone(), cx);
@@ -1767,11 +1767,7 @@ impl Render for Shell {
                             .child({
                                 let id =
                                     gpui_kit::SharedString::from(format!("page-{:?}", self.page));
-                                if matches!(self.page, Page::Chat(..)) {
-                                    theme::enter_rising(id, main)
-                                } else {
-                                    theme::enter(id, main)
-                                }
+                                theme::enter_after_dip(id, main)
                             }),
                     )
                     .children(members),

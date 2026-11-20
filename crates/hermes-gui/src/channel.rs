@@ -2405,7 +2405,29 @@ impl Shell {
                 )
                 .into_any_element()
         } else if !loaded {
-            centered("Loading…").into_any_element()
+            // Nothing for a moment (most channels arrive by then), then lines standing in for
+            // the messages, instead of a "Loading…" that flashes by (#4).
+            {
+                use gpui_kit::AnimationExt as _;
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .p(px(16.))
+                    .child(theme::skeleton(&format!("chat-wait-{channel}"), 6))
+                    .with_animation(
+                        SharedString::from(format!("chat-wait-in-{channel}")),
+                        gpui_kit::Animation::new(
+                            std::time::Duration::from_millis(150) + theme::fade(),
+                        ),
+                        |d, t| {
+                            let wait = 150. / (150. + theme::fade().as_millis() as f32);
+                            d.opacity(((t - wait) / (1. - wait)).clamp(0., 1.))
+                        },
+                    )
+                    .into_any_element()
+            }
         } else if empty {
             div()
                 .flex()
@@ -4371,18 +4393,6 @@ fn piece_style(p: &Piece, system: bool, revealed: bool) -> HighlightStyle {
         style.background_color = Some(theme::code_background().into());
     }
     style
-}
-
-fn centered(text: &'static str) -> gpui_kit::Div {
-    div()
-        .flex()
-        .flex_1()
-        .min_h_0()
-        .items_center()
-        .justify_center()
-        .text_size(theme::secondary_size())
-        .text_color(theme::text_tertiary())
-        .child(text)
 }
 
 /// A centered label on a hairline (day dividers, the new messages marker).

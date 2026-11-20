@@ -574,6 +574,39 @@ pub fn paced(spring: gpui_kit::SpringConfig) -> gpui_kit::SpringConfig {
 
 /// Fades `element` in where it is, once each time `id` first shows: a page or tab that just
 /// opened. Nothing moves, so the eye stays on the content. It fills its parent.
+/// How long a page takes to go when another one opens: the first part of the dip.
+pub fn page_out() -> std::time::Duration {
+    fade().mul_f32(0.5)
+}
+
+/// How long the new page then takes to come in.
+pub fn page_in() -> std::time::Duration {
+    fade().mul_f32(0.9)
+}
+
+/// A page coming in after the one before has gone ([`page_out`]): nothing shows of it until
+/// then, then it fades in where it is (#4: the two pages never show at once, nothing moves).
+pub fn enter_after_dip(
+    id: impl Into<gpui_kit::ElementId>,
+    element: impl gpui_kit::IntoElement,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::prelude::*;
+    use gpui_kit::{Animation, AnimationExt as _};
+    let (out, into) = (page_out(), page_in());
+    let total = out + into;
+    let wait = out.as_secs_f32() / total.as_secs_f32().max(f32::EPSILON);
+    gpui_kit::div()
+        .relative()
+        .size_full()
+        .child(element)
+        .with_animation(id, Animation::new(total), move |d, t| {
+            let t = ((t - wait) / (1. - wait)).clamp(0., 1.);
+            // Ease out: most of the way in quickly, the last bit gently.
+            d.opacity(1. - (1. - t).powi(3))
+        })
+        .into_any_element()
+}
+
 pub fn enter(
     id: impl Into<gpui_kit::ElementId>,
     element: impl gpui_kit::IntoElement,
@@ -588,26 +621,6 @@ pub fn enter(
             id,
             Animation::new(fade()).with_easing(ease_out_quint()),
             |d, t| d.opacity(t),
-        )
-        .into_any_element()
-}
-
-/// Like [`enter`], but it also rises a little into place: a chat that was switched to, so the
-/// switch reads as a move rather than a swap.
-pub fn enter_rising(
-    id: impl Into<gpui_kit::ElementId>,
-    element: impl gpui_kit::IntoElement,
-) -> gpui_kit::AnyElement {
-    use gpui_kit::prelude::*;
-    use gpui_kit::{Animation, AnimationExt as _, ease_out_quint};
-    gpui_kit::div()
-        .relative()
-        .size_full()
-        .child(element)
-        .with_animation(
-            id,
-            Animation::new(fade() * 2).with_easing(ease_out_quint()),
-            |d, t| d.opacity(t).top(px(10. * (1. - t))),
         )
         .into_any_element()
 }
