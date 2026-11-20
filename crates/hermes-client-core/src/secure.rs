@@ -536,7 +536,10 @@ impl Core {
         // and play while they download (#7). A file that zstd shrank by a few percent had to be
         // downloaded whole before it could start.
         let streams = {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
             let kind = crate::core::content_type(name);
             kind.starts_with("video/") || kind.starts_with("audio/")
         };

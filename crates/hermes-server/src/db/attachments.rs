@@ -41,9 +41,10 @@ impl AttachmentRow {
         }
     }
 
-    /// Only decoded raster images get dimensions; everything else is served as a download.
+    /// A decoded raster image (served inline); everything else is served as a download. A video
+    /// may have a size too (its sender measured it), but is no image.
     pub fn is_image(&self) -> bool {
-        self.width.is_some()
+        self.width.is_some() && self.content_type.starts_with("image/")
     }
 }
 
@@ -77,6 +78,15 @@ pub async fn insert(e: impl SqliteExecutor<'_>, row: &AttachmentRow) -> Result<(
     )
     .execute(e)
     .await?;
+    Ok(())
+}
+
+/// The attachment now has a thumbnail (a video's poster, sent by its uploader).
+pub async fn set_has_thumb(e: impl SqliteExecutor<'_>, id: Id) -> Result<(), sqlx::Error> {
+    let id = id.to_i64();
+    sqlx::query!("UPDATE attachments SET has_thumb = 1 WHERE id = ?", id)
+        .execute(e)
+        .await?;
     Ok(())
 }
 

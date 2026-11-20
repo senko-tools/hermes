@@ -684,10 +684,20 @@ pub(crate) mod tests {
         for n in 0..8u64 {
             keep_original(&kept, ("h".into(), Id(n)), Arc::new(vec![0; 10]));
         }
-        assert!(kept_original(&kept, &("h".into(), Id(0))).is_none(), "the oldest went");
+        assert!(
+            kept_original(&kept, &("h".into(), Id(0))).is_none(),
+            "the oldest went"
+        );
         assert!(kept_original(&kept, &("h".into(), Id(7))).is_some());
-        keep_original(&kept, ("h".into(), Id(9)), Arc::new(vec![0; ORIGINALS_BYTES + 1]));
-        assert!(kept_original(&kept, &("h".into(), Id(9))).is_none(), "too large to keep");
+        keep_original(
+            &kept,
+            ("h".into(), Id(9)),
+            Arc::new(vec![0; ORIGINALS_BYTES + 1]),
+        );
+        assert!(
+            kept_original(&kept, &("h".into(), Id(9))).is_none(),
+            "too large to keep"
+        );
     }
 
     #[test]

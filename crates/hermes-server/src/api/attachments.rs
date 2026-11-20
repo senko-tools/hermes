@@ -267,7 +267,10 @@ async fn store(
     let Measured {
         waveform,
         duration_ms,
+        size: measured_size,
     } = if media { measured } else { Measured::default() };
+    // A video's size comes from its sender; a picture's from its bytes.
+    let video_size = measured_size.filter(|_| content_type.starts_with("video/"));
     let row = AttachmentRow {
         id,
         uploader_id: auth.user_id,
@@ -275,8 +278,8 @@ async fn store(
         filename,
         content_type,
         size,
-        width: image.as_ref().map(|i| i.width),
-        height: image.as_ref().map(|i| i.height),
+        width: image.as_ref().map(|i| i.width).or(video_size.map(|s| s.0)),
+        height: image.as_ref().map(|i| i.height).or(video_size.map(|s| s.1)),
         has_thumb,
         sha256,
         created_at: now_ms(),
@@ -292,7 +295,13 @@ async fn store(
 struct Measured {
     waveform: Option<Vec<u8>>,
     duration_ms: Option<u64>,
+    /// A video's picture size (`X-Width`, `X-Height`), so clients draw its box the right shape
+    /// before it loads.
+    size: Option<(u32, u32)>,
 }
+
+/// The largest side a measured video may claim.
+const MAX_MEASURED_SIDE: u32 = 16_384;
 
 /// Reads `X-Waveform` and `X-Duration-Ms`; either may be missing.
 fn measured(headers: &HeaderMap) -> ApiResult<Measured> {
@@ -324,9 +333,26 @@ fn measured(headers: &HeaderMap) -> ApiResult<Measured> {
                 .ok_or_else(|| validate::field_error("X-Duration-Ms", "must be milliseconds"))
         })
         .transpose()?;
+    let side = |name: &'static str| {
+        text(name)
+            .map(|v| {
+                v.parse::<u32>()
+                    .ok()
+                    .filter(|v| (1..=MAX_MEASURED_SIDE).contains(v))
+                    .ok_or_else(|| {
+                        validate::field_error(name, format!("must be 1 to {MAX_MEASURED_SIDE}"))
+                    })
+            })
+            .transpose()
+    };
+    let size = match (side("X-Width")?, side("X-Height")?) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => None,
+    };
     Ok(Measured {
         waveform,
         duration_ms,
+        size,
     })
 }
 
@@ -383,6 +409,62 @@ pub async fn thumb(
 
 /// The upload if `user_id` may read it (`NOT_FOUND` otherwise): attached → `VIEW_CHANNEL` in the
 /// message's channel; an avatar or icon → any user; otherwise only the uploader.
+/// The largest poster a video's uploader may send.
+const MAX_POSTER_BYTES: usize = 512 * 1024;
+
+/// `PUT /attachments/{id}/thumb`: a video's uploader sends a still of it (a poster), shown
+/// before the video is loaded. It is decoded and written again as the usual thumbnail, so only
+/// a real picture is kept.
+pub async fn set_poster(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(id): Path<Id>,
+    body: axum::body::Bytes,
+) -> ApiResult<StatusCode> {
+    if body.len() > MAX_POSTER_BYTES {
+        return Err(Error::new(
+            ErrorCode::PayloadTooLarge,
+            format!("A poster may be at most {} KB", MAX_POSTER_BYTES / 1024),
+        ));
+    }
+    let row = db::attachments::get(&state.db.read, id)
+        .await?
+        .ok_or_else(|| Error::not_found("attachment"))?;
+    if row.uploader_id != auth.user_id {
+        return Err(Error::forbidden("Only the uploader can set its poster"));
+    }
+    if !row.content_type.starts_with("video/") {
+        return Err(Error::bad_request("Only a video has a poster"));
+    }
+    let (part, thumb_part) = (
+        state.files.tmp_path(id, ".poster"),
+        state.files.tmp_path(id, ".poster.webp"),
+    );
+    if let Some(dir) = part.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| Error::internal(format!("create {}: {e}", dir.display())))?;
+    }
+    tokio::fs::write(&part, &body)
+        .await
+        .map_err(|e| Error::internal(format!("write {}: {e}", part.display())))?;
+    let image = state
+        .files
+        .probe(part.clone(), Some(thumb_part.clone()))
+        .await;
+    remove(&part).await;
+    if !image.is_some_and(|i| i.has_thumb) {
+        remove(&thumb_part).await;
+        return Err(Error::bad_request("The poster is not a picture"));
+    }
+    let thumb = state.files.thumb_path(&row.sha256, id);
+    tokio::fs::rename(&thumb_part, &thumb)
+        .await
+        .map_err(|e| Error::internal(format!("move poster to {}: {e}", thumb.display())))?;
+    db::attachments::set_has_thumb(&state.db.write, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn readable(state: &AppState, id: Id, user_id: Id) -> ApiResult<AttachmentRow> {
     let not_found = || Error::not_found("attachment");
     let row = db::attachments::get(&state.db.read, id)

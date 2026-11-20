@@ -281,6 +281,19 @@ impl TestServer {
     }
 
     /// A GET returning the raw response (for file downloads and HTML pages).
+    /// `PUT` of raw bytes; the status.
+    pub async fn put_bytes(&self, path: &str, token: &str, bytes: Vec<u8>) -> u16 {
+        self.client
+            .put(format!("{}{path}", self.base))
+            .bearer_auth(token)
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
+
     pub async fn get_raw(&self, path: &str, token: Option<&str>) -> reqwest::Response {
         let mut req = self.client.get(format!("{}{path}", self.base));
         if let Some(token) = token {

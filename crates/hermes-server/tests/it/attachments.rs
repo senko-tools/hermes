@@ -604,3 +604,69 @@ async fn sounds_keep_the_waveform_and_length_their_uploader_measured() {
         .await
         .err(400, "VALIDATION_FAILED");
 }
+
+#[tokio::test]
+async fn a_video_keeps_its_measured_size_and_takes_a_poster_from_its_uploader() {
+    let server = start("attachments-video-poster", RegistrationMode::Open).await;
+    let (owner, _, space) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space, "alice").await;
+    let video = server
+        .upload_with(
+            &owner,
+            "clip.mp4",
+            "video/mp4",
+            vec![0; 2048],
+            &[
+                ("x-width", "720"),
+                ("x-height", "1280"),
+                ("x-duration-ms", "4000"),
+            ],
+        )
+        .await
+        .ok();
+    assert_eq!(
+        (video["width"].as_u64(), video["height"].as_u64()),
+        (Some(720), Some(1280))
+    );
+    assert_eq!(video["has_thumb"], false);
+    let vid = id(&video);
+    // Still a download, not an inline picture.
+    let res = server
+        .get_raw(&format!("/attachments/{vid}/clip.mp4"), Some(&owner))
+        .await;
+    let disposition = res.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(disposition.starts_with("attachment"), "{disposition}");
+
+    let path = format!("/attachments/{vid}/thumb");
+    assert_eq!(
+        server.put_bytes(&path, &alice, png(48, 64)).await,
+        403,
+        "not the uploader"
+    );
+    assert_eq!(
+        server
+            .put_bytes(&path, &owner, b"not a picture".to_vec())
+            .await,
+        400
+    );
+    assert_eq!(server.put_bytes(&path, &owner, png(48, 64)).await, 204);
+    assert_eq!(
+        status(&server, &path, Some(&owner)).await,
+        200,
+        "the poster is its thumbnail"
+    );
+
+    let picture = server
+        .upload(&owner, "a.png", "image/png", png(20, 20))
+        .await
+        .ok();
+    let path = format!("/attachments/{}/thumb", id(&picture));
+    assert_eq!(
+        server.put_bytes(&path, &owner, png(8, 8)).await,
+        400,
+        "only videos"
+    );
+}

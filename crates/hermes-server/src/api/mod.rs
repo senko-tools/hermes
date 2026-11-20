@@ -211,7 +211,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{id}/typing", post(messages::typing))
         .route("/channels/{id}/ack", post(messages::ack))
         .route("/attachments", post(attachments::upload))
-        .route("/attachments/{id}/thumb", get(attachments::thumb))
+        .route(
+            "/attachments/{id}/thumb",
+            get(attachments::thumb).put(attachments::set_poster),
+        )
         .route("/attachments/{id}/{filename}", get(attachments::download))
         .route("/dms", get(dms::list).post(dms::create))
         .route("/dms/{id}", delete(dms::close))
