@@ -155,10 +155,10 @@ impl TextSelection {
     /// The spot of the text under `at`, if there is any.
     fn spot_under(&self, at: Point<Pixels>) -> Option<Spot> {
         let laid = self.laid.borrow();
-        let (part, (_, layout, _)) = laid.iter().find(|(_, (b, _, _))| b.contains(&at))?;
+        let (part, (_, layout, text)) = laid.iter().find(|(_, (b, _, _))| b.contains(&at))?;
         Some(Spot {
             part: *part,
-            byte: layout.index_for_position(at).unwrap_or_else(|i| i),
+            byte: boundary_at(layout, text, at),
         })
     }
 
@@ -166,7 +166,7 @@ impl TextSelection {
     /// when one is given.
     fn spot_nearest(&self, at: Point<Pixels>, message: Option<Id>) -> Option<Spot> {
         let laid = self.laid.borrow();
-        let (part, (_, layout, _)) = laid
+        let (part, (_, layout, text)) = laid
             .iter()
             .filter(|(part, _)| message.is_none_or(|m| part.message == m))
             .min_by(|(_, (a, _, _)), (_, (b, _, _))| {
@@ -175,7 +175,7 @@ impl TextSelection {
             })?;
         Some(Spot {
             part: *part,
-            byte: layout.index_for_position(at).unwrap_or_else(|i| i),
+            byte: boundary_at(layout, text, at),
         })
     }
 
@@ -733,6 +733,37 @@ impl Shell {
     }
 }
 
+/// The letter boundary nearest `at`: a letter's left half stands for the boundary before it,
+/// its right half for the one after it, so a drag takes a letter in once the pointer crosses
+/// its middle, in either direction. Off a letter, the boundary gpui gives.
+fn boundary_at(layout: &TextLayout, text: &str, at: Point<Pixels>) -> usize {
+    let start = match layout.index_for_position(at) {
+        Ok(start) => start,
+        Err(nearest) => return nearest,
+    };
+    let Some(letter) = text.get(start..).and_then(|rest| rest.chars().next()) else {
+        return start;
+    };
+    let end = start + letter.len_utf8();
+    match (
+        layout.position_for_index(start),
+        layout.position_for_index(end),
+    ) {
+        // A letter whose end wraps to the next line has no right edge on this one.
+        (Some(left), Some(right))
+            if right.y == left.y && past_middle(left.x.into(), right.x.into(), at.x.into()) =>
+        {
+            end
+        }
+        _ => start,
+    }
+}
+
+/// Whether `x` lies past the middle of a letter from `left` to `right`.
+fn past_middle(left: f32, right: f32, x: f32) -> bool {
+    x >= (left + right) / 2.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,6 +781,14 @@ mod tests {
             part: part(message, index),
             byte,
         }
+    }
+
+    #[test]
+    fn a_letter_rounds_to_its_nearer_edge() {
+        assert!(!past_middle(10.0, 20.0, 10.0));
+        assert!(!past_middle(10.0, 20.0, 14.9));
+        assert!(past_middle(10.0, 20.0, 15.0));
+        assert!(past_middle(10.0, 20.0, 19.9));
     }
 
     #[test]
