@@ -17,6 +17,8 @@ impl Shell {
     fn render_member_edge(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("members-edge")
+            // Over the member rows: a press here resizes, it does not also click the row under it.
+            .occlude()
             .absolute()
             .top_0()
             .bottom_0()

@@ -1571,6 +1571,8 @@ impl Shell {
     fn render_resize_handle(&self, on_right: bool, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("sidebar-edge")
+            // Over the rows at the edge: a press here resizes, it does not also click them.
+            .occlude()
             .absolute()
             .top_0()
             .bottom_0()

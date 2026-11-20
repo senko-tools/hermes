@@ -855,7 +855,9 @@ impl Shell {
             .size(px(CARD_AVATAR))
             .child(avatar)
             .when(mine, |d| {
-                d.cursor_pointer()
+                // Over the banner: the picture alone takes the pointer there, not the banner too.
+                d.occlude()
+                    .cursor_pointer()
                     .group("profile-avatar-edit")
                     .child(note_part(parts.clone(), ProfilePart::Avatar))
                     // On the picture's corner, half over the banner.
@@ -867,6 +869,7 @@ impl Shell {
                     )
                     .on_click(
                         cx.listener(|this, event: &gpui_kit::ClickEvent, window, cx| {
+                            cx.stop_propagation();
                             this.open_part_menu(ProfilePart::Avatar, event.position(), window, cx);
                         }),
                     )
