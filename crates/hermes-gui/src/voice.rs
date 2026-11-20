@@ -30,7 +30,9 @@ const RING_FOR: Duration = Duration::from_secs(30);
 const RING_EVERY: Duration = Duration::from_millis(2000);
 /// Tiles keep this aspect ratio (width / height), the shape of most screens.
 const ASPECT: f32 = 16.0 / 9.0;
-const AVATAR_MAX: f32 = 72.0;
+const AVATAR_MAX: f32 = 128.0;
+/// The smallest a tile gets: past that the tiles scroll instead of shrinking (#12).
+const TILE_MIN: (f32, f32) = (176.0, 99.0);
 const TILE_GAP: f32 = 12.0;
 /// How many seconds of the connection are kept for the network graphs.
 const HISTORY: usize = 900;
@@ -122,6 +124,17 @@ impl NetHistory {
 
 /// The column count and tile size that make `n` tiles of [`ASPECT`] largest in `area` with
 /// `gap` between them; on a tie, more columns (side by side reads better than stacked).
+/// [`layout`]'s answer, kept to at least [`TILE_MIN`]: as many columns of that size as fit
+/// across `width`, and the rows scroll.
+fn min_layout(fit: (usize, (f32, f32)), width: f32, gap: f32) -> (usize, (f32, f32)) {
+    let (cols, tile) = fit;
+    if tile.0 >= TILE_MIN.0 {
+        return (cols, tile);
+    }
+    let across = ((width + gap) / (TILE_MIN.0 + gap)).floor().max(1.) as usize;
+    (across.min(cols.max(1)).max(1), TILE_MIN)
+}
+
 pub fn layout(n: usize, area: (f32, f32), gap: f32) -> (usize, (f32, f32)) {
     let mut best = (1, (0.0, 0.0));
     for cols in 1..=n.max(1) {
@@ -1197,8 +1210,10 @@ impl Shell {
         let (cols, tile_size) = if enlarged.is_some() {
             (1, area)
         } else {
-            layout(shown.len(), area, TILE_GAP)
+            min_layout(layout(shown.len(), area, TILE_GAP), area.0, TILE_GAP)
         };
+        let overflows = enlarged.is_none()
+            && shown.len().div_ceil(cols.max(1)) as f32 * (tile_size.1 + TILE_GAP) > area.1 + 1.;
         // A popped-out share's window says how large it shows instead.
         if let Some(latest) = self
             .screen_latest
@@ -1259,13 +1274,22 @@ impl Shell {
             )
             .child(
                 div()
+                    .id("voice-tiles")
                     .relative()
                     .flex()
                     .flex_col()
                     .flex_1()
                     .min_h_0()
                     .items_center()
-                    .justify_center()
+                    // Too many to fit at the smallest size: they scroll from the top.
+                    .map(|d| {
+                        if overflows {
+                            d.justify_start()
+                        } else {
+                            d.justify_center()
+                        }
+                    })
+                    .overflow_y_scroll()
                     .gap(px(TILE_GAP))
                     .child(measure)
                     .children(lines),
@@ -1404,7 +1428,9 @@ impl Shell {
                     .into_any_element()
             }
             None => {
-                let side = (tile.1 * 0.4).clamp(24., AVATAR_MAX);
+                // Half the tile's height, never too small to see (#12).
+                let side = (tile.1 * 0.5).clamp(40., AVATAR_MAX);
+                let short = tile.1 < 130.;
                 let avatar = {
                     let store = self.core.store();
                     let user = store.instance(inst).and_then(|s| s.user(p.user));
@@ -1435,7 +1461,7 @@ impl Shell {
                     .gap(px(8.))
                     .child(avatar)
                     .child(name_row)
-                    .children(note.map(|note| {
+                    .children(note.filter(|_| !short).map(|note| {
                         let note = div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
@@ -2457,6 +2483,10 @@ mod tests {
         }
         // A room too small for anything gives empty tiles instead of panicking.
         assert_eq!(layout(3, (0.0, 0.0), 12.0).1, (0.0, 0.0));
+        // Never smaller than TILE_MIN: fewer columns, and the rows scroll.
+        let (cols, tile) = min_layout(layout(12, (500.0, 300.0), 12.0), 500.0, 12.0);
+        assert_eq!(tile, TILE_MIN);
+        assert_eq!(cols, 2, "two of 176 px fit across 500 px");
     }
 
     fn link(sent: u64, lost: u64, down: u64, up: u64) -> VoiceLink {
