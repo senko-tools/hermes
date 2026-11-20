@@ -274,6 +274,9 @@ pub struct SettingsPage {
     mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     date_format: Entity<InputState>,
+    /// Custom was chosen for the time or date: its pattern field shows.
+    custom_time: bool,
+    custom_date: bool,
     /// Searching every setting by name and hint.
     search: Entity<InputState>,
     ptt_key: Entity<InputState>,
@@ -394,19 +397,19 @@ impl Shell {
                 }
                 _ => {}
             }),
-            cx.subscribe_in(&date_format, window, |this, input, event, _, cx| {
+            cx.subscribe_in(&date_format, window, |this, input, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
-                    this.set_config(|c| c.buffer.date_format = value, cx);
+                    this.set_pattern(Pattern::Date, value, true, window, cx);
                     this.info("Date format saved", cx);
                 }
             }),
             font_events,
             mono_events,
-            cx.subscribe_in(&time_format, window, |this, input, event, _, cx| {
+            cx.subscribe_in(&time_format, window, |this, input, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
-                    this.set_config(|c| c.buffer.timestamp_format = value, cx);
+                    this.set_pattern(Pattern::Time, value, true, window, cx);
                     this.info("Time format saved", cx);
                 }
             }),
@@ -549,6 +552,8 @@ impl Shell {
             font: font_input,
             mono_font: mono_input,
             time_format,
+            custom_time: false,
+            custom_date: false,
             date_format,
             search,
             ptt_key,
@@ -995,8 +1000,7 @@ impl Shell {
                 .mb(px(4.))
                 .child(
                     Input::new(&page.search)
-                        .small()
-                        .prefix(icon(assets::SEARCH, 14., theme::text_tertiary()))
+                        .prefix(icon(assets::SEARCH, 16., theme::text_tertiary()))
                         .cleanable(true),
                 )
                 .into_any_element(),
@@ -1319,7 +1323,12 @@ impl Shell {
     fn slider(&self, page: &SettingsPage, kind: SliderKind) -> AnyElement {
         page.sliders.iter().find(|(k, _)| *k == kind).map_or_else(
             || div().into_any_element(),
-            |(_, state)| Slider::new(state).cursor_pointer().into_any_element(),
+            |(_, state)| {
+                div()
+                    .w_full()
+                    .child(Slider::new(state).cursor_pointer())
+                    .into_any_element()
+            },
         )
     }
 
@@ -1629,74 +1638,12 @@ impl Shell {
                             "Time, a small picture, the name and the text on one line.",
                             buffer.compact
                         ),
-                        setting(
-                            "Clock",
-                            "",
-                            wrap().children(
-                                [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")]
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(n, (format, name))| {
-                                        crate::ui::chip(
-                                            self,
-                                            ("clock", n),
-                                            name,
-                                            b.timestamp_format == format,
-                                            cx,
-                                        )
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.set_config(
-                                                    |c| {
-                                                        c.buffer.timestamp_format =
-                                                            format.to_owned()
-                                                    },
-                                                    cx,
-                                                );
-                                            }),
-                                        )
-                                    }),
-                            ),
-                        ),
-                        setting(
-                            "Time format",
-                            &format!("Now: {preview}. Enter saves."),
-                            Input::new(&page.time_format),
-                        ),
-                        setting(
-                            "Date",
-                            "On the line between days.",
-                            wrap().children(DATE_FORMATS.into_iter().enumerate().map(
-                                |(n, format)| {
-                                    let name = time::format(
-                                        hermes_client_core::now_ms(),
-                                        format,
-                                        self.utc_offset,
-                                    );
-                                    crate::ui::chip(
-                                        self,
-                                        ("date-format", n),
-                                        name,
-                                        b.date_format == format,
-                                        cx,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.set_config(
-                                                |c| c.buffer.date_format = format.to_owned(),
-                                                cx,
-                                            );
-                                        },
-                                    ))
-                                },
-                            )),
-                        ),
-                        setting(
-                            "Date format",
-                            &format!(
-                                "Now: {date_preview}. %e is the day, %B the month, %A the                                  weekday, %Y the year. Enter saves."
-                            ),
-                            Input::new(&page.date_format),
+                        self.pattern_row(page, Pattern::Time, &format!("Now: {preview}."), cx),
+                        self.pattern_row(
+                            page,
+                            Pattern::Date,
+                            &format!("On the line between days. Now: {date_preview}."),
+                            cx,
                         ),
                     ],
                 ),
@@ -3236,15 +3183,11 @@ impl Shell {
             } else {
                 "Hide".to_owned()
             })
-            .child(
-                icon(assets::CHEVRON_DOWN, 14., theme::text_tertiary()).with_transformation(
-                    gpui_kit::Transformation::rotate(gpui_kit::radians(if folded {
-                        -std::f32::consts::FRAC_PI_2
-                    } else {
-                        0.
-                    })),
-                ),
-            )
+            .child(crate::ui::chevron(
+                icon(assets::CHEVRON_DOWN, 14., theme::text_tertiary()),
+                format!("fold-chevron-{key}"),
+                !folded,
+            ))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.set_folded(key, !folded, cx);
             }))
@@ -3259,7 +3202,14 @@ impl Shell {
         if folded && !recording() {
             return group_with(title, toggle, Vec::new());
         }
-        let shown = group_with(title, toggle, rows);
+        let header = group_header(title, toggle);
+        // Opening grows the card from nothing, so the groups below glide down.
+        let card = crate::channel::grow_in(
+            &self.grow_heights,
+            SharedString::from(format!("fold-open-{key}")),
+            group_card(rows).into_any_element(),
+        );
+        let shown = group_column(header, Some(card));
         note_fold();
         shown
     }
@@ -3374,6 +3324,157 @@ const DATE_FORMATS: [&str; 5] = [
     "%d.%m.%Y",
 ];
 
+/// The two settings that are a time pattern: message times and the day lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pattern {
+    Time,
+    Date,
+}
+
+/// The time patterns offered as chips.
+const TIME_FORMATS: [(&str, &str); 2] = [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")];
+
+impl Shell {
+    /// "Time" or "Date on day lines": preset chips and Custom, which shows the pattern field
+    /// under them. A preset also goes into the field, so the two never disagree (#11).
+    fn pattern_row(
+        &self,
+        page: &SettingsPage,
+        which: Pattern,
+        hint: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let b = &self.config.buffer;
+        let (name, current, input, custom_chosen) = match which {
+            Pattern::Time => (
+                "Time",
+                &b.timestamp_format,
+                &page.time_format,
+                page.custom_time,
+            ),
+            Pattern::Date => (
+                "Date on day lines",
+                &b.date_format,
+                &page.date_format,
+                page.custom_date,
+            ),
+        };
+        let presets: Vec<(String, String)> = match which {
+            Pattern::Time => TIME_FORMATS
+                .iter()
+                .map(|(f, n)| ((*f).to_owned(), (*n).to_owned()))
+                .collect(),
+            Pattern::Date => DATE_FORMATS
+                .iter()
+                .map(|f| {
+                    let shown = time::format(hermes_client_core::now_ms(), f, self.utc_offset);
+                    ((*f).to_owned(), shown)
+                })
+                .collect(),
+        };
+        let custom = custom_chosen || !presets.iter().any(|(f, _)| f == current);
+        let id = match which {
+            Pattern::Time => "time-format",
+            Pattern::Date => "date-format",
+        };
+        let mut chips: Vec<AnyElement> = presets
+            .into_iter()
+            .enumerate()
+            .map(|(n, (format, shown))| {
+                let chosen = !custom && *current == format;
+                crate::ui::chip(self, (id, n), shown, chosen, cx)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_pattern(which, format.clone(), false, window, cx);
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        chips.push(
+            crate::ui::chip(self, (id, 99usize), "Custom", custom, cx)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(page) = this.settings.as_mut() {
+                        match which {
+                            Pattern::Time => page.custom_time = true,
+                            Pattern::Date => page.custom_date = true,
+                        }
+                    }
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+        let field = custom.then(|| {
+            let help = match which {
+                Pattern::Time => "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
+                Pattern::Date => "%e day, %B month, %A weekday, %Y year. Enter saves.",
+            };
+            crate::channel::grow_in(
+                &self.grow_heights,
+                SharedString::from(format!("{id}-custom")),
+                div()
+                    .w_full()
+                    .flex()
+                    .justify_end()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .pt(px(8.))
+                            .w(px(300.))
+                            .child(Input::new(input))
+                            .child(muted(help)),
+                    )
+                    .into_any_element(),
+            )
+        });
+        setting(
+            name,
+            hint,
+            div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .child(wrap().justify_end().children(chips))
+                .children(field),
+        )
+    }
+
+    /// Saves a time or date pattern and shows it in the pattern field; `custom` keeps the
+    /// field open (it came from the field itself).
+    fn set_pattern(
+        &mut self,
+        which: Pattern,
+        format: String,
+        custom: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(page) = self.settings.as_mut() {
+            let input = match which {
+                Pattern::Time => {
+                    page.custom_time = custom;
+                    page.time_format.clone()
+                }
+                Pattern::Date => {
+                    page.custom_date = custom;
+                    page.date_format.clone()
+                }
+            };
+            if !custom {
+                let shown = format.clone();
+                input.update(cx, |input, cx| input.set_value(shown, window, cx));
+            }
+        }
+        self.set_config(
+            |c| match which {
+                Pattern::Time => c.buffer.timestamp_format = format,
+                Pattern::Date => c.buffer.date_format = format,
+            },
+            cx,
+        );
+    }
+}
+
 /// A tab's name in the navigation.
 fn tab_name(tab: Tab) -> &'static str {
     all_tabs()
@@ -3468,8 +3569,9 @@ fn nav_section(title: &str) -> AnyElement {
 
 // ---- parts, also used by the space settings ---------------------------------------------------
 
+/// Chips side by side, wrapping; they line up on the right, where a setting's control goes.
 pub fn wrap() -> gpui_kit::Div {
-    div().flex().flex_wrap().w_full().gap(px(4.))
+    div().flex().flex_wrap().justify_end().w_full().gap(px(4.))
 }
 
 pub fn muted(text: impl Into<SharedString>) -> AnyElement {
@@ -3569,6 +3671,15 @@ pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
 
 /// A titled group of settings, with something on the title's right.
 pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> AnyElement {
+    let header = group_header(title, actions);
+    group_column(
+        header,
+        (!rows.is_empty()).then(|| group_card(rows).into_any_element()),
+    )
+}
+
+/// A group's title line, with something on its right.
+fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
             r.group(title);
@@ -3576,41 +3687,63 @@ pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> An
     });
     div()
         .flex()
+        .items_center()
+        .gap(px(8.))
+        .child(
+            div()
+                .flex_1()
+                .text_size(theme::caption_size())
+                .text_color(theme::text_tertiary())
+                .child(title.to_uppercase()),
+        )
+        .child(actions)
+}
+
+/// A group's rows on their card, a thin line between each two.
+fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
+    let count = rows.len();
+    let mut children: Vec<AnyElement> = Vec::with_capacity(count * 2);
+    for (n, row) in rows.into_iter().enumerate() {
+        children.push(row);
+        if n + 1 < count {
+            children.push(
+                div()
+                    .h(px(1.))
+                    .flex_shrink_0()
+                    .bg(theme::border())
+                    .into_any_element(),
+            );
+        }
+    }
+    div()
+        .flex()
+        .flex_col()
+        .px(px(14.))
+        .py(px(4.))
+        .rounded(theme::radius_large())
+        .bg(theme::sidebar())
+        .children(children)
+}
+
+/// The title line over the card (none while folded).
+fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
+    div()
+        .flex()
         .flex_col()
         .flex_shrink_0()
         .gap(px(10.))
         .max_w(px(760.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .child(
-                    div()
-                        .flex_1()
-                        .text_size(theme::caption_size())
-                        .text_color(theme::text_tertiary())
-                        .child(title.to_uppercase()),
-                )
-                .child(actions),
-        )
-        // Folded: the title alone.
-        .when(!rows.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(14.))
-                    .p(px(14.))
-                    .rounded(theme::radius_large())
-                    .bg(theme::sidebar())
-                    .children(rows),
-            )
-        })
+        .child(header)
+        .children(card)
         .into_any_element()
 }
 
-/// A row: name and hint on the left, the control on the right.
+/// How long a hint may be and still show in full under its setting; a longer one shows its
+/// start and the rest in the (i) next to the name.
+const HINT_CHARS: usize = 72;
+
+/// A row: the name and a one-line hint on the left, the control on the right. A hint too long
+/// for one line puts all of it in the (i) beside the name.
 pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
@@ -3623,11 +3756,24 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
             .as_ref()
             .is_some_and(|(found, at)| found == name && at.elapsed() < LIT_FOR)
     });
+    let long = hint.chars().count() > HINT_CHARS;
+    let full_hint = SharedString::from(hint.to_owned());
+    let info = long.then(|| {
+        let tip = full_hint.clone();
+        div()
+            .id(SharedString::from(format!("hint-{name}")))
+            .flex_shrink_0()
+            .child(icon(assets::INFO, 14., theme::text_tertiary()))
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+    });
     let row = div()
         .flex()
         .flex_wrap()
         .items_center()
         .gap(px(12.))
+        .py(px(10.))
         .child(
             div()
                 .flex()
@@ -3637,25 +3783,32 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 .gap(px(2.))
                 .child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
                         .text_size(theme::body_size())
-                        .child(SharedString::from(name.to_owned())),
+                        .child(SharedString::from(name.to_owned()))
+                        .children(info),
                 )
                 .when(!hint.is_empty(), |d| {
                     d.child(
                         div()
                             .text_size(theme::secondary_size())
                             .text_color(theme::text_tertiary())
-                            .child(SharedString::from(hint.to_owned())),
+                            .truncate()
+                            .child(full_hint),
                     )
                 }),
         )
         .child(
+            // At least wide enough for a slider, which has no width of its own.
             div()
                 .flex()
                 .flex_col()
-                .items_start()
-                .flex_1()
-                .min_w_0()
+                .items_end()
+                .flex_shrink_0()
+                .min_w(px(240.))
+                .max_w_full()
                 .child(control),
         );
     if !lit {

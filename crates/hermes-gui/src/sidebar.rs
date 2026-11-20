@@ -1318,22 +1318,12 @@ impl Shell {
                     .hover(|d| d.text_color(theme::accent()))
                     .child(div().min_w_0().truncate().child(name.clone()))
                     // The chevron turns to point right as the category folds, and back.
-                    .child(
+                    .child(crate::ui::chevron(
                         icon(assets::CHEVRON_DOWN, 14., theme::category_text())
-                            .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent()))
-                            .with_spring(
-                                SharedString::from(format!("category-chevron-{id}")),
-                                gpui_kit::SpringAnimation::new(crate::theme::paced(
-                                    gpui_kit::SpringConfig::new(420., 32., 1.),
-                                ))
-                                .to(collapsed),
-                                |d, phase| {
-                                    d.with_transformation(gpui_kit::Transformation::rotate(
-                                        gpui_kit::radians(-std::f32::consts::FRAC_PI_2 * phase.0),
-                                    ))
-                                },
-                            ),
-                    )
+                            .group_hover(CATEGORY_ROW, |s| s.text_color(theme::accent())),
+                        format!("category-chevron-{id}"),
+                        !collapsed,
+                    ))
                     .child(div().flex_1())
                     .children(self.badge(&format!("category-{id}"), badge))
                     .children(add)

@@ -86,6 +86,7 @@ impl Shell {
     pub fn warn_unencrypted_choices(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
         let current = self.config.privacy.warn_unencrypted;
         crate::settings::wrap()
+            .when(id == "unencrypted-popup-choice", |d| d.justify_start())
             .children(
                 WARN_CHOICES
                     .into_iter()

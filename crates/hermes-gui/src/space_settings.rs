@@ -1854,7 +1854,7 @@ impl Shell {
                 }),
             )
         });
-        col.push(wrap().children(chips).into_any_element());
+        col.push(wrap().justify_start().children(chips).into_any_element());
         if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
             let ov = channel.overrides.iter().find(|o| o.role_id == role_id);
             let role_name = st.role(role_id).map(|r| r.name.clone()).unwrap_or_default();

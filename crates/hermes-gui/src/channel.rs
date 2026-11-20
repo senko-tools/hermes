@@ -455,7 +455,7 @@ pub type GrowHeights = std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui
 /// Grows `element` from nothing to its own height, so the rows around it glide aside instead of
 /// jumping: a message that just arrived. Its height is measured on the first frame, while it is
 /// still closed; once open, it is left to size itself again (reactions, pictures loading).
-fn grow_in(heights: &GrowHeights, key: SharedString, element: AnyElement) -> AnyElement {
+pub fn grow_in(heights: &GrowHeights, key: SharedString, element: AnyElement) -> AnyElement {
     use gpui_kit::{Animation, AnimationExt as _};
     let height = heights.borrow().get(&key).copied();
     let record = heights.clone();

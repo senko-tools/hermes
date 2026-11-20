@@ -229,6 +229,22 @@ pub fn error_text(
         )
 }
 
+/// A fold's chevron (`glyph`, a down-pointing icon the caller styled): it points down while
+/// `open` and turns to point right as it folds, on a spring. Server categories and settings
+/// groups share it.
+pub fn chevron(glyph: gpui_kit::Svg, id: String, open: bool) -> impl IntoElement + use<> {
+    glyph.with_spring(
+        SharedString::from(id),
+        gpui_kit::SpringAnimation::new(theme::paced(gpui_kit::SpringConfig::new(420., 32., 1.)))
+            .to(!open),
+        |d, phase| {
+            d.with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
+                -std::f32::consts::FRAC_PI_2 * phase.0,
+            )))
+        },
+    )
+}
+
 /// A small square button holding an icon. Under the pointer a soft background fades in behind
 /// the icon and the icon turns accent. The caller adds what a click does.
 pub fn icon_button(
