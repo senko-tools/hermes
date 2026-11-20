@@ -1874,6 +1874,9 @@ impl Render for Shell {
             .child(self.smooth_scroll.catcher())
             .children(self.media_scrub_catcher(cx))
             .children(self.selection_catcher(cx))
+            // Any press lets go of the video Space plays and pauses; a press on a video takes it
+            // again when it is let go (its click).
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| this.media.focused = None))
             // The text cursor: while selecting, and over letters of selectable text (#2).
             .on_mouse_move(
                 cx.listener(|this, event: &gpui_kit::MouseMoveEvent, _, cx| {

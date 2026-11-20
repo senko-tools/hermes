@@ -31,6 +31,12 @@ impl Shell {
             cx.stop_propagation();
             return;
         }
+        // A video that was clicked takes Space (it would type into the message box).
+        if key == "space" && plain && self.space_on_media(cx) {
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.composer_key(key, plain, window, cx) {
             cx.stop_propagation();
             cx.notify();

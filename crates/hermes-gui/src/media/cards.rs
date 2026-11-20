@@ -155,6 +155,8 @@ pub struct Media {
     bars: Rc<RefCell<HashMap<BarKey, Bounds<Pixels>>>>,
     /// The video the mouse is over (inline or in the full view), and when it last moved.
     pointer: Option<(BarKey, Instant)>,
+    /// The video last clicked: Space plays and pauses it until something else is pressed (#6).
+    pub focused: Option<(InstanceId, Attachment)>,
 }
 
 impl Media {
@@ -516,6 +518,15 @@ impl Shell {
             item.full = full;
             cx.notify();
         }
+    }
+
+    /// Space on the video last clicked: plays or pauses it. `false` when no video has the keys.
+    pub fn space_on_media(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((inst, attachment)) = self.media.focused.clone() else {
+            return false;
+        };
+        self.media_toggle(inst, attachment, cx);
+        true
     }
 
     /// Closes the full view, if one is open. `false` if none was.
@@ -1528,6 +1539,8 @@ impl Shell {
             })
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.stop_propagation();
+                // Clicked: Space now plays and pauses it.
+                this.media.focused = Some((click_inst.clone(), click_a.clone()));
                 if !this.selection.dragged {
                     this.media_toggle(click_inst.clone(), click_a.clone(), cx);
                 }

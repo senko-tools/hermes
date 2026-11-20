@@ -645,7 +645,11 @@ pub(crate) mod tests {
         assert!(is_svg("application/octet-stream", "Logo.SVG"));
         let picture = decode(svg, Some(200)).expect("an SVG is drawn");
         let size = picture.still.size(0);
-        assert_eq!((size.width.0, size.height.0), (200, 100), "drawn at the asked size");
+        assert_eq!(
+            (size.width.0, size.height.0),
+            (200, 100),
+            "drawn at the asked size"
+        );
     }
 
     #[test]
