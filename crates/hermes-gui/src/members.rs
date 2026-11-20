@@ -125,11 +125,24 @@ impl Shell {
                 }
             }
         }
+        // It widens out of nothing when shown and narrows away when hidden, on a spring.
+        let width = f32::from(self.config.sidebar.member_list_width);
+        let open = !crate::modal::closing("members-panel");
         Some(
             div()
                 .relative()
                 .flex_shrink_0()
                 .h_full()
+                .overflow_hidden()
+                .with_spring(
+                    "members-width",
+                    gpui_kit::SpringAnimation::new(theme::paced(gpui_kit::SpringConfig::new(
+                        420., 32., 1.,
+                    )))
+                    .to(if open { 1. } else { 0. })
+                    .from(0.),
+                    move |d, t: f32| d.w(px(width * t.clamp(0., 1.2))),
+                )
                 .child(
                     div()
                         .id("members")

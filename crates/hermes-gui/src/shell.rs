@@ -925,9 +925,17 @@ impl Shell {
     }
 
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
-        let shown = !self.show_members;
-        self.show_members = shown;
+        // Hidden: it narrows away first; shown again meanwhile: it widens back.
+        let shown = !self.show_members || crate::modal::closing("members-panel");
+        if shown {
+            self.cancel_closing("members-panel");
+            self.show_members = true;
+        } else {
+            self.close_later("members-panel", |s| s.show_members = false, cx);
+        }
         self.set_config(|c| c.sidebar.show_members = shown, cx);
+        // The config says it is hidden at once; the panel still shows while it narrows.
+        self.show_members = shown || crate::modal::closing("members-panel");
     }
 
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
