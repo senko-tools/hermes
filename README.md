@@ -155,6 +155,26 @@ reach it (older apps then fail voice while text still works):
 
 *Settings → Diagnostics* in the app tests HTTPS and voice on each of the server's addresses.
 
+### Console commands
+
+The server reads commands typed into its console (the panel's console, or the terminal it runs
+in). Type `help` for the list. `log` chooses what the console shows while the server runs:
+
+| Command | What it does |
+|---|---|
+| `log` | what is shown now |
+| `log connections on` | every TCP/TLS connection opened and closed, and failed handshakes |
+| `log requests on` | every HTTP request: address, method, path, status, time |
+| `log gateway on` | people's gateway sessions starting, resuming and ending, with their address |
+| `log voice on` | joining and leaving voice channels (nothing about the audio itself) |
+| `log auth on` | sign-ins, refused sign-ins, new accounts, sign-outs |
+| `log all off` | hide every topic (`off` works for each one too) |
+| `log level debug` | the base level: `trace`, `debug`, `info`, `warn`, `error`, or a filter like `info,hermes_server::voice=debug` |
+| `log reset` | back to the config file's settings |
+
+Changes last until the server restarts. `topics` and `level` under `[log]` in `hermes.toml` set
+what shows at start (by default `gateway`, `voice` and `auth`).
+
 ### Way 4: by hand (Linux or Windows)
 
 Good for trying Hermes out. Unlike Way 1 it does not start by itself after a reboot or renew
