@@ -1719,6 +1719,18 @@ impl Shell {
                 )
                 .into_any_element()
         });
+        let mut rows = rows;
+        if manage {
+            rows.push(
+                self.channel_end_drop(
+                    div().id("channel-list-end").h(px(32.)),
+                    inst.clone(),
+                    space,
+                    cx,
+                )
+                .into_any_element(),
+            );
+        }
         let list = side_list("Channels", actions, rows);
         let detail = match page.channel.and_then(|id| s.channel(id)) {
             Some(channel) if channel.space_id == Some(space) => {

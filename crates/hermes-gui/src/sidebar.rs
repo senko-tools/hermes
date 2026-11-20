@@ -997,6 +997,7 @@ impl Shell {
                 let empty = div().id("sidebar-empty").flex_1().min_h(px(48.));
                 match &self.selected {
                     Selected::Space(inst, space) => {
+                        let empty = self.channel_end_drop(empty, inst.clone(), *space, cx);
                         self.with_menu(empty, Target::ChannelArea(inst.clone(), *space), cx)
                     }
                     Selected::Home => self.with_instances_menu(empty, cx),
@@ -1722,6 +1723,59 @@ impl Shell {
                     .map_or(Place::Before, |(_, place)| place);
                 if dragged.can_drop_on(&target) {
                     this.drop_item(dragged.clone(), target.clone(), place, cx);
+                }
+                cx.notify();
+            }))
+    }
+
+    /// The space under a channel list: a channel dropped there goes last, after everything
+    /// (also after an open category, which a drop on its rows cannot reach). An accent line
+    /// along its top shows it while one is dragged over it.
+    pub(crate) fn channel_end_drop(
+        &self,
+        element: Stateful<Div>,
+        inst: InstanceId,
+        space: Id,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let fits = {
+            let inst = inst.clone();
+            move |dragged: &Item| {
+                dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
+            }
+        };
+        let fits_drop = fits.clone();
+        element
+            // Over here, no row shows where it would land: only this line.
+            .on_drag_move::<Item>(cx.listener(|this, ev: &DragMoveEvent<Item>, _, cx| {
+                if ev.bounds.contains(&ev.event.position) && this.drop_at.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .drag_over::<Item>(move |style, dragged, _, _| {
+                if fits(dragged) {
+                    style.border_t_2().border_color(theme::accent())
+                } else {
+                    style
+                }
+            })
+            .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
+                if !fits_drop(dragged) {
+                    return;
+                }
+                // After the last thing at the top level, whatever it is.
+                let last = this.core.store().instance(&inst).and_then(|s| {
+                    view::channel_tree(s, space)
+                        .into_iter()
+                        .rfind(|c| c.depth == 0)
+                        .map(|c| c.id)
+                });
+                if let Some(last) = last.filter(|last| *last != dragged.id) {
+                    let target = Item {
+                        id: last,
+                        ..dragged.clone()
+                    };
+                    this.drop_item(dragged.clone(), target, Place::After, cx);
                 }
                 cx.notify();
             }))
