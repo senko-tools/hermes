@@ -12,7 +12,7 @@ use hermes_proto::api::{
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    CurrentUser, Message, NotificationSetting, PrivacySettings, RelationshipKind,
+    CurrentUser, Message, NotificationSetting, PrivacySettings, RelationshipKind, User,
 };
 use hermes_proto::permissions::Permissions;
 use sqlx::SqliteConnection;
@@ -33,6 +33,20 @@ pub async fn me(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<Jso
         .get(&auth.user_id)
         .map(|u| Json(CachedUser::current_user(u)))
         .ok_or_else(|| Error::internal("authenticated user missing from the cache"))
+}
+
+fn publish_user_update(state: &AppState, user: &User) {
+    let audience = {
+        let mut cache = state.cache_mut();
+        if let Some(cached) = cache.users.get_mut(&user.id) {
+            cached.user = user.clone();
+        }
+        cache.profile_audience(user.id)
+    };
+    state.publish(
+        ServerEvent::UserUpdate(user.clone()),
+        Audience::Users(audience.into_iter().collect()),
+    );
 }
 
 /// Changes the password and revokes every other session of the user.
@@ -121,17 +135,7 @@ pub async fn change_username(
     let mut tx = state.db.write.begin().await?;
     set_handle(&mut tx, auth.user_id, &user.handle()).await?;
     tx.commit().await?;
-    let audience = {
-        let mut cache = state.cache_mut();
-        if let Some(cached) = cache.users.get_mut(&auth.user_id) {
-            cached.user = user.clone();
-        }
-        cache.profile_audience(auth.user_id)
-    };
-    state.publish(
-        ServerEvent::UserUpdate(user.clone()),
-        Audience::Users(audience.into_iter().collect()),
-    );
+    publish_user_update(&state, &user);
     Ok(Json(CurrentUser {
         user,
         instance_admin,
@@ -229,17 +233,7 @@ pub async fn update_me(
         let mut tx = state.db.write.begin().await?;
         db::users::update_profile(&mut tx, &user).await?;
         tx.commit().await?;
-        let audience = {
-            let mut cache = state.cache_mut();
-            if let Some(cached) = cache.users.get_mut(&auth.user_id) {
-                cached.user = user.clone();
-            }
-            cache.profile_audience(auth.user_id)
-        };
-        state.publish(
-            ServerEvent::UserUpdate(user.clone()),
-            Audience::Users(audience.into_iter().collect()),
-        );
+        publish_user_update(&state, &user);
     }
     Ok(Json(CurrentUser {
         user,
