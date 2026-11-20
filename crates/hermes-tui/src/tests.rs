@@ -1,19 +1,17 @@
 //! End-to-end: the TUI adds an instance from an invite link, creates the owner account, opens
 //! `#general`, sends a message and renders it, all against a real `hermes-server`.
 
-use std::time::Duration;
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use hermes_client_core::config::ClientConfig;
-use hermes_client_core::{Core, CoreEvents, CoreOptions};
+use hermes_client_core::{Core, CoreOptions};
 use hermes_server::config::RegistrationMode;
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
 use tokio::sync::mpsc;
 
-use crate::app::{App, Mode, Popup, SidebarItem, TaskMsg};
+use crate::app::{App, Mode, Popup, SidebarItem};
 use crate::commands::Command;
-use crate::ui;
+use crate::test_support::{pump, screen};
+
+const SCREEN_WIDTH: u16 = 110;
 
 /// A server from `hermes_server::testing`.
 struct Server {
@@ -43,43 +41,6 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
-/// Feeds core events and task results to the app until `done` holds.
-async fn pump(
-    app: &mut App,
-    events: &mut CoreEvents,
-    tasks: &mut mpsc::UnboundedReceiver<TaskMsg>,
-    what: &str,
-    done: impl Fn(&App) -> bool,
-) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while !done(app) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out: {what} (status: {:?})",
-            app.status
-        );
-        tokio::select! {
-            Some(e) = events.recv() => app.on_core_event(e),
-            Some(m) = tasks.recv() => app.on_task(m),
-            () = tokio::time::sleep(Duration::from_millis(20)) => {}
-        }
-    }
-}
-
-fn screen(app: &mut App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
-    terminal.draw(|f| ui::draw(f, app)).unwrap();
-    let buffer = terminal.backend().buffer();
-    let mut out = String::new();
-    for y in 0..buffer.area.height {
-        for x in 0..buffer.area.width {
-            out.push_str(buffer[(x, y)].symbol());
-        }
-        out.push('\n');
-    }
-    out
-}
-
 #[tokio::test]
 async fn invite_sign_up_open_channel_and_send() {
     let server = start("e2e").await;
@@ -89,7 +50,7 @@ async fn invite_sign_up_open_channel_and_send() {
     );
     let (tx, mut tasks) = mpsc::unbounded_channel();
     let mut app = App::new(core, tx, 0);
-    assert!(screen(&mut app).contains(":instance add"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains(":instance add"));
 
     // The invite carries the fingerprint, so no trust prompt: straight to the account form.
     app.run(Command::AddInstance(server.link.clone()));
@@ -101,7 +62,7 @@ async fn invite_sign_up_open_channel_and_send() {
         unreachable!()
     };
     assert!(form.register, "an invite link starts with account creation");
-    assert!(screen(&mut app).contains("Create an account"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains("Create an account"));
     type_text(&mut app, "alice");
     app.on_key(key(KeyCode::Enter));
     type_text(&mut app, "correct horse");
@@ -149,7 +110,7 @@ async fn invite_sign_up_open_channel_and_send() {
         },
     )
     .await;
-    let text = screen(&mut app);
+    let text = screen(&mut app, SCREEN_WIDTH);
     assert!(text.contains("hello from the TUI"), "{text}");
     assert!(text.contains("#general — Friends"), "{text}");
     assert!(text.contains("alice"), "{text}");
@@ -169,7 +130,7 @@ async fn invite_sign_up_open_channel_and_send() {
             .is_some_and(|w| w.messages.iter().any(|m| m.content.contains("(ツ)")))
     })
     .await;
-    let text = screen(&mut app);
+    let text = screen(&mut app, SCREEN_WIDTH);
     assert!(text.contains("¯\\_(ツ"), "{text}");
 }
 
@@ -209,7 +170,7 @@ async fn menus_search_and_space_commands() {
     };
     assert_eq!(items[0].0, "Open");
     assert!(items.iter().any(|(l, _)| l == "Mute"));
-    assert!(screen(&mut app).contains("Enter: do it"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains("Enter: do it"));
     app.on_key(key(KeyCode::Enter));
     assert!(app.popup.is_none());
     let (inst, channel) = app.current.clone().expect("opened");

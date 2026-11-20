@@ -2,6 +2,8 @@
 //! "Client core"): probing and pinning, register/login, the gateway, optimistic sending,
 //! notifications, the offline queue with resume, and logout on a revoked session.
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,7 +17,7 @@ use hermes_client_core::{
     CertStatus, Core, CoreError, CoreEvent, CoreEvents, CoreOptions, Draft, InstanceId,
 };
 
-const WAIT: Duration = Duration::from_secs(15);
+use common::{WAIT, wait_for};
 
 /// A server from `hermes_server::testing`, with what these tests use of its invite link.
 struct TestServer {
@@ -58,19 +60,6 @@ fn core() -> (Core, CoreEvents) {
 }
 
 /// Waits for an event matching `f`, skipping others.
-async fn wait_for(events: &mut CoreEvents, what: &str, mut f: impl FnMut(&CoreEvent) -> bool) {
-    let result = tokio::time::timeout(WAIT, async {
-        while let Some(event) = events.recv().await {
-            if f(&event) {
-                return;
-            }
-        }
-        panic!("event stream ended");
-    })
-    .await;
-    assert!(result.is_ok(), "timed out waiting for {what}");
-}
-
 async fn wait_status(events: &mut CoreEvents, inst: &str, want: ConnStatus) {
     wait_for(events, &format!("{want:?}"), |e| {
         matches!(e, CoreEvent::InstanceStatus { inst: i, status } if i == inst && *status == want)

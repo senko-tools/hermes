@@ -2,6 +2,8 @@
 //! between two clients on virtual devices, speaking events, per-user volume, mute, switching,
 //! leaving, being disconnected, and reconnecting after a lost connection.
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,7 +16,7 @@ use hermes_client_core::voice::ScreenFrame;
 use hermes_client_core::{Core, CoreEvent, CoreEvents, CoreOptions, InstanceId, VoiceStatus};
 use hermes_server::config::Config;
 
-const WAIT: Duration = Duration::from_secs(15);
+use common::{WAIT, wait_for};
 
 /// A server with voice from `hermes_server::testing`, with what these tests use of its
 /// invite link.
@@ -98,19 +100,6 @@ fn core(device: &Device) -> (Core, CoreEvents) {
         phase: 0,
     }));
     Core::new(config, options)
-}
-
-async fn wait_for(events: &mut CoreEvents, what: &str, mut f: impl FnMut(&CoreEvent) -> bool) {
-    let result = tokio::time::timeout(WAIT, async {
-        while let Some(event) = events.recv().await {
-            if f(&event) {
-                return;
-            }
-        }
-        panic!("event stream ended");
-    })
-    .await;
-    assert!(result.is_ok(), "timed out waiting for {what}");
 }
 
 async fn sign_up(
