@@ -53,7 +53,7 @@ impl Shell {
         let text = dialog.input.read(cx).value().to_string();
         let ids = match self.core.store().instance(&inst) {
             Some(store) => resolve(store, &text),
-            None => Err("Not connected to this instance.".into()),
+            None => Err("Not connected to this account.".into()),
         };
         let ids = match ids {
             Ok(ids) => ids,

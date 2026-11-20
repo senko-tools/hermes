@@ -129,7 +129,7 @@ impl Shell {
                     },
                     |this, result, _, cx| match result {
                         Ok(Some(link)) => this.copy(link, "Invite link", cx),
-                        Ok(None) => this.error("no such instance", cx),
+                        Ok(None) => this.error("no such account", cx),
                         Err(err) => this.error(format!("could not create an invite: {err}"), cx),
                     },
                 );

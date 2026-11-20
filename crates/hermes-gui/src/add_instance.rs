@@ -406,7 +406,7 @@ impl Shell {
         let spacer = || div().flex_1();
         match &dialog_state.step {
             Step::Address => {
-                body.push(heading("Add an instance").into_any_element());
+                body.push(heading("Add an account").into_any_element());
                 body.push(paragraph("Paste an invite link or an address.").into_any_element());
                 body.push(Input::new(&dialog_state.address).large().into_any_element());
                 body.extend(
@@ -547,7 +547,7 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child("This instance only accepts new accounts with an invite link.")
+                            .child("This address only accepts new accounts with an invite link.")
                             .into_any_element(),
                     );
                 }

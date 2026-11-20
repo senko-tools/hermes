@@ -1079,7 +1079,7 @@ impl Shell {
             return vec![
                 crate::ui::list_row(self, "add-instance", false, theme::ROW_HEIGHT, cx)
                     .child(icon(assets::PLUS, theme::ROW_ICON, theme::text_secondary()))
-                    .child("Add an instance")
+                    .child("Add an account")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_add_instance(String::new(), window, cx);
                     }))
@@ -1866,7 +1866,7 @@ impl Shell {
             .collect();
         let look = ConnLook::of(&states);
         let tip: SharedString = if instances.is_empty() {
-            "No instance".into()
+            "No account".into()
         } else {
             instances
                 .iter()

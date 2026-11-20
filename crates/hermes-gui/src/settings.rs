@@ -83,7 +83,7 @@ const SECTIONS: [(&str, &[NavTab]); 4] = [
         "Advanced",
         &[
             (Tab::Diagnostics, assets::PULSE, "Diagnostics"),
-            (Tab::Admin, assets::SERVER, "Instance"),
+            (Tab::Admin, assets::SERVER, "Administration"),
         ],
     ),
 ];
@@ -1060,16 +1060,78 @@ impl Shell {
         ))
     }
 
+    /// Every account (an instance signed in to), with signing in and out, going offline and
+    /// removing it, and adding another: these left the menus (#17).
+    fn accounts_group(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::menu_entries::{Action as MenuAction, Target};
+        use hermes_client_core::gateway::ConnStatus;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for inst in self.core.instance_ids() {
+            let status = self.core.status(&inst);
+            let username = self
+                .config
+                .instances
+                .iter()
+                .find(|e| e.id == inst)
+                .map(|e| e.username.clone())
+                .unwrap_or_default();
+            let hint = match &status {
+                ConnStatus::Connected => format!("Signed in as @{username}"),
+                ConnStatus::Connecting | ConnStatus::Reconnecting { .. } => {
+                    "Connecting…".to_owned()
+                }
+                ConnStatus::Offline => "Offline".to_owned(),
+                ConnStatus::LoggedOut => "Signed out".to_owned(),
+                _ => "Not connected".to_owned(),
+            };
+            let button = |label: &'static str, action: Option<MenuAction>, danger: bool| {
+                let inst = inst.clone();
+                Button::new(SharedString::from(format!("account-{inst}-{label}")))
+                    .cursor_pointer()
+                    .small()
+                    .label(label)
+                    .when(danger, |b| b.danger())
+                    .on_click(cx.listener(move |this, _, window, cx| match action {
+                        Some(action) => {
+                            this.menu_action(Target::Instance(inst.clone()), action, window, cx)
+                        }
+                        None => this.sign_in(&inst, window, cx),
+                    }))
+            };
+            let mut buttons = div().flex().flex_wrap().justify_end().gap(px(6.));
+            buttons = match status {
+                ConnStatus::LoggedOut => buttons.child(button("Sign in", None, false)),
+                ConnStatus::Offline => {
+                    buttons.child(button("Go online", Some(MenuAction::GoOnline), false))
+                }
+                _ => buttons
+                    .child(button("Reconnect", Some(MenuAction::Reconnect), false))
+                    .child(button("Go offline", Some(MenuAction::GoOffline), false)),
+            };
+            if status != ConnStatus::LoggedOut {
+                buttons = buttons.child(button("Sign out", Some(MenuAction::LogOut), false));
+            }
+            buttons = buttons.child(button("Remove", Some(MenuAction::RemoveInstance), true));
+            rows.push(setting(&inst, &hint, buttons));
+        }
+        rows.push(setting(
+            "Another account",
+            "Sign in with a Hermes address, or paste an invite link.",
+            Button::new("accounts-add")
+                .cursor_pointer()
+                .small()
+                .label("Add an account")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_add_instance(String::new(), window, cx);
+                })),
+        ));
+        group("Accounts", rows)
+    }
+
     fn tab_account(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let instances = self.core.instance_ids();
         if instances.is_empty() {
-            return page_body(
-                "Account",
-                None,
-                vec![muted(
-                    "Add an instance first: your account lives on a server.",
-                )],
-            );
+            return page_body("Account", None, vec![self.accounts_group(cx)]);
         }
         let selected = self.account_instance();
         let me = {
@@ -1092,14 +1154,18 @@ impl Shell {
                 )
             });
             account_rows.push(setting(
-                "Instance",
-                "Each server has its own account.",
+                "Account",
+                "Which account these settings are for.",
                 wrap().children(chips),
             ));
         }
         let Some(me) = me else {
-            account_rows.push(muted("Not signed in to this instance."));
-            return page_body("Account", None, vec![group("Account", account_rows)]);
+            account_rows.push(muted("Not signed in."));
+            return page_body(
+                "Account",
+                None,
+                vec![group("Account", account_rows), self.accounts_group(cx)],
+            );
         };
         let inst = selected.clone().unwrap_or_default();
         let mut hint = format!(
@@ -1113,7 +1179,7 @@ impl Shell {
                 .unwrap_or_default()
         );
         if me.instance_admin {
-            hint.push_str(" · instance admin");
+            hint.push_str(" · administrator");
         }
         let username_inst = inst.clone();
         let copy_handle = me.user.handle();
@@ -1316,6 +1382,7 @@ impl Shell {
                 group("Account", account_rows),
                 group("Signed-in devices", device_rows),
                 self.security_group(page, &inst, cx),
+                self.accounts_group(cx),
             ],
         )
     }
@@ -1987,7 +2054,7 @@ impl Shell {
     fn tab_admin(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         use hermes_client_core::proto::api::{AdminSettings, RegistrationMode as Mode};
         let Some(inst) = self.account_instance() else {
-            return muted("Add an instance first.");
+            return muted("Add an account first.");
         };
         let current = page.admin_settings.map(|s| s.registration_mode);
         let chips = [

@@ -74,6 +74,8 @@ fn lookup<T: Copy>(table: &[(&'static str, T)], label: &str) -> Option<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Purpose {
     CreateSpace(InstanceId),
+    /// Joining a server with an invite link (#17).
+    JoinServer,
     /// A text or voice channel, at the top level or in a category.
     CreateChannel {
         inst: InstanceId,
@@ -378,6 +380,16 @@ impl Shell {
             .text("A server is a home for your group, with its own channels, roles and members.");
         self.close_later("form", |s| s.form = None, cx);
         let built = Self::fields(form, window, cx).text("Name", "e.g. Friends", "");
+        self.finish(built);
+    }
+
+    /// Join a server with an invite someone sent: on the account it is for, or adding that
+    /// account first.
+    pub fn open_form_join_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let form = Form::new(Purpose::JoinServer, "Join a server", "Join")
+            .text("Paste the invite link someone sent you.");
+        self.close_later("form", |s| s.form = None, cx);
+        let built = Self::fields(form, window, cx).text("Invite link", "https://…/invite/…", "");
         self.finish(built);
     }
 
@@ -816,7 +828,7 @@ impl Shell {
     pub fn open_form_add_friend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let instances = self.core.instance_ids();
         if instances.is_empty() {
-            self.error("Add an instance first", cx);
+            self.error("Add an account first", cx);
             return;
         }
         let form = Form::new(Purpose::AddFriend, "Add a friend", "Send request")
@@ -824,7 +836,7 @@ impl Shell {
         let mut fields = Self::fields(form, window, cx).text("Name", "name#1234", "");
         if instances.len() > 1 {
             let options: Vec<&str> = instances.iter().map(String::as_str).collect();
-            fields = fields.choice("Instance", "", &options, &instances[0]);
+            fields = fields.choice("Account", "", &options, &instances[0]);
         }
         self.finish(fields);
     }
@@ -1066,6 +1078,33 @@ impl Shell {
     fn start_submit(&mut self, form: &Form, cx: &mut Context<Self>) -> Result<(), String> {
         let core = self.core.clone();
         match form.purpose.clone() {
+            Purpose::JoinServer => {
+                let text = form.required(0, "an invite link", cx)?;
+                let link = hermes_client_core::address::InviteLink::parse(&text)
+                    .map_err(|e| e.to_string())?;
+                let account = self
+                    .config
+                    .instances
+                    .iter()
+                    .find(|e| e.url == link.host)
+                    .map(|e| e.id.clone());
+                match account {
+                    Some(inst) => {
+                        let code = link.code.clone();
+                        self.form_call(cx, async move {
+                            let joined = core.join_invite(&inst, &code).await?;
+                            Ok(format!("Joined {}", joined.space.name))
+                        });
+                    }
+                    // An address without an account here yet: adding it joins too.
+                    None => {
+                        self.close_later("form", |s| s.form = None, cx);
+                        self.run(cx, async {}, move |this, (), window, cx| {
+                            this.open_add_instance(text.clone(), window, cx);
+                        });
+                    }
+                }
+            }
             Purpose::CreateSpace(inst) => {
                 let name = form.required(0, "a name", cx)?;
                 self.form_call(cx, async move {
@@ -1263,7 +1302,7 @@ impl Shell {
                             this.copy(link, "Invite link", cx);
                             this.invite_created(inst, space, cx);
                         }
-                        Ok(None) => this.form_done(Err("no such instance".into()), cx),
+                        Ok(None) => this.form_done(Err("no such account".into()), cx),
                         Err(err) => this.form_done(Err(err.to_string()), cx),
                     },
                 );

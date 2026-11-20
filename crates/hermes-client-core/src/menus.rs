@@ -186,7 +186,7 @@ impl Action {
             Action::CreateSpace => "Create a server…",
             Action::EditProfile => "Edit profile…",
             Action::LogOut => "Log out",
-            Action::RemoveInstance => "Remove instance",
+            Action::RemoveInstance => "Remove account",
             Action::SpaceSettings => "Server settings",
             Action::CreateChannel => "Create channel…",
             Action::CreateCategory => "Create category…",

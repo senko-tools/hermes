@@ -535,7 +535,7 @@ pub fn entries(
         command: Command::LeaveVoice,
     });
     out.push(Entry {
-        label: "Add an instance".into(),
+        label: "Add an account".into(),
         detail: String::new(),
         command: Command::AddInstance,
     });

@@ -357,9 +357,10 @@ impl Shell {
             }));
             lines.push(Line::Separator);
         }
-        // The user panel's menu is also a way to the instances, which the sidebar hides.
-        if matches!(target, Target::Me(_) | Target::Instances) {
-            lines.extend(self.instance_lines());
+        // The rail's plus and empty space: making or joining a server, or adding an account.
+        // The accounts themselves are in Settings > Account (#17).
+        if matches!(target, Target::Instances) {
+            lines.extend(self.server_lines());
         }
         for line in entry_lines(target, &entries) {
             match line {
@@ -377,42 +378,53 @@ impl Shell {
     }
 
     /// "Add an instance", and the actions of each saved instance.
-    fn instance_lines(&self) -> Vec<Line> {
-        let mut lines = vec![Line::Item {
-            label: "Add an instance…".into(),
+    /// Create a server (on the one account, or choosing one), join a server with an invite,
+    /// add an account.
+    fn server_lines(&self) -> Vec<Line> {
+        let connected: Vec<hermes_client_core::InstanceId> = self
+            .core
+            .instance_ids()
+            .into_iter()
+            .filter(|inst| self.core.status(inst) == ConnStatus::Connected)
+            .collect();
+        let create = |inst: hermes_client_core::InstanceId| -> RunLine {
+            Rc::new(move |this, window, cx| this.open_form_create_space(inst.clone(), window, cx))
+        };
+        let mut lines = Vec::new();
+        match connected.as_slice() {
+            [] => {}
+            [only] => lines.push(Line::Item {
+                label: "Create a server…".into(),
+                checked: false,
+                danger: false,
+                run: create(only.clone()),
+            }),
+            several => lines.push(Line::Submenu {
+                label: "Create a server".into(),
+                lines: several
+                    .iter()
+                    .map(|inst| Line::Item {
+                        label: format!("On {inst}…").into(),
+                        checked: false,
+                        danger: false,
+                        run: create(inst.clone()),
+                    })
+                    .collect(),
+            }),
+        }
+        lines.push(Line::Item {
+            label: "Join a server…".into(),
+            checked: false,
+            danger: false,
+            run: Rc::new(|this, window, cx| this.open_form_join_server(window, cx)),
+        });
+        lines.push(Line::Separator);
+        lines.push(Line::Item {
+            label: "Add an account…".into(),
             checked: false,
             danger: false,
             run: Rc::new(|this, window, cx| this.open_add_instance(String::new(), window, cx)),
-        }];
-        for inst in self.core.instance_ids() {
-            let status = self.core.status(&inst);
-            let mut inside = Vec::new();
-            if status == ConnStatus::LoggedOut {
-                let sign_in = inst.clone();
-                inside.push(Line::Item {
-                    label: "Sign in…".into(),
-                    checked: false,
-                    danger: false,
-                    run: Rc::new(move |this, window, cx| this.sign_in(&sign_in, window, cx)),
-                });
-            }
-            let target = Target::Instance(inst.clone());
-            let entries = {
-                let store = self.core.store();
-                menu_entries::entries_with(
-                    &target,
-                    &status,
-                    store.instance(&inst),
-                    menu_entries::Extra::default(),
-                )
-            };
-            inside.extend(entry_lines(&target, &entries));
-            lines.push(Line::Submenu {
-                label: inst.into(),
-                lines: inside,
-            });
-        }
-        lines.push(Line::Separator);
+        });
         lines
     }
 

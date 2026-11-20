@@ -220,12 +220,12 @@ impl Shell {
                 div()
                     .text_size(theme::body_size())
                     .text_color(theme::text_secondary())
-                    .child("Add a server by its address, or paste an invite link."),
+                    .child("Sign in with a Hermes address, or paste an invite link."),
             )
             .child(
                 gpui_kit::component::button::Button::new("welcome-add")
                     .cursor_pointer()
-                    .label("Add an instance")
+                    .label("Add an account")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_add_instance(String::new(), window, cx);
                     })),
@@ -275,7 +275,7 @@ impl Shell {
                 FriendsTab::People => (
                     assets::SERVER,
                     "Nobody here yet",
-                    "Add an instance to get started.",
+                    "Add an account to get started.",
                 ),
             };
             content.push(theme::empty_state(
