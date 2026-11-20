@@ -342,6 +342,12 @@ impl ChatView {
 }
 
 /// Whether an attachment is shown as an inline image.
+/// A video whose sender sent a picture of it: shown before it loads (#8).
+pub fn has_poster(a: &Attachment) -> bool {
+    crate::media::is_video(&a.content_type, &a.filename)
+        && (a.has_thumb || a.sealed.as_ref().is_some_and(|s| s.thumb.is_some()))
+}
+
 pub fn is_image(a: &Attachment) -> bool {
     // An SVG has no thumbnail: its original is drawn (#5).
     crate::images::is_svg(&a.content_type, &a.filename)
@@ -1660,11 +1666,12 @@ impl Shell {
                 // A picture's size, a sound's waveform and a video's length go with it.
                 let file = path.clone();
                 let info = tokio::task::spawn_blocking(move || {
-                    let (waveform, duration_ms) = crate::media::measure_file(&file);
+                    let measured = crate::media::measure_file(&file);
                     hermes_client_core::secure::FileInfo {
-                        size: image::image_dimensions(&file).ok(),
-                        waveform,
-                        duration_ms,
+                        size: image::image_dimensions(&file).ok().or(measured.size),
+                        poster: measured.poster,
+                        waveform: measured.waveform,
+                        duration_ms: measured.duration_ms,
                     }
                 })
                 .await
@@ -3041,7 +3048,10 @@ impl Shell {
             message
                 .attachments
                 .iter()
-                .filter(|a| is_image(a) && !self.images.thumbs.contains_key(&(key.0.clone(), a.id)))
+                .filter(|a| {
+                    (is_image(a) || has_poster(a))
+                        && !self.images.thumbs.contains_key(&(key.0.clone(), a.id))
+                })
                 .cloned()
                 .collect()
         };

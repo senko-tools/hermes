@@ -527,11 +527,10 @@ impl Core {
                 .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?
                 .len();
             refusal(size)?;
-            return self
-                .upload_measured(inst, path, info.waveform.as_deref(), info.duration_ms)
-                .await;
+            return self.upload_with_info(inst, path, &info).await;
         }
         let size = info.size;
+        let poster = info.poster.clone();
         // Sound and video are compressed already: never zstd them, so they are sealed in pieces
         // and play while they download (#7). A file that zstd shrank by a few percent had to be
         // downloaded whole before it could start.
@@ -548,7 +547,8 @@ impl Core {
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
         let (sealed, key, nonce, plain_size, compression, preview, chunk_size) =
             tokio::task::spawn_blocking(move || {
-                let preview = match crate::compress::preview(&bytes) {
+                // A video's poster stands as its preview; a picture gets a small copy.
+                let preview = match poster.or_else(|| crate::compress::preview(&bytes)) {
                     Some(preview) => Some(e2ee::seal_file(&preview)?),
                     None => None,
                 };
@@ -831,8 +831,10 @@ pub(crate) fn keys_of(keys: &AccountKeys, users: &[Id]) -> ConversationKeys {
 /// What the uploader knows of a file beyond its bytes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FileInfo {
-    /// Its pixels, if it is a picture.
+    /// Its pixels, if it is a picture or a video.
     pub size: Option<(u32, u32)>,
+    /// A video's poster: one of its pictures as a PNG, shown before it loads (#8).
+    pub poster: Option<Vec<u8>>,
     /// A sound's loudness, a byte per bar, and how long a sound or video lasts.
     pub waveform: Option<Vec<u8>>,
     pub duration_ms: Option<u64>,

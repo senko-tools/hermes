@@ -1347,3 +1347,42 @@ async fn encrypted_channels_are_searched_on_the_device() {
         Vec::<String>::new()
     );
 }
+
+#[tokio::test]
+async fn a_video_is_sent_with_its_size_and_poster() {
+    let server = start("video-poster").await;
+    let (alice, mut events) = core();
+    let a = sign_up(
+        &server,
+        &alice,
+        &mut events,
+        "alice",
+        Some(&server.setup_code),
+    )
+    .await;
+    let path = server.dir.join("clip.mp4");
+    std::fs::write(&path, noise(4096)).unwrap();
+    let mut poster = std::io::Cursor::new(Vec::new());
+    image::RgbImage::from_pixel(48, 64, image::Rgb([200, 120, 40]))
+        .write_to(&mut poster, image::ImageFormat::Png)
+        .unwrap();
+    let info = hermes_client_core::secure::FileInfo {
+        size: Some((720, 1280)),
+        poster: Some(poster.into_inner()),
+        waveform: None,
+        duration_ms: Some(4000),
+    };
+    let attachment = alice.upload_with_info(&a, &path, &info).await.unwrap();
+    assert_eq!(
+        (attachment.width, attachment.height),
+        (Some(720), Some(1280))
+    );
+    assert!(attachment.has_thumb, "the poster was kept");
+    let thumb = alice
+        .rest(&a)
+        .unwrap()
+        .thumbnail(attachment.id)
+        .await
+        .unwrap();
+    assert!(image::load_from_memory(&thumb).is_ok());
+}

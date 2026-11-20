@@ -2115,16 +2115,17 @@ impl Core {
 
     /// Uploads a file; attach the result to a [`Draft`].
     pub async fn upload(&self, inst: &str, path: &Path) -> Result<Attachment> {
-        self.upload_measured(inst, path, None, None).await
+        self.upload_with_info(inst, path, &crate::secure::FileInfo::default())
+            .await
     }
 
-    /// [`Core::upload`] with what was measured of a sound or video.
-    pub async fn upload_measured(
+    /// [`Core::upload`] with what was measured of it: a sound's waveform, a length, a video's
+    /// size and poster. A poster the server will not take is left out (an older server).
+    pub async fn upload_with_info(
         &self,
         inst: &str,
         path: &Path,
-        waveform: Option<&[u8]>,
-        duration_ms: Option<u64>,
+        info: &crate::secure::FileInfo,
     ) -> Result<Attachment> {
         let bytes = tokio::fs::read(path)
             .await
@@ -2133,10 +2134,22 @@ impl Core {
             .file_name()
             .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
         let content_type = content_type(&filename);
-        Ok(self
-            .rest(inst)?
-            .upload_measured(&filename, content_type, bytes, waveform, duration_ms)
-            .await?)
+        let rest = self.rest(inst)?;
+        let measured = crate::rest::Measured {
+            waveform: info.waveform.as_deref(),
+            duration_ms: info.duration_ms,
+            size: info.size.filter(|_| content_type.starts_with("video/")),
+        };
+        let mut attachment = rest
+            .upload_measured(&filename, content_type, bytes, measured)
+            .await?;
+        if let Some(poster) = info.poster.clone() {
+            match rest.set_poster(attachment.id, poster).await {
+                Ok(()) => attachment.has_thumb = true,
+                Err(err) => tracing::debug!("poster of {filename} not kept: {err}"),
+            }
+        }
+        Ok(attachment)
     }
 
     /// Expires typing indicators every second and trims idle message windows every minute.

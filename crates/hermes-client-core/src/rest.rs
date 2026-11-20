@@ -110,6 +110,16 @@ impl From<Error> for String {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What an uploader measured of a sound or video, sent with it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Measured<'a> {
+    /// A sound's loudness, a byte per bar.
+    pub waveform: Option<&'a [u8]>,
+    pub duration_ms: Option<u64>,
+    /// A video's picture size.
+    pub size: Option<(u32, u32)>,
+}
+
 fn network(err: reqwest::Error) -> Error {
     // The full chain names the real cause (e.g. a fingerprint mismatch inside the TLS error).
     let mut text = err.to_string();
@@ -1024,19 +1034,23 @@ impl Rest {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Result<Attachment> {
-        self.upload_measured(filename, content_type, bytes, None, None)
+        self.upload_measured(filename, content_type, bytes, Measured::default())
             .await
     }
 
-    /// An upload with what was measured of a sound or video: its waveform and length.
+    /// An upload with what was measured of a sound or video.
     pub async fn upload_measured(
         &self,
         filename: &str,
         content_type: &str,
         bytes: Vec<u8>,
-        waveform: Option<&[u8]>,
-        duration_ms: Option<u64>,
+        measured: Measured<'_>,
     ) -> Result<Attachment> {
+        let Measured {
+            waveform,
+            duration_ms,
+            size,
+        } = measured;
         let mut req = self
             .request(Method::POST, "/attachments")
             .timeout(UPLOAD_TIMEOUT)
@@ -1049,7 +1063,21 @@ impl Rest {
         if let Some(ms) = duration_ms {
             req = req.header("x-duration-ms", ms.to_string());
         }
+        if let Some((width, height)) = size {
+            req = req
+                .header("x-width", width.to_string())
+                .header("x-height", height.to_string());
+        }
         Self::json(req.body(bytes)).await
+    }
+
+    /// Sends a video's poster (a picture of it), as its uploader.
+    pub async fn set_poster(&self, attachment: Id, picture: Vec<u8>) -> Result<()> {
+        let req = self
+            .request(Method::PUT, &format!("/attachments/{attachment}/thumb"))
+            .timeout(UPLOAD_TIMEOUT)
+            .body(picture);
+        Self::send(req).await.map(|_| ())
     }
 
     pub async fn download(&self, attachment: Id, filename: &str) -> Result<Vec<u8>> {

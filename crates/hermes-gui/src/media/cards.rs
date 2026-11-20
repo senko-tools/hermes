@@ -1568,8 +1568,11 @@ impl Shell {
             (_, Some(w), Some(h)) => Some((w, h, 0.)),
             _ => None,
         };
-        let (w, h) = shape.map_or((VIDEO_W, VIDEO_W * 9. / 16.), |(w, h, _)| {
-            let (w, h) = fit((w, h), (VIDEO_W, VIDEO_H));
+        // The box follows the "Size of pictures and videos" setting, as the player does.
+        let scale = crate::channel::media_scale();
+        let (box_w, box_h) = (VIDEO_W * scale, VIDEO_H * scale);
+        let (w, h) = shape.map_or((box_w, box_w * 9. / 16.), |(w, h, _)| {
+            let (w, h) = fit((w, h), (box_w, box_h));
             (w.max(240.), h.max(135.))
         });
         let card = div()
@@ -1616,19 +1619,45 @@ impl Shell {
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
                 let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-                card.child(
-                    play_button(
-                        SharedString::from(format!("play-{}", a.id)),
-                        false,
-                        loading,
-                        56.,
+                // Its poster, under the play button, until it plays (#8).
+                let poster = match self.images.thumbs.get(&key) {
+                    Some(crate::images::Img::Ready(picture)) => Some(
+                        img(picture.still.clone())
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Cover),
+                    ),
+                    _ => None,
+                };
+                let length = a.duration_ms.map(|ms| {
+                    div()
+                        .absolute()
+                        .right(px(8.))
+                        .bottom(px(8.))
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(theme::radius_small())
+                        .bg(theme::scrim())
+                        .text_size(theme::caption_size())
+                        .text_color(gpui_kit::rgb(0xffffff))
+                        .child(clock(ms))
+                });
+                card.children(poster)
+                    .children(length)
+                    .child(
+                        play_button(
+                            SharedString::from(format!("play-{}", a.id)),
+                            false,
+                            loading,
+                            56.,
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
+                        })),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.media_toggle(toggle_inst.clone(), toggle_a.clone(), cx);
-                    })),
-                )
-                .child(self.video_top(inst, Some(place), a))
+                    .child(self.video_top(inst, Some(place), a))
             }
         };
         let element = self.with_volume_wheel(element, &key, cx);
