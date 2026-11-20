@@ -343,7 +343,9 @@ impl ChatView {
 
 /// Whether an attachment is shown as an inline image.
 pub fn is_image(a: &Attachment) -> bool {
-    (a.has_thumb || a.sealed.is_some()) && a.content_type.starts_with("image/")
+    // An SVG has no thumbnail: its original is drawn (#5).
+    crate::images::is_svg(&a.content_type, &a.filename)
+        || ((a.has_thumb || a.sealed.is_some()) && a.content_type.starts_with("image/"))
 }
 
 /// The size an inline image is shown at: scaled into 400×300, never enlarged.

@@ -53,6 +53,43 @@ const ANIMATED_PREVIEW: u32 = 480;
 /// Below this many pixels on its long side an animation stays still instead.
 const ANIMATION_MIN_SIDE: u32 = 48;
 
+/// Whether an attachment is an SVG picture: it has no thumbnail, so its original is drawn.
+pub fn is_svg(content_type: &str, filename: &str) -> bool {
+    content_type == "image/svg+xml" || filename.to_ascii_lowercase().ends_with(".svg")
+}
+
+/// Whether `bytes` look like an SVG document rather than a bitmap.
+fn looks_like_svg(bytes: &[u8]) -> bool {
+    let start = &bytes[..bytes.len().min(512)];
+    let text = String::from_utf8_lossy(start);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    text.starts_with("<svg") || (text.starts_with("<?xml") && text.contains("<svg"))
+}
+
+/// Draws an SVG into a PNG whose long side is `side` pixels. Fonts come from the system.
+pub fn svg_to_png(bytes: &[u8], side: f32) -> Result<Vec<u8>, String> {
+    use resvg::{tiny_skia, usvg};
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+    let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("not an SVG: {e}"))?;
+    let size = tree.size();
+    let scale = side / size.width().max(size.height());
+    let (w, h) = (
+        ((size.width() * scale).round() as u32).max(1),
+        ((size.height() * scale).round() as u32).max(1),
+    );
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the SVG has no size")?;
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    pixmap.encode_png().map_err(|e| e.to_string())
+}
+
+/// How large an SVG is drawn when shown: big enough for the full view.
+const SVG_SIDE: f32 = 2048.;
+
 /// Whether an attachment may be animated: its original is loaded instead of the still thumbnail.
 pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
     let lower = filename.to_ascii_lowercase();
@@ -142,6 +179,12 @@ fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
 }
 
 fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Picture, String> {
+    // An SVG is drawn first (#5), then read like any picture.
+    if looks_like_svg(bytes) {
+        let side = max.map_or(SVG_SIDE, |m| m as f32);
+        let png = svg_to_png(bytes, side)?;
+        return decode_within(&png, max, budget);
+    }
     let moving = match frames_within(bytes, max, budget) {
         Ok(Some(frames)) => Some(frames),
         Ok(None) => None,
@@ -394,7 +437,8 @@ impl Shell {
             async move {
                 // An encrypted picture may have a preview of its own; the server cannot make one.
                 // The thumbnail of an animated one is still, so its original is loaded too.
-                let animated = maybe_animated(&attachment.content_type, &attachment.filename);
+                let animated = maybe_animated(&attachment.content_type, &attachment.filename)
+                    || is_svg(&attachment.content_type, &attachment.filename);
                 let no_preview = attachment
                     .sealed
                     .as_ref()
@@ -590,6 +634,18 @@ pub(crate) mod tests {
             encoder.encode_frames(frames).unwrap();
         }
         bytes
+    }
+
+    #[test]
+    fn svg_pictures_are_drawn() {
+        let svg = br##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#e8a33d"/></svg>"##;
+        assert!(looks_like_svg(svg));
+        assert!(!looks_like_svg(b"\x89PNG\r\n"));
+        assert!(is_svg("application/octet-stream", "Logo.SVG"));
+        let picture = decode(svg, Some(200)).expect("an SVG is drawn");
+        let size = picture.still.size(0);
+        assert_eq!((size.width.0, size.height.0), (200, 100), "drawn at the asked size");
     }
 
     #[test]

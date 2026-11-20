@@ -2200,6 +2200,7 @@ pub fn content_type(filename: &str) -> &'static str {
         .map(|(_, e)| e.to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
+        "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",

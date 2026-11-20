@@ -73,33 +73,12 @@ fn croppable(path: &std::path::Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> 
         .unwrap_or_default()
         .to_ascii_lowercase();
     if ext == "svg" {
-        return svg_to_png(&bytes);
+        return crate::images::svg_to_png(&bytes, SVG_SIDE);
     }
     if FFMPEG_PICTURES.contains(&ext.as_str()) {
         return crate::media::ffmpeg::picture_as_png(path);
     }
     Ok(bytes)
-}
-
-/// Draws an SVG into a PNG, its long side [`SVG_SIDE`] pixels.
-fn svg_to_png(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    use resvg::{tiny_skia, usvg};
-    let mut options = usvg::Options::default();
-    options.fontdb_mut().load_system_fonts();
-    let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("not an SVG: {e}"))?;
-    let size = tree.size();
-    let scale = SVG_SIDE / size.width().max(size.height());
-    let (w, h) = (
-        ((size.width() * scale).round() as u32).max(1),
-        ((size.height() * scale).round() as u32).max(1),
-    );
-    let mut pixmap = tiny_skia::Pixmap::new(w, h).ok_or("the SVG has no size")?;
-    resvg::render(
-        &tree,
-        tiny_skia::Transform::from_scale(scale, scale),
-        &mut pixmap.as_mut(),
-    );
-    pixmap.encode_png().map_err(|e| e.to_string())
 }
 
 /// Why a picture was refused, in words.
