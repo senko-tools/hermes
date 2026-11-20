@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, ErrorKind, FromSample, SampleFormat, SizedSample, Stream, StreamConfig};
+use cpal::{
+    Device, ErrorKind, FromSample, SampleFormat, SizedSample, Stream, StreamConfig,
+    SupportedStreamConfig,
+};
 use ringbuf::traits::{Consumer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 
@@ -82,6 +85,29 @@ pub struct OpenStream {
     pub glitches: Arc<AtomicU64>,
 }
 
+impl OpenStream {
+    fn start(
+        stream: Stream,
+        device: &Device,
+        supported: &SupportedStreamConfig,
+        failed: Arc<AtomicBool>,
+        glitches: Arc<AtomicU64>,
+        direction: &str,
+    ) -> Result<Self, String> {
+        stream
+            .play()
+            .map_err(|e| format!("cannot start the {direction}: {e}"))?;
+        Ok(Self {
+            _stream: stream,
+            name: device_name(device),
+            rate: supported.sample_rate(),
+            channels: usize::from(supported.channels()),
+            failed,
+            glitches,
+        })
+    }
+}
+
 pub struct Input {
     pub stream: OpenStream,
     /// Interleaved samples at the device rate.
@@ -141,20 +167,8 @@ pub fn open_input(device: &Device) -> Result<Input, String> {
         supported.sample_format(),
         input_stream(device, config, prod, failed.clone(), glitches.clone())
     )?;
-    stream
-        .play()
-        .map_err(|e| format!("cannot start the input: {e}"))?;
-    Ok(Input {
-        stream: OpenStream {
-            _stream: stream,
-            name: device_name(device),
-            rate,
-            channels,
-            failed,
-            glitches,
-        },
-        ring,
-    })
+    let stream = OpenStream::start(stream, device, &supported, failed, glitches, "input")?;
+    Ok(Input { stream, ring })
 }
 
 fn input_stream<T>(
@@ -189,7 +203,6 @@ pub fn open_output(device: &Device) -> Result<Output, String> {
         .map_err(|e| format!("output device has no usable format: {e}"))?;
     let config: StreamConfig = supported.config();
     let rate = supported.sample_rate();
-    let channels = usize::from(supported.channels());
     // Stereo, interleaved: half a second.
     let (mut ring, cons) = HeapRb::<f32>::new(rate as usize).split();
     // 10 ms of silence so the first callback does not underrun.
@@ -202,20 +215,8 @@ pub fn open_output(device: &Device) -> Result<Output, String> {
         supported.sample_format(),
         output_stream(device, config, cons, failed.clone(), glitches.clone())
     )?;
-    stream
-        .play()
-        .map_err(|e| format!("cannot start the output: {e}"))?;
-    Ok(Output {
-        stream: OpenStream {
-            _stream: stream,
-            name: device_name(device),
-            rate,
-            channels,
-            failed,
-            glitches,
-        },
-        ring,
-    })
+    let stream = OpenStream::start(stream, device, &supported, failed, glitches, "output")?;
+    Ok(Output { stream, ring })
 }
 
 fn output_stream<T>(
