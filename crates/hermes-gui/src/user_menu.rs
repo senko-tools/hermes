@@ -2,12 +2,16 @@
 //! them in voice, and the voice moderation (server mute and deafen, moving and disconnecting).
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnimationExt as _, AnyElement, Context, FontWeight, SharedString, Window, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window,
+    div,
+};
 use hermes_client_core::InstanceId;
-use hermes_client_core::proto::api::VoiceStatePatchRequest;
+use hermes_client_core::proto::api::{UpdateMeRequest, VoiceStatePatchRequest};
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::{ChannelKind, Status};
+use hermes_client_core::proto::models::{ChannelKind, PresenceStatus, Status};
 use hermes_client_core::view;
 
 use crate::menu::{Line, run_line};
@@ -25,7 +29,42 @@ pub struct ProfileCard {
     pub last_online: Option<i64>,
     /// Their "About me", once the profile is fetched.
     pub bio: Option<String>,
+    /// My own card, open for editing: the banner, picture, name, status and "About me" change
+    /// where they are.
+    pub editing: bool,
+    /// The text being edited, in place of what it shows.
+    pub field: Option<FieldEdit>,
 }
+
+/// What text of my profile can be edited on the card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileField {
+    Name,
+    Status,
+    Bio,
+}
+
+impl ProfileField {
+    /// The longest it may be, in characters (the server's limits).
+    fn max_chars(self) -> usize {
+        match self {
+            ProfileField::Name => 32,
+            ProfileField::Status => 128,
+            ProfileField::Bio => 190,
+        }
+    }
+}
+
+/// A text of my profile being edited on the card.
+pub struct FieldEdit {
+    pub field: ProfileField,
+    pub input: Entity<InputState>,
+    _events: Subscription,
+}
+
+/// The width of a profile card, and of my own while it is edited.
+const CARD_WIDTH: f32 = 300.;
+const EDIT_WIDTH: f32 = 360.;
 
 impl Shell {
     /// A left click on someone (a voice row, a member, a name or picture in the chat): their
@@ -67,9 +106,125 @@ impl Shell {
             at,
             last_online: None,
             bio: None,
+            editing: false,
+            field: None,
         });
         self.fetch_last_online(cx);
         cx.notify();
+    }
+
+    /// My own profile card on `inst`, open for editing, beside `at`. It shows at once from what
+    /// the store has; the "About me" comes in the background.
+    pub fn open_my_profile(
+        &mut self,
+        inst: InstanceId,
+        at: crate::modal::PopupFrom,
+        cx: &mut Context<Self>,
+    ) {
+        let me = self.core.store().instance(&inst).and_then(|s| s.me_id());
+        let Some(me) = me else { return };
+        self.show_profile(inst, None, me, at, cx);
+        if let Some(card) = &mut self.profile {
+            card.editing = true;
+        }
+    }
+
+    /// Starts editing `field` of my profile on the open card: an input in its place, saved on
+    /// Enter or when it loses focus.
+    fn edit_profile_field(
+        &mut self,
+        field: ProfileField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_profile_field(cx);
+        let Some(card) = &self.profile else { return };
+        let current = {
+            let store = self.core.store();
+            let me = store
+                .instance(&card.inst)
+                .and_then(|s| s.me.as_ref().map(|m| m.user.clone()));
+            match field {
+                ProfileField::Name => me.and_then(|u| u.display_name),
+                ProfileField::Status => me.and_then(|u| u.status_text),
+                ProfileField::Bio => card.bio.clone(),
+            }
+            .unwrap_or_default()
+        };
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx);
+            state.set_value(current, window, cx);
+            state
+        });
+        let events = cx.subscribe_in(&input, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                this.save_profile_field(cx);
+            }
+        });
+        input.update(cx, |input, cx| input.focus(window, cx));
+        if let Some(card) = &mut self.profile {
+            card.field = Some(FieldEdit {
+                field,
+                input,
+                _events: events,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Saves the text being edited on my card, when it changed: one request for that field.
+    fn save_profile_field(&mut self, cx: &mut Context<Self>) {
+        let Some(card) = &mut self.profile else {
+            return;
+        };
+        let Some(edit) = card.field.take() else {
+            return;
+        };
+        cx.notify();
+        let text = edit.input.read(cx).value().trim().to_owned();
+        let inst = card.inst.clone();
+        if text.chars().count() > edit.field.max_chars() {
+            self.error(
+                format!(
+                    "that is too long: at most {} characters",
+                    edit.field.max_chars()
+                ),
+                cx,
+            );
+            return;
+        }
+        let value = (!text.is_empty()).then_some(text);
+        let current = {
+            let store = self.core.store();
+            let me = store
+                .instance(&inst)
+                .and_then(|s| s.me.as_ref().map(|m| m.user.clone()));
+            match edit.field {
+                ProfileField::Name => me.and_then(|u| u.display_name),
+                ProfileField::Status => me.and_then(|u| u.status_text),
+                ProfileField::Bio => card.bio.clone(),
+            }
+            .filter(|t| !t.is_empty())
+        };
+        if value == current {
+            return;
+        }
+        let mut req = UpdateMeRequest::default();
+        match edit.field {
+            ProfileField::Name => req.display_name = Some(value),
+            ProfileField::Status => req.status_text = Some(value),
+            ProfileField::Bio => {
+                // The card shows it at once; the server's answer does not carry it.
+                card.bio = value.clone();
+                req.bio = Some(value);
+            }
+        }
+        self.call_status(
+            &inst,
+            "Profile saved",
+            move |r| async move { r.update_me(&req).await },
+            cx,
+        );
     }
 
     /// The person's entries of a member menu. `false` if `action` is not one of them.
@@ -234,6 +389,10 @@ impl Shell {
     /// status, and when they joined this server, where they talk, and their roles.
     pub fn render_profile(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let card = self.profile.as_ref()?;
+        // A picture being cropped for it: the card waits under the crop dialog.
+        if self.crop.is_some() {
+            return None;
+        }
         let (inst, user) = (card.inst.clone(), card.user);
         let store = self.core.store();
         let s = store.instance(&inst)?;
@@ -244,6 +403,10 @@ impl Shell {
             .and_then(|u| u.status_text.clone())
             .filter(|t| !t.is_empty());
         let mine = s.me_id() == Some(user);
+        let editing = mine && card.editing;
+        let with_bio = s.has_feature(hermes_client_core::proto::compat::features::BIO);
+        let width = if editing { EDIT_WIDTH } else { CARD_WIDTH };
+        let editing_field = card.field.as_ref().map(|f| (f.field, f.input.clone()));
         let member = card
             .space
             .and_then(|space| s.spaces.get(&space))
@@ -286,6 +449,8 @@ impl Shell {
                 None => name,
             })
         });
+        let (has_avatar, has_banner) =
+            found.map_or((false, false), |u| (u.avatar.is_some(), u.banner.is_some()));
         let avatar = self.avatar_with_status(&inst, found, &name, 80., s.status(user));
         let banner = self.banner_picture(&inst, found);
         drop(store);
@@ -318,7 +483,24 @@ impl Shell {
                 }))
         });
         let mut details: Vec<AnyElement> = Vec::new();
-        if let Some(bio) = card.bio.clone() {
+        if editing && with_bio {
+            let bio = card.bio.clone().filter(|b| !b.is_empty());
+            details.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(section("About me"))
+                    .child(self.profile_text(
+                        ProfileField::Bio,
+                        editing_field.clone(),
+                        bio.map(|b| div().whitespace_normal().child(b).into_any_element()),
+                        "About me",
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
+        } else if let Some(bio) = card.bio.clone() {
             details.push(
                 div()
                     .flex()
@@ -434,37 +616,71 @@ impl Shell {
 
         let message_inst = inst.clone();
         let volume_inst = inst.clone();
-        let (edit_inst, edit_space) = (inst.clone(), card.space);
         let status_row = mine.then(|| {
-            use hermes_client_core::proto::models::PresenceStatus as P;
             let current = self.core.presence();
-            crate::settings::wrap().justify_start().children(
+            div().flex().flex_wrap().gap(px(4.)).children(
                 [
-                    (P::Online, "Online"),
-                    (P::Idle, "Idle"),
-                    (P::Dnd, "Do not disturb"),
-                    (P::Invisible, "Invisible"),
+                    (PresenceStatus::Online, Status::Online, "Online"),
+                    (PresenceStatus::Idle, Status::Idle, "Idle"),
+                    (PresenceStatus::Dnd, Status::Dnd, "Do Not Disturb"),
+                    (PresenceStatus::Invisible, Status::Offline, "Invisible"),
                 ]
                 .into_iter()
                 .enumerate()
-                .map(|(n, (status, label))| {
-                    crate::ui::chip(self, ("my-status", n), label, current == status, cx).on_click(
-                        cx.listener(move |this, _, _, cx| {
+                .map(|(n, (status, dot, label))| {
+                    let chosen = current == status;
+                    div()
+                        .id(("my-status", n))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(theme::radius_small())
+                        .cursor_pointer()
+                        .text_color(if chosen {
+                            theme::text()
+                        } else {
+                            theme::text_secondary()
+                        })
+                        .when(chosen, |d| d.bg(theme::selected()))
+                        .when(!chosen, |d| d.hover(|d| d.bg(theme::hover())))
+                        .child(div().size(px(8.)).rounded_full().bg(theme::status(dot)))
+                        .child(label)
+                        .on_click(cx.listener(move |this, _, _, cx| {
                             this.core.set_presence(status);
                             cx.notify();
-                        }),
-                    )
+                        }))
                 }),
             )
         });
-        let edit = mine.then(|| {
-            Button::new("profile-edit")
+        // My card: a pencil in the corner opens it for editing, a tick closes that again.
+        let edit_toggle = mine.then(|| {
+            div()
+                .id("profile-edit-toggle")
+                .absolute()
+                .top(px(8.))
+                .right(px(8.))
+                .p(px(6.))
+                .rounded_full()
                 .cursor_pointer()
-                .w_full()
-                .label(SharedString::from("Edit profile"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.close_later("profile-card-in", |s| s.profile = None, cx);
-                    this.open_form_profile_in(edit_inst.clone(), edit_space, window, cx);
+                .bg(theme::alpha(theme::sidebar(), 0.75))
+                .hover(|d| d.bg(theme::sidebar()))
+                .child(crate::assets::icon(
+                    if editing {
+                        crate::assets::CHECK
+                    } else {
+                        crate::assets::PENCIL
+                    },
+                    14.,
+                    theme::text(),
+                ))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.save_profile_field(cx);
+                    if let Some(card) = &mut this.profile {
+                        card.editing = !card.editing;
+                    }
+                    cx.notify();
                 }))
         });
         let buttons = (!mine).then(|| {
@@ -511,17 +727,121 @@ impl Shell {
                 })
         });
 
+        // Editing: the banner and the picture are pickers, a dimmed layer and a pencil over them
+        // under the pointer.
+        let banner_height = if banner.is_some() {
+            (width - 2.) * 0.4
+        } else if editing {
+            88.
+        } else {
+            64.
+        };
+        let edit_inst = inst.clone();
+        let banner_box = div()
+            .id("profile-banner-box")
+            .relative()
+            .h(px(banner_height))
+            .rounded_t(px(9.))
+            .overflow_hidden()
+            // Not under a banner: each layer fades on its own, so a band there would show
+            // through the banner while the card goes.
+            .when(banner.is_none(), |d| {
+                d.bg(theme::mix(theme::sidebar(), band, 0.75))
+            })
+            .children(banner.map(|picture| {
+                gpui_kit::img(picture)
+                    .size_full()
+                    .rounded_t(px(9.))
+                    .object_fit(gpui_kit::ObjectFit::Cover)
+                    .id("profile-banner")
+            }))
+            .when(editing, |d| {
+                d.cursor_pointer()
+                    .group("profile-banner-edit")
+                    .child(picker_layer("profile-banner-edit"))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_picture(crate::crop::CropFor::Banner(edit_inst.clone()), cx);
+                    }))
+                    .when(has_banner, |d| {
+                        d.child(self.remove_picture("profile-banner-edit", true, &inst, cx))
+                    })
+            });
+        let avatar_inst = inst.clone();
+        let avatar_box = div()
+            .id("profile-avatar-box")
+            .relative()
+            .group("profile-avatar-edit")
+            .child(avatar)
+            .when(editing, |d| {
+                d.child(
+                    div()
+                        .id("profile-avatar-pick")
+                        .absolute()
+                        .inset_0()
+                        .rounded_full()
+                        .overflow_hidden()
+                        .cursor_pointer()
+                        .child(picker_layer("profile-avatar-edit"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_picture(
+                                crate::crop::CropFor::Avatar(avatar_inst.clone()),
+                                cx,
+                            );
+                        })),
+                )
+                .when(has_avatar, |d| {
+                    d.child(self.remove_picture("profile-avatar-edit", false, &inst, cx))
+                })
+            });
+        let name_line = div()
+            .text_size(theme::heading_size())
+            .font_weight(FontWeight::BOLD)
+            .child(name.clone());
+        let name_line = if editing {
+            self.profile_text(
+                ProfileField::Name,
+                editing_field.clone(),
+                Some(name_line.into_any_element()),
+                "Display name",
+                cx,
+            )
+        } else {
+            name_line.into_any_element()
+        };
+        let status_bubble = |text: String| {
+            div()
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(theme::row_radius())
+                .bg(theme::raised())
+                .text_color(theme::text_secondary())
+                .child(text)
+                .into_any_element()
+        };
+        let status = if editing {
+            Some(self.profile_text(
+                ProfileField::Status,
+                editing_field,
+                status.map(status_bubble),
+                "Status",
+                cx,
+            ))
+        } else {
+            status.map(status_bubble)
+        };
+
         Some(crate::modal::popup(
             "profile-card-in",
             card.at,
-            300.,
+            width,
             self.viewport,
             div()
                 .id("profile-card")
                 .occlude()
+                .relative()
                 .flex()
                 .flex_col()
-                .w(px(300.))
+                .w(px(width))
                 .overflow_hidden()
                 .rounded(theme::radius_large())
                 .bg(theme::sidebar())
@@ -541,27 +861,10 @@ impl Shell {
                     this.close_later("profile-card-in", |s| s.profile = None, cx);
                     cx.notify();
                 }))
-                .child(
-                    // gpui clips to the card's box, not its rounded corners: the band rounds its
-                    // own (the card's radius less its border).
-                    // A banner is 5:2 across the card; without one, a shorter band of colour.
-                    div()
-                        .h(px(if banner.is_some() { 119.2 } else { 64. }))
-                        .rounded_t(px(9.))
-                        .overflow_hidden()
-                        // Not under a banner: each layer fades on its own, so a band there
-                        // would show through the banner while the card goes.
-                        .when(banner.is_none(), |d| {
-                            d.bg(theme::mix(theme::sidebar(), band, 0.75))
-                        })
-                        .children(banner.map(|picture| {
-                            gpui_kit::img(picture)
-                                .size_full()
-                                .rounded_t(px(9.))
-                                .object_fit(gpui_kit::ObjectFit::Cover)
-                                .id("profile-banner")
-                        })),
-                )
+                // gpui clips to the card's box, not its rounded corners: the band rounds its own
+                // (the card's radius less its border). A banner is 5:2 across the card; without
+                // one, a shorter band of colour.
+                .child(banner_box)
                 .child(
                     div()
                         .flex()
@@ -578,40 +881,142 @@ impl Shell {
                                 .w(px(88.))
                                 .rounded(px(44.))
                                 .bg(theme::sidebar())
-                                .child(avatar),
+                                .child(avatar_box),
                         )
                         .child(
                             div()
                                 .flex()
                                 .flex_col()
                                 .gap(px(2.))
-                                .child(
-                                    div()
-                                        .text_size(theme::heading_size())
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(name),
-                                )
+                                .child(name_line)
                                 .children(handle_row),
                         )
-                        .children(status.map(|text| {
-                            div()
-                                .px(px(10.))
-                                .py(px(6.))
-                                .rounded(theme::row_radius())
-                                .bg(theme::raised())
-                                .text_color(theme::text_secondary())
-                                .child(text)
-                        }))
+                        .children(status)
                         .when(!details.is_empty(), |d| {
                             d.child(div().h(px(1.)).bg(theme::border()))
                                 .children(details)
                         })
                         .children(buttons)
-                        .children(status_row)
-                        .children(edit),
-                ),
+                        .children(status_row),
+                )
+                .children(edit_toggle),
         ))
     }
+
+    /// A text of my profile on the card while it is edited: what it shows (or `empty`, dimmed),
+    /// tinted under the pointer with a pencil beside it, and an input in its place once
+    /// clicked.
+    fn profile_text(
+        &self,
+        field: ProfileField,
+        editing: Option<(ProfileField, Entity<InputState>)>,
+        shown: Option<AnyElement>,
+        empty: &'static str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some((_, input)) = editing.filter(|(f, _)| *f == field) {
+            return Input::new(&input).into_any_element();
+        }
+        let group = SharedString::from(format!("profile-text-{field:?}"));
+        div()
+            .id(group.clone())
+            .group(group.clone())
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .mx(px(-6.))
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(theme::radius_small())
+            .cursor_text()
+            .hover(|d| d.bg(theme::hover()))
+            .child(div().flex_1().min_w_0().child(shown.unwrap_or_else(|| {
+                div()
+                    .text_color(theme::text_tertiary())
+                    .child(empty)
+                    .into_any_element()
+            })))
+            .child(
+                crate::assets::icon(crate::assets::PENCIL, 12., theme::text_tertiary())
+                    .group_hover(group, |s| s.text_color(theme::accent())),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.edit_profile_field(field, window, cx);
+            }))
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    /// A small cross in the corner of my banner (`banner`) or picture while the pointer is on
+    /// it: removes it.
+    fn remove_picture(
+        &self,
+        group: &'static str,
+        banner: bool,
+        inst: &InstanceId,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let inst = inst.clone();
+        div()
+            .id(if banner {
+                "profile-banner-remove"
+            } else {
+                "profile-avatar-remove"
+            })
+            .absolute()
+            .top(px(if banner { 8. } else { 0. }))
+            .left(px(if banner { 8. } else { 0. }))
+            .p(px(4.))
+            .rounded_full()
+            .cursor_pointer()
+            .bg(theme::alpha(theme::sidebar(), 0.))
+            .group_hover(group, |d| d.bg(theme::sidebar()))
+            .hover(|d| d.bg(theme::danger()))
+            .child(
+                crate::assets::icon(crate::assets::CLOSE, 12., theme::alpha(theme::text(), 0.))
+                    .group_hover(group, |s| s.text_color(theme::text())),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                let req = if banner {
+                    UpdateMeRequest {
+                        banner_id: Some(None),
+                        ..UpdateMeRequest::default()
+                    }
+                } else {
+                    UpdateMeRequest {
+                        avatar_id: Some(None),
+                        ..UpdateMeRequest::default()
+                    }
+                };
+                this.call_status(
+                    &inst,
+                    if banner {
+                        "Banner removed"
+                    } else {
+                        "Avatar removed"
+                    },
+                    move |r| async move { r.update_me(&req).await },
+                    cx,
+                );
+            }))
+    }
+}
+
+/// Over a picture that can be changed: dimmed, with a pencil, while the pointer is on it.
+fn picker_layer(group: &'static str) -> impl IntoElement {
+    div()
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .group_hover(group, |d| d.bg(gpui_kit::rgba(0x0000_0059)))
+        .child(
+            crate::assets::icon(crate::assets::PENCIL, 18., gpui_kit::rgba(0xffff_ff00))
+                .group_hover(group, |s| s.text_color(gpui_kit::rgba(0xffff_ffff))),
+        )
 }
 
 /// A date like `Mar 4, 2026`.

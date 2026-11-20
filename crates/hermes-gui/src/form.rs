@@ -110,11 +110,6 @@ pub enum Purpose {
         inst: InstanceId,
         space: Id,
     },
-    /// `bio`: the form has an "About me" field (the server has the `bio` feature).
-    EditProfile {
-        inst: InstanceId,
-        bio: bool,
-    },
     ChangePassword(InstanceId),
     LoginCode {
         host: hermes_client_core::address::HostPort,
@@ -182,20 +177,7 @@ pub struct Form {
     pub danger: bool,
     pub busy: bool,
     pub error: Option<String>,
-    /// My profile everywhere, or my nickname in a server: the form switches between the two.
-    pub profile_switch: Option<ProfileSwitch>,
     _inputs: Vec<Subscription>,
-}
-
-/// Which of my profiles a form edits, and the server the other one is for.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ProfileSwitch {
-    pub inst: InstanceId,
-    pub space: Id,
-    /// The server's name, for the switch.
-    pub space_name: String,
-    /// The form edits my profile everywhere (else my nickname here).
-    pub everywhere: bool,
 }
 
 impl Form {
@@ -209,7 +191,6 @@ impl Form {
             danger: false,
             busy: false,
             error: None,
-            profile_switch: None,
             _inputs: Vec::new(),
         }
     }
@@ -626,21 +607,12 @@ impl Shell {
                 .and_then(|m| m.nickname.clone())
                 .unwrap_or_default()
         };
-        let mine = self.core.store().instance(&inst).and_then(|s| s.me_id()) == Some(user);
-        let switch = mine
-            .then(|| self.profile_switch(&inst, Some(space), false))
-            .flatten();
-        let mut form = Form::new(
+        let form = Form::new(
             Purpose::Nickname { inst, space, user },
-            if switch.is_some() {
-                "Edit profile"
-            } else {
-                "Change nickname"
-            },
+            "Change nickname",
             "Save",
         )
         .text("A nickname is only used in this server. Leave it empty to remove it.");
-        form.profile_switch = switch;
         let fields = Self::fields(form, window, cx).text("Nickname", "", current);
         self.finish(fields);
     }
@@ -687,117 +659,6 @@ impl Shell {
         let fields = Self::fields(form, window, cx)
             .choice("Expires after", "", &labels(&INVITE_EXPIRY), "7 days")
             .choice("Max uses", "", &labels(&INVITE_USES), "No limit");
-        self.finish(fields);
-    }
-
-    /// The switch between my profile and my nickname in `space`, if I may set one there.
-    fn profile_switch(
-        &self,
-        inst: &InstanceId,
-        space: Option<Id>,
-        everywhere: bool,
-    ) -> Option<ProfileSwitch> {
-        let space = space?;
-        let store = self.core.store();
-        let s = store.instance(inst)?;
-        if !hermes_client_core::view::can_in_space(
-            s,
-            space,
-            hermes_client_core::proto::permissions::Permissions::CHANGE_NICKNAME,
-        ) {
-            return None;
-        }
-        Some(ProfileSwitch {
-            inst: inst.clone(),
-            space,
-            space_name: s.spaces.get(&space)?.space.name.clone(),
-            everywhere,
-        })
-    }
-
-    pub fn open_form_profile(
-        &mut self,
-        inst: InstanceId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_form_profile_in(inst, None, window, cx);
-    }
-
-    /// My profile, with a switch to my nickname in `space` when there is one.
-    pub fn open_form_profile_in(
-        &mut self,
-        inst: InstanceId,
-        space: Option<Id>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let me = {
-            let store = self.core.store();
-            store.instance(&inst).and_then(|s| s.me.clone())
-        };
-        let Some(me) = me else { return };
-        let with_bio = self
-            .core
-            .store()
-            .instance(&inst)
-            .is_some_and(|s| s.has_feature(hermes_client_core::proto::compat::features::BIO));
-        if !with_bio {
-            self.show_profile_form(inst, space, me.user, None, window, cx);
-            return;
-        }
-        // The "About me" is only on the full profile: fetched first.
-        let Ok(rest) = self.core.rest(&inst) else {
-            return;
-        };
-        let id = me.user.id;
-        self.run(
-            cx,
-            async move { rest.user(id).await },
-            move |this, result, window, cx| {
-                let bio = result.ok().and_then(|p| p.bio).unwrap_or_default();
-                this.show_profile_form(inst.clone(), space, me.user.clone(), Some(bio), window, cx);
-            },
-        );
-    }
-
-    fn show_profile_form(
-        &mut self,
-        inst: InstanceId,
-        space: Option<Id>,
-        user: hermes_client_core::proto::models::User,
-        bio: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let switch = self.profile_switch(&inst, space, true);
-        let purpose = Purpose::EditProfile {
-            inst,
-            bio: bio.is_some(),
-        };
-        let mut form = Form::new(purpose, "Edit profile", "Save")
-            .text(format!("Signed in as @{}.", user.username));
-        form.profile_switch = switch;
-        let mut fields = Self::fields(form, window, cx)
-            .text_hint(
-                "Display name",
-                "Leave empty to use your username.",
-                "Shown instead of your username",
-                user.display_name.clone().unwrap_or_default(),
-            )
-            .text(
-                "Status",
-                "e.g. Working on a project",
-                user.status_text.clone().unwrap_or_default(),
-            );
-        if let Some(bio) = bio {
-            fields = fields.text_hint(
-                "About me",
-                "Shown on your profile, up to 190 characters.",
-                "A few words about you",
-                bio,
-            );
-        }
         self.finish(fields);
     }
 
@@ -1489,29 +1350,6 @@ impl Shell {
                     })
                 });
             }
-            Purpose::EditProfile { inst, bio } => {
-                let (display, status) = (form.value(0, cx), form.value(1, cx));
-                let about = bio.then(|| form.value(2, cx));
-                if about.as_ref().is_some_and(|b| b.chars().count() > 190) {
-                    return Err("About me can be at most 190 characters".into());
-                }
-                if display.chars().count() > 32 {
-                    return Err("the display name can be at most 32 characters".into());
-                }
-                if status.chars().count() > 128 {
-                    return Err("the status can be at most 128 characters".into());
-                }
-                let req = hermes_client_core::proto::api::UpdateMeRequest {
-                    display_name: Some((!display.is_empty()).then_some(display)),
-                    status_text: Some((!status.is_empty()).then_some(status)),
-                    bio: about.map(|b| (!b.is_empty()).then_some(b)),
-                    ..Default::default()
-                };
-                self.form_call(cx, async move {
-                    core.rest(&inst)?.update_me(&req).await?;
-                    Ok("Profile saved".to_owned())
-                });
-            }
         }
         Ok(())
     }
@@ -1529,22 +1367,8 @@ impl Shell {
     pub fn render_form(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let form = self.form.as_ref()?;
         let mut content: Vec<AnyElement> = vec![heading(form.title.clone()).into_any_element()];
-        if let Some(switch) = &form.profile_switch {
-            content.push(profile_switch_chips(self, switch, cx));
-        }
         if !form.text.is_empty() {
             content.push(paragraph(form.text.clone()).into_any_element());
-        }
-        // The whole profile in one place: avatar and banner first (#20).
-        if let Purpose::EditProfile { inst, .. } = &form.purpose {
-            let me = self
-                .core
-                .store()
-                .instance(inst)
-                .and_then(|s| s.me.as_ref().map(|m| m.user.clone()));
-            if let Some(me) = me {
-                content.extend(self.profile_picture_rows(inst, &me, cx));
-            }
         }
         for (i, field) in form.fields.iter().enumerate() {
             content.push(render_field(self, i, field, cx));
@@ -1590,54 +1414,6 @@ impl Shell {
             div().flex().flex_col().gap(px(14.)).children(content),
         ))
     }
-}
-
-/// "Everywhere" and "In <server>": which of my profiles the form edits; the other one replaces
-/// the form.
-fn profile_switch_chips(
-    shell: &Shell,
-    switch: &ProfileSwitch,
-    cx: &mut Context<Shell>,
-) -> AnyElement {
-    let choices = [
-        (true, "Everywhere".to_owned()),
-        (false, format!("In {}", switch.space_name)),
-    ];
-    div()
-        .flex()
-        .gap(px(6.))
-        .children(
-            choices
-                .into_iter()
-                .enumerate()
-                .map(|(n, (everywhere, name))| {
-                    let (inst, space) = (switch.inst.clone(), switch.space);
-                    crate::ui::chip(
-                        shell,
-                        ("profile-switch", n),
-                        name,
-                        switch.everywhere == everywhere,
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let current = this
-                            .form
-                            .as_ref()
-                            .and_then(|f| f.profile_switch.as_ref())
-                            .map(|s| s.everywhere);
-                        if current == Some(everywhere) {
-                            return;
-                        }
-                        let me = this.core.store().instance(&inst).and_then(|s| s.me_id());
-                        if everywhere {
-                            this.open_form_profile_in(inst.clone(), Some(space), window, cx);
-                        } else if let Some(me) = me {
-                            this.open_form_nickname(inst.clone(), space, me, window, cx);
-                        }
-                    }))
-                }),
-        )
-        .into_any_element()
 }
 
 fn render_field(shell: &Shell, i: usize, field: &Field, cx: &mut Context<Shell>) -> AnyElement {

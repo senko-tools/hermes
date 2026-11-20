@@ -16,7 +16,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::audio::{AudioDevices, Sound};
 use hermes_client_core::config::{self, ClientConfig};
-use hermes_client_core::proto::api::{SessionInfo, UpdateMeRequest, UpdatePrivacyRequest};
+use hermes_client_core::proto::api::{SessionInfo, UpdatePrivacyRequest};
 use hermes_client_core::proto::id::Id;
 use hermes_client_core::proto::models::DmFrom;
 use hermes_client_core::{InstanceId, time};
@@ -730,42 +730,6 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
 /// How long a hint may be and still show in full under its setting; a longer one shows its
 /// start and the rest in the (i) next to the name.
 const HINT_CHARS: usize = 72;
-
-/// A row of the profile editor: the name and a one-line hint (all of it on hover), and the
-/// controls on the same line however narrow the dialog is.
-fn picture_row(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
-    let tip = SharedString::from(hint.to_owned());
-    div()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .child(
-            div()
-                .id(SharedString::from(format!("picture-row-{name}")))
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_w_0()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_size(theme::body_size())
-                        .child(SharedString::from(name.to_owned())),
-                )
-                .child(
-                    div()
-                        .text_size(theme::secondary_size())
-                        .text_color(theme::text_tertiary())
-                        .truncate()
-                        .child(tip.clone()),
-                )
-                .tooltip(move |window, cx| {
-                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-                }),
-        )
-        .child(div().flex_none().child(control))
-        .into_any_element()
-}
 
 /// A row: the name and a one-line hint on the left, the control on the right. A hint too long
 /// for one line puts all of it in the (i) beside the name.

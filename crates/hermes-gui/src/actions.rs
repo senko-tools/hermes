@@ -97,7 +97,8 @@ impl Shell {
                 self.open_form_create_space(inst, window, cx);
             }
             (Target::Instance(inst) | Target::Me(Some(inst)), Action::EditProfile) => {
-                self.open_form_profile(inst, window, cx);
+                let at = self.popup_from(window.mouse_position());
+                self.open_my_profile(inst, at, cx);
             }
 
             (Target::Channel(inst, channel), Action::JoinVoice) => {

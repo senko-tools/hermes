@@ -660,10 +660,6 @@ impl Shell {
         out
     }
 
-    pub(super) fn pick_avatar(&mut self, inst: InstanceId, cx: &mut Context<Self>) {
-        self.pick_picture(crate::crop::CropFor::Avatar(inst), cx);
-    }
-
     pub(super) fn revoke_sessions(&mut self, ids: Vec<Id>, cx: &mut Context<Self>) {
         let Some(inst) = self.account_instance() else {
             return;
