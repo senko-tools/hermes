@@ -7,6 +7,7 @@ pub mod presence;
 pub mod ready;
 pub mod visibility;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -19,8 +20,10 @@ use hermes_proto::id::Id;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until};
 
+use crate::api::ClientAddr;
 use crate::auth::token_hash;
 use crate::db;
+use crate::logging::{self, GATEWAY};
 use crate::ratelimit::{self, Bucket};
 use crate::state::AppState;
 use bus::{Attached, ResumeError};
@@ -32,10 +35,14 @@ const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const MAX_CLIENT_FRAME: usize = 16 * 1024;
 
 /// `GET /api/v1/gateway`: upgrades to a WebSocket.
-pub async fn handler(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> Response {
+pub async fn handler(
+    State(state): State<Arc<AppState>>,
+    ClientAddr(ip): ClientAddr,
+    ws: WebSocketUpgrade,
+) -> Response {
     ws.max_message_size(MAX_CLIENT_FRAME)
         .max_frame_size(MAX_CLIENT_FRAME)
-        .on_upgrade(move |socket| connection(state, socket))
+        .on_upgrade(move |socket| connection(state, socket, ip))
 }
 
 /// Why the connection loop stops.
@@ -54,9 +61,12 @@ struct Connection {
     deadline: Instant,
     /// Client ops: `limits.gateway_ops_per_minute` per [`ratelimit::GATEWAY_OPS_PERIOD`], else 4008.
     ops: Bucket,
+    /// The client's address, for the log.
+    ip: IpAddr,
 }
 
-async fn connection(state: Arc<AppState>, socket: WebSocket) {
+async fn connection(state: Arc<AppState>, socket: WebSocket, ip: IpAddr) {
+    let opened = Instant::now();
     let interval = state.gateway.timings.heartbeat_interval;
     let identify_within = state.gateway.timings.identify_within;
     let shutdown = state.gateway.shutting_down();
@@ -67,6 +77,7 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) {
         socket,
         attached: None,
         ops: Bucket::full(gateway_ops, std::time::Instant::now()),
+        ip,
     };
     let hello = ServerEvent::Hello {
         heartbeat_interval_ms: u64::try_from(interval.as_millis()).unwrap_or(u64::MAX),
@@ -86,6 +97,16 @@ async fn connection(state: Arc<AppState>, socket: WebSocket) {
         let _ = conn.socket.send(Message::Close(Some(frame))).await;
     }
     if let Some(attached) = conn.attached.take() {
+        let why = match &end {
+            End::Close(code) => format!("{code:?}"),
+            End::Gone => "the client went away".to_owned(),
+        };
+        tracing::info!(
+            target: GATEWAY,
+            "{} left the gateway ({ip}) after {}: {why}",
+            logging::who(&conn.state, attached.session.user_id),
+            logging::duration(opened.elapsed())
+        );
         conn.state.gateway.detach(&attached);
         presence::disconnected(&conn.state, attached.session.user_id);
     }
@@ -245,11 +266,13 @@ impl Connection {
         presence::connected(&self.state, user_id);
         let ready = ready::build(&self.state, user_id, session_id, rows)
             .ok_or(End::Close(CloseCode::AuthenticationFailed))?;
-        tracing::debug!(
-            user_id = %user_id,
-            client = %identify.client.name,
-            version = %identify.client.version,
-            "gateway: identified"
+        tracing::info!(
+            target: GATEWAY,
+            "{} joined the gateway from {} ({} {})",
+            logging::who(&self.state, user_id),
+            self.ip,
+            identify.client.name,
+            identify.client.version
         );
         self.send_control(ServerEvent::Ready(Box::new(ready))).await
     }
@@ -265,6 +288,12 @@ impl Connection {
             .resume(&resume.session_id, auth_session_id, resume.last_seq)
         {
             Ok((attached, replay)) => {
+                tracing::info!(
+                    target: GATEWAY,
+                    "{} resumed their gateway session from {}",
+                    logging::who(&self.state, user_id),
+                    self.ip
+                );
                 self.attached = Some(attached);
                 self.heard_from();
                 presence::connected(&self.state, user_id);

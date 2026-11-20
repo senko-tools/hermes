@@ -6,12 +6,14 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use axum::serve::Listener;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::config::ProxyRange;
+use crate::logging::CONNECTIONS;
 
 /// How many connections may be open.
 #[derive(Debug, Clone)]
@@ -31,6 +33,7 @@ pub struct Capped<L> {
     per_ip: u32,
     trusted_proxies: Arc<[ProxyRange]>,
     open: Counts,
+    cap: u32,
 }
 
 impl<L> Capped<L> {
@@ -41,6 +44,7 @@ impl<L> Capped<L> {
             per_ip: caps.per_ip,
             trusted_proxies: caps.trusted_proxies,
             open: Counts::default(),
+            cap: caps.total.max(1),
         }
     }
 
@@ -84,6 +88,19 @@ pub struct CappedIo<I> {
     io: I,
     _total: OwnedSemaphorePermit,
     _slot: Option<IpSlot>,
+    addr: SocketAddr,
+    opened: Instant,
+}
+
+impl<I> Drop for CappedIo<I> {
+    fn drop(&mut self) {
+        tracing::info!(
+            target: CONNECTIONS,
+            "{} closed after {:.1} s",
+            self.addr,
+            self.opened.elapsed().as_secs_f64()
+        );
+    }
 }
 
 impl<L> Listener for Capped<L>
@@ -103,15 +120,26 @@ where
                 .await
                 .expect("the semaphore is never closed");
             let (io, addr) = self.inner.accept().await;
-            if let Ok(slot) = self.claim(addr.ip()) {
-                return (
-                    CappedIo {
-                        io,
-                        _total: total,
-                        _slot: slot,
-                    },
-                    addr,
-                );
+            match self.claim(addr.ip()) {
+                Ok(slot) => {
+                    let open = self.cap as usize - self.total.available_permits();
+                    tracing::info!(target: CONNECTIONS, "{addr} connected ({open} open)");
+                    return (
+                        CappedIo {
+                            io,
+                            _total: total,
+                            _slot: slot,
+                            addr,
+                            opened: Instant::now(),
+                        },
+                        addr,
+                    );
+                }
+                Err(()) => tracing::info!(
+                    target: CONNECTIONS,
+                    "{addr} turned away: its address already has {} connections open",
+                    self.per_ip
+                ),
             }
         }
     }

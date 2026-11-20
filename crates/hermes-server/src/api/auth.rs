@@ -12,12 +12,13 @@ use hermes_proto::{ApiError, ErrorCode};
 use sqlx::SqliteConnection;
 
 use super::validate::{self, Fields};
-use super::{ApiResult, Error, Json, Path};
+use super::{ApiResult, ClientAddr, Error, Json, Path};
 use crate::auth::{self, Auth};
 use crate::config::RegistrationMode;
 use crate::db;
 use crate::gateway::bus::Audience;
 use crate::invites;
+use crate::logging::{self, AUTH};
 use crate::ratelimit;
 use crate::setup::DefaultSpace;
 use crate::state::{AppState, CachedUser};
@@ -62,6 +63,7 @@ fn check_mode(mode: RegistrationMode, first_user: bool, has_invite: bool) -> Api
 
 pub async fn register(
     State(state): State<Arc<AppState>>,
+    ClientAddr(ip): ClientAddr,
     Json(req): Json<RegisterRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
@@ -199,6 +201,11 @@ pub async fn register(
         }
     }
     tracing::debug!(user_id = %user_id, session_id = %session_id, "registered");
+    tracing::info!(
+        target: AUTH,
+        "{} created an account from {ip}",
+        logging::who(&state, user_id)
+    );
     Ok(Json(AuthResponse {
         token,
         user: current,
@@ -235,8 +242,29 @@ async fn insert_session(
 
 pub async fn login(
     State(state): State<Arc<AppState>>,
+    ClientAddr(ip): ClientAddr,
     Json(req): Json<LoginRequest>,
 ) -> ApiResult<Json<AuthResponse>> {
+    let name = req.username.trim().to_owned();
+    let result = login_checked(&state, req).await;
+    match &result {
+        Ok(Json(res)) => tracing::info!(
+            target: AUTH,
+            "{} signed in from {ip}",
+            logging::who(&state, res.user.user.id)
+        ),
+        // Asking for the code is a step of signing in, not a failure.
+        Err(Error(err)) if err.code == ErrorCode::TwoFactorRequired => {}
+        Err(Error(err)) => tracing::info!(
+            target: AUTH,
+            "sign-in as {name:?} from {ip} refused: {}",
+            err.message
+        ),
+    }
+    result
+}
+
+async fn login_checked(state: &AppState, req: LoginRequest) -> ApiResult<Json<AuthResponse>> {
     let mut fields = Fields::new();
     let device_name = fields.check("device_name", validate::device_name(&req.device_name));
     if req.password.chars().count() > validate::MAX_PASSWORD_CHARS {
@@ -309,13 +337,22 @@ pub async fn login(
 
     let token = auth::new_token();
     let mut conn = state.db.write.acquire().await?;
-    insert_session(&mut conn, &state, credentials.user_id, &token, &device_name).await?;
+    insert_session(&mut conn, state, credentials.user_id, &token, &device_name).await?;
     Ok(Json(AuthResponse { token, user }))
 }
 
 /// Revokes the current session and closes its gateway connections (4011).
-pub async fn logout(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<StatusCode> {
+pub async fn logout(
+    State(state): State<Arc<AppState>>,
+    ClientAddr(ip): ClientAddr,
+    auth: Auth,
+) -> ApiResult<StatusCode> {
     db::auth::delete_session(&state.db.write, auth.user_id, auth.session_id).await?;
+    tracing::info!(
+        target: AUTH,
+        "{} signed out from {ip}",
+        logging::who(&state, auth.user_id)
+    );
     state.gateway.revoke(&[auth.session_id]);
     super::devices::revoke_sessions(&state, &[auth.session_id]).await?;
     Ok(StatusCode::NO_CONTENT)

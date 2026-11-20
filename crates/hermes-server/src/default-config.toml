@@ -72,3 +72,7 @@ max_users_per_room = 25
 [log]
 level = "info"                      # trace | debug | info | warn | error, or an EnvFilter string
 format = "pretty"                   # "pretty" | "json"
+# Shown on top of the level: connections (every TCP/TLS connection), requests (every HTTP request),
+# gateway (sessions), voice (joins and leaves), auth (sign-ins). Type "help" in the console to
+# switch them while the server runs.
+topics = ["gateway", "voice", "auth"]

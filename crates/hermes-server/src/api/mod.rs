@@ -31,9 +31,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
 use axum::extract::connect_info::Connected;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{ConnectInfo, DefaultBodyLimit};
 use axum::extract::{FromRequest, FromRequestParts, Request};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::request::Parts;
@@ -257,7 +257,38 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(healthz))
         .route("/", get(pages::landing))
         .route("/invite/{code}", get(pages::invite))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            log_request,
+        ))
         .with_state(state)
+}
+
+/// The `requests` log topic: one line per request, once its answer starts (a download's time
+/// is until its first bytes). The query string is left out: it can hold search text.
+async fn log_request(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !tracing::enabled!(target: crate::logging::REQUESTS, tracing::Level::INFO) {
+        return next.run(request).await;
+    }
+    let started = std::time::Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let from = match request.extensions().get::<ConnectInfo<PeerAddr>>() {
+        Some(ConnectInfo(PeerAddr(peer))) => state.client_ip(*peer, request.headers()).to_string(),
+        None => "-".to_owned(),
+    };
+    let response = next.run(request).await;
+    tracing::info!(
+        target: crate::logging::REQUESTS,
+        "{from} {method} {path} {} {} ms",
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
 }
 
 /// A request body that stops arriving ends the request, instead of holding it open.
@@ -306,6 +337,27 @@ pub async fn serve(
             .with_graceful_shutdown(shutdown)
             .await
         }
+    }
+}
+
+/// The client's address (see [`AppState::client_ip`]), for handlers that log it. Unspecified
+/// when serving without connect info (tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddr(pub std::net::IpAddr);
+
+impl FromRequestParts<Arc<AppState>> for ClientAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ClientAddr(
+            match parts.extensions.get::<ConnectInfo<PeerAddr>>() {
+                Some(ConnectInfo(PeerAddr(peer))) => state.client_ip(*peer, &parts.headers),
+                None => std::net::Ipv4Addr::UNSPECIFIED.into(),
+            },
+        ))
     }
 }
 

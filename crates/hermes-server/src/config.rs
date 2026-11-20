@@ -351,6 +351,9 @@ pub struct LogConfig {
     #[serde(deserialize_with = "lossy::string")]
     pub level: String,
     pub format: LogFormat,
+    /// What else is shown at startup, on top of `level` (see [`LogTopic`]); the console's
+    /// `log <topic> on|off` changes it while the server runs.
+    pub topics: Vec<LogTopic>,
 }
 
 impl Default for LogConfig {
@@ -358,7 +361,51 @@ impl Default for LogConfig {
         Self {
             level: "info".into(),
             format: LogFormat::Pretty,
+            topics: vec![LogTopic::Gateway, LogTopic::Voice, LogTopic::Auth],
         }
+    }
+}
+
+/// A kind of event that can be shown in the log or hidden, whatever `log.level` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogTopic {
+    /// Every TCP/TLS connection opened and closed, and handshakes that fail.
+    Connections,
+    /// Every HTTP request: method, path, status and time.
+    Requests,
+    /// Gateway sessions starting, resuming and ending.
+    Gateway,
+    /// Joining and leaving voice channels.
+    Voice,
+    /// Sign-ins, failed sign-ins, new accounts and sign-outs.
+    Auth,
+}
+
+impl LogTopic {
+    pub const ALL: [LogTopic; 5] = [
+        LogTopic::Connections,
+        LogTopic::Requests,
+        LogTopic::Gateway,
+        LogTopic::Voice,
+        LogTopic::Auth,
+    ];
+
+    /// The name used in the config and the console.
+    pub fn name(self) -> &'static str {
+        match self {
+            LogTopic::Connections => "connections",
+            LogTopic::Requests => "requests",
+            LogTopic::Gateway => "gateway",
+            LogTopic::Voice => "voice",
+            LogTopic::Auth => "auth",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<LogTopic> {
+        LogTopic::ALL
+            .into_iter()
+            .find(|t| t.name().eq_ignore_ascii_case(name))
     }
 }
 

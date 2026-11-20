@@ -1,7 +1,8 @@
 //! An [`axum::serve::Listener`] that terminates TLS.
 //!
 //! Handshakes run in their own tasks with a timeout, so a slow or silent client never holds up
-//! `accept` for everyone else. Failed handshakes are logged at debug level and dropped.
+//! `accept` for everyone else. Failed handshakes are dropped and logged under the `connections`
+//! topic.
 
 use std::io;
 use std::net::SocketAddr;
@@ -57,8 +58,14 @@ async fn accept_loop(mut tcp: TcpListener, acceptor: TlsAcceptor, tx: mpsc::Send
                 Ok(Ok(tls)) => {
                     let _ = tx.send((tls, addr)).await;
                 }
-                Ok(Err(err)) => tracing::debug!(%addr, "TLS handshake failed: {err}"),
-                Err(_) => tracing::debug!(%addr, "TLS handshake timed out"),
+                Ok(Err(err)) => tracing::info!(
+                    target: crate::logging::CONNECTIONS,
+                    "{addr}: TLS handshake failed: {err}"
+                ),
+                Err(_) => tracing::info!(
+                    target: crate::logging::CONNECTIONS,
+                    "{addr}: TLS handshake timed out"
+                ),
             }
         });
     }

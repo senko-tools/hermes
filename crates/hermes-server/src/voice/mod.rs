@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::gateway::bus::Audience;
+use crate::logging;
 use crate::ratelimit::KeyedLimiter;
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
@@ -542,6 +543,13 @@ impl Voice {
         conn.user_id = Some(user_id);
         conn.room = Some((channel_id, participant_id));
         users.insert(user_id, conn_id);
+        tracing::info!(
+            target: logging::VOICE,
+            "{} joined voice in {} ({} there)",
+            logging::who(state, user_id),
+            logging::channel(state, channel_id),
+            room.members.len()
+        );
         conn.link.tell(ServerControl::Ready {
             participant_id,
             room_id: channel_id,
@@ -1251,6 +1259,7 @@ impl Registry {
         let Some((channel_id, participant_id)) = conn.room.take() else {
             return;
         };
+        let why = reason.map(|r| format!(": {r:?}")).unwrap_or_default();
         if let Some(reason) = reason {
             conn.link.tell(ServerControl::Kicked { reason });
         }
@@ -1281,6 +1290,12 @@ impl Registry {
         state.publish(
             ServerEvent::VoiceStateUpdate(VoiceStateUpdate::left(user_id)),
             Audience::Channel(channel_id),
+        );
+        tracing::info!(
+            target: logging::VOICE,
+            "{} left voice in {}{why}",
+            logging::who(state, user_id),
+            logging::channel(state, channel_id)
         );
 
         let empty = room.members.is_empty();

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use clap::{Parser, Subcommand};
 use hermes_proto::id::Id;
 
-use crate::config::{self, Config, LogConfig, LogFormat, TlsMode};
+use crate::config::{self, Config, TlsMode};
 use crate::state::AppState;
 use crate::time::{SECOND_MS, now_ms};
 use crate::tls::{self, Tls};
@@ -163,7 +163,7 @@ fn run_server(path: &Path) -> ExitCode {
     let Some(loaded) = load_or_report(path) else {
         return ExitCode::FAILURE;
     };
-    init_logging(&loaded.config.log);
+    crate::logging::init(&loaded.config.log);
     if !loaded.file_found {
         tracing::info!(
             "config file {} not found, using defaults and environment variables",
@@ -222,6 +222,7 @@ async fn serve(config: Config) -> ExitCode {
         tracing::info!("voice is disabled (voice.enabled = false)");
         None
     };
+    crate::console::start(&state.config.log);
     match server::run(Arc::new(state), tcp, tls, quic, server::shutdown_signal()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -528,16 +529,6 @@ fn load_or_report(path: &Path) -> Option<config::Loaded> {
             eprintln!("Invalid configuration ({}):\n{err}", path.display());
             None
         }
-    }
-}
-
-fn init_logging(log: &LogConfig) {
-    let filter = tracing_subscriber::EnvFilter::try_new(&log.level)
-        .expect("log.level is checked by config validation");
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
-    match log.format {
-        LogFormat::Pretty => builder.init(),
-        LogFormat::Json => builder.json().init(),
     }
 }
 
