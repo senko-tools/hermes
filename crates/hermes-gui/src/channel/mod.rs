@@ -619,17 +619,20 @@ fn piece_style(p: &Piece, system: bool, revealed: bool) -> HighlightStyle {
     style
 }
 
-/// A centered label on a hairline (day dividers, the new messages marker).
+/// A day divider: the date centred between two hairlines. The lines start where message text
+/// starts (past the avatar column) and stop as far from the right edge, so they sit inside the
+/// chat's content and the date stays centred in the chat whatever the messages' widths.
 fn divider(text: String, color: gpui_kit::Rgba, line: gpui_kit::Rgba) -> AnyElement {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(16.))
+        .gap(px(12.))
+        .px(px(16. + GUTTER))
         .py(px(8.))
         .child(div().flex_1().h(px(1.)).bg(line))
         .child(
             div()
+                .flex_shrink_0()
                 .text_size(theme::caption_size())
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(color)
