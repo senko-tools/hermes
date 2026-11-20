@@ -1,6 +1,7 @@
 # The desktop client
 
-Start here in a new session. Reasons and history are in `docs/DECISIONS.md` (2026-11-07 entries), encryption in
+Start here in a new session. Where things are and the rules that keep them in one place: `docs/codebase.md`.
+Reasons and history are in `docs/DECISIONS.md` (2026-11-07 entries), encryption in
 `docs/e2ee.md`.
 
 ## The crate
