@@ -62,6 +62,16 @@ pub enum Tab {
     Register,
 }
 
+pub fn launch_instance(link: &str) -> Option<InstanceId> {
+    parse_message_link(link)
+        .map(|(inst, _, _)| inst)
+        .or_else(|| {
+            AddTarget::parse(link)
+                .ok()
+                .map(|target| target.host().display())
+        })
+}
+
 /// `hermes://<instance>/channels/<channel>/<message>`, from "Copy link".
 fn parse_message_link(link: &str) -> Option<(InstanceId, Id, Id)> {
     let rest = link.trim().strip_prefix("hermes://")?;

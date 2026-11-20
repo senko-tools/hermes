@@ -138,6 +138,8 @@ pub struct Crop {
     /// The file as picked, its size in pixels, and its preview.
     bytes: Arc<Vec<u8>>,
     size: (u32, u32),
+    source: Option<Arc<image::RgbaImage>>,
+    uploaded: Option<Id>,
     preview: Picture,
     /// 1 = the picture just covers the frame.
     zoom: f32,
@@ -210,13 +212,25 @@ const APNG_BUDGET: usize = 160 << 20;
 
 /// Crops the picture: every frame of an animated one into an animated PNG when it has soft
 /// see-through edges (a GIF has only clear or solid pixels) or a GIF, else a PNG.
-fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result<Output, String> {
+fn crop_file(
+    shape: Shape,
+    file: &[u8],
+    source: Option<&image::RgbaImage>,
+    zoom: f32,
+    offset: (f32, f32),
+) -> Result<Output, String> {
     use hermes_client_core::picture;
     use image::imageops::FilterType;
     let err = |e: image::ImageError| e.to_string();
-    let first = image::load_from_memory(file).map_err(err)?;
-    let (x, y, w, h) = crop_rect(shape, (first.width(), first.height()), zoom, offset);
-    if let Some(frames) = animated_frames(file)? {
+    // Only something whose first two frames read is cropped as an animation; anything else
+    // (one frame, or frames that do not read) is cropped as a still picture.
+    let mut decoder = crate::images::animation_decoder(file).ok().flatten();
+    if let Some(frames) = decoder.as_mut()
+        && let Some(Ok(first)) = frames.next()
+        && let Some(Ok(second)) = frames.next()
+    {
+        let (x, y, w, h) = crop_rect(shape, first.buffer().dimensions(), zoom, offset);
+        let frames = [Ok(first), Ok(second)].into_iter().chain(frames);
         let (ow, oh) = output_size((w, h), shape.moving);
         let scale = |frame: &image::RgbaImage| {
             let cropped = image::imageops::crop_imm(frame, x, y, w, h).to_image();
@@ -265,8 +279,28 @@ fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result
             content_type: "image/gif",
         });
     }
+    let decoded;
+    let pixels = match source {
+        Some(pixels) => pixels,
+        None => {
+            decoded = image::load_from_memory(file).map_err(err)?.into_rgba8();
+            &decoded
+        }
+    };
+    crop_still(shape, pixels, zoom, offset)
+}
+
+fn crop_still(
+    shape: Shape,
+    pixels: &image::RgbaImage,
+    zoom: f32,
+    offset: (f32, f32),
+) -> Result<Output, String> {
+    use hermes_client_core::picture;
+    use image::imageops::FilterType;
+    let (x, y, w, h) = crop_rect(shape, pixels.dimensions(), zoom, offset);
     let (ow, oh) = output_size((w, h), shape.still);
-    let cropped = image::imageops::crop_imm(&first.to_rgba8(), x, y, w, h).to_image();
+    let cropped = image::imageops::crop_imm(pixels, x, y, w, h).to_image();
     let cropped = picture::resize(&cropped, ow, oh, FilterType::Lanczos3);
     let mut bytes = Vec::new();
     cropped
@@ -274,7 +308,7 @@ fn crop_file(shape: Shape, file: &[u8], zoom: f32, offset: (f32, f32)) -> Result
             &mut std::io::Cursor::new(&mut bytes),
             image::ImageFormat::Png,
         )
-        .map_err(err)?;
+        .map_err(|e| e.to_string())?;
     Ok(Output {
         bytes,
         filename: "picture.png",
@@ -313,18 +347,6 @@ fn apng(
     Ok(bytes)
 }
 
-/// The frames of an animated GIF, WebP or PNG, as they come; `None` for a still picture.
-fn animated_frames(file: &[u8]) -> Result<Option<image::Frames<'_>>, String> {
-    // Only something with more than one frame is cropped as an animation; two tell.
-    let Ok(Some(frames)) = crate::images::animation_decoder(file) else {
-        return Ok(None);
-    };
-    if frames.take(2).filter(Result::is_ok).count() < 2 {
-        return Ok(None);
-    }
-    crate::images::animation_decoder(file)
-}
-
 impl Shell {
     /// Asks for a picture and opens the crop view on it.
     pub fn pick_picture(&mut self, purpose: CropFor, cx: &mut Context<Self>) {
@@ -357,21 +379,21 @@ impl Shell {
                 let path = file.path().to_owned();
                 tokio::task::spawn_blocking(move || {
                     let bytes = croppable(&path, bytes)?;
-                    let size = image::ImageReader::new(std::io::Cursor::new(&bytes))
-                        .with_guessed_format()
+                    let pixels = image::load_from_memory(&bytes)
                         .map_err(|e| e.to_string())?
-                        .into_dimensions()
-                        .map_err(|e| e.to_string())?;
-                    let preview = crate::images::decode_first_frame(&bytes, PREVIEW_SIDE)?;
-                    Ok(Some((Arc::new(bytes), size, preview)))
+                        .into_rgba8();
+                    let size = pixels.dimensions();
+                    let preview = crate::images::first_frame_pixels(&pixels, PREVIEW_SIDE);
+                    let source = (size.0.max(size.1) <= PREVIEW_SIDE).then(|| Arc::new(pixels));
+                    Ok(Some((Arc::new(bytes), size, source, preview)))
                 })
                 .await
                 .map_err(|e| e.to_string())?
             },
             move |this, result: Result<_, String>, window, cx| match result {
-                Ok(Some((bytes, size, preview))) => {
+                Ok(Some((bytes, size, source, preview))) => {
                     this.load_crop_animation(bytes.clone(), cx);
-                    this.open_crop(purpose, bytes, size, preview, window, cx);
+                    this.open_crop(purpose, bytes, (size, source, preview), window, cx);
                 }
                 Ok(None) => {}
                 Err(err) => this.error(format!("could not open the picture: {err}"), cx),
@@ -409,8 +431,7 @@ impl Shell {
         &mut self,
         purpose: CropFor,
         bytes: Arc<Vec<u8>>,
-        size: (u32, u32),
-        preview: Picture,
+        (size, source, preview): ((u32, u32), Option<Arc<image::RgbaImage>>, Picture),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -434,6 +455,8 @@ impl Shell {
             purpose,
             bytes,
             size,
+            source,
+            uploaded: None,
             preview,
             zoom: 1.,
             offset: (0., 0.),
@@ -449,80 +472,179 @@ impl Shell {
         let Some(crop) = &mut self.crop else {
             return;
         };
+        if crop.saving {
+            return;
+        }
         crop.saving = true;
-        let (file, zoom, offset) = (crop.bytes.clone(), crop.zoom, crop.offset);
+        let started = std::time::Instant::now();
+        let file = crop.bytes.clone();
         let purpose = crop.purpose.clone();
+        let Ok(rest) = self.core.rest(purpose.inst()) else {
+            crop.saving = false;
+            self.error("The account is disconnected", cx);
+            return;
+        };
+        if let Some(id) = crop.uploaded {
+            self.apply_crop(purpose, file, rest, id, cx);
+            return;
+        }
+        let source = crop.source.clone();
+        let (zoom, offset) = (crop.zoom, crop.offset);
         let shape = purpose.shape();
-        let core = self.core.clone();
+        let banner = matches!(purpose, CropFor::Banner(_));
+        let picked = file.clone();
+        let upload = rest.clone();
         self.run(
             cx,
             async move {
-                let output =
-                    tokio::task::spawn_blocking(move || crop_file(shape, &file, zoom, offset))
-                        .await
-                        .map_err(|e| e.to_string())?
-                        .map_err(|e| e.to_string())?;
-                // A long animation can grow when cropped.
+                let output = tokio::task::spawn_blocking(move || {
+                    crop_file(shape, &file, source.as_deref(), zoom, offset)
+                })
+                .await
+                .map_err(|e| e.to_string())??;
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    bytes = output.bytes.len(),
+                    "picture crop and encode"
+                );
                 if output.bytes.len() as u64 > PICTURE_MAX_BYTES {
                     return Err(too_big());
                 }
-                let inst = purpose.inst().clone();
-                fn failed(e: impl std::fmt::Display) -> String {
-                    e.to_string()
-                }
-                let rest = core.rest(&inst).map_err(failed)?;
-                let picture = rest
+                let preview = banner.then(|| {
+                    let bytes = output.bytes.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::images::decode_preview(&bytes, Some(crate::images::BANNER_PIXELS))
+                    })
+                });
+                let at = std::time::Instant::now();
+                let picture = upload
                     .upload(output.filename, output.content_type, output.bytes)
                     .await
-                    .map_err(failed)?;
-                match purpose {
+                    .map_err(|e| e.to_string())?;
+                tracing::info!(
+                    elapsed_ms = at.elapsed().as_millis(),
+                    "picture upload acknowledged"
+                );
+                Ok((picture.id, preview))
+            },
+            move |this, result, _, cx| {
+                let (id, preview) = match result {
+                    Ok(done) => done,
+                    Err(err) => {
+                        if let Some(crop) = this
+                            .crop
+                            .as_mut()
+                            .filter(|c| Arc::ptr_eq(&c.bytes, &picked))
+                        {
+                            crop.saving = false;
+                        }
+                        this.error(format!("could not save the picture: {err}"), cx);
+                        return;
+                    }
+                };
+                if let Some(crop) = this
+                    .crop
+                    .as_mut()
+                    .filter(|c| Arc::ptr_eq(&c.bytes, &picked))
+                {
+                    crop.uploaded = Some(id);
+                }
+                if let Some(preview) = preview {
+                    let key = (purpose.inst().clone(), id);
+                    let account = this.images.account(&key.0);
+                    this.images
+                        .avatars
+                        .insert(key.clone(), crate::images::Img::Loading);
+                    this.images.track_banner(key.clone(), started);
+                    this.run(cx, preview, move |this, result, _, _| {
+                        if this.images.account(&key.0) == account {
+                            if let Ok(Ok(picture)) = result {
+                                this.images
+                                    .avatars
+                                    .insert(key, crate::images::Img::Ready(picture));
+                            } else {
+                                this.images.avatars.remove(&key);
+                            }
+                        }
+                    });
+                }
+                this.apply_crop(purpose, picked, rest, id, cx);
+            },
+        );
+    }
+
+    fn apply_crop(
+        &mut self,
+        purpose: CropFor,
+        picked: Arc<Vec<u8>>,
+        rest: hermes_client_core::rest::Rest,
+        id: Id,
+        cx: &mut Context<Self>,
+    ) {
+        self.run(
+            cx,
+            async move {
+                let at = std::time::Instant::now();
+                let message = match purpose {
                     CropFor::Avatar(_) => {
                         rest.update_me(&UpdateMeRequest {
-                            avatar_id: Some(Some(picture.id)),
-                            ..UpdateMeRequest::default()
+                            avatar_id: Some(Some(id)),
+                            ..Default::default()
                         })
                         .await
-                        .map_err(failed)?;
-                        Ok::<_, String>("Avatar changed")
+                        .map_err(|e| e.to_string())?;
+                        "Avatar changed"
                     }
                     CropFor::SpaceIcon(_, space) => {
                         rest.update_space(
                             space,
                             &UpdateSpaceRequest {
-                                icon_id: Some(Some(picture.id)),
-                                ..UpdateSpaceRequest::default()
+                                icon_id: Some(Some(id)),
+                                ..Default::default()
                             },
                         )
                         .await
-                        .map_err(failed)?;
-                        Ok("Icon changed")
+                        .map_err(|e| e.to_string())?;
+                        "Icon changed"
                     }
                     CropFor::Banner(_) => {
                         let me = rest
                             .update_me(&UpdateMeRequest {
-                                banner_id: Some(Some(picture.id)),
-                                ..UpdateMeRequest::default()
+                                banner_id: Some(Some(id)),
+                                ..Default::default()
                             })
                             .await
-                            .map_err(failed)?;
-                        // A server from before banners ignores the field and still says yes.
-                        if me.user.banner.as_ref().map(|b| b.id) != Some(picture.id) {
+                            .map_err(|e| e.to_string())?;
+                        if me.user.banner.as_ref().map(|b| b.id) != Some(id) {
                             return Err("this server is too old for banners".to_owned());
                         }
-                        Ok("Banner changed")
+                        "Banner changed"
                     }
-                }
+                };
+                tracing::info!(
+                    elapsed_ms = at.elapsed().as_millis(),
+                    "picture profile update acknowledged"
+                );
+                Ok::<_, String>(message)
             },
-            |this, result, _, cx| match result {
-                Ok(text) => {
-                    this.close_later("crop", |s| s.crop = None, cx);
-                    this.info(text, cx);
-                }
-                Err(err) => {
-                    if let Some(crop) = &mut this.crop {
-                        crop.saving = false;
+            move |this, result, _, cx| {
+                let same = this
+                    .crop
+                    .as_ref()
+                    .is_some_and(|c| Arc::ptr_eq(&c.bytes, &picked));
+                match result {
+                    Ok(text) => {
+                        if same {
+                            this.close_later("crop", |s| s.crop = None, cx);
+                        }
+                        this.info(text, cx);
                     }
-                    this.error(format!("could not save the picture: {err}"), cx);
+                    Err(err) => {
+                        if same {
+                            this.crop.as_mut().unwrap().saving = false;
+                        }
+                        this.error(format!("could not save the picture: {err}"), cx);
+                    }
                 }
             },
         );
@@ -696,7 +818,13 @@ impl Shell {
 impl Crop {
     /// Zooms around the frame's middle: what is there stays there.
     fn set_zoom(&mut self, zoom: f32) {
+        if self.saving {
+            return;
+        }
         let zoom = zoom.clamp(1., MAX_ZOOM);
+        if zoom != self.zoom {
+            self.uploaded = None;
+        }
         let grow = zoom / self.zoom;
         self.zoom = zoom;
         self.set_offset((self.offset.0 * grow, self.offset.1 * grow));
@@ -705,7 +833,14 @@ impl Crop {
     fn set_offset(&mut self, offset: (f32, f32)) {
         let shape = self.purpose.shape();
         let shown = shown_size(shape, self.size, self.zoom);
-        self.offset = clamp_offset(shape, shown, offset);
+        if self.saving {
+            return;
+        }
+        let offset = clamp_offset(shape, shown, offset);
+        if self.offset != offset {
+            self.uploaded = None;
+        }
+        self.offset = offset;
     }
 }
 
@@ -803,7 +938,7 @@ mod tests {
     #[test]
     fn an_animated_picture_stays_animated_when_cropped() {
         let gif = crate::images::tests::gif(3, 64);
-        let out = crop_file(square(), &gif, 1., (0., 0.)).unwrap();
+        let out = crop_file(square(), &gif, None, 1., (0., 0.)).unwrap();
         assert_eq!(out.content_type, "image/gif");
         let frames = crate::images::animation_decoder(&out.bytes)
             .unwrap()
@@ -814,7 +949,7 @@ mod tests {
     #[test]
     fn a_gif_of_one_frame_is_cropped_as_a_still_picture() {
         let gif = crate::images::tests::gif(1, 64);
-        let out = crop_file(square(), &gif, 1., (0., 0.)).unwrap();
+        let out = crop_file(square(), &gif, None, 1., (0., 0.)).unwrap();
         assert_eq!(out.content_type, "image/png");
     }
 
@@ -830,7 +965,7 @@ mod tests {
                 .unwrap();
             bytes
         };
-        let out = crop_file(square(), &png, 1., (0., 0.)).unwrap();
+        let out = crop_file(square(), &png, None, 1., (0., 0.)).unwrap();
         assert_eq!(out.content_type, "image/png");
         let cropped = image::load_from_memory(&out.bytes).unwrap();
         assert_eq!((cropped.width(), cropped.height()), (20, 20));

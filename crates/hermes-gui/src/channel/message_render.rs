@@ -32,8 +32,7 @@ impl Shell {
                 .attachments
                 .iter()
                 .filter(|a| {
-                    (is_image(a) || has_poster(a))
-                        && !self.images.thumbs.contains_key(&(key.0.clone(), a.id))
+                    has_poster(a) && !self.images.thumbs.contains_key(&(key.0.clone(), a.id))
                 })
                 .cloned()
                 .collect()

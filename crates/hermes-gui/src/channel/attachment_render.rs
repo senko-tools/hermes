@@ -24,6 +24,7 @@ impl Shell {
                     .overflow_hidden()
                     .cursor_pointer()
                     .group(IMAGE_GROUP)
+                    .child(self.images.attachment_marker(inst, a))
                     .child({
                         let picture = img(image.shown(self.animating()))
                             .w(px(w))
@@ -76,11 +77,11 @@ impl Shell {
             }
             let failed = matches!(picture, Some(Img::Failed));
             let text = if failed {
-                "Could not load · click to try again"
+                "Could not load · click to open"
             } else {
                 "Loading…"
             };
-            let retry_key = (inst.clone(), a.id);
+            let (open_inst, attachment) = (inst.clone(), a.clone());
             // While it loads, the space it will fill breathes softly.
             let shimmer = (!failed).then(|| {
                 div()
@@ -110,14 +111,17 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .children(shimmer)
                 .child(text)
-                // A failed picture loads again on a click (#9).
-                .when(failed, |d| {
-                    d.cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.images.thumbs.remove(&retry_key);
-                            cx.notify();
-                        }))
-                });
+                .child(self.images.attachment_marker(inst, a))
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if failed {
+                        this.images
+                            .thumbs
+                            .remove(&(open_inst.clone(), attachment.id));
+                    }
+                    this.open_image(open_inst.clone(), attachment.clone(), cx);
+                }));
             return self
                 .with_file_menu(waiting, inst, place, a.id, cx)
                 .into_any_element();

@@ -1,6 +1,8 @@
 //! Avatars and attachment images, loaded from the server once and decoded off the UI thread.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
@@ -8,7 +10,7 @@ use gpui_kit::{AnyElement, Context, RenderImage, SharedString, Window, div, img}
 use hermes_client_core::InstanceId;
 use hermes_client_core::picture;
 use hermes_client_core::proto::id::Id;
-use hermes_client_core::proto::models::Attachment;
+use hermes_client_core::proto::models::{Attachment, AttachmentRef};
 use hermes_client_core::proto::models::{Status, User};
 use image::Frame;
 
@@ -16,9 +18,9 @@ use crate::shell::Shell;
 use crate::theme::{self, px};
 
 /// The largest size an avatar is drawn at, in pixels on a 2x display.
-const AVATAR_PIXELS: u32 = 192;
+pub(crate) const AVATAR_PIXELS: u32 = 192;
 /// The same for a profile banner (300 by 120 on the card).
-const BANNER_PIXELS: u32 = 640;
+pub(crate) const BANNER_PIXELS: u32 = 640;
 
 #[derive(Clone)]
 pub enum Img {
@@ -99,6 +101,14 @@ pub fn maybe_animated(content_type: &str, filename: &str) -> bool {
             .any(|e| lower.ends_with(e))
 }
 
+type ImageKey = (InstanceId, Id);
+
+#[derive(Default)]
+struct DrawnMedia {
+    pictures: HashMap<ImageKey, Attachment>,
+    profiles: HashMap<ImageKey, (String, u32)>,
+}
+
 #[derive(Default)]
 pub struct Images {
     pub thumbs: HashMap<(InstanceId, Id), Img>,
@@ -111,50 +121,104 @@ pub struct Images {
     pub retired: Vec<Arc<RenderImage>>,
     /// The viewer's picture as last drawn, freed from the GPU once the viewer lets go of it.
     viewer_drawn: Option<Picture>,
-    /// Originals downloaded lately (for animated previews and SVGs): the full view opens from
-    /// them instead of downloading the file again (#9). Shared with the background tasks.
-    pub originals: Originals,
+    drawn: Rc<RefCell<DrawnMedia>>,
+    visible: HashMap<ImageKey, Attachment>,
+    originals: VecDeque<(ImageKey, Arc<Vec<u8>>)>,
+    banner_saved: RefCell<Option<(ImageKey, std::time::Instant)>>,
+    active: HashSet<ImageKey>,
+    failed: HashSet<ImageKey>,
+    /// Originals fetched ahead of a click once already: not fetched ahead again once evicted.
+    warmed: HashSet<ImageKey>,
+    accounts: HashMap<InstanceId, String>,
 }
 
-/// Recently downloaded originals by (instance, attachment), oldest first.
-pub type Originals =
-    Arc<std::sync::Mutex<std::collections::VecDeque<((InstanceId, Id), Arc<Vec<u8>>)>>>;
+/// Originals kept in memory; ones on screen or open stay even past it.
+const ORIGINALS_BYTES: usize = 192 << 20;
+/// Larger originals are only downloaded when opened.
+const WARM_MAX_BYTES: u64 = 16 << 20;
 
-/// How many originals stay, and how many bytes at most.
-const ORIGINALS_KEPT: usize = 6;
-const ORIGINALS_BYTES: usize = 64 << 20;
-
-/// Keeps `bytes` as the original of `key`, letting the oldest go past the limits.
-pub fn keep_original(originals: &Originals, key: (InstanceId, Id), bytes: Arc<Vec<u8>>) {
-    let mut kept = originals
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    kept.retain(|(k, _)| *k != key);
-    if bytes.len() > ORIGINALS_BYTES {
-        return;
-    }
-    kept.push_back((key, bytes));
-    while kept.len() > ORIGINALS_KEPT
-        || kept.iter().map(|(_, b)| b.len()).sum::<usize>() > ORIGINALS_BYTES
-    {
-        kept.pop_front();
-    }
+fn original_preview(a: &Attachment) -> bool {
+    maybe_animated(&a.content_type, &a.filename)
+        || is_svg(&a.content_type, &a.filename)
+        || a.sealed
+            .as_ref()
+            .map_or(!a.has_thumb, |s| s.thumb.is_none())
 }
 
-/// The original of `key`, if it was downloaded lately.
-pub fn kept_original(originals: &Originals, key: &(InstanceId, Id)) -> Option<Arc<Vec<u8>>> {
-    originals
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .find(|(k, _)| k == key)
-        .map(|(_, b)| b.clone())
+fn when_visible(work: impl FnOnce() + 'static) -> AnyElement {
+    gpui_kit::canvas(
+        move |bounds, window, _| {
+            if bounds.intersects(&window.content_mask().bounds) {
+                work();
+            }
+        },
+        |_, (), _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }
 
 /// Thumbnails kept in memory.
 const MAX_THUMBNAILS: usize = 400;
 
 impl Images {
+    pub fn account(&self, host: &str) -> Option<String> {
+        self.accounts.get(host).cloned()
+    }
+
+    pub fn track_banner(&self, key: ImageKey, started: std::time::Instant) {
+        self.banner_saved.replace(Some((key, started)));
+    }
+
+    fn original(&self, key: &ImageKey) -> Option<Arc<Vec<u8>>> {
+        self.originals
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, b)| b.clone())
+    }
+
+    fn originals_bytes(&self) -> usize {
+        self.originals.iter().map(|(_, b)| b.len()).sum()
+    }
+
+    fn trim_originals(&mut self, viewer: Option<&ImageKey>, budget: usize) {
+        let mut bytes = self.originals_bytes();
+        while bytes > budget {
+            let Some(i) = self
+                .originals
+                .iter()
+                .position(|(k, _)| !self.visible.contains_key(k) && Some(k) != viewer)
+            else {
+                break;
+            };
+            bytes -= self.originals.remove(i).unwrap().1.len();
+        }
+    }
+
+    pub fn attachment_marker(&self, inst: &str, attachment: &Attachment) -> AnyElement {
+        let drawn = self.drawn.clone();
+        let key = (inst.to_owned(), attachment.id);
+        let attachment = attachment.clone();
+        when_visible(move || {
+            drawn.borrow_mut().pictures.insert(key, attachment);
+        })
+    }
+
+    pub fn profile_marker(&self, inst: &str, file: &AttachmentRef, max: u32) -> Option<AnyElement> {
+        let key = (inst.to_owned(), file.id);
+        if self.avatars.contains_key(&key) {
+            return None;
+        }
+        let drawn = self.drawn.clone();
+        let filename = file.filename.clone();
+        Some(when_visible(move || {
+            let mut drawn = drawn.borrow_mut();
+            let entry = drawn.profiles.entry(key).or_insert((filename, max));
+            entry.1 = entry.1.max(max);
+        }))
+    }
+
     /// At the start of each draw: frees the GPU copies of pictures nothing draws any more
     /// (dropped or replaced ones, and the full-size picture of a closed viewer; gpui keeps every
     /// drawn image until told).
@@ -212,7 +276,7 @@ pub fn decode(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
 }
 
 /// [`decode`] for a picture that stays loaded: an animation gets a smaller budget.
-fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
+pub(crate) fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
     decode_within(bytes, max, PREVIEW_ANIMATION_BUDGET)
 }
 
@@ -257,17 +321,23 @@ fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Pictur
 
 /// Only a picture's first frame, at most `max` pixels on a side, decoded and shrunk quickly: what
 /// is shown right after picking a file. See [`decode_animation`] for the rest of it.
+#[cfg(test)]
 pub fn decode_first_frame(bytes: &[u8], max: u32) -> Result<Picture, String> {
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
-    let mut pixels = image.to_rgba8();
-    if pixels.width() > max || pixels.height() > max {
-        pixels = picture::thumbnail(&pixels, max, max);
-    }
+    Ok(first_frame_pixels(&image.into_rgba8(), max))
+}
+
+pub fn first_frame_pixels(source: &image::RgbaImage, max: u32) -> Picture {
+    let mut pixels = if source.width() > max || source.height() > max {
+        picture::thumbnail(source, max, max)
+    } else {
+        source.clone()
+    };
     to_bgra(&mut pixels);
-    Ok(Picture {
+    Picture {
         still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
         moving: None,
-    })
+    }
 }
 
 /// All frames of an animated picture at most `side` pixels on a side, for a picture looked at
@@ -355,40 +425,101 @@ fn fit(pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
 }
 
 impl Shell {
-    /// Starts loading the avatar of everyone the store knows whose avatar is not loaded (or
-    /// loading) yet. A changed avatar is a new attachment, so each is fetched once.
-    pub fn load_avatars(&mut self, cx: &mut Context<Self>) {
-        let wanted: Vec<(InstanceId, Id, String, u32)> = {
-            let store = self.core.store();
-            store
-                .instances
-                .iter()
-                .flat_map(|(inst, s)| {
-                    let users = || s.users.values().chain(s.me.as_ref().map(|me| &me.user));
-                    users()
-                        .filter_map(|u| u.avatar.as_ref())
-                        // Server icons load the same way.
-                        .chain(s.spaces.values().filter_map(|st| st.space.icon.as_ref()))
-                        .map(|a| (a, AVATAR_PIXELS))
-                        .chain(
-                            users()
-                                .filter_map(|u| u.banner.as_ref())
-                                .map(|a| (a, BANNER_PIXELS)),
-                        )
-                        .map(move |(a, max)| (inst.clone(), a.id, a.filename.clone(), max))
-                        .collect::<Vec<_>>()
-                })
-                .filter(|(inst, id, ..)| !self.images.avatars.contains_key(&(inst.clone(), *id)))
-                .collect()
-        };
-        for (inst, id, filename, max) in wanted {
-            let key = (inst, id);
+    /// Resolve this frame's clipped attachment and profile elements after layout.
+    pub fn prepare_media_frame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let accounts = self.core.connected_accounts();
+        for (host, old) in &std::mem::take(&mut self.images.accounts) {
+            if accounts.get(host) == Some(old) {
+                continue;
+            }
+            let images = &mut self.images;
+            images.originals.retain(|(k, _)| &k.0 != host);
+            images.active.retain(|k| &k.0 != host);
+            images.failed.retain(|k| &k.0 != host);
+            images.warmed.retain(|k| &k.0 != host);
+            images.thumb_order.retain(|k| &k.0 != host);
+            images.thumb_arrived.retain(|k, _| &k.0 != host);
+            let stale: Vec<_> = images
+                .thumbs
+                .extract_if(|k, _| &k.0 == host)
+                .chain(images.avatars.extract_if(|k, _| &k.0 == host))
+                .map(|(_, p)| p)
+                .collect();
+            for img in stale {
+                images.retire(img);
+            }
+            if self.viewer.as_ref().is_some_and(|v| &v.inst == host) {
+                self.viewer = None;
+            }
+        }
+        self.images.accounts = accounts;
+        self.images.drawn.replace(DrawnMedia::default());
+        let shell = cx.entity().downgrade();
+        window.defer(cx, move |_, cx| {
+            let _ = shell.update(cx, |this, cx| this.load_drawn_media(cx));
+        });
+    }
+
+    fn load_drawn_media(&mut self, cx: &mut Context<Self>) {
+        let drawn = self.images.drawn.take();
+        self.images.visible = drawn.pictures;
+        self.images
+            .failed
+            .retain(|k| self.images.visible.contains_key(k));
+        let viewer = self
+            .viewer
+            .as_ref()
+            .map(|v| (v.inst.clone(), v.attachment.id));
+        self.images.trim_originals(viewer.as_ref(), ORIGINALS_BYTES);
+        let pictures: Vec<_> = self
+            .images
+            .visible
+            .iter()
+            .map(|(k, a)| (k.0.clone(), a.clone()))
+            .collect();
+        for (host, attachment) in &pictures {
+            if !original_preview(attachment) {
+                self.load_thumbnail(host, attachment, cx);
+            }
+        }
+        // Originals that are themselves needed to draw a preview go first; the rest are fetched
+        // ahead of a click once each, within the memory budget.
+        for need_preview in [true, false] {
+            for (host, a) in &pictures {
+                let key = (host.clone(), a.id);
+                let images = &self.images;
+                if images.failed.contains(&key) || images.active.contains(&key) {
+                    continue;
+                }
+                let preview = original_preview(a) && !images.thumbs.contains_key(&key);
+                if need_preview != preview {
+                    continue;
+                }
+                if !preview
+                    && (images.warmed.contains(&key)
+                        || a.size > WARM_MAX_BYTES
+                        || !matches!(images.thumbs.get(&key), Some(Img::Ready(_)))
+                        || images.original(&key).is_some()
+                        || images.originals_bytes() + a.size as usize > ORIGINALS_BYTES)
+                {
+                    continue;
+                }
+                if images.active.iter().filter(|k| &k.0 == host).count() >= 2 {
+                    continue;
+                }
+                self.images.warmed.insert(key.clone());
+                self.request_original(key, a.clone(), false, cx);
+            }
+        }
+
+        for (key, (filename, max)) in drawn.profiles {
             if self.images.avatars.contains_key(&key) {
                 continue; // two users with the same avatar
             }
             self.images.avatars.insert(key.clone(), Img::Loading);
             let core = self.core.clone();
             let (inst, id) = key.clone();
+            let account = self.images.accounts.get(&inst).cloned();
             self.run(
                 cx,
                 async move {
@@ -411,7 +542,11 @@ impl Shell {
                             Img::Failed
                         }
                     };
-                    this.images.avatars.insert(key, img);
+                    if this.images.accounts.get(&key.0) == account.as_ref()
+                        && matches!(this.images.avatars.get(&key), Some(Img::Loading))
+                    {
+                        this.images.avatars.insert(key, img);
+                    }
                 },
             );
         }
@@ -420,27 +555,46 @@ impl Shell {
     /// Someone's profile banner, once loaded.
     pub fn banner_picture(&self, inst: &str, user: Option<&User>) -> Option<Arc<RenderImage>> {
         let banner = user?.banner.as_ref()?;
-        match self.images.avatars.get(&(inst.to_owned(), banner.id)) {
-            Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
+        let key = (inst.to_owned(), banner.id);
+        match self.images.avatars.get(&key) {
+            Some(Img::Ready(picture)) => {
+                let mut saved = self.images.banner_saved.borrow_mut();
+                if saved.as_ref().is_some_and(|(k, _)| k == &key)
+                    && let Some((_, at)) = saved.take()
+                {
+                    tracing::info!(
+                        elapsed_ms = at.elapsed().as_millis(),
+                        "new banner displayed"
+                    );
+                }
+                Some(picture.shown(self.animating()))
+            }
             _ => None,
         }
     }
 
     /// A server's icon, once loaded.
-    pub fn space_picture(&self, inst: &str, space: Id) -> Option<Arc<RenderImage>> {
+    pub fn space_picture(
+        &self,
+        inst: &str,
+        space: Id,
+    ) -> (Option<Arc<RenderImage>>, Option<AnyElement>) {
         let store = self.core.store();
-        let icon = store
-            .instance(inst)?
-            .spaces
-            .get(&space)?
-            .space
-            .icon
-            .as_ref()?
-            .id;
-        match self.images.avatars.get(&(inst.to_owned(), icon)) {
+        let Some(icon) = store
+            .instance(inst)
+            .and_then(|s| s.spaces.get(&space))
+            .and_then(|s| s.space.icon.as_ref())
+        else {
+            return (None, None);
+        };
+        let picture = match self.images.avatars.get(&(inst.to_owned(), icon.id)) {
             Some(Img::Ready(picture)) => Some(picture.shown(self.animating())),
             _ => None,
-        }
+        };
+        (
+            picture,
+            self.images.profile_marker(inst, icon, AVATAR_PIXELS),
+        )
     }
 
     /// Frees every thumbnail; those on screen load again.
@@ -452,71 +606,176 @@ impl Shell {
         }
     }
 
-    /// Starts loading an attachment's thumbnail unless that was done already.
-    pub fn load_thumbnail(
-        &mut self,
-        inst: &InstanceId,
-        attachment: &Attachment,
-        cx: &mut Context<Self>,
-    ) {
-        let id = attachment.id;
-        let attachment = attachment.clone();
-        let key = (inst.clone(), id);
-        if self.images.thumbs.contains_key(&key) {
-            return;
-        }
+    fn begin_thumbnail(&mut self, key: &ImageKey) {
         self.images.evict_thumbnails();
         self.images.thumb_order.push_back(key.clone());
         self.images.thumbs.insert(key.clone(), Img::Loading);
+    }
+
+    fn finish_thumbnail(&mut self, key: ImageKey, result: Result<Picture, String>) {
+        if !matches!(self.images.thumbs.get(&key), Some(Img::Loading)) {
+            return;
+        }
+        let image = match result {
+            Ok(picture) => {
+                self.images
+                    .thumb_arrived
+                    .insert(key.clone(), std::time::Instant::now());
+                Img::Ready(picture)
+            }
+            Err(err) => {
+                tracing::warn!("preview {}: {err}", key.1);
+                Img::Failed
+            }
+        };
+        self.images.thumbs.insert(key, image);
+    }
+
+    pub fn load_thumbnail(&mut self, inst: &InstanceId, a: &Attachment, cx: &mut Context<Self>) {
+        let key = (inst.clone(), a.id);
+        if self.images.thumbs.contains_key(&key) {
+            return;
+        }
+        self.begin_thumbnail(&key);
         let core = self.core.clone();
-        let inst = inst.clone();
-        let originals = self.images.originals.clone();
+        let account = self.images.accounts.get(inst).cloned();
+        let (inst, attachment) = (inst.clone(), a.clone());
         self.run(
             cx,
             async move {
-                // An encrypted picture may have a preview of its own; the server cannot make one.
-                // The thumbnail of an animated one is still, so its original is loaded too.
-                let animated = maybe_animated(&attachment.content_type, &attachment.filename)
-                    || is_svg(&attachment.content_type, &attachment.filename);
-                let no_preview = attachment
-                    .sealed
-                    .as_ref()
-                    .is_some_and(|sealed| sealed.thumb.is_none());
-                let (bytes, max) = if no_preview || animated {
-                    let bytes = core.download(&inst, &attachment).await;
-                    if let Ok(bytes) = &bytes {
-                        keep_original(&originals, (inst.clone(), id), Arc::new(bytes.clone()));
-                    }
-                    let max = if animated {
-                        ANIMATED_PREVIEW
-                    } else {
-                        SEALED_PREVIEW
-                    };
-                    (bytes?, Some(max))
-                } else {
-                    let bytes = core.thumbnail(&inst, &attachment).await;
-                    (bytes?, None)
-                };
-                tokio::task::spawn_blocking(move || decode_preview(&bytes, max))
+                let bytes = core.thumbnail(&inst, &attachment).await?;
+                tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(SEALED_PREVIEW)))
                     .await
                     .map_err(|e| e.to_string())?
             },
             move |this, result, _, _| {
-                let img = match result {
-                    Ok(image) => Img::Ready(image),
-                    Err(err) => {
-                        tracing::warn!("thumbnail {id}: {err}");
-                        Img::Failed
-                    }
-                };
-                if matches!(img, Img::Ready(_)) {
-                    this.images
-                        .thumb_arrived
-                        .insert(key.clone(), std::time::Instant::now());
+                if this.images.accounts.get(&key.0) == account.as_ref() {
+                    this.finish_thumbnail(key, result);
                 }
-                this.images.thumbs.insert(key, img);
             },
         );
+    }
+
+    pub fn request_original(
+        &mut self,
+        key: ImageKey,
+        a: Attachment,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(bytes) = self.images.original(&key) {
+            self.decode_original(key, &a, bytes, open, cx);
+            return;
+        }
+        if !self.images.active.insert(key.clone()) {
+            return;
+        }
+        let core = self.core.clone();
+        let host = key.0.clone();
+        let account = self.images.accounts.get(&host).cloned();
+        let file = a.clone();
+        self.run(
+            cx,
+            async move { core.download(&host, &file).await },
+            move |this, result, _, cx| {
+                if this.images.accounts.get(&key.0) != account.as_ref() {
+                    return;
+                }
+                this.images.active.remove(&key);
+                let open = this
+                    .viewer
+                    .as_ref()
+                    .is_some_and(|v| v.inst == key.0 && v.attachment.id == key.1);
+                match result {
+                    Ok(bytes) => {
+                        let bytes = Arc::new(bytes);
+                        this.images
+                            .originals
+                            .push_back((key.clone(), bytes.clone()));
+                        this.decode_original(key, &a, bytes, open, cx);
+                    }
+                    Err(err) => {
+                        tracing::warn!("original {}: {err}", key.1);
+                        this.images.failed.insert(key.clone());
+                        if open {
+                            this.viewer.as_mut().unwrap().image = Img::Failed;
+                        }
+                        if original_preview(&a) && !this.images.thumbs.contains_key(&key) {
+                            this.begin_thumbnail(&key);
+                            this.finish_thumbnail(key, Err(err.to_string()));
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    fn decode_original(
+        &mut self,
+        key: ImageKey,
+        a: &Attachment,
+        bytes: Arc<Vec<u8>>,
+        open: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let account = self.images.accounts.get(&key.0).cloned();
+        if original_preview(a)
+            && self.images.visible.contains_key(&key)
+            && !matches!(
+                self.images.thumbs.get(&key),
+                Some(Img::Loading | Img::Ready(_))
+            )
+        {
+            self.begin_thumbnail(&key);
+            let bytes = bytes.clone();
+            let preview_key = key.clone();
+            let preview_account = account.clone();
+            let max = if maybe_animated(&a.content_type, &a.filename)
+                || is_svg(&a.content_type, &a.filename)
+            {
+                ANIMATED_PREVIEW
+            } else {
+                SEALED_PREVIEW
+            };
+            self.run(
+                cx,
+                async move {
+                    tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(max)))
+                        .await
+                        .map_err(|e| e.to_string())?
+                },
+                move |this, result, _, _| {
+                    if this.images.accounts.get(&preview_key.0) == preview_account.as_ref() {
+                        if result.is_err() {
+                            this.images.failed.insert(preview_key.clone());
+                        }
+                        this.finish_thumbnail(preview_key, result);
+                    }
+                },
+            );
+        }
+        if open {
+            self.run(
+                cx,
+                async move {
+                    tokio::task::spawn_blocking(move || decode(&bytes, None))
+                        .await
+                        .map_err(|e| e.to_string())?
+                },
+                move |this, result, _, _| {
+                    if this.images.accounts.get(&key.0) == account.as_ref()
+                        && let Some(viewer) = &mut this.viewer
+                        && viewer.inst == key.0
+                        && viewer.attachment.id == key.1
+                    {
+                        viewer.image = result.map(Img::Ready).unwrap_or_else(|err| {
+                            tracing::warn!("image {}: {err}", key.1);
+                            Img::Failed
+                        });
+                    }
+                },
+            );
+        }
     }
 
     /// An avatar in the chosen shape (round or a squircle): the user's picture, else the first
@@ -548,6 +807,11 @@ impl Shell {
             .bg(theme::selected())
             .text_color(theme::text())
             .text_size(px((size * 0.45).max(12.)))
+            .relative()
+            .children(
+                user.and_then(|u| u.avatar.as_ref())
+                    .and_then(|file| self.images.profile_marker(inst, file, AVATAR_PIXELS)),
+            )
             .child(initial(name))
             .into_any_element()
     }
@@ -702,24 +966,18 @@ pub(crate) mod tests {
 
     #[test]
     fn originals_keep_the_last_few() {
-        let kept = Originals::default();
-        for n in 0..8u64 {
-            keep_original(&kept, ("h".into(), Id(n)), Arc::new(vec![0; 10]));
+        let mut images = Images::default();
+        for n in 0..8 {
+            images
+                .originals
+                .push_back((("h".into(), Id(n)), Arc::new(vec![0; 10])));
         }
-        assert!(
-            kept_original(&kept, &("h".into(), Id(0))).is_none(),
-            "the oldest went"
-        );
-        assert!(kept_original(&kept, &("h".into(), Id(7))).is_some());
-        keep_original(
-            &kept,
-            ("h".into(), Id(9)),
-            Arc::new(vec![0; ORIGINALS_BYTES + 1]),
-        );
-        assert!(
-            kept_original(&kept, &("h".into(), Id(9))).is_none(),
-            "too large to keep"
-        );
+        let open = ("h".into(), Id(0));
+        images.trim_originals(Some(&open), 60);
+        assert!(images.original(&open).is_some(), "the open one stays");
+        assert!(images.original(&("h".into(), Id(1))).is_none());
+        assert!(images.original(&("h".into(), Id(7))).is_some());
+        assert_eq!(images.originals.len(), 6);
     }
 
     #[test]

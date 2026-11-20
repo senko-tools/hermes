@@ -17,6 +17,12 @@ const QUIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(1500);
 /// A message sound plays at most this often.
 const SOUND_GAP: std::time::Duration = std::time::Duration::from_secs(2);
 
+pub fn create_tray() -> Option<desktop::tray::Tray> {
+    desktop::tray::Tray::new()
+        .map_err(|err| tracing::warn!("no tray icon: {err}"))
+        .ok()
+}
+
 impl Shell {
     pub fn start_desktop(
         &mut self,
@@ -34,6 +40,32 @@ impl Shell {
         if start_hidden {
             native::set_visible(window, false);
         }
+        if start_hidden {
+            self.finish_desktop(cx);
+        } else {
+            let shell = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = shell.update(cx, |this, cx| {
+                    tracing::info!(
+                        elapsed_ms = this.launched.elapsed().as_millis(),
+                        "first interactive window"
+                    );
+                    this.tray = create_tray();
+                    this.finish_desktop(cx);
+                });
+            });
+        }
+    }
+
+    fn finish_desktop(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = self.core.watch_config() {
+            tracing::warn!("config hot reload unavailable: {err}");
+        }
+        self.global_keys = ptt::GlobalKeys::new()
+            .map_err(|err| tracing::warn!("no global keys: {err}"))
+            .ok();
+        self.update_badge();
+        self.update_tray_voice();
         if self.tray.is_some() {
             let handle = self.window;
             cx.spawn(async move |this, cx| {

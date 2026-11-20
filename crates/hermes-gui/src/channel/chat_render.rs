@@ -18,6 +18,12 @@ impl Shell {
         let Some(view) = self.chats.get(&key) else {
             return div().into_any_element();
         };
+        if loaded && !self.first_chat.replace(true) {
+            tracing::info!(
+                elapsed_ms = self.launched.elapsed().as_millis(),
+                "first usable chat"
+            );
+        }
         let empty = view.rows.is_empty();
         let title = s
             .and_then(|s| s.channel(channel).map(|c| view::channel_title(s, c)))

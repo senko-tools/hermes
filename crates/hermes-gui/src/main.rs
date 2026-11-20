@@ -116,6 +116,7 @@ impl Cli {
 }
 
 fn main() -> ExitCode {
+    let launched = std::time::Instant::now();
     // The old version, renamed, watching the new one come up after an update.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if args
@@ -195,12 +196,9 @@ fn main() -> ExitCode {
     let warning = loaded.warnings.first().cloned();
     let loaded_start_minimized = loaded.config.general.start_minimized;
     let (core, events) = Core::new(loaded.config, options);
-    if let Err(err) = core.watch_config() {
-        tracing::warn!("config hot reload unavailable: {err}");
-    }
-    core.start();
-
     let link = cli.link;
+    let link_ready =
+        core.start_desktop_accounts(link.as_deref().and_then(add_instance::launch_instance));
     let start_minimized = loaded_start_minimized;
     gpui_kit::application()
         .with_assets(assets::Assets)
@@ -228,24 +226,12 @@ fn main() -> ExitCode {
                 ..Default::default()
             };
             // The tray and the global keys live on this (the event loop's) thread.
-            let tray = match desktop::tray::Tray::new() {
-                Ok(tray) => Some(tray),
-                Err(err) => {
-                    tracing::warn!("no tray icon: {err}");
-                    None
-                }
-            };
-            let global_keys = match ptt::GlobalKeys::new() {
-                Ok(keys) => Some(keys),
-                Err(err) => {
-                    tracing::warn!("no global keys: {err}");
-                    None
-                }
-            };
+            let tray = start_minimized.then(desktop_shell::create_tray).flatten();
             let start_hidden = start_minimized && tray.is_some();
             let boot = Boot {
                 tray,
-                global_keys,
+                launched,
+                link_ready,
                 start_hidden,
                 core,
                 events,

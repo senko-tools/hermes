@@ -50,7 +50,8 @@ pub struct Boot {
     pub link: Option<String>,
     pub warning: Option<String>,
     pub tray: Option<Tray>,
-    pub global_keys: Option<GlobalKeys>,
+    pub launched: std::time::Instant,
+    pub link_ready: tokio::sync::oneshot::Receiver<()>,
     pub start_hidden: bool,
 }
 
@@ -320,6 +321,9 @@ pub struct Shell {
     pub screen_latest: Option<Arc<Latest>>,
     /// A share shown in a window of its own.
     pub popped_out: crate::screen::popout::PoppedOut,
+    pub launched: std::time::Instant,
+    pub first_chat: std::cell::Cell<bool>,
+    pub first_gateway: bool,
     pub tray: Option<Tray>,
     pub global_keys: Option<GlobalKeys>,
     /// The window is shown (not hidden in the tray).
@@ -351,7 +355,8 @@ impl Shell {
             link,
             warning,
             tray,
-            global_keys,
+            launched,
+            link_ready,
             start_hidden,
         } = boot;
         let config = core.config();
@@ -484,7 +489,10 @@ impl Shell {
             screen_latest: None,
             popped_out: None,
             tray,
-            global_keys,
+            global_keys: None,
+            launched,
+            first_chat: Default::default(),
+            first_gateway: false,
             window_visible: !start_hidden,
             scale: window.scale_factor(),
             restore: None,
@@ -522,9 +530,10 @@ impl Shell {
             this.show_status(format!("config: {warning}"), Level::Warning, cx);
         }
         if let Some(link) = link {
-            this.open_link(link, window, cx);
+            this.run(cx, link_ready, move |this, _, window, cx| {
+                this.open_link(link, window, cx)
+            });
         }
-        this.load_avatars(cx);
         this
     }
 
@@ -724,6 +733,19 @@ impl Shell {
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
                     Changed::All => {
+                        if !self.first_gateway
+                            && self
+                                .core
+                                .store()
+                                .instance(&inst)
+                                .is_some_and(|s| s.me.is_some())
+                        {
+                            self.first_gateway = true;
+                            tracing::info!(
+                                elapsed_ms = self.launched.elapsed().as_millis(),
+                                "authenticated gateway ready"
+                            );
+                        }
                         self.everything_changed(&inst, window, cx);
                         if self.restore.as_ref().is_some_and(|(i, _)| *i == inst)
                             && let Some((inst, channel)) = self.restore.take()
@@ -735,9 +757,6 @@ impl Shell {
                         self.check_page_exists(window, cx);
                     }
                     _ => {}
-                }
-                if people_changed {
-                    self.load_avatars(cx);
                 }
             }
             // The views read the store directly; the other events only trigger a redraw.
@@ -1688,6 +1707,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        self.prepare_media_frame(window, cx);
         self.images
             .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
         self.scale = window.scale_factor();

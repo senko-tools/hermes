@@ -581,6 +581,10 @@ impl Shell {
         } else {
             self.avatar_with_status(&inst, found, &name, CARD_AVATAR, presence)
         };
+        let banner_marker = found.and_then(|u| u.banner.as_ref()).and_then(|file| {
+            self.images
+                .profile_marker(&inst, file, crate::images::BANNER_PIXELS)
+        });
         let banner = self.banner_picture(&inst, found);
         drop(store);
 
@@ -804,6 +808,7 @@ impl Shell {
         let parts = card.parts.clone();
         let banner_box = div()
             .id("profile-banner-box")
+            .children(banner_marker)
             .relative()
             .h(px(banner_height))
             .rounded_t(px(9.))

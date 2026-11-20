@@ -1180,6 +1180,10 @@ impl Shell {
         ];
         if editable {
             let has_icon = st.space.icon.is_some();
+            let marker = st.space.icon.as_ref().and_then(|file| {
+                self.images
+                    .profile_marker(&inst, file, crate::images::AVATAR_PIXELS)
+            });
             // Read from the image cache, not through the store again (it is held here).
             let picture = st.space.icon.as_ref().and_then(|icon| {
                 match self.images.avatars.get(&(inst.clone(), icon.id)) {
@@ -1195,6 +1199,8 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .relative()
+                    .children(marker)
                     .children(picture.map(|picture| {
                         gpui_kit::img(picture)
                             .size(px(40.))

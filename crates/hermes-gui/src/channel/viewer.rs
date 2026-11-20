@@ -18,35 +18,7 @@ impl Shell {
             drag: None,
             laid_out: Default::default(),
         });
-        let core = self.core.clone();
-        let id = attachment.id;
-        // Already downloaded for its preview: no second download (#9).
-        let kept = crate::images::kept_original(&self.images.originals, &(inst.clone(), id));
-        self.run(
-            cx,
-            async move {
-                let bytes = match kept {
-                    Some(bytes) => bytes,
-                    None => std::sync::Arc::new(core.download(&inst, &attachment).await?),
-                };
-                tokio::task::spawn_blocking(move || crate::images::decode(&bytes, None))
-                    .await
-                    .map_err(|e| e.to_string())?
-            },
-            move |this, result, _, _| {
-                if let Some(viewer) = &mut this.viewer
-                    && viewer.attachment.id == id
-                {
-                    viewer.image = match result {
-                        Ok(image) => Img::Ready(image),
-                        Err(err) => {
-                            tracing::warn!("image {id}: {err}");
-                            Img::Failed
-                        }
-                    };
-                }
-            },
-        );
+        self.request_original((inst, attachment.id), attachment, true, cx);
         cx.notify();
     }
 
@@ -55,7 +27,15 @@ impl Shell {
         let layout = viewer.laid_out.clone();
         let zoom = viewer.zoom;
         let zoomed = zoom > 1. && layout.get().fitted.0 > 0.;
-        let content = match &viewer.image {
+        let preview = self
+            .images
+            .thumbs
+            .get(&(viewer.inst.clone(), viewer.attachment.id));
+        let shown = match (&viewer.image, preview) {
+            (Img::Loading, Some(ready @ Img::Ready(_))) => ready,
+            (image, _) => image,
+        };
+        let content = match shown {
             Img::Ready(picture) => {
                 let shown = picture.shown(self.animating());
                 // Its own width in window pixels, for the double-click's full size.

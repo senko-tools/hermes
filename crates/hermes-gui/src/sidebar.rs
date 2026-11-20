@@ -789,7 +789,7 @@ impl Shell {
                 let selected = self.selected == Selected::Space(inst.clone(), id);
                 let target = Target::Space(inst.clone(), id);
                 let inst_key = inst.clone();
-                let picture = self.space_picture(&inst, id);
+                let (picture, marker) = self.space_picture(&inst, id);
                 let voice = self
                     .core
                     .store()
@@ -797,6 +797,8 @@ impl Shell {
                     .map(|s| view::voice_in_space(s, id))
                     .unwrap_or_default();
                 let element = rail_icon(format!("rail-space-{inst}-{id}"))
+                    .relative()
+                    .children(marker)
                     .text_color(if selected {
                         theme::on_accent()
                     } else {

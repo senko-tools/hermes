@@ -375,7 +375,8 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         link: None,
         warning: None,
         tray: None,
-        global_keys: None,
+        launched: std::time::Instant::now(),
+        link_ready: tokio::sync::oneshot::channel().1,
         start_hidden: false,
     };
     let (window, shell) = cx.update(|cx| {
