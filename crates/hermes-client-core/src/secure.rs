@@ -532,6 +532,14 @@ impl Core {
                 .await;
         }
         let size = info.size;
+        // Sound and video are compressed already: never zstd them, so they are sealed in pieces
+        // and play while they download (#7). A file that zstd shrank by a few percent had to be
+        // downloaded whole before it could start.
+        let streams = {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            let kind = crate::core::content_type(name);
+            kind.starts_with("video/") || kind.starts_with("audio/")
+        };
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
@@ -541,7 +549,15 @@ impl Core {
                     Some(preview) => Some(e2ee::seal_file(&preview)?),
                     None => None,
                 };
-                let shrunk = crate::compress::shrink(bytes);
+                let shrunk = if streams {
+                    crate::compress::Shrunk {
+                        plain_size: bytes.len() as u64,
+                        bytes,
+                        compression: None,
+                    }
+                } else {
+                    crate::compress::shrink(bytes)
+                };
                 // What is not compressed (media nearly always) is sealed in pieces, so it can be
                 // played while it downloads.
                 let chunk_size = shrunk.compression.is_none().then_some(e2ee::FILE_CHUNK);
