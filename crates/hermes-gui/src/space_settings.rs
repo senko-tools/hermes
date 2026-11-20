@@ -2395,64 +2395,46 @@ impl Shell {
             );
             let (copy_inst, copy_code) = (inst.clone(), invite.code.clone());
             let (revoke_inst, revoke_code) = (inst.clone(), invite.code.clone());
-            rows.push(
+            let row = space_settings_list_row(
                 div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .font_family(theme::mono_font())
-                                    .text_size(theme::secondary_size())
-                                    .child(invite.code.clone()),
-                            )
-                            .child(muted(format!("{uses} · {expires} · by {creator}"))),
-                    )
-                    .child(
-                        Button::new(("invite-copy", n))
-                            .cursor_pointer()
-                            .label(
-                                self.copy_label(
-                                    &format!("invite-copy-{}", invite.code),
-                                    "Copy link",
-                                ),
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
-                                    this.copy_from(
-                                        format!("invite-copy-{copy_code}"),
-                                        link,
-                                        "Invite link",
-                                        cx,
-                                    );
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new(("invite-revoke", n))
-                            .cursor_pointer()
-                            .danger()
-                            .label("Revoke")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.cancel_closing("confirm");
-                                this.confirm = Some((
-                                    Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
-                                    Action::RevokeInvite,
-                                ));
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element(),
+                    .font_family(theme::mono_font())
+                    .text_size(theme::secondary_size())
+                    .child(invite.code.clone()),
+                muted(format!("{uses} · {expires} · by {creator}")),
+            );
+            rows.push(
+                row.child(
+                    Button::new(("invite-copy", n))
+                        .cursor_pointer()
+                        .label(
+                            self.copy_label(&format!("invite-copy-{}", invite.code), "Copy link"),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
+                                this.copy_from(
+                                    format!("invite-copy-{copy_code}"),
+                                    link,
+                                    "Invite link",
+                                    cx,
+                                );
+                            }
+                        })),
+                )
+                .child(
+                    Button::new(("invite-revoke", n))
+                        .cursor_pointer()
+                        .danger()
+                        .label("Revoke")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.cancel_closing("confirm");
+                            this.confirm = Some((
+                                Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
+                                Action::RevokeInvite,
+                            ));
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
             );
         }
         page_body("Invites", None, rows)
@@ -2483,61 +2465,48 @@ impl Shell {
             let jump_inst = page.inst.clone();
             let (channel, message) = (report.channel_id, report.message_id);
             let who = |user: Id| s.display_name(Some(space), user);
+            let row = space_settings_list_row(
+                div().text_size(theme::secondary_size()).child(format!(
+                    "{} about {}: {}",
+                    who(report.reporter_id),
+                    who(report.author_id),
+                    report.reason
+                )),
+                muted(report.excerpt.clone()),
+            );
             rows.push(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_size(theme::secondary_size()).child(format!(
-                                "{} about {}: {}",
-                                who(report.reporter_id),
-                                who(report.author_id),
-                                report.reason
-                            )))
-                            .child(muted(report.excerpt.clone())),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("report-open-{id}")))
-                            .cursor_pointer()
-                            .label("Go to it")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_pages(cx);
-                                this.jump_to(jump_inst.clone(), channel, message, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("report-done-{id}")))
-                            .cursor_pointer()
-                            .label("Dealt with")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let core = this.core.clone();
-                                let inst = inst.clone();
-                                this.run(
-                                    cx,
-                                    async move {
-                                        core.rest(&inst)?
-                                            .resolve_report(space, id)
-                                            .await
-                                            .map_err(|e| e.to_string())
-                                    },
-                                    |this, result, _, cx| match result {
-                                        Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
-                                        Err(err) => this.error(err, cx),
-                                    },
-                                );
-                            })),
-                    )
-                    .into_any_element(),
+                row.child(
+                    Button::new(SharedString::from(format!("report-open-{id}")))
+                        .cursor_pointer()
+                        .label("Go to it")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_pages(cx);
+                            this.jump_to(jump_inst.clone(), channel, message, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("report-done-{id}")))
+                        .cursor_pointer()
+                        .label("Dealt with")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let core = this.core.clone();
+                            let inst = inst.clone();
+                            this.run(
+                                cx,
+                                async move {
+                                    core.rest(&inst)?
+                                        .resolve_report(space, id)
+                                        .await
+                                        .map_err(|e| e.to_string())
+                                },
+                                |this, result, _, cx| match result {
+                                    Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
+                                    Err(err) => this.error(err, cx),
+                                },
+                            );
+                        })),
+                )
+                .into_any_element(),
             );
         }
         page_body("Reports", None, rows)
@@ -2568,54 +2537,41 @@ impl Shell {
                 .unwrap_or_else(|| "no reason given".to_owned());
             let user = ban.user.id;
             let unban_inst = inst.clone();
+            let row = space_settings_list_row(
+                div().text_size(theme::secondary_size()).child(format!(
+                    "{} (@{})",
+                    ban.user.name(),
+                    ban.user.username
+                )),
+                muted(format!(
+                    "{reason} · {}",
+                    time::format(ban.created_at, "%Y-%m-%d", self.utc_offset)
+                )),
+            );
             rows.push(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap(px(8.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_size(theme::secondary_size()).child(format!(
-                                "{} (@{})",
-                                ban.user.name(),
-                                ban.user.username
-                            )))
-                            .child(muted(format!(
-                                "{reason} · {}",
-                                time::format(ban.created_at, "%Y-%m-%d", self.utc_offset)
-                            ))),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("unban-{user}")))
-                            .cursor_pointer()
-                            .label("Unban")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let core = this.core.clone();
-                                let inst = unban_inst.clone();
-                                this.run(
-                                    cx,
-                                    async move {
-                                        core.rest(&inst)?.unban(space, user).await?;
-                                        Ok::<_, CoreError>(())
-                                    },
-                                    |this, result, _, cx| match result {
-                                        Ok(()) => this.set_space_tab(Tab::Bans, true, cx),
-                                        Err(err) => {
-                                            this.error(format!("could not unban: {err}"), cx);
-                                        }
-                                    },
-                                );
-                            })),
-                    )
-                    .into_any_element(),
+                row.child(
+                    Button::new(SharedString::from(format!("unban-{user}")))
+                        .cursor_pointer()
+                        .label("Unban")
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let core = this.core.clone();
+                            let inst = unban_inst.clone();
+                            this.run(
+                                cx,
+                                async move {
+                                    core.rest(&inst)?.unban(space, user).await?;
+                                    Ok::<_, CoreError>(())
+                                },
+                                |this, result, _, cx| match result {
+                                    Ok(()) => this.set_space_tab(Tab::Bans, true, cx),
+                                    Err(err) => {
+                                        this.error(format!("could not unban: {err}"), cx);
+                                    }
+                                },
+                            );
+                        })),
+                )
+                .into_any_element(),
             );
         }
         page_body("Bans", None, rows)
@@ -2720,6 +2676,26 @@ impl Shell {
                 }
             }))
     }
+}
+
+fn space_settings_list_row(title: gpui_kit::Div, detail: AnyElement) -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(8.))
+        .py(px(6.))
+        .border_t_1()
+        .border_color(theme::border())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(title)
+                .child(detail),
+        )
 }
 
 fn strong(text: String) -> AnyElement {

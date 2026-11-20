@@ -58,20 +58,7 @@ impl Shell {
         let content = if !query.is_empty() {
             self.search_results(&query, cx)
         } else {
-            match page.tab {
-                Tab::Account => self.tab_account(page, cx),
-                Tab::Privacy => self.tab_privacy(cx),
-                Tab::Appearance => self.tab_appearance(page, cx),
-                Tab::Chat => self.tab_chat(page, cx),
-                Tab::Notifications => self.tab_notifications(cx),
-                Tab::Window => self.tab_window(cx),
-                Tab::Keybinds => self.tab_keybinds(page, cx),
-                Tab::Voice => self.tab_voice(page, cx),
-                Tab::ScreenShare => self.tab_screen_share(cx),
-                Tab::Diagnostics => self.tab_diagnostics(cx),
-                Tab::Admin => self.tab_admin(page, cx),
-                Tab::About => self.tab_about(cx),
-            }
+            self.render_settings_tab(page, page.tab, cx)
         };
         let key = if query.is_empty() {
             format!("settings-{:?}", page.tab)
@@ -84,5 +71,27 @@ impl Shell {
             theme::enter(SharedString::from(key), content),
             cx.listener(|this, _, _, cx| this.close_settings(cx)),
         ))
+    }
+
+    pub(super) fn render_settings_tab(
+        &self,
+        page: &SettingsPage,
+        tab: Tab,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match tab {
+            Tab::Account => self.tab_account(page, cx),
+            Tab::Privacy => self.tab_privacy(cx),
+            Tab::Appearance => self.tab_appearance(page, cx),
+            Tab::Chat => self.tab_chat(page, cx),
+            Tab::Notifications => self.tab_notifications(cx),
+            Tab::Window => self.tab_window(cx),
+            Tab::Keybinds => self.tab_keybinds(page, cx),
+            Tab::Voice => self.tab_voice(page, cx),
+            Tab::ScreenShare => self.tab_screen_share(cx),
+            Tab::Diagnostics => self.tab_diagnostics(cx),
+            Tab::Admin => self.tab_admin(page, cx),
+            Tab::About => self.tab_about(cx),
+        }
     }
 }

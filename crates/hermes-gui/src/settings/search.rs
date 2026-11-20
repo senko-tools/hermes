@@ -16,20 +16,7 @@ impl Shell {
                 continue;
             }
             RECORDING.with(|r| *r.borrow_mut() = Some(Recording::default()));
-            let _ = match tab {
-                Tab::Account => self.tab_account(page, cx),
-                Tab::Privacy => self.tab_privacy(cx),
-                Tab::Appearance => self.tab_appearance(page, cx),
-                Tab::Chat => self.tab_chat(page, cx),
-                Tab::Notifications => self.tab_notifications(cx),
-                Tab::Window => self.tab_window(cx),
-                Tab::Keybinds => self.tab_keybinds(page, cx),
-                Tab::Voice => self.tab_voice(page, cx),
-                Tab::ScreenShare => self.tab_screen_share(cx),
-                Tab::Admin => self.tab_admin(page, cx),
-                Tab::About => self.tab_about(cx),
-                Tab::Diagnostics => div().into_any_element(),
-            };
+            let _ = self.render_settings_tab(page, tab, cx);
             let found = RECORDING
                 .with(|r| r.borrow_mut().take())
                 .unwrap_or_default();
