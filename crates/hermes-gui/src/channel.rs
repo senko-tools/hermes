@@ -1835,10 +1835,15 @@ impl Shell {
         });
         let core = self.core.clone();
         let id = attachment.id;
+        // Already downloaded for its preview: no second download (#9).
+        let kept = crate::images::kept_original(&self.images.originals, &(inst.clone(), id));
         self.run(
             cx,
             async move {
-                let bytes = core.download(&inst, &attachment).await?;
+                let bytes = match kept {
+                    Some(bytes) => bytes,
+                    None => std::sync::Arc::new(core.download(&inst, &attachment).await?),
+                };
                 tokio::task::spawn_blocking(move || crate::images::decode(&bytes, None))
                     .await
                     .map_err(|e| e.to_string())?
@@ -1934,7 +1939,24 @@ impl Shell {
                     )
                     .into_any_element()
             }
-            Img::Failed => "Image not available".into_any_element(),
+            Img::Failed => {
+                let (inst, attachment) = (viewer.inst.clone(), viewer.attachment.clone());
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(10.))
+                    .child("The picture could not be loaded")
+                    .child(
+                        gpui_kit::component::button::Button::new("viewer-retry")
+                            .cursor_pointer()
+                            .label("Try again")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_image(inst.clone(), attachment.clone(), cx);
+                            })),
+                    )
+                    .into_any_element()
+            }
             Img::Loading => "Loading…".into_any_element(),
         };
         Some(
@@ -4100,10 +4122,11 @@ impl Shell {
             }
             let failed = matches!(picture, Some(Img::Failed));
             let text = if failed {
-                "Image not available"
+                "Could not load · click to try again"
             } else {
                 "Loading…"
             };
+            let retry_key = (inst.clone(), a.id);
             // While it loads, the space it will fill breathes softly.
             let shimmer = (!failed).then(|| {
                 div()
@@ -4132,7 +4155,15 @@ impl Shell {
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
                 .children(shimmer)
-                .child(text);
+                .child(text)
+                // A failed picture loads again on a click (#9).
+                .when(failed, |d| {
+                    d.cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.images.thumbs.remove(&retry_key);
+                            cx.notify();
+                        }))
+                });
             return self
                 .with_file_menu(waiting, inst, place, a.id, cx)
                 .into_any_element();

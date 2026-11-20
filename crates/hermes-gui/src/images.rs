@@ -111,6 +111,44 @@ pub struct Images {
     pub retired: Vec<Arc<RenderImage>>,
     /// The viewer's picture as last drawn, freed from the GPU once the viewer lets go of it.
     viewer_drawn: Option<Picture>,
+    /// Originals downloaded lately (for animated previews and SVGs): the full view opens from
+    /// them instead of downloading the file again (#9). Shared with the background tasks.
+    pub originals: Originals,
+}
+
+/// Recently downloaded originals by (instance, attachment), oldest first.
+pub type Originals =
+    Arc<std::sync::Mutex<std::collections::VecDeque<((InstanceId, Id), Arc<Vec<u8>>)>>>;
+
+/// How many originals stay, and how many bytes at most.
+const ORIGINALS_KEPT: usize = 6;
+const ORIGINALS_BYTES: usize = 64 << 20;
+
+/// Keeps `bytes` as the original of `key`, letting the oldest go past the limits.
+pub fn keep_original(originals: &Originals, key: (InstanceId, Id), bytes: Arc<Vec<u8>>) {
+    let mut kept = originals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    kept.retain(|(k, _)| *k != key);
+    if bytes.len() > ORIGINALS_BYTES {
+        return;
+    }
+    kept.push_back((key, bytes));
+    while kept.len() > ORIGINALS_KEPT
+        || kept.iter().map(|(_, b)| b.len()).sum::<usize>() > ORIGINALS_BYTES
+    {
+        kept.pop_front();
+    }
+}
+
+/// The original of `key`, if it was downloaded lately.
+pub fn kept_original(originals: &Originals, key: &(InstanceId, Id)) -> Option<Arc<Vec<u8>>> {
+    originals
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, b)| b.clone())
 }
 
 /// Thumbnails kept in memory.
@@ -432,6 +470,7 @@ impl Shell {
         self.images.thumbs.insert(key.clone(), Img::Loading);
         let core = self.core.clone();
         let inst = inst.clone();
+        let originals = self.images.originals.clone();
         self.run(
             cx,
             async move {
@@ -445,6 +484,9 @@ impl Shell {
                     .is_some_and(|sealed| sealed.thumb.is_none());
                 let (bytes, max) = if no_preview || animated {
                     let bytes = core.download(&inst, &attachment).await;
+                    if let Ok(bytes) = &bytes {
+                        keep_original(&originals, (inst.clone(), id), Arc::new(bytes.clone()));
+                    }
                     let max = if animated {
                         ANIMATED_PREVIEW
                     } else {
@@ -634,6 +676,18 @@ pub(crate) mod tests {
             encoder.encode_frames(frames).unwrap();
         }
         bytes
+    }
+
+    #[test]
+    fn originals_keep_the_last_few() {
+        let kept = Originals::default();
+        for n in 0..8u64 {
+            keep_original(&kept, ("h".into(), Id(n)), Arc::new(vec![0; 10]));
+        }
+        assert!(kept_original(&kept, &("h".into(), Id(0))).is_none(), "the oldest went");
+        assert!(kept_original(&kept, &("h".into(), Id(7))).is_some());
+        keep_original(&kept, ("h".into(), Id(9)), Arc::new(vec![0; ORIGINALS_BYTES + 1]));
+        assert!(kept_original(&kept, &("h".into(), Id(9))).is_none(), "too large to keep");
     }
 
     #[test]
