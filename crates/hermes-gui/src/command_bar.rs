@@ -36,20 +36,48 @@ pub enum Command {
     Menu(Target, M),
 }
 
+/// The group an entry is listed under, in the order the groups come with nothing typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Section {
+    Channels,
+    DirectMessages,
+    People,
+    Servers,
+    Actions,
+    Themes,
+}
+
+impl Section {
+    fn title(self) -> &'static str {
+        match self {
+            Section::Channels => "Channels",
+            Section::DirectMessages => "Direct messages",
+            Section::People => "People",
+            Section::Servers => "Servers",
+            Section::Actions => "Actions",
+            Section::Themes => "Themes",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub label: String,
     /// Shown dimmed on the right: the space or instance, or the key combo.
     pub detail: String,
     pub command: Command,
+    pub section: Section,
 }
 
 pub struct CommandBar {
     input: Entity<InputState>,
     entries: Vec<Entry>,
-    /// Indexes into `entries` matching the input, best first.
+    /// Indexes into `entries` matching the input, by section (the best match's first), best
+    /// first within each.
     shown: Vec<usize>,
     pub selected: usize,
+    /// The list's scroll, kept on the selected row.
+    scroll: gpui_kit::ScrollHandle,
     /// Picking where to forward this message (instance, channel, message) to.
     forward: Option<(InstanceId, Id, Id)>,
     _events: Subscription,
@@ -65,8 +93,10 @@ impl CommandBar {
             .collect();
         // Best score first; ties keep the entry order.
         scored.sort_by_key(|(s, i)| (std::cmp::Reverse(*s), *i));
-        self.shown = scored.into_iter().take(MAX_SHOWN).map(|(_, i)| i).collect();
+        scored.truncate(MAX_SHOWN);
+        self.shown = grouped(&self.entries, scored, query.trim().is_empty());
         self.selected = 0;
+        self.scroll.scroll_to_item(0);
     }
 
     pub fn move_selection(&mut self, delta: i32) {
@@ -75,12 +105,51 @@ impl CommandBar {
         }
         let len = self.shown.len() as i32;
         self.selected = (self.selected as i32 + delta).rem_euclid(len) as usize;
+        self.scroll.scroll_to_item(self.child_index(self.selected));
+    }
+
+    /// Where the `n`th shown entry is among the list's children, section headers included.
+    fn child_index(&self, n: usize) -> usize {
+        let mut headers = 0;
+        let mut last = None;
+        for index in &self.shown[..=n.min(self.shown.len().saturating_sub(1))] {
+            let section = self.entries[*index].section;
+            if last != Some(section) {
+                headers += 1;
+                last = Some(section);
+            }
+        }
+        // The first header is worth scrolling to: it says what the first row is.
+        if n == 0 { 0 } else { n + headers }
     }
 
     /// The command of the `n`th shown entry.
     fn command(&self, n: usize) -> Option<Command> {
         self.shown.get(n).map(|i| self.entries[*i].command.clone())
     }
+}
+
+/// `scored` (best first) put into sections. With nothing typed the sections keep their own
+/// order; otherwise the section of the best match comes first, so Enter still takes it.
+fn grouped(entries: &[Entry], scored: Vec<(i32, usize)>, fixed: bool) -> Vec<usize> {
+    let mut order: Vec<Section> = Vec::new();
+    for (_, i) in &scored {
+        let section = entries[*i].section;
+        if !order.contains(&section) {
+            order.push(section);
+        }
+    }
+    if fixed {
+        order.sort();
+    }
+    let rank = |section: Section| order.iter().position(|s| *s == section).unwrap_or(0);
+    let mut shown: Vec<(usize, usize, usize)> = scored
+        .into_iter()
+        .enumerate()
+        .map(|(n, (_, i))| (rank(entries[i].section), n, i))
+        .collect();
+    shown.sort();
+    shown.into_iter().map(|(.., i)| i).collect()
 }
 
 /// Where a message of `inst` can be forwarded: its text channels and DMs I may write in.
@@ -96,6 +165,7 @@ pub fn forward_entries(store: &Store, inst: &InstanceId) -> Vec<Entry> {
                     label: format!("#{}", c.name),
                     detail: space.space.name.clone(),
                     command: Command::Open(inst.clone(), c.id),
+                    section: Section::Channels,
                 });
             }
         }
@@ -105,6 +175,7 @@ pub fn forward_entries(store: &Store, inst: &InstanceId) -> Vec<Entry> {
             label: dm.name,
             detail: "Direct message".into(),
             command: Command::Open(inst.clone(), dm.id),
+            section: Section::DirectMessages,
         });
     }
     out
@@ -182,6 +253,7 @@ impl Shell {
             entries,
             shown: Vec::new(),
             selected: 0,
+            scroll: gpui_kit::ScrollHandle::new(),
             forward,
             _events: events,
         };
@@ -226,12 +298,25 @@ impl Shell {
 
     pub fn render_command_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let bar = self.command_bar.as_ref()?;
-        let rows: Vec<AnyElement> = bar
-            .shown
-            .iter()
-            .enumerate()
-            .map(|(n, index)| {
-                let entry = &bar.entries[*index];
+        let mut rows: Vec<AnyElement> = Vec::with_capacity(bar.shown.len() + 6);
+        let mut last_section = None;
+        for (n, index) in bar.shown.iter().enumerate() {
+            let entry = &bar.entries[*index];
+            if last_section != Some(entry.section) {
+                last_section = Some(entry.section);
+                rows.push(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(8.))
+                        .pt(px(if n == 0 { 2. } else { 10. }))
+                        .pb(px(2.))
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .child(entry.section.title().to_uppercase())
+                        .into_any_element(),
+                );
+            }
+            rows.push({
                 div()
                     .id(("command", n))
                     .flex()
@@ -272,8 +357,8 @@ impl Shell {
                         |d, phase| d.bg(theme::alpha(theme::selected(), phase.0.clamp(0., 1.))),
                     )
                     .into_any_element()
-            })
-            .collect();
+            });
+        }
         let empty = rows.is_empty();
         let leaving = crate::modal::closing("command-bar");
         Some(
@@ -315,6 +400,7 @@ impl Shell {
                             .child(
                                 div()
                                     .id("command-bar-rows")
+                                    .track_scroll(&bar.scroll)
                                     .flex()
                                     .flex_col()
                                     .flex_1()
@@ -418,27 +504,32 @@ pub fn entries(
             label: "Create a server".into(),
             detail: inst.clone(),
             command: Command::Menu(Target::Instance(inst.clone()), M::CreateSpace),
+            section: Section::Servers,
         });
         out.push(Entry {
             label: "Edit profile".into(),
             detail: inst.clone(),
             command: Command::Menu(Target::Instance(inst.clone()), M::EditProfile),
+            section: Section::Actions,
         });
         out.push(Entry {
             label: "Search everywhere".into(),
             detail: inst.clone(),
             command: Command::Results(Key::Search(inst.clone(), None)),
+            section: Section::Actions,
         });
         for (space_id, space) in &s.spaces {
             out.push(Entry {
                 label: format!("Search in {}", space.space.name),
                 detail: inst.clone(),
                 command: Command::Results(Key::Search(inst.clone(), Some(*space_id))),
+                section: Section::Servers,
             });
             out.push(Entry {
                 label: format!("Server settings: {}", space.space.name),
                 detail: inst.clone(),
                 command: Command::SpaceSettings(inst.clone(), *space_id),
+                section: Section::Servers,
             });
             if view::can_in_space(s, *space_id, Permissions::MANAGE_CHANNELS) {
                 out.push(Entry {
@@ -448,6 +539,7 @@ pub fn entries(
                         Target::Space(inst.clone(), *space_id),
                         M::CreateChannel,
                     ),
+                    section: Section::Servers,
                 });
             }
             if view::can_in_space(s, *space_id, Permissions::CREATE_INVITES) {
@@ -455,6 +547,7 @@ pub fn entries(
                     label: format!("Invite people to {}", space.space.name),
                     detail: inst.clone(),
                     command: Command::Menu(Target::Space(inst.clone(), *space_id), M::InvitePeople),
+                    section: Section::Servers,
                 });
             }
             for c in view::channel_tree(s, *space_id) {
@@ -470,12 +563,14 @@ pub fn entries(
                     label: format!("{prefix}{}", c.name),
                     detail: space.space.name.clone(),
                     command: Command::Open(inst.clone(), c.id),
+                    section: Section::Channels,
                 });
                 if c.kind == ChannelKind::Voice {
                     out.push(Entry {
                         label: format!("Join voice: {}", c.name),
                         detail: space.space.name.clone(),
                         command: Command::JoinVoice(inst.clone(), c.id),
+                        section: Section::Channels,
                     });
                 }
             }
@@ -485,6 +580,7 @@ pub fn entries(
                 label: dm.name,
                 detail: format!("Direct message · {inst}"),
                 command: Command::Open(inst.clone(), dm.id),
+                section: Section::DirectMessages,
             });
         }
         let me = s.me_id();
@@ -495,6 +591,7 @@ pub fn entries(
                 label: format!("Message @{}", user.username),
                 detail: inst.clone(),
                 command: Command::MessageUser(inst.clone(), user.id),
+                section: Section::People,
             });
         }
     }
@@ -502,11 +599,13 @@ pub fn entries(
         label: "Mentions".into(),
         detail: "Messages that mention you".into(),
         command: Command::Results(Key::Mentions),
+        section: Section::Actions,
     });
     out.push(Entry {
         label: "Saved messages".into(),
         detail: "Messages you saved on this device".into(),
         command: Command::Results(Key::Saved),
+        section: Section::Actions,
     });
     for (action, _, _, title) in ACTIONS {
         // Split panes come later.
@@ -527,23 +626,27 @@ pub fn entries(
             label: title.to_owned(),
             detail: Keybinds::combo_text(keys, action).unwrap_or_default(),
             command: Command::KeyAction(action),
+            section: Section::Actions,
         });
     }
     out.push(Entry {
         label: "Leave voice".into(),
         detail: String::new(),
         command: Command::LeaveVoice,
+        section: Section::Actions,
     });
     out.push(Entry {
         label: "Add an account".into(),
         detail: String::new(),
         command: Command::AddInstance,
+        section: Section::Actions,
     });
     for theme in themes {
         out.push(Entry {
             label: format!("Theme: {theme}"),
             detail: String::new(),
             command: Command::Theme(theme.clone()),
+            section: Section::Themes,
         });
     }
     out
@@ -588,5 +691,45 @@ mod tests {
         ] {
             assert!(labels.contains(&want), "{want} missing from {labels:?}");
         }
+    }
+
+    #[test]
+    fn results_come_grouped_by_section() {
+        let mut store = Store::default();
+        store.instances.insert("h".into(), fixtures::store());
+        let entries = entries(
+            &store,
+            &["h".into()],
+            &["dark".into(), "light".into()],
+            &Default::default(),
+        );
+        let sections = |query: &str| -> Vec<Section> {
+            let mut scored: Vec<(i32, usize)> = entries
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| score(query, &e.label).map(|s| (s, i)))
+                .collect();
+            scored.sort_by_key(|(s, i)| (std::cmp::Reverse(*s), *i));
+            let best = scored.first().map(|(_, i)| entries[*i].section);
+            let shown = grouped(&entries, scored, query.is_empty());
+            let out: Vec<Section> = shown.iter().map(|i| entries[*i].section).collect();
+            // The best match still comes first.
+            assert_eq!(out.first().copied(), best);
+            out
+        };
+        for query in ["", "l", "theme", "gen"] {
+            let shown = sections(query);
+            // Each section shows up in one run, never split.
+            let mut runs = shown.clone();
+            runs.dedup();
+            let mut unique = runs.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(runs.len(), unique.len(), "{query:?}: {shown:?}");
+        }
+        // Nothing typed: the sections keep their own order.
+        let mut runs = sections("");
+        runs.dedup();
+        assert!(runs.is_sorted(), "{runs:?}");
     }
 }
