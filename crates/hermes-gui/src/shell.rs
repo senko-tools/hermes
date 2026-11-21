@@ -107,6 +107,43 @@ const RECENT_CHANNELS: usize = 10;
 /// How long an info line stays: `general.status_seconds`.
 static INFO_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
 
+/// Counts the frames drawn while frames keep coming, and says in the log how many per second
+/// that was, focused or not (#66). A pause starts a new count, so idle time doesn't lower it.
+#[derive(Default)]
+struct FrameRate {
+    since: Option<Instant>,
+    last: Option<Instant>,
+    frames: u32,
+}
+
+impl FrameRate {
+    /// A pause longer than this between frames starts a new count.
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+    /// How long a count runs before it is logged.
+    const SPAN: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn count(&mut self, focused: bool) {
+        let now = Instant::now();
+        if self
+            .last
+            .is_none_or(|last| now.duration_since(last) > Self::PAUSE)
+        {
+            self.since = Some(now);
+            self.frames = 0;
+        }
+        self.last = Some(now);
+        self.frames += 1;
+        let since = *self.since.get_or_insert(now);
+        let span = now.duration_since(since);
+        if span >= Self::SPAN {
+            let fps = f64::from(self.frames - 1) / span.as_secs_f64();
+            tracing::debug!(fps = format!("{fps:.1}"), focused, "frames drawn");
+            self.since = Some(now);
+            self.frames = 1;
+        }
+    }
+}
+
 /// The member list of each (instance, channel) shown.
 type MemberGroupsCache = std::cell::RefCell<
     HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
@@ -148,6 +185,8 @@ pub struct Shell {
     pub hover_tracked: std::rc::Rc<std::cell::RefCell<HashSet<gpui_kit::SharedString>>>,
     /// The copy button used a moment ago: it says "Copied".
     pub copied: Option<String>,
+    /// Code blocks' own scrolling and "Show all" (#65).
+    pub code_blocks: crate::channel::CodeBlocks,
     /// What is playing its way out, with the serial of its close (`modal.rs`).
     pub closing_serials: HashMap<&'static str, u64>,
     pub closing_serial: u64,
@@ -185,8 +224,6 @@ pub struct Shell {
     pub pointer_over_text: bool,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
-    /// Code blocks' own scrolling and "Show all" (#65).
-    pub code_blocks: crate::channel::CodeBlocks,
     /// Profiles fetched for the card lately, so opening it again soon does not ask again.
     pub profile_cache: HashMap<(InstanceId, Id), crate::user_menu::FetchedProfile>,
     /// A destructive menu action waiting for confirmation.
@@ -337,6 +374,8 @@ pub struct Shell {
     pub launched: std::time::Instant,
     /// Whether a frame was rendered yet (the startup log).
     first_frame: std::cell::Cell<bool>,
+    /// Frames drawn in the current run of frames, for the frame-rate log (#66).
+    frame_rate: FrameRate,
     pub first_chat: std::cell::Cell<bool>,
     /// Accounts whose gateway was READY once since the start (each is logged the first time).
     pub gateways_ready: std::collections::HashSet<InstanceId>,
@@ -411,6 +450,7 @@ impl Shell {
             hovered: HashSet::new(),
             hover_tracked: Default::default(),
             copied: None,
+            code_blocks: Default::default(),
             closing_serials: HashMap::new(),
             closing_serial: 0,
             reactions_seen: Default::default(),
@@ -450,7 +490,6 @@ impl Shell {
             keybinds,
             friends_tab: crate::friends::FriendsTab::default(),
             show_members: true,
-            code_blocks: Default::default(),
             sidebar_visible: true,
             resizing: None,
             resizing_members: false,
@@ -514,6 +553,7 @@ impl Shell {
             global_keys: None,
             launched,
             first_frame: Default::default(),
+            frame_rate: Default::default(),
             first_chat: Default::default(),
             gateways_ready: Default::default(),
             first_server: Default::default(),
@@ -1724,6 +1764,7 @@ impl Render for Shell {
         watchdog::beat();
         let _phase = watchdog::in_view();
         let first_frame = !self.first_frame.replace(true);
+        self.frame_rate.count(self.focused);
         self.prepare_media_frame(window, cx);
         self.images
             .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
@@ -1754,6 +1795,7 @@ impl Render for Shell {
         self.advance_media(window);
         crate::images::advance_streams(window);
         self.advance_selection(window);
+        self.code_blocks.advance();
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
@@ -1795,7 +1837,6 @@ impl Render for Shell {
                 if room - theme::RAIL_WIDTH - sidebar_room - member_room >= 480. =>
             {
                 self.render_members(inst, *channel, cx)
-        self.code_blocks.advance();
             }
             _ => None,
         };
@@ -1931,6 +1972,7 @@ impl Render for Shell {
             .child(self.smooth_scroll.catcher())
             .children(self.media_scrub_catcher(cx))
             .children(self.selection_catcher(cx))
+            .children(self.code_scroll_catcher(cx))
             // Any press lets go of the video Space plays and pauses; a press on a video takes it
             // again when it is let go (its click).
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.media.focused = None))
@@ -1972,7 +2014,6 @@ impl Shell {
                     "first frame painted"
                 );
             },
-            .children(self.code_scroll_catcher(cx))
         )
         .absolute()
         .size_0()

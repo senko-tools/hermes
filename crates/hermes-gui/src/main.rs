@@ -218,6 +218,10 @@ fn main() -> ExitCode {
                     cx,
                 ))),
                 window_min_size: Some(size(px(theme::WINDOW_MIN_W), px(theme::WINDOW_MIN_H))),
+                // Draws at the display's rate also while another window has focus, so scrolling and
+                // animations beside it stay smooth (#66). Frames are still drawn only when something
+                // changed; a window hidden behind another one is slowed down in vendor/gpui-pre-windows.
+                inactive_frame_interval: None,
                 // The native title bar, which shows the space and page (`Shell::page_title`).
                 titlebar: Some(TitlebarOptions {
                     title: Some("Hermes".into()),
