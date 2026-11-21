@@ -829,7 +829,7 @@ impl Shell {
     }
 
     /// The same on another surface: `ground` is the colour around the avatar, which the dot's
-    /// ring and cut-outs take so they read as holes. A new status pops the dot.
+    /// ring and cut-outs take so they read as holes.
     pub fn avatar_with_status_on(
         &self,
         inst: &str,
@@ -840,7 +840,6 @@ impl Shell {
         ground: gpui_kit::Rgba,
     ) -> AnyElement {
         let dot = presence_dot_size(size);
-        let who = user.map_or_else(|| name.to_owned(), |u| u.id.to_string());
         div()
             .relative()
             .flex_shrink_0()
@@ -851,12 +850,7 @@ impl Shell {
                     .absolute()
                     .bottom(px(-1.))
                     .right(px(-1.))
-                    .child(presence_dot(
-                        SharedString::from(format!("presence-{inst}-{who}-{status:?}")),
-                        status,
-                        dot,
-                        ground,
-                    )),
+                    .child(presence_dot(status, dot, ground)),
             )
             .into_any_element()
     }
@@ -868,42 +862,20 @@ pub(crate) fn presence_dot_size(size: f32) -> f32 {
 }
 
 /// A presence dot `dot` across in a ring of `ground` (the colour around it), which its
-/// cut-outs take too so they read as holes. It pops when `key` (with the status in it) is new.
-pub(crate) fn presence_dot(
-    key: SharedString,
-    status: Status,
-    dot: f32,
-    ground: gpui_kit::Rgba,
-) -> gpui_kit::Div {
-    use gpui_kit::{AnimationExt as _, SpringAnimation, SpringConfig};
-    // A box of the dot's size, so the dot grows from its middle.
+/// cut-outs take too so they read as holes. A new status shows at once, without motion.
+pub(crate) fn presence_dot(status: Status, dot: f32, ground: gpui_kit::Rgba) -> gpui_kit::Div {
     div()
+        .flex_shrink_0()
         .size(px(dot))
+        .rounded(px(dot / 2.))
+        .border_2()
+        .border_color(ground)
+        .bg(theme::status(status))
+        .overflow_hidden()
         .flex()
         .items_center()
         .justify_center()
-        .child(
-            div().with_spring(
-                key,
-                SpringAnimation::new(crate::theme::paced(SpringConfig::new(520., 22., 1.)))
-                    .to(true)
-                    .from(false),
-                move |d, phase| {
-                    let grown = dot * (0.55 + 0.45 * phase.0.max(0.));
-                    d.flex_shrink_0()
-                        .size(px(grown))
-                        .rounded(px(grown / 2.))
-                        .border_2()
-                        .border_color(ground)
-                        .bg(theme::status(status))
-                        .overflow_hidden()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .children(presence_shape(status, grown, ground))
-                },
-            ),
-        )
+        .children(presence_shape(status, dot, ground))
 }
 
 /// What is cut out of a presence dot, so that a status never depends on its colour alone:

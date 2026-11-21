@@ -178,6 +178,8 @@ pub struct Shell {
     pub pointer_over_text: bool,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
+    /// Profiles fetched for the card lately, so opening it again soon does not ask again.
+    pub profile_cache: HashMap<(InstanceId, Id), crate::user_menu::FetchedProfile>,
     /// A destructive menu action waiting for confirmation.
     pub confirm: Option<(Target, Action)>,
     pub add_instance: Option<AddInstance>,
@@ -413,6 +415,7 @@ impl Shell {
             pointer_over_text: false,
             drop_out_strip: Default::default(),
             profile: None,
+            profile_cache: HashMap::new(),
             confirm: None,
             add_instance: None,
             form: None,
@@ -756,6 +759,8 @@ impl Shell {
                     Changed::Spaces | Changed::Dms | Changed::Channel(_) => {
                         self.check_page_exists(window, cx);
                     }
+                    // Someone changed their profile: ask again the next time a card opens.
+                    Changed::Users => self.profile_cache.retain(|(i, _), _| *i != inst),
                     _ => {}
                 }
             }

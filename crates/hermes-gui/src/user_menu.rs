@@ -40,6 +40,20 @@ pub struct ProfileCard {
     parts: Rc<RefCell<HashMap<ProfilePart, Bounds<Pixels>>>>,
 }
 
+/// How long a fetched profile is shown again without asking the server.
+const PROFILE_FRESH: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A profile fetched for the card (see [`Shell::profile_cache`]).
+pub enum FetchedProfile {
+    /// Asked for; not here yet.
+    Loading,
+    Ready {
+        at: std::time::Instant,
+        last_online: Option<i64>,
+        bio: Option<String>,
+    },
+}
+
 /// What on my own card opens a menu: the banner, the picture, the presence dot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProfilePart {
@@ -285,6 +299,11 @@ impl Shell {
             ProfileField::Bio => {
                 // The card shows it at once; the server's answer does not carry it.
                 card.bio = value.clone();
+                if let Some(FetchedProfile::Ready { bio, .. }) =
+                    self.profile_cache.get_mut(&(inst.clone(), card.user))
+                {
+                    bio.clone_from(&value);
+                }
                 req.bio = Some(value);
             }
         }
@@ -478,27 +497,63 @@ impl Shell {
             .collect()
     }
 
-    /// Asks the server when the person on the open profile card was last online.
+    /// Asks the server when the person on the open profile card was last online and what their
+    /// "About me" says, unless it was asked within [`PROFILE_FRESH`] or is being asked already.
     fn fetch_last_online(&mut self, cx: &mut Context<Self>) {
-        let Some(card) = &self.profile else {
+        let Some(card) = &mut self.profile else {
             return;
         };
         let (inst, user) = (card.inst.clone(), card.user);
+        let key = (inst.clone(), user);
+        match self.profile_cache.get(&key) {
+            Some(FetchedProfile::Ready {
+                at,
+                last_online,
+                bio,
+            }) if at.elapsed() < PROFILE_FRESH => {
+                card.last_online = *last_online;
+                card.bio.clone_from(bio);
+                return;
+            }
+            // The answer fills the card when it comes.
+            Some(FetchedProfile::Loading) => return,
+            _ => {}
+        }
         let Ok(rest) = self.core.rest(&inst) else {
             return;
         };
+        self.profile_cache
+            .insert(key.clone(), FetchedProfile::Loading);
         self.run(
             cx,
             async move { rest.user(user).await },
             move |this, result, _, cx| match result {
                 Ok(profile) => {
-                    if let Some(card) = this.profile.as_mut().filter(|c| c.user == user) {
+                    // Kept only if nothing changed meanwhile (the entry was not dropped).
+                    if let Some(entry @ FetchedProfile::Loading) = this.profile_cache.get_mut(&key)
+                    {
+                        *entry = FetchedProfile::Ready {
+                            at: std::time::Instant::now(),
+                            last_online: profile.last_online_at,
+                            bio: profile.bio.clone(),
+                        };
+                    }
+                    if let Some(card) = this
+                        .profile
+                        .as_mut()
+                        .filter(|c| c.user == user && c.inst == key.0)
+                    {
                         card.last_online = profile.last_online_at;
                         card.bio = profile.bio;
                         cx.notify();
                     }
                 }
-                Err(err) => tracing::debug!("could not fetch {user}'s profile: {err}"),
+                Err(err) => {
+                    if matches!(this.profile_cache.get(&key), Some(FetchedProfile::Loading)) {
+                        this.profile_cache.remove(&key);
+                    }
+                    tracing::debug!("could not fetch {user}'s profile: {err}");
+                }
             },
         );
     }
@@ -888,12 +943,7 @@ impl Shell {
                 .size(px(dot))
                 .group(group)
                 .cursor_pointer()
-                .child(crate::images::presence_dot(
-                    SharedString::from(format!("presence-{inst}-{user}-{presence:?}")),
-                    presence,
-                    dot,
-                    theme::sidebar(),
-                ))
+                .child(crate::images::presence_dot(presence, dot, theme::sidebar()))
                 .child(
                     div()
                         .absolute()
