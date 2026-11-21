@@ -81,6 +81,16 @@ fn forwarded_text(content: &str, author: &str, place: &str, files: usize, link: 
     out
 }
 
+/// The mark of an edited message, dim like its time.
+pub(crate) const EDITED: &str = "edited";
+
+/// Whether an edited message's mark follows its text: where the row shows no time of its own
+/// (a group's later messages, and compact rows, whose time column keeps one width so all text
+/// lines up). Otherwise it sits beside the time.
+pub(crate) fn edited_after_text(msg: &ChatMessage, row: &MessageRow, compact: bool) -> bool {
+    msg.edited_at.is_some() && (compact || row.grouped)
+}
+
 /// What a message's time says under the pointer: the whole date, and when it was edited.
 fn time_tip(msg: &ChatMessage, utc_offset: i64) -> SharedString {
     let sent = time::long(msg.created_at() as i64, utc_offset);
@@ -609,6 +619,10 @@ fn piece_style(p: &Piece, system: bool, revealed: bool) -> HighlightStyle {
             thickness: px(1.),
             ..StrikethroughStyle::default()
         });
+    }
+    if p.muted {
+        style.color = Some(theme::text_tertiary().into());
+        style.font_style = None;
     }
     if hidden {
         style.color = Some(theme::code_background().into());

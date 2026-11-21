@@ -20,15 +20,15 @@ impl Shell {
             div()
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
-                .child("(edited)")
+                .child(EDITED)
         };
         match block {
             Block::Text(pieces) => {
                 let mut pieces = pieces;
                 if edited {
                     pieces.push(Piece {
-                        text: " (edited)".into(),
-                        italic: true,
+                        text: format!(" {EDITED}"),
+                        muted: true,
                         ..Piece::default()
                     });
                 }

@@ -387,7 +387,8 @@ fn block_text(block: &Block, edited: bool, revealed: bool) -> (String, Vec<Range
             }
             if edited && matches!(block, Block::Text(_)) {
                 let start = text.len();
-                text.push_str(" (edited)");
+                text.push(' ');
+                text.push_str(crate::channel::EDITED);
                 hidden.push(start..text.len());
             }
         }
@@ -706,8 +707,9 @@ impl Shell {
         }
         let blocks = markup::blocks(&msg.content, s, space);
         let last = blocks.len().saturating_sub(1);
+        let mark_after_text = crate::channel::edited_after_text(msg, m, self.config.buffer.compact);
         for (i, block) in blocks.iter().enumerate() {
-            let edited = i == last && msg.edited_at.is_some();
+            let edited = i == last && mark_after_text;
             let (text, hidden) = block_text(block, edited, revealed);
             parts.push((BLOCKS + i as u16, text, hidden));
         }
@@ -858,7 +860,7 @@ mod tests {
         ];
         let block = Block::Text(pieces);
         let (text, hidden) = block_text(&block, true, false);
-        assert_eq!(text, "a secret b (edited)");
+        assert_eq!(text, "a secret b edited");
         assert_eq!(visible(&text, 0..text.len(), &hidden), "a  b");
         let (text, hidden) = block_text(&block, false, true);
         assert_eq!(visible(&text, 0..text.len(), &hidden), "a secret b");

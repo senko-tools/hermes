@@ -248,15 +248,19 @@ impl Shell {
                 msg.author.id,
                 cx,
             );
-            // Under the pointer its time says the whole date, and when it was edited.
+            // Under the pointer its time says the whole date, and when it was edited. An edited
+            // message says so beside it (compact rows: after the text, see `edited_after_text`).
             let time_tip = time_tip(msg, self.utc_offset);
+            let edited_here = !compact && msg.edited_at.is_some();
             let time = div()
                 .id(SharedString::from(format!("time-{id}")))
-                .relative()
+                .flex()
+                .items_baseline()
+                .gap(px(4.))
                 .text_size(theme::caption_size())
                 .text_color(theme::text_tertiary())
-                .child(time)
-                .child(time_record)
+                .child(div().relative().child(time).child(time_record))
+                .when(edited_here, |d| d.child("·").child(EDITED))
                 .tooltip(move |window, cx| {
                     gpui_kit::component::tooltip::Tooltip::new(time_tip.clone()).build(window, cx)
                 });
@@ -313,18 +317,20 @@ impl Shell {
         };
         let last = blocks.len().saturating_sub(1);
         let system = m.system;
+        let mark_after_text = edited_after_text(msg, m, compact);
         let mut texts: Vec<AnyElement> = Vec::new();
         for (i, block) in blocks.iter().cloned().enumerate() {
-            let edited = i == last && msg.edited_at.is_some();
+            let edited = i == last && mark_after_text;
             texts
                 .push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
         }
-        if msg.content.is_empty() && msg.edited_at.is_some() {
+        // Files only: the mark stands where the text would be.
+        if msg.content.is_empty() && mark_after_text {
             texts.push(
                 div()
                     .text_size(theme::caption_size())
                     .text_color(theme::text_tertiary())
-                    .child("(edited)")
+                    .child(EDITED)
                     .into_any_element(),
             );
         }

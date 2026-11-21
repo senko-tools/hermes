@@ -186,6 +186,30 @@ impl Shell {
         });
     }
 
+    /// Takes one file off a message; the message goes too when nothing is left of it.
+    pub fn remove_attachment(
+        &self,
+        inst: InstanceId,
+        channel: Id,
+        message: Id,
+        attachment: Id,
+        cx: &mut Context<Self>,
+    ) {
+        let core = self.core.clone();
+        self.run(
+            cx,
+            async move {
+                core.remove_attachment(&inst, channel, message, attachment)
+                    .await
+            },
+            |this, result, _, cx| {
+                if let Err(err) = result {
+                    this.error(format!("could not remove: {err}"), cx);
+                }
+            },
+        );
+    }
+
     /// A file card's download button.
     pub fn download_button(
         &self,

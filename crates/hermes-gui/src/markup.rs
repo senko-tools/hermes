@@ -34,6 +34,8 @@ pub struct Piece {
     /// A role mention's color.
     pub color: Option<u32>,
     pub link: Option<Link>,
+    /// Drawn dim, like a message's time: the edited mark, which is no part of the text.
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

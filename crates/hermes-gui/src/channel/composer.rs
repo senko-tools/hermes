@@ -221,7 +221,15 @@ impl Shell {
         };
         if let Some(message) = view.editing {
             let text = resolve(self, text);
-            if text.trim().is_empty() {
+            // The text may go while files are left: they then are the message.
+            let has_files = || {
+                let store = self.core.store();
+                store
+                    .instance(&inst)
+                    .and_then(|s| s.window(channel)?.get(message))
+                    .is_some_and(|m| !m.attachments.is_empty())
+            };
+            if text.trim().is_empty() && !has_files() {
                 self.error("A message cannot be empty; delete it instead.", cx);
                 return;
             }

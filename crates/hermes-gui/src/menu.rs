@@ -348,7 +348,7 @@ impl Shell {
                 }));
             }
         }
-        let (save_inst, save) = (inst, a.clone());
+        let (save_inst, save) = (inst.clone(), a.clone());
         lines.push(run_line("Download", move |this, _, cx| {
             this.download(save_inst.clone(), save.clone(), cx);
         }));
@@ -356,6 +356,25 @@ impl Shell {
         lines.push(run_line("Copy file name", move |this, _, cx| {
             this.copy(name.clone(), "File name", cx);
         }));
+        // Whoever may delete the message may take a file off it.
+        let removable = self.core.status(&inst) == ConnStatus::Connected
+            && self
+                .core
+                .store()
+                .instance(&inst)
+                .is_some_and(|s| menu_entries::can_delete(s, channel, message));
+        if removable {
+            lines.push(Line::Separator);
+            lines.push(Line::Item {
+                label: "Remove attachment".into(),
+                checked: false,
+                danger: true,
+                dot: None,
+                run: Rc::new(move |this, _, cx| {
+                    this.remove_attachment(inst.clone(), channel, message, file, cx);
+                }),
+            });
+        }
         lines
     }
 
