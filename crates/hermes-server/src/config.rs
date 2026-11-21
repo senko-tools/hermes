@@ -266,6 +266,18 @@ pub struct LimitsConfig {
     /// How long a dropped connection can come back and catch up.
     pub resume_window_secs: u32,
     pub resume_buffer_events: u32,
+    /// How long an invite made without a lifetime lasts.
+    pub invite_default_days: u32,
+    /// The longest lifetime an invite may have, other than "never".
+    pub invite_max_days: u32,
+    /// Files one message can carry.
+    pub max_files_per_message: u32,
+    /// Different emoji on one message.
+    pub max_reactions_per_message: u32,
+    /// The longest slow mode a channel can have.
+    pub max_slowmode_minutes: u32,
+    /// Pinned messages in one channel.
+    pub max_pins_per_channel: u32,
 }
 
 impl Default for LimitsConfig {
@@ -288,6 +300,12 @@ impl Default for LimitsConfig {
             max_inflight_requests: 512,
             resume_window_secs: 300,
             resume_buffer_events: 2000,
+            invite_default_days: 7,
+            invite_max_days: 30,
+            max_files_per_message: 10,
+            max_reactions_per_message: 20,
+            max_slowmode_minutes: 360,
+            max_pins_per_channel: 500,
         }
     }
 }
@@ -506,7 +524,29 @@ fn server_port() -> Result<Option<u16>, String> {
     }
 }
 
+/// The longest `limits.max_slowmode_minutes` may be (a week): slow mode's memory of who sent
+/// what keeps entries this long.
+pub const MAX_SLOWMODE_MINUTES_CEILING: u32 = 7 * 24 * 60;
+
 impl Config {
+    /// The limits clients are told about (`GET /instance` and READY), the same ones the server
+    /// holds them to.
+    pub fn instance_limits(&self) -> hermes_proto::gateway::InstanceLimits {
+        const DAY: u64 = 24 * 60 * 60;
+        let limits = &self.limits;
+        hermes_proto::gateway::InstanceLimits {
+            max_upload_mb: self.storage.max_upload_mb,
+            max_message_length: limits.max_message_length,
+            channels_encrypted: self.privacy.require_channel_encryption,
+            invite_default_secs: u64::from(limits.invite_default_days) * DAY,
+            invite_max_secs: u64::from(limits.invite_max_days) * DAY,
+            max_files: limits.max_files_per_message,
+            max_reactions: limits.max_reactions_per_message,
+            max_slowmode_secs: limits.max_slowmode_minutes.saturating_mul(60),
+            max_pins: limits.max_pins_per_channel,
+        }
+    }
+
     /// The port clients connect to: `instance.public_port`, or `network.port` when that is 0.
     pub fn public_port(&self) -> u16 {
         match self.instance.public_port {
@@ -548,6 +588,37 @@ impl Config {
             self.limits.max_inflight_requests,
         );
         at_least_one("voice.max_users_per_room", self.voice.max_users_per_room);
+        at_least_one(
+            "limits.invite_default_days",
+            self.limits.invite_default_days,
+        );
+        at_least_one("limits.invite_max_days", self.limits.invite_max_days);
+        at_least_one(
+            "limits.max_files_per_message",
+            self.limits.max_files_per_message,
+        );
+        at_least_one(
+            "limits.max_reactions_per_message",
+            self.limits.max_reactions_per_message,
+        );
+        at_least_one(
+            "limits.max_pins_per_channel",
+            self.limits.max_pins_per_channel,
+        );
+        if self.limits.invite_default_days > self.limits.invite_max_days {
+            errors
+                .push("limits.invite_default_days must not be above limits.invite_max_days".into());
+        }
+        // Past these the numbers stop meaning much and start overflowing.
+        if self.limits.invite_max_days > 3650 {
+            errors.push("limits.invite_max_days must be at most 3650".into());
+        }
+        if self.limits.max_files_per_message > 100 {
+            errors.push("limits.max_files_per_message must be at most 100".into());
+        }
+        if self.limits.max_slowmode_minutes > MAX_SLOWMODE_MINUTES_CEILING {
+            errors.push("limits.max_slowmode_minutes must be at most 10080 (a week)".into());
+        }
 
         if self.instance.name.trim().is_empty() {
             errors.push("instance.name must not be empty".into());

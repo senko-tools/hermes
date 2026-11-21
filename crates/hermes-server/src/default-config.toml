@@ -56,6 +56,12 @@ gateway_identifies_per_minute = 12  # gateway sign-ins per person; one address g
 max_inflight_requests = 512         # REST requests answered at once; more get 503 at once
 resume_window_secs = 300            # how long a dropped connection can come back and catch up
 resume_buffer_events = 2000
+invite_default_days = 7             # how long an invite lasts when its maker picks no lifetime
+invite_max_days = 30                # the longest an invite can last, other than "never"
+max_files_per_message = 10
+max_reactions_per_message = 20      # different emoji on one message
+max_slowmode_minutes = 360          # the longest slow mode a channel can have
+max_pins_per_channel = 500
 
 [privacy]
 dm_policy = "shared_space"          # "shared_space" | "anyone"

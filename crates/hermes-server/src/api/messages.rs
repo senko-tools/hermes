@@ -23,7 +23,7 @@ use crate::auth::Auth;
 use crate::db;
 use crate::db::messages::MessageRow;
 use crate::gateway::bus::Audience;
-use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
+use crate::messages::{self, broadcast_copy};
 use crate::ratelimit::{self, Action};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
@@ -286,12 +286,14 @@ pub async fn send(
     let mut attachment_ids = req.attachment_ids.clone();
     attachment_ids.sort();
     attachment_ids.dedup();
-    if attachment_ids.len() > SendMessageRequest::MAX_ATTACHMENTS {
+    // Each file may also link its encrypted preview.
+    let max_attachments = 2 * state.config.limits.max_files_per_message as usize;
+    if attachment_ids.len() > max_attachments {
         fields.add(
             "attachment_ids",
             format!(
-                "at most {} attachments",
-                SendMessageRequest::MAX_ATTACHMENTS
+                "at most {} files",
+                state.config.limits.max_files_per_message
             ),
         );
     }
@@ -680,6 +682,12 @@ async fn set_pinned(
     if row.pinned == pinned {
         return Ok(StatusCode::NO_CONTENT);
     }
+    let max_pins = state.config.limits.max_pins_per_channel;
+    if pinned && db::messages::pinned_count(&mut *tx, channel_id).await? >= max_pins {
+        return Err(Error::bad_request(format!(
+            "A channel can have at most {max_pins} pinned messages"
+        )));
+    }
     db::messages::set_pinned(&mut *tx, message_id, pinned).await?;
     if let Some(space_id) = t.space_id {
         audit::record(
@@ -719,12 +727,17 @@ pub async fn pins(
         auth.user_id,
         Permissions::VIEW_CHANNEL | Permissions::READ_HISTORY,
     )?;
-    let rows = db::messages::pinned(&state.db.read, channel_id).await?;
+    let rows = db::messages::pinned(
+        &state.db.read,
+        channel_id,
+        state.config.limits.max_pins_per_channel,
+    )
+    .await?;
     Ok(Json(messages::to_wire(&state, rows, auth.user_id).await?))
 }
 
 /// Joining an existing reaction needs `VIEW_CHANNEL`; a new emoji also needs `ADD_REACTIONS`,
-/// and a message can have at most [`MAX_REACTION_EMOJI`] different ones.
+/// and a message can have at most `limits.max_reactions_per_message` different ones.
 pub async fn add_reaction(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -738,16 +751,17 @@ pub async fn add_reaction(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    // The write transaction serializes the checks (message not deleted, at most 20 emoji) with
+    // The write transaction serializes the checks (message not deleted, not too many emoji) with
     // the insert.
     let mut tx = checking_tx(&state).await?;
     live_message(&mut *tx, channel_id, message_id).await?;
     let existing = db::messages::reaction_emoji(&mut *tx, message_id).await?;
     if !existing.contains(&emoji) {
         t.require(Permissions::ADD_REACTIONS)?;
-        if existing.len() >= MAX_REACTION_EMOJI {
+        let max = state.config.limits.max_reactions_per_message;
+        if existing.len() >= max as usize {
             return Err(Error::bad_request(format!(
-                "A message can have at most {MAX_REACTION_EMOJI} different reactions"
+                "A message can have at most {max} different reactions"
             )));
         }
     }

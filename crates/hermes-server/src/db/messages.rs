@@ -221,18 +221,22 @@ pub async fn after(
 }
 
 /// Pinned messages of a channel, newest first.
+/// The newest `limit` pinned messages of a channel.
 pub async fn pinned(
     e: impl SqliteExecutor<'_>,
     channel_id: Id,
+    limit: u32,
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let channel_id = channel_id.to_i64();
+    let limit = i64::from(limit);
     rows(
         sqlx::query_as!(
             Raw,
             r#"SELECT id, channel_id, author_id, content, reply_to_id, edited_at,
                       deleted AS "deleted: bool", pinned AS "pinned: bool", kind, e2ee
-               FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC LIMIT 500"#,
-            channel_id
+               FROM messages WHERE channel_id = ? AND pinned = 1 ORDER BY id DESC LIMIT ?"#,
+            channel_id,
+            limit
         )
         .fetch_all(e)
         .await?,
@@ -600,6 +604,18 @@ pub async fn clear_deleted_extras(
     .execute(&mut *conn)
     .await?;
     Ok(())
+}
+
+/// How many messages of a channel are pinned.
+pub async fn pinned_count(e: impl SqliteExecutor<'_>, channel_id: Id) -> Result<u32, sqlx::Error> {
+    let id = channel_id.to_i64();
+    let count = sqlx::query_scalar!(
+        r#"SELECT COUNT(*) AS "count: i64" FROM messages WHERE channel_id = ? AND pinned = 1"#,
+        id
+    )
+    .fetch_one(e)
+    .await?;
+    Ok(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 pub async fn set_pinned(

@@ -56,16 +56,15 @@ pub async fn create(
     if !perms.contains(Permissions::CREATE_INVITES) {
         return Err(Error::missing_permission("CREATE_INVITES"));
     }
-    let expires_in = req
-        .expires_in_secs
-        .unwrap_or(CreateInviteRequest::DEFAULT_EXPIRES_IN_SECS);
+    let limits = state.config.instance_limits();
+    let expires_in = req.expires_in_secs.unwrap_or(limits.invite_default_secs);
     let mut fields = Fields::new();
-    if expires_in > CreateInviteRequest::MAX_EXPIRES_IN_SECS {
+    if expires_in > limits.invite_max_secs {
         fields.add(
             "expires_in_secs",
             format!(
-                "must be at most {} (30 days), or 0 for never",
-                CreateInviteRequest::MAX_EXPIRES_IN_SECS
+                "must be at most {} ({} days), or 0 for never",
+                limits.invite_max_secs, state.config.limits.invite_max_days
             ),
         );
     }
@@ -76,7 +75,7 @@ pub async fn create(
     }
 
     let now = now_ms();
-    // Bounded by MAX_EXPIRES_IN_SECS above, so the multiplication cannot overflow.
+    // Bounded by limits.invite_max_days above (at most ten years), so this cannot overflow.
     let expires_at = (expires_in > 0).then(|| now + expires_in as i64 * SECOND_MS);
     let max_uses = req.max_uses.filter(|&n| n > 0);
     let row = invites::create(

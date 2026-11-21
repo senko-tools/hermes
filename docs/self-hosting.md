@@ -122,7 +122,9 @@ daily copies of the files that hard-link what has not changed, so they take litt
   what is older (0 keeps it). They run once an hour.
 - `[limits]`: `session_idle_days` and `max_sessions_per_user` end unused sessions, `max_connections` and
   `max_connections_per_ip` cap sockets, `actions_per_minute` limits edits, reactions and the like per person, and
-  `max_mentions_per_message` also works on encrypted messages.
+  `max_mentions_per_message` also works on encrypted messages. `invite_default_days`, `invite_max_days`,
+  `max_files_per_message`, `max_reactions_per_message`, `max_slowmode_minutes` and `max_pins_per_channel` set what
+  people may do in servers; clients are told them and show the real limits.
 - What else is limited, so a flood of requests is turned away cheaply instead of slowing everyone down:
   - REST: `requests_per_second` per session (ten times that per address), and `max_inflight_requests` answered at
     once in all; more get `RATE_LIMITED` straight away.

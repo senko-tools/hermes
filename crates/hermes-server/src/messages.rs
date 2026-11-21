@@ -18,8 +18,6 @@ use hermes_proto::e2ee::{Envelope, MessageLock};
 
 /// Length of [`MessageRef::excerpt`].
 pub const EXCERPT_CHARS: usize = 100;
-/// Distinct reaction emoji per message.
-pub const MAX_REACTION_EMOJI: usize = 20;
 
 /// Builds wire messages as `viewer` sees them (`ReactionSummary::me`). `nonce` is left empty.
 pub async fn to_wire(
@@ -224,8 +222,8 @@ pub struct Slowmode(Mutex<HashMap<(Id, Id), i64>>);
 
 /// Entries older than the longest slowmode are dropped once the map grows this large.
 const SLOWMODE_PRUNE_AT: usize = 10_000;
-const MAX_SLOWMODE_MS: i64 =
-    hermes_proto::api::UpdateChannelRequest::MAX_SLOWMODE_SECS as i64 * SECOND_MS;
+/// The longest slow mode any config allows, so no entry still in use is dropped.
+const MAX_SLOWMODE_MS: i64 = crate::config::MAX_SLOWMODE_MINUTES_CEILING as i64 * 60 * SECOND_MS;
 
 impl Slowmode {
     /// Records a send at `now` if the user may send in the channel; otherwise returns how many

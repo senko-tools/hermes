@@ -298,12 +298,12 @@ pub async fn update(
         if let Some(slowmode) = req.slowmode_secs {
             if old.kind == ChannelKind::Category {
                 fields.add("slowmode_secs", "categories have no messages");
-            } else if slowmode > UpdateChannelRequest::MAX_SLOWMODE_SECS {
+            } else if slowmode > state.config.instance_limits().max_slowmode_secs {
                 fields.add(
                     "slowmode_secs",
                     format!(
                         "must be at most {}",
-                        UpdateChannelRequest::MAX_SLOWMODE_SECS
+                        state.config.instance_limits().max_slowmode_secs
                     ),
                 );
             }

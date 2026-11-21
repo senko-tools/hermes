@@ -17,6 +17,7 @@ mod friends;
 mod gateway;
 mod invites;
 mod lifecycle;
+mod limits;
 mod members;
 mod mentions_inbox;
 mod messages;
