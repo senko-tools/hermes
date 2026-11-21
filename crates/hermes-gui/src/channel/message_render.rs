@@ -680,6 +680,24 @@ impl Shell {
         if let Some(view) = self.chats.get_mut(&(inst.clone(), channel)) {
             view.palette = None;
         }
+        // A new emoji on a message that has as many as the server takes: said here, not sent.
+        if add {
+            let max = self.limits(&inst).max_reactions as usize;
+            let full = self.core.store().instance(&inst).is_some_and(|s| {
+                s.window(channel)
+                    .and_then(|w| w.messages.iter().find(|m| m.id == message))
+                    .is_some_and(|m| {
+                        m.reactions.len() >= max && !m.reactions.iter().any(|r| r.emoji == emoji)
+                    })
+            });
+            if full {
+                self.error(
+                    format!("A message can have at most {max} different reactions here"),
+                    cx,
+                );
+                return;
+            }
+        }
         let core = self.core.clone();
         self.run(
             cx,

@@ -167,6 +167,9 @@ pub fn channel_move_changes(
     now != Some(index.min(siblings.len()))
 }
 
+/// A channel being moved, the parent it goes under and the sibling it goes next to.
+type MoveTarget<'a> = (&'a Channel, Option<Id>, Option<(Id, Place)>);
+
 /// The channel being moved, the parent it goes under and the sibling it goes next to, for a
 /// drop of `moved` at `place` of `onto`; `None` when nothing would move.
 fn move_target(
@@ -174,7 +177,7 @@ fn move_target(
     moved: Id,
     onto: Id,
     place: Place,
-) -> Option<(&Channel, Option<Id>, Option<(Id, Place)>)> {
+) -> Option<MoveTarget<'_>> {
     let (Some(m), Some(t)) = (state.channels.get(&moved), state.channels.get(&onto)) else {
         return None;
     };

@@ -277,6 +277,12 @@ impl InstanceStore {
         (len > max).then(|| format!("This message is {len} characters; the limit here is {max}."))
     }
 
+    /// What this server allows (invite lifetimes, files, reactions, slow mode, pins); before
+    /// READY, the limits every server had before they could be set.
+    pub fn limits(&self) -> hermes_proto::gateway::InstanceLimits {
+        self.instance.as_ref().map(|i| i.limits).unwrap_or_default()
+    }
+
     pub fn max_upload_mb(&self) -> Option<u32> {
         self.instance.as_ref().map(|i| i.limits.max_upload_mb)
     }
@@ -1188,11 +1194,7 @@ pub(crate) mod tests {
             },
             instance: InstanceInfo {
                 name: "Test".into(),
-                limits: InstanceLimits {
-                    max_upload_mb: 25,
-                    max_message_length: 4000,
-                    channels_encrypted: false,
-                },
+                limits: InstanceLimits::default(),
                 features: Vec::new(),
             },
         }

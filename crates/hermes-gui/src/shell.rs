@@ -956,6 +956,15 @@ impl Shell {
             .configure(general.smooth_scroll, general.scroll_speed as f32);
     }
 
+    /// What `inst`'s server allows (invite lifetimes, files, reactions, slow mode, pins).
+    pub fn limits(&self, inst: &InstanceId) -> hermes_client_core::proto::gateway::InstanceLimits {
+        self.core
+            .store()
+            .instance(inst)
+            .map(|s| s.limits())
+            .unwrap_or_default()
+    }
+
     /// Whether animated pictures move right now.
     pub fn animating(&self) -> bool {
         let general = &self.config.general;

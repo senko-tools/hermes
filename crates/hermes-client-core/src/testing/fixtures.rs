@@ -153,11 +153,7 @@ pub fn store() -> InstanceStore {
         },
         instance: InstanceInfo {
             name: "Test".into(),
-            limits: InstanceLimits {
-                max_upload_mb: 25,
-                max_message_length: 4000,
-                channels_encrypted: false,
-            },
+            limits: InstanceLimits::default(),
             features: Vec::new(),
         },
     };

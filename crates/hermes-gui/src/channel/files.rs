@@ -18,7 +18,8 @@ impl Shell {
                 .map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned())
         });
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        // Too large for the server: said at once, nothing is read or sent.
+        // Too large for the server, or one file too many: said at once, nothing is read or sent.
+        let max_files = self.limits(&key.0).max_files as usize;
         let refusal = self
             .core
             .store()
@@ -27,6 +28,15 @@ impl Shell {
         let Some(view) = self.chats.get_mut(key) else {
             return;
         };
+        let attached = view
+            .uploads
+            .iter()
+            .filter(|u| !matches!(u.state, UploadState::Failed(_)))
+            .count();
+        let refusal = refusal.or_else(|| {
+            (attached >= max_files)
+                .then(|| format!("A message may carry at most {max_files} files on this server"))
+        });
         let refused = refusal.is_some();
         view.uploads.push(Upload {
             local,

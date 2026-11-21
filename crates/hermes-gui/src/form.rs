@@ -20,7 +20,8 @@ use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
-const SLOWMODE: [(&str, u32); 8] = [
+/// Offered up to the server's longest slow mode.
+const SLOWMODE: [(&str, u32); 10] = [
     ("Off", 0),
     ("5 seconds", 5),
     ("10 seconds", 10),
@@ -29,6 +30,8 @@ const SLOWMODE: [(&str, u32); 8] = [
     ("5 minutes", 300),
     ("15 minutes", 900),
     ("1 hour", 3600),
+    ("2 hours", 7200),
+    ("6 hours", 21600),
 ];
 
 const BAN_LENGTH: [(&str, u32); 5] = [
@@ -46,6 +49,7 @@ const BAN_DELETE: [(&str, u32); 4] = [
     ("From the last 7 days", 168),
 ];
 
+/// Offered up to the server's longest lifetime ("Never" is 0).
 const INVITE_EXPIRY: [(&str, u64); 5] = [
     ("30 minutes", 30 * 60),
     ("1 day", 24 * 60 * 60),
@@ -64,6 +68,18 @@ const INVITE_USES: [(&str, u32); 5] = [
 
 fn labels<T>(table: &[(&'static str, T)]) -> Vec<&'static str> {
     table.iter().map(|(l, _)| *l).collect()
+}
+
+/// The labels of `table` whose value is at most `max`, plus any 0 ("Off", "Never").
+fn labels_up_to<T: Copy + PartialOrd + Default>(
+    table: &[(&'static str, T)],
+    max: T,
+) -> Vec<&'static str> {
+    table
+        .iter()
+        .filter(|(_, v)| *v <= max || *v == T::default())
+        .map(|(l, _)| *l)
+        .collect()
 }
 
 fn lookup<T: Copy>(table: &[(&'static str, T)], label: &str) -> Option<T> {
@@ -485,6 +501,7 @@ impl Shell {
                 .and_then(|s| s.channel(channel).cloned())
         };
         let Some(c) = c else { return };
+        let max_slowmode = self.limits(&inst).max_slowmode_secs;
         let title = match c.kind {
             ChannelKind::Category => "Edit category",
             ChannelKind::GroupDm => "Rename group",
@@ -525,7 +542,7 @@ impl Shell {
                 .choice(
                     "Slow mode",
                     "How long members wait between messages.",
-                    &labels(&SLOWMODE),
+                    &labels_up_to(&SLOWMODE, max_slowmode.max(c.slowmode_secs)),
                     slow,
                 );
         }
@@ -651,13 +668,21 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let limits = self.limits(&inst);
         let form = Form::new(
             Purpose::CreateInvite { inst, space },
             "Create an invite link",
             "Create and copy",
         );
+        let offered = labels_up_to(&INVITE_EXPIRY, limits.invite_max_secs);
+        // The server's own default when it is offered, else the longest offered below it.
+        let default = INVITE_EXPIRY
+            .iter()
+            .filter(|(l, v)| *v != 0 && *v <= limits.invite_default_secs && offered.contains(l))
+            .max_by_key(|(_, v)| *v)
+            .map_or("Never", |(l, _)| *l);
         let fields = Self::fields(form, window, cx)
-            .choice("Expires after", "", &labels(&INVITE_EXPIRY), "7 days")
+            .choice("Expires after", "", &offered, default)
             .choice("Max uses", "", &labels(&INVITE_USES), "No limit");
         self.finish(fields);
     }
