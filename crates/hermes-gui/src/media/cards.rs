@@ -33,6 +33,10 @@ use crate::theme::{self, px};
 /// The inline video's box, like a picture's.
 const VIDEO_W: f32 = 400.;
 const VIDEO_H: f32 = 300.;
+/// How often a playing sound's progress or a growing waveform is drawn: smooth to the eye.
+const SMOOTH: Duration = Duration::from_millis(33);
+/// How often it looks again while a picture it waits for is being decoded.
+const WAITING: Duration = Duration::from_millis(10);
 
 /// How many bytes of paused files stay in memory, so playing them again needs no download.
 const CACHE_BYTES: usize = 64 << 20;
@@ -630,19 +634,29 @@ impl Shell {
             viewport.width.as_f32() * 0.9 / theme::scale(),
             (viewport.height.as_f32() - 120.) / theme::scale(),
         );
-        let mut busy = false;
+        // Drawn again only when something changes (#60): a video at its next picture, a
+        // progress bar or a growing waveform a few dozen times a second, never on every refresh.
+        let now = Instant::now();
+        let wake = |after: Duration| crate::images::wake_at(now + after);
         let gain = self.media_gain();
         for item in self.media.items.values_mut() {
-            busy |= item
+            if item
                 .waveform
                 .as_ref()
-                .is_some_and(|w| !w.lock().unwrap_or_else(|e| e.into_inner()).done);
+                .is_some_and(|w| !w.lock().unwrap_or_else(|e| e.into_inner()).done)
+            {
+                wake(SMOOTH);
+            }
             let Load::Ready(player) = &mut item.load else {
-                busy |= matches!(item.load, Load::Loading);
+                if matches!(item.load, Load::Loading) {
+                    wake(SMOOTH);
+                }
                 continue;
             };
             player.set_volume(gain);
-            busy |= player.still_pending();
+            if player.still_pending() {
+                wake(WAITING);
+            }
             if let Some((w, h, _)) = player.probe.video {
                 let shown = fit(
                     (w, h),
@@ -667,13 +681,14 @@ impl Shell {
             if player.playing() {
                 if player.ended() {
                     player.pause();
+                } else if player.probe.video.is_some() {
+                    // Its next picture, or soon while the decoder catches up; the progress bar
+                    // moves with the pictures.
+                    wake(player.next_picture_in().unwrap_or(WAITING));
                 } else {
-                    busy = true;
+                    wake(SMOOTH);
                 }
             }
-        }
-        if busy {
-            window.request_animation_frame();
         }
     }
 

@@ -68,8 +68,6 @@ impl Render for PopOut {
                 (area.height.as_f32() * scale) as u32,
             );
         }
-        // New pictures arrive without anything here changing: look again next frame.
-        window.request_animation_frame();
         div()
             .id("popout")
             .track_focus(&self.focus)
@@ -130,6 +128,11 @@ impl Shell {
             cx.new(|cx| {
                 let focus = cx.focus_handle();
                 focus.focus(window, cx);
+                // Drawn again when the main window's state changes: a new picture arrived, or the
+                // share ended. Not on every screen refresh (#60).
+                if let Some(main) = shell.upgrade() {
+                    cx.observe(&main, |_, _, cx| cx.notify()).detach();
+                }
                 // Closed by the user: the main window watches the share again only on its page.
                 let released = shell.clone();
                 cx.on_release(move |this: &mut PopOut, cx| {

@@ -255,6 +255,8 @@ pub struct Shell {
     pub member_groups_cache: MemberGroupsCache,
     /// Plays mouse-wheel notches back smoothly.
     pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
+    /// When the window is next drawn for a moving picture (a timer waits for it), if it is.
+    redraw_at: std::rc::Rc<std::cell::Cell<Option<std::time::Instant>>>,
     /// Sound and video files that were clicked: loading, playing or paused.
     pub media: crate::media::cards::Media,
     /// A picked picture being cropped before it is uploaded.
@@ -458,6 +460,7 @@ impl Shell {
             link_cards: HashMap::new(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
+            redraw_at: Default::default(),
             crop: None,
             media: Default::default(),
             utc_offset: hermes_client_core::time::local_offset_secs(),
@@ -965,8 +968,14 @@ impl Shell {
             .unwrap_or_default()
     }
 
-    /// Whether animated pictures move right now.
+    /// Whether animated pictures move right now. Under an open picture viewer nothing does: it
+    /// covers them, and a streamed one under it would decode every frame a second time (#60).
     pub fn animating(&self) -> bool {
+        self.viewer.is_none() && self.viewer_animating()
+    }
+
+    /// Whether the picture in the viewer moves.
+    pub fn viewer_animating(&self) -> bool {
         let general = &self.config.general;
         general.animate_pictures && (self.focused || general.animate_unfocused)
     }
@@ -1757,10 +1766,11 @@ impl Render for Shell {
             crate::desktop::taskbar::set_count(window, count);
             self.taskbar_count = Some(count);
         }
+        // What the pictures and players drawn this time ask for is gathered from here on (see
+        // `redraw_waker`).
+        let _ = crate::images::take_wake();
         self.advance_media(window);
-        if crate::images::advance_streams(window) {
-            window.request_animation_frame();
-        }
+        crate::images::advance_streams(window);
         self.advance_selection(window);
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
@@ -1956,6 +1966,42 @@ impl Render for Shell {
             .child(body)
             .children(self.render_modals(cx))
             .children(self.render_menu())
+            .child(self.redraw_waker(cx))
+    }
+}
+
+impl Shell {
+    /// Drawn last: by its paint every picture of this frame has said when it changes next (the
+    /// chat's rows are built during layout, after `render`). One timer then draws the window
+    /// again at the earliest of those moments, instead of on every screen refresh (#60).
+    fn redraw_waker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shell = cx.entity().downgrade();
+        let pending = self.redraw_at.clone();
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, (), _, cx| {
+                let Some(at) = crate::images::take_wake() else {
+                    return;
+                };
+                // A timer for this moment or an earlier one waits already.
+                if pending.get().is_some_and(|p| p <= at) {
+                    return;
+                }
+                pending.set(Some(at));
+                let wait = at.saturating_duration_since(std::time::Instant::now());
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(wait).await;
+                    if pending.get() == Some(at) {
+                        pending.set(None);
+                        let _ = shell.update(cx, |_, cx| cx.notify());
+                    }
+                })
+                .detach();
+            },
+        )
+        .absolute()
+        .size_0()
+        .into_any_element()
     }
 }
 

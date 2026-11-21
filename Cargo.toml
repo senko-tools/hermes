@@ -74,6 +74,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 image = { version = "=0.25.10", default-features = false }  # crates enable the formats they need
 resvg = "=0.45.1"                                            # SVG pictures are drawn to PNG before cropping (gpui builds it already)
 png = "=0.18.1"                                              # animated PNG output (the GIF encoder has no soft alpha)
+libwebp-sys = "=0.14.4"                                      # animated WebP in the client: ~3.6x faster than image-webp (approved 2026-11-21, #60)
 zstd = { version = "=0.13.3", default-features = false }     # files are compressed before they are encrypted
 bitflags = "=2.13.2"
 

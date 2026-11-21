@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, RenderImage, SharedString, Window, div, img};
@@ -36,10 +37,88 @@ pub use stream::advance_all as advance_streams;
 /// How an animated picture moves.
 #[derive(Clone)]
 pub enum Moving {
-    /// All its frames, decoded (gpui steps through them).
-    Frames(Arc<RenderImage>),
+    /// All its frames, decoded.
+    Frames(Arc<Held>),
     /// Too big to hold decoded: played from its file a few frames ahead.
     Stream(Arc<stream::AnimStream>),
+}
+
+/// An animation with all its frames decoded, each its own image. It picks the frame due itself
+/// instead of handing gpui one image of many frames: gpui would draw the whole window again on
+/// every screen refresh for that, however slowly the animation moves (#60).
+pub struct Held {
+    frames: Vec<Arc<RenderImage>>,
+    /// When each frame ends, from the start of a loop.
+    ends: Vec<Duration>,
+    start: Instant,
+}
+
+impl Held {
+    /// `frames` in BGRA, each with how long it shows.
+    fn new(frames: Vec<Frame>) -> Self {
+        let mut ends = Vec::with_capacity(frames.len());
+        let mut end = Duration::ZERO;
+        let frames = frames
+            .into_iter()
+            .map(|f| {
+                end += frame_delay(f.delay());
+                ends.push(end);
+                Arc::new(RenderImage::new(vec![Frame::new(f.into_buffer())]))
+            })
+            .collect();
+        Held {
+            frames,
+            ends,
+            start: Instant::now(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    #[cfg(test)]
+    pub fn frame(&self, n: usize) -> &Arc<RenderImage> {
+        &self.frames[n]
+    }
+
+    /// The frame shown at `now`, and when the next one is due.
+    fn at(&self, now: Instant) -> (usize, Instant) {
+        let total = self.ends.last().copied().unwrap_or_default();
+        if total.is_zero() {
+            return (0, now + Duration::from_secs(3600));
+        }
+        let into = now.duration_since(self.start);
+        let t = Duration::from_nanos((into.as_nanos() % total.as_nanos()) as u64);
+        let n = self
+            .ends
+            .partition_point(|end| *end <= t)
+            .min(self.ends.len() - 1);
+        (n, now + (self.ends[n] - t))
+    }
+}
+
+/// How long a frame shows: like browsers, 10 ms or less counts as 100 ms.
+fn frame_delay(delay: image::Delay) -> Duration {
+    let (numer, denom) = delay.numer_denom_ms();
+    let ms = numer / denom.max(1);
+    Duration::from_millis(if ms <= 10 { 100 } else { u64::from(ms) })
+}
+
+thread_local! {
+    /// The earliest moment a picture drawn in this frame changes (see [`wake_at`]).
+    static WAKE: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// A picture being drawn changes at `at`: the window is drawn again then.
+pub(crate) fn wake_at(at: Instant) {
+    WAKE.with(|w| w.set(Some(w.get().map_or(at, |old| old.min(at)))));
+}
+
+/// When the pictures drawn since the last call change next, if any moves.
+pub(crate) fn take_wake() -> Option<Instant> {
+    WAKE.with(std::cell::Cell::take)
 }
 
 /// A decoded picture: its first frame, and how it moves when it is animated.
@@ -53,7 +132,11 @@ impl Picture {
     /// What to draw: the animation only while `animate` (the window has the focus).
     pub fn shown(&self, animate: bool) -> Arc<RenderImage> {
         match (&self.moving, animate) {
-            (Some(Moving::Frames(moving)), true) => moving.clone(),
+            (Some(Moving::Frames(held)), true) => {
+                let (n, next) = held.at(Instant::now());
+                wake_at(next);
+                held.frames[n].clone()
+            }
             (Some(Moving::Stream(stream)), true) => {
                 stream.frame().unwrap_or_else(|| self.still.clone())
             }
@@ -65,7 +148,8 @@ impl Picture {
     fn gpu_images(&self) -> Vec<Arc<RenderImage>> {
         let mut out = vec![self.still.clone()];
         match &self.moving {
-            Some(Moving::Frames(moving)) => out.push(moving.clone()),
+            // The still is its first frame.
+            Some(Moving::Frames(held)) => out.extend(held.frames.iter().skip(1).cloned()),
             Some(Moving::Stream(stream)) => out.extend(stream.current()),
             None => {}
         }
@@ -399,15 +483,12 @@ pub(crate) fn decode_streamed(bytes: Arc<Vec<u8>>, max: Option<u32>) -> Result<P
             }
         }
     }
-    let first = animation_decoder(&bytes)?
-        .and_then(|mut frames| frames.next())
-        .ok_or("no frames")?
-        .map_err(|e| e.to_string())?;
-    let mut pixels = first.into_buffer();
+    let (mut pixels, _) = BgraFrames::new(&bytes)?
+        .and_then(|mut frames| frames.next_frame())
+        .ok_or("no frames")??;
     if let Some(max) = max {
         pixels = fit(pixels, max);
     }
-    to_bgra(&mut pixels);
     Ok(Picture {
         still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
         moving: Some(Moving::Stream(stream::AnimStream::new(bytes, max))),
@@ -428,17 +509,12 @@ fn fitted((w, h): (u32, u32), max: Option<u32>) -> (u32, u32) {
     }
 }
 
-/// A picture of `frames`, all decoded.
+/// A picture of `frames` (BGRA), all decoded.
 fn animated(frames: Vec<Frame>) -> Picture {
-    let still = Frame::from_parts(
-        frames[0].buffer().clone(),
-        0,
-        0,
-        image::Delay::from_numer_denom_ms(0, 1),
-    );
+    let held = Held::new(frames);
     Picture {
-        still: Arc::new(RenderImage::new(vec![still])),
-        moving: Some(Moving::Frames(Arc::new(RenderImage::new(frames)))),
+        still: held.frames[0].clone(),
+        moving: Some(Moving::Frames(Arc::new(held))),
     }
 }
 
@@ -505,7 +581,7 @@ pub fn first_frame_pixels(source: &image::RgbaImage, max: u32) -> Picture {
 /// closely for a while (the crop view): the larger budget of the viewer.
 pub fn decode_animation_sized(bytes: &[u8], side: u32) -> Result<Option<Moving>, String> {
     let frames = frames_within(bytes, Some(side), ANIMATION_BUDGET)?;
-    Ok(frames.map(|frames| Moving::Frames(Arc::new(RenderImage::new(frames)))))
+    Ok(frames.map(|frames| Moving::Frames(Arc::new(Held::new(frames)))))
 }
 
 /// gpui wants BGRA.
@@ -541,6 +617,38 @@ pub fn animation_decoder(bytes: &[u8]) -> Result<Option<image::Frames<'_>>, Stri
     }))
 }
 
+/// The frames of an animation in BGRA (what gpui draws), decoded as they are asked for.
+pub(crate) enum BgraFrames<'a> {
+    /// libwebp writes BGRA itself.
+    WebP(crate::webp_anim::Decoder<'a>),
+    Other(image::Frames<'a>),
+}
+
+impl<'a> BgraFrames<'a> {
+    /// `None` for a picture that is not a GIF, an animated WebP or an APNG.
+    pub fn new(bytes: &'a [u8]) -> Result<Option<Self>, String> {
+        if let Some(decoder) = crate::webp_anim::Decoder::new(bytes, true) {
+            return Ok(Some(BgraFrames::WebP(decoder)));
+        }
+        Ok(animation_decoder(bytes)?.map(BgraFrames::Other))
+    }
+
+    /// The next frame and how long it shows; `None` after the last one.
+    pub fn next_frame(&mut self) -> Option<Result<(image::RgbaImage, image::Delay), String>> {
+        match self {
+            BgraFrames::WebP(decoder) => decoder.next_frame(),
+            BgraFrames::Other(frames) => {
+                Some(frames.next()?.map_err(|e| e.to_string()).map(|frame| {
+                    let delay = frame.delay();
+                    let mut pixels = frame.into_buffer();
+                    to_bgra(&mut pixels);
+                    (pixels, delay)
+                }))
+            }
+        }
+    }
+}
+
 /// The frames of an animated GIF, WebP or PNG, at most `max` pixels on a side and within
 /// `budget` bytes, in BGRA. `None`: one frame only, or too long to keep moving.
 fn frames_within(
@@ -570,17 +678,15 @@ fn frames_fitting(
     budget: usize,
     shrink: bool,
 ) -> Result<Fit, String> {
-    let err = |e: image::ImageError| e.to_string();
-    let Some(frames) = animation_decoder(bytes)? else {
+    let Some(mut frames) = BgraFrames::new(bytes)? else {
         return Ok(Fit::Still);
     };
     let mut side = max.unwrap_or(u32::MAX);
     let mut out: Vec<Frame> = Vec::new();
     let mut bytes_used = 0usize;
-    for frame in frames {
-        let frame = frame.map_err(err)?;
-        let delay = frame.delay();
-        let mut pixels = fit(frame.into_buffer(), side);
+    while let Some(frame) = frames.next_frame() {
+        let (pixels, delay) = frame?;
+        let mut pixels = fit(pixels, side);
         bytes_used += pixels.as_raw().len();
         if bytes_used > budget && !shrink {
             return Ok(Fit::TooBig);
@@ -599,7 +705,6 @@ fn frames_fitting(
             bytes_used = out.iter().map(|f| f.buffer().as_raw().len()).sum::<usize>()
                 + pixels.as_raw().len();
         }
-        to_bgra(&mut pixels);
         out.push(Frame::from_parts(pixels, 0, 0, delay));
     }
     Ok(if out.len() > 1 {
@@ -609,9 +714,41 @@ fn frames_fitting(
     })
 }
 
-/// `pixels` made to fit `side` on its long side, keeping its shape.
-fn fit(pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
+/// `pixels` made to fit `side` on its long side, keeping its shape. While it is still at least
+/// twice too big it is halved by averaging each 2×2 block, which looks the same as the filter
+/// over that span and costs a fraction of it (a streamed full-HD frame for the chat: #60).
+fn fit(mut pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
+    while pixels.width().max(pixels.height()) >= side.saturating_mul(2)
+        && pixels.width() >= 2
+        && pixels.height() >= 2
+    {
+        pixels = halve(&pixels);
+    }
     picture::fit(pixels, side, image::imageops::FilterType::Triangle)
+}
+
+/// `pixels` at half the size, each pixel the average of a 2×2 block (an odd last row or column
+/// is left out).
+fn halve(pixels: &image::RgbaImage) -> image::RgbaImage {
+    let (w, h) = (pixels.width() / 2, pixels.height() / 2);
+    let stride = pixels.width() as usize * 4;
+    let source = pixels.as_raw();
+    let mut out = Vec::with_capacity(w as usize * h as usize * 4);
+    for y in 0..h as usize {
+        let top = &source[2 * y * stride..][..stride];
+        let bottom = &source[(2 * y + 1) * stride..][..stride];
+        for x in 0..w as usize {
+            let i = x * 8;
+            for c in 0..4 {
+                let sum = u16::from(top[i + c])
+                    + u16::from(top[i + 4 + c])
+                    + u16::from(bottom[i + c])
+                    + u16::from(bottom[i + 4 + c]);
+                out.push(((sum + 2) / 4) as u8);
+            }
+        }
+    }
+    image::RgbaImage::from_raw(w, h, out).expect("the size matches")
 }
 
 impl Shell {
@@ -980,7 +1117,6 @@ impl Shell {
                 .size(px(size))
                 .rounded(px(theme::avatar_radius(size)))
                 .object_fit(gpui_kit::ObjectFit::Cover)
-                // An id lets gpui step through an animation's frames.
                 .id(SharedString::from(format!(
                     "pic-{:p}",
                     Arc::as_ptr(&picture.still)
@@ -1165,10 +1301,10 @@ pub(crate) mod tests {
         let Some(Moving::Frames(frames)) = &picture.moving else {
             panic!("animated");
         };
-        assert_eq!(frames.frame_count(), 2);
+        assert_eq!(frames.len(), 2);
         // BGRA: the red half shows first, then only the blue one.
-        let first = frames.as_bytes(0).unwrap();
-        let second = frames.as_bytes(1).unwrap();
+        let first = frames.frame(0).as_bytes(0).unwrap();
+        let second = frames.frame(1).as_bytes(0).unwrap();
         assert_eq!(&first[..4], &[0, 0, 255, 255]);
         assert_eq!(first[4 * 3 + 3], 0, "blue hidden");
         assert_eq!(second[3], 0, "red hidden");
@@ -1181,8 +1317,45 @@ pub(crate) mod tests {
         let Some(Moving::Frames(moving)) = &picture.moving else {
             panic!("all frames held");
         };
-        assert_eq!(moving.frame_count(), 3);
+        assert_eq!(moving.len(), 3);
         assert_eq!(picture.still.frame_count(), 1);
+        assert!(
+            Arc::ptr_eq(&picture.still, moving.frame(0)),
+            "the still is its first frame"
+        );
+    }
+
+    #[test]
+    fn a_held_animation_shows_the_frame_due_and_says_when_the_next_is() {
+        let picture = decode(&gif(3, 4), None).unwrap();
+        let Some(Moving::Frames(held)) = &picture.moving else {
+            panic!("held");
+        };
+        // Three frames of 50 ms: 120 ms in is the third, the first again 30 ms later.
+        let now = held.start + Duration::from_millis(120);
+        let (n, next) = held.at(now);
+        assert_eq!(n, 2);
+        assert_eq!(next - now, Duration::from_millis(30));
+        let (n, _) = held.at(held.start + Duration::from_millis(155));
+        assert_eq!(n, 0, "and round again");
+        let _ = take_wake();
+        let shown = picture.shown(true);
+        assert!(take_wake().is_some(), "drawing it asks for the next frame");
+        assert!(held.frames.iter().any(|f| Arc::ptr_eq(f, &shown)));
+        picture.shown(false);
+        assert!(take_wake().is_none(), "a still one asks for nothing");
+    }
+
+    #[test]
+    fn halving_averages_each_block() {
+        let mut pixels = image::RgbaImage::new(5, 2);
+        pixels.put_pixel(0, 0, image::Rgba([200, 0, 0, 255]));
+        pixels.put_pixel(1, 1, image::Rgba([100, 40, 0, 255]));
+        let half = halve(&pixels);
+        assert_eq!(half.dimensions(), (2, 1));
+        assert_eq!(half.get_pixel(0, 0).0, [75, 10, 0, 128]);
+        let fitted = fit(image::RgbaImage::new(1920, 1080), 480);
+        assert_eq!(fitted.dimensions(), (480, 270));
     }
 
     #[test]
@@ -1255,7 +1428,7 @@ pub(crate) mod tests {
         let size = picture.still.size(0);
         let how = match &picture.moving {
             None => "still".to_owned(),
-            Some(Moving::Frames(f)) => format!("{} frames held", f.frame_count()),
+            Some(Moving::Frames(f)) => format!("{} frames held", f.len()),
             Some(Moving::Stream(_)) => "streamed".to_owned(),
         };
         eprintln!(
@@ -1268,12 +1441,13 @@ pub(crate) mod tests {
         if let (Ok(out), Some(Moving::Frames(frames))) =
             (std::env::var("HERMES_ANIM_OUT"), &picture.moving)
         {
-            for n in 0..frames.frame_count() {
-                let size = frames.size(n);
+            for n in 0..frames.len() {
+                let frame = frames.frame(n);
+                let size = frame.size(0);
                 let mut pixels = image::RgbaImage::from_raw(
                     size.width.0 as u32,
                     size.height.0 as u32,
-                    frames.as_bytes(n).unwrap().to_vec(),
+                    frame.as_bytes(0).unwrap().to_vec(),
                 )
                 .unwrap();
                 to_bgra(&mut pixels);
