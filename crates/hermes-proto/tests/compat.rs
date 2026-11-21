@@ -6,7 +6,7 @@
 //! reads around it (a new server and an old client). Each release adds its own folder.
 
 use hermes_proto::api::{InstanceResponse, RegistrationMode};
-use hermes_proto::gateway::{ServerEvent, ServerMessage};
+use hermes_proto::gateway::{InstanceLimits, ServerEvent, ServerMessage};
 use hermes_proto::models::{
     AuditAction, AuditEntry, ChannelKind, Message, MessageKind, NotificationLevel, Status,
 };
@@ -54,6 +54,8 @@ fn reads_what_1_2_0_sent() {
     }))
     .unwrap();
     assert!(instance.features.is_empty());
+    // Limits that came later read as what every server had then.
+    assert_eq!(instance.limits, InstanceLimits::default());
 }
 
 #[test]

@@ -136,6 +136,8 @@ pub struct VoiceInfo {
     pub cert_sha256: Option<String>,
 }
 
+/// What the instance admin set in `hermes.toml`. Fields added later read as the values every
+/// server had before they could be set, so an older server's limits come out right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceLimits {
     pub max_upload_mb: u32,
@@ -143,6 +145,64 @@ pub struct InstanceLimits {
     /// Whether messages in server channels have to be end-to-end encrypted here.
     #[serde(default)]
     pub channels_encrypted: bool,
+    /// How long an invite made without a lifetime lasts.
+    #[serde(default = "limit_defaults::invite_default_secs")]
+    pub invite_default_secs: u64,
+    /// The longest lifetime an invite may have, other than "never".
+    #[serde(default = "limit_defaults::invite_max_secs")]
+    pub invite_max_secs: u64,
+    /// Files one message can carry (each may also link an encrypted preview).
+    #[serde(default = "limit_defaults::max_files")]
+    pub max_files: u32,
+    /// Different emoji on one message.
+    #[serde(default = "limit_defaults::max_reactions")]
+    pub max_reactions: u32,
+    /// The longest slow mode a channel can have.
+    #[serde(default = "limit_defaults::max_slowmode_secs")]
+    pub max_slowmode_secs: u32,
+    /// Pinned messages in one channel.
+    #[serde(default = "limit_defaults::max_pins")]
+    pub max_pins: u32,
+}
+
+impl Default for InstanceLimits {
+    fn default() -> Self {
+        Self {
+            max_upload_mb: 25,
+            max_message_length: 4000,
+            channels_encrypted: false,
+            invite_default_secs: limit_defaults::invite_default_secs(),
+            invite_max_secs: limit_defaults::invite_max_secs(),
+            max_files: limit_defaults::max_files(),
+            max_reactions: limit_defaults::max_reactions(),
+            max_slowmode_secs: limit_defaults::max_slowmode_secs(),
+            max_pins: limit_defaults::max_pins(),
+        }
+    }
+}
+
+/// The limits every server had before they could be set.
+pub mod limit_defaults {
+    use crate::api::{CreateInviteRequest, SendMessageRequest, UpdateChannelRequest};
+
+    pub fn invite_default_secs() -> u64 {
+        CreateInviteRequest::DEFAULT_EXPIRES_IN_SECS
+    }
+    pub fn invite_max_secs() -> u64 {
+        CreateInviteRequest::MAX_EXPIRES_IN_SECS
+    }
+    pub fn max_files() -> u32 {
+        SendMessageRequest::MAX_FILES as u32
+    }
+    pub fn max_reactions() -> u32 {
+        20
+    }
+    pub fn max_slowmode_secs() -> u32 {
+        UpdateChannelRequest::MAX_SLOWMODE_SECS
+    }
+    pub fn max_pins() -> u32 {
+        500
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -672,11 +732,7 @@ mod tests {
             },
             instance: InstanceInfo {
                 name: "Hermes".into(),
-                limits: InstanceLimits {
-                    max_upload_mb: 25,
-                    max_message_length: 4000,
-                    channels_encrypted: false,
-                },
+                limits: InstanceLimits::default(),
                 features: Vec::new(),
             },
         };

@@ -408,15 +408,16 @@ pub struct CreateInviteRequest {
     /// `None` or `0` = unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_uses: Option<u32>,
-    /// `None` = 7 days, `0` = never expires, at most 30 days.
+    /// `None` = the instance's default (7 days unless set), `0` = never expires; at most the
+    /// instance's maximum (30 days unless set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_secs: Option<u64>,
 }
 
 impl CreateInviteRequest {
-    /// Lifetime used when `expires_in_secs` is absent.
+    /// Lifetime used when `expires_in_secs` is absent, unless the instance sets its own.
     pub const DEFAULT_EXPIRES_IN_SECS: u64 = 7 * 24 * 60 * 60;
-    /// Longest lifetime other than "never".
+    /// Longest lifetime other than "never", unless the instance sets its own.
     pub const MAX_EXPIRES_IN_SECS: u64 = 30 * 24 * 60 * 60;
 }
 
@@ -581,6 +582,7 @@ pub struct UpdateChannelRequest {
 }
 
 impl UpdateChannelRequest {
+    /// The longest slow mode, unless the instance sets its own.
     pub const MAX_SLOWMODE_SECS: u32 = 6 * 60 * 60;
 }
 
@@ -654,7 +656,8 @@ pub struct SendMessageRequest {
 
 impl SendMessageRequest {
     pub const MAX_NONCE_CHARS: usize = 64;
-    /// Files a message can carry.
+    /// Files a message can carry, unless the instance sets its own
+    /// ([`crate::gateway::InstanceLimits::max_files`]).
     pub const MAX_FILES: usize = 10;
     /// Uploads it can link: its files, and the encrypted preview of each.
     pub const MAX_ATTACHMENTS: usize = 2 * Self::MAX_FILES;
