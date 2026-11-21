@@ -226,7 +226,15 @@ impl Shell {
                             // The wheel zooms toward the pointer.
                             .on_scroll(cx.listener(|this, event: &gpui_kit::ScrollEvent, _, cx| {
                                 let Some(v) = &mut this.viewer else { return };
-                                if !matches!(v.image, Img::Ready(_)) {
+                                // The picture, or its preview while the picture loads.
+                                let preview =
+                                    this.images.thumbs.get(&(v.inst.clone(), v.attachment.id));
+                                if !matches!(v.image, Img::Ready(_))
+                                    && !matches!(
+                                        (&v.image, preview),
+                                        (Img::Loading, Some(Img::Ready(_)))
+                                    )
+                                {
                                     return;
                                 }
                                 cx.stop_propagation();

@@ -29,20 +29,47 @@ pub enum Img {
     Failed,
 }
 
-/// A decoded picture: its first frame, and all of them when it is animated.
+mod stream;
+mod svg_anim;
+pub use stream::advance_all as advance_streams;
+
+/// How an animated picture moves.
+#[derive(Clone)]
+pub enum Moving {
+    /// All its frames, decoded (gpui steps through them).
+    Frames(Arc<RenderImage>),
+    /// Too big to hold decoded: played from its file a few frames ahead.
+    Stream(Arc<stream::AnimStream>),
+}
+
+/// A decoded picture: its first frame, and how it moves when it is animated.
 #[derive(Clone)]
 pub struct Picture {
     pub still: Arc<RenderImage>,
-    pub moving: Option<Arc<RenderImage>>,
+    pub moving: Option<Moving>,
 }
 
 impl Picture {
     /// What to draw: the animation only while `animate` (the window has the focus).
     pub fn shown(&self, animate: bool) -> Arc<RenderImage> {
         match (&self.moving, animate) {
-            (Some(moving), true) => moving.clone(),
+            (Some(Moving::Frames(moving)), true) => moving.clone(),
+            (Some(Moving::Stream(stream)), true) => {
+                stream.frame().unwrap_or_else(|| self.still.clone())
+            }
             _ => self.still.clone(),
         }
+    }
+
+    /// Everything of it that may be on the GPU.
+    fn gpu_images(&self) -> Vec<Arc<RenderImage>> {
+        let mut out = vec![self.still.clone()];
+        match &self.moving {
+            Some(Moving::Frames(moving)) => out.push(moving.clone()),
+            Some(Moving::Stream(stream)) => out.extend(stream.current()),
+            None => {}
+        }
+        out
     }
 }
 
@@ -70,10 +97,39 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
 
 /// Draws an SVG into a PNG whose long side is `side` pixels. Fonts come from the system.
 pub fn svg_to_png(bytes: &[u8], side: f32) -> Result<Vec<u8>, String> {
-    use resvg::{tiny_skia, usvg};
-    let mut options = usvg::Options::default();
+    svg_pixmap(bytes, side, &svg_options())?
+        .encode_png()
+        .map_err(|e| e.to_string())
+}
+
+fn svg_options() -> resvg::usvg::Options<'static> {
+    let mut options = resvg::usvg::Options::default();
     options.fontdb_mut().load_system_fonts();
-    let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("not an SVG: {e}"))?;
+    options
+}
+
+/// An SVG drawn with its long side `side` pixels, as straight (not premultiplied) RGBA.
+fn svg_pixels(
+    bytes: &[u8],
+    side: f32,
+    options: &resvg::usvg::Options,
+) -> Result<image::RgbaImage, String> {
+    let pixmap = svg_pixmap(bytes, side, options)?;
+    let mut out = image::RgbaImage::new(pixmap.width(), pixmap.height());
+    for (to, from) in out.pixels_mut().zip(pixmap.pixels()) {
+        let c = from.demultiply();
+        *to = image::Rgba([c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    Ok(out)
+}
+
+fn svg_pixmap(
+    bytes: &[u8],
+    side: f32,
+    options: &resvg::usvg::Options,
+) -> Result<resvg::tiny_skia::Pixmap, String> {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_data(bytes, options).map_err(|e| format!("not an SVG: {e}"))?;
     let size = tree.size();
     let scale = side / size.width().max(size.height());
     let (w, h) = (
@@ -86,7 +142,49 @@ pub fn svg_to_png(bytes: &[u8], side: f32) -> Result<Vec<u8>, String> {
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.encode_png().map_err(|e| e.to_string())
+    Ok(pixmap)
+}
+
+/// An SVG animated by CSS keyframes that switch its parts (see [`svg_anim`]), drawn moment by
+/// moment with its long side at most `side` and all frames within `budget`; `None` if it does not
+/// move.
+fn svg_animation(bytes: &[u8], side: f32, budget: usize) -> Result<Option<Picture>, String> {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return Ok(None);
+    };
+    let svg_anim::Plan::Frames(moments) = svg_anim::plan(text) else {
+        return Ok(None);
+    };
+    let options = svg_options();
+    let first = svg_pixels(moments[0].0.as_bytes(), side, &options)?;
+    // All frames within the budget: drawn smaller if need be.
+    let per_frame = first.as_raw().len() * moments.len();
+    let side = if per_frame > budget {
+        let shrink = (budget as f64 / per_frame as f64).sqrt() as f32;
+        (side * shrink).max(ANIMATION_MIN_SIDE as f32)
+    } else {
+        side
+    };
+    if moments.len() == 1 {
+        let mut pixels = svg_pixels(moments[0].0.as_bytes(), side, &options)?;
+        to_bgra(&mut pixels);
+        return Ok(Some(Picture {
+            still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+            moving: None,
+        }));
+    }
+    let mut frames = Vec::with_capacity(moments.len());
+    for (text, ms) in &moments {
+        let mut pixels = svg_pixels(text.as_bytes(), side, &options)?;
+        to_bgra(&mut pixels);
+        frames.push(Frame::from_parts(
+            pixels,
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(*ms, 1),
+        ));
+    }
+    Ok(Some(animated(frames)))
 }
 
 /// How large an SVG is drawn when shown: big enough for the full view.
@@ -231,16 +329,11 @@ impl Images {
             _ => None,
         };
         if let Some(old) = self.viewer_drawn.take() {
-            let same = |a: &Arc<RenderImage>, b: Option<&Arc<RenderImage>>| {
-                b.is_some_and(|b| Arc::ptr_eq(a, b))
-            };
-            if !same(&old.still, shown.map(|s| &s.still)) {
-                let _ = window.drop_image(old.still);
-            }
-            if let Some(moving) = old.moving
-                && !same(&moving, shown.and_then(|s| s.moving.as_ref()))
-            {
-                let _ = window.drop_image(moving);
+            let keep = shown.map(Picture::gpu_images).unwrap_or_default();
+            for image in old.gpu_images() {
+                if !keep.iter().any(|k| Arc::ptr_eq(k, &image)) {
+                    let _ = window.drop_image(image);
+                }
             }
         }
         self.viewer_drawn = shown.cloned();
@@ -248,8 +341,7 @@ impl Images {
 
     fn retire(&mut self, picture: Img) {
         if let Img::Ready(picture) = picture {
-            self.retired.push(picture.still);
-            self.retired.extend(picture.moving);
+            self.retired.extend(picture.gpu_images());
         }
     }
 
@@ -280,10 +372,83 @@ pub(crate) fn decode_preview(bytes: &[u8], max: Option<u32>) -> Result<Picture, 
     decode_within(bytes, max, PREVIEW_ANIMATION_BUDGET)
 }
 
+/// [`decode`] for the viewer (`max` `None`) or a chat preview: an animation too big to hold
+/// decoded at `max` is played from `bytes` instead of being made smaller.
+pub(crate) fn decode_streamed(bytes: Arc<Vec<u8>>, max: Option<u32>) -> Result<Picture, String> {
+    let budget = if max.is_none() {
+        ANIMATION_BUDGET
+    } else {
+        PREVIEW_ANIMATION_BUDGET
+    };
+    if looks_like_svg(&bytes) {
+        return decode_within(&bytes, max, budget);
+    }
+    // A WebP says its size and frame count up front: one too big is not decoded twice.
+    let too_big = crate::webp_anim::size_and_count(&bytes).is_some_and(|((w, h), n)| {
+        let (w, h) = fitted((w, h), max);
+        w as usize * h as usize * 4 * n > budget
+    });
+    if !too_big {
+        match frames_fitting(&bytes, max, budget, false) {
+            Ok(Fit::Frames(frames)) => return Ok(animated(frames)),
+            Ok(Fit::TooBig) => {}
+            Ok(Fit::Still) => return decode_still(&bytes, max),
+            Err(err) => {
+                tracing::debug!("not animated: {err}");
+                return decode_still(&bytes, max);
+            }
+        }
+    }
+    let first = animation_decoder(&bytes)?
+        .and_then(|mut frames| frames.next())
+        .ok_or("no frames")?
+        .map_err(|e| e.to_string())?;
+    let mut pixels = first.into_buffer();
+    if let Some(max) = max {
+        pixels = fit(pixels, max);
+    }
+    to_bgra(&mut pixels);
+    Ok(Picture {
+        still: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
+        moving: Some(Moving::Stream(stream::AnimStream::new(bytes, max))),
+    })
+}
+
+/// The size `size` is made to fit `max` at, as [`fit`] makes it.
+fn fitted((w, h): (u32, u32), max: Option<u32>) -> (u32, u32) {
+    match max {
+        Some(side) if w > side || h > side => {
+            let scale = f64::from(side) / f64::from(w.max(h));
+            (
+                ((f64::from(w) * scale).round() as u32).max(1),
+                ((f64::from(h) * scale).round() as u32).max(1),
+            )
+        }
+        _ => (w, h),
+    }
+}
+
+/// A picture of `frames`, all decoded.
+fn animated(frames: Vec<Frame>) -> Picture {
+    let still = Frame::from_parts(
+        frames[0].buffer().clone(),
+        0,
+        0,
+        image::Delay::from_numer_denom_ms(0, 1),
+    );
+    Picture {
+        still: Arc::new(RenderImage::new(vec![still])),
+        moving: Some(Moving::Frames(Arc::new(RenderImage::new(frames)))),
+    }
+}
+
 fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Picture, String> {
     // An SVG is drawn first (#5), then read like any picture.
     if looks_like_svg(bytes) {
         let side = max.map_or(SVG_SIDE, |m| m as f32);
+        if let Some(picture) = svg_animation(bytes, side, budget)? {
+            return Ok(picture);
+        }
         let png = svg_to_png(bytes, side)?;
         return decode_within(&png, max, budget);
     }
@@ -296,17 +461,13 @@ fn decode_within(bytes: &[u8], max: Option<u32>, budget: usize) -> Result<Pictur
         }
     };
     if let Some(frames) = moving {
-        let still = Frame::from_parts(
-            frames[0].buffer().clone(),
-            0,
-            0,
-            image::Delay::from_numer_denom_ms(0, 1),
-        );
-        return Ok(Picture {
-            still: Arc::new(RenderImage::new(vec![still])),
-            moving: Some(Arc::new(RenderImage::new(frames))),
-        });
+        return Ok(animated(frames));
     }
+    decode_still(bytes, max)
+}
+
+/// A picture as one still frame, at most `max` on a side.
+fn decode_still(bytes: &[u8], max: Option<u32>) -> Result<Picture, String> {
     let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     let mut pixels = image.to_rgba8();
     if let Some(max) = max {
@@ -342,9 +503,9 @@ pub fn first_frame_pixels(source: &image::RgbaImage, max: u32) -> Picture {
 
 /// All frames of an animated picture at most `side` pixels on a side, for a picture looked at
 /// closely for a while (the crop view): the larger budget of the viewer.
-pub fn decode_animation_sized(bytes: &[u8], side: u32) -> Result<Option<Arc<RenderImage>>, String> {
+pub fn decode_animation_sized(bytes: &[u8], side: u32) -> Result<Option<Moving>, String> {
     let frames = frames_within(bytes, Some(side), ANIMATION_BUDGET)?;
-    Ok(frames.map(|frames| Arc::new(RenderImage::new(frames))))
+    Ok(frames.map(|frames| Moving::Frames(Arc::new(RenderImage::new(frames)))))
 }
 
 /// gpui wants BGRA.
@@ -387,9 +548,31 @@ fn frames_within(
     max: Option<u32>,
     budget: usize,
 ) -> Result<Option<Vec<Frame>>, String> {
+    Ok(match frames_fitting(bytes, max, budget, true)? {
+        Fit::Frames(frames) => Some(frames),
+        Fit::Still | Fit::TooBig => None,
+    })
+}
+
+enum Fit {
+    /// Not animated.
+    Still,
+    Frames(Vec<Frame>),
+    /// Its frames do not fit the budget (at the asked size, or at any when shrinking).
+    TooBig,
+}
+
+/// [`frames_within`]; without `shrink`, an animation over the budget is [`Fit::TooBig`] instead
+/// of made smaller.
+fn frames_fitting(
+    bytes: &[u8],
+    max: Option<u32>,
+    budget: usize,
+    shrink: bool,
+) -> Result<Fit, String> {
     let err = |e: image::ImageError| e.to_string();
     let Some(frames) = animation_decoder(bytes)? else {
-        return Ok(None);
+        return Ok(Fit::Still);
     };
     let mut side = max.unwrap_or(u32::MAX);
     let mut out: Vec<Frame> = Vec::new();
@@ -399,11 +582,14 @@ fn frames_within(
         let delay = frame.delay();
         let mut pixels = fit(frame.into_buffer(), side);
         bytes_used += pixels.as_raw().len();
+        if bytes_used > budget && !shrink {
+            return Ok(Fit::TooBig);
+        }
         // Over the budget: everything so far and everything after at half the size.
         while bytes_used > budget {
             side = pixels.width().max(pixels.height()) / 2;
             if side < ANIMATION_MIN_SIDE {
-                return Ok(None);
+                return Ok(Fit::TooBig);
             }
             for f in &mut out {
                 let smaller = fit(f.buffer().clone(), side);
@@ -416,7 +602,11 @@ fn frames_within(
         to_bgra(&mut pixels);
         out.push(Frame::from_parts(pixels, 0, 0, delay));
     }
-    Ok((out.len() > 1).then_some(out))
+    Ok(if out.len() > 1 {
+        Fit::Frames(out)
+    } else {
+        Fit::Still
+    })
 }
 
 /// `pixels` made to fit `side` on its long side, keeping its shape.
@@ -740,7 +930,7 @@ impl Shell {
             self.run(
                 cx,
                 async move {
-                    tokio::task::spawn_blocking(move || decode_preview(&bytes, Some(max)))
+                    tokio::task::spawn_blocking(move || decode_streamed(bytes, Some(max)))
                         .await
                         .map_err(|e| e.to_string())?
                 },
@@ -758,7 +948,7 @@ impl Shell {
             self.run(
                 cx,
                 async move {
-                    tokio::task::spawn_blocking(move || decode(&bytes, None))
+                    tokio::task::spawn_blocking(move || decode_streamed(bytes, None))
                         .await
                         .map_err(|e| e.to_string())?
                 },
@@ -969,9 +1159,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_flipbook_svg_moves() {
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"><style>.f{visibility:hidden;animation:0.5s step-end infinite}@keyframes k0{0%{visibility:visible}50%{visibility:hidden}}.f0{animation-name:k0}@keyframes k1{0%{visibility:hidden}50%{visibility:visible}100%{visibility:hidden}}.f1{animation-name:k1}</style><rect class="f f0" width="2" height="2" fill="red"/><rect class="f f1" x="2" width="2" height="2" fill="blue"/></svg>"#;
+        let picture = decode(svg, Some(4)).unwrap();
+        let Some(Moving::Frames(frames)) = &picture.moving else {
+            panic!("animated");
+        };
+        assert_eq!(frames.frame_count(), 2);
+        // BGRA: the red half shows first, then only the blue one.
+        let first = frames.as_bytes(0).unwrap();
+        let second = frames.as_bytes(1).unwrap();
+        assert_eq!(&first[..4], &[0, 0, 255, 255]);
+        assert_eq!(first[4 * 3 + 3], 0, "blue hidden");
+        assert_eq!(second[3], 0, "red hidden");
+        assert_eq!(&second[4 * 3..4 * 3 + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
     fn an_animated_gif_keeps_its_frames_and_a_still_first_one() {
         let picture = decode(&gif(3, 16), None).unwrap();
-        assert_eq!(picture.moving.as_ref().unwrap().frame_count(), 3);
+        let Some(Moving::Frames(moving)) = &picture.moving else {
+            panic!("all frames held");
+        };
+        assert_eq!(moving.frame_count(), 3);
         assert_eq!(picture.still.frame_count(), 1);
     }
 
@@ -1012,6 +1222,75 @@ pub(crate) mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_big_animation_streams_at_full_size_and_a_small_one_is_held() {
+        // 12 frames of 1200 px: 69 MB decoded, over the 24 MB of a preview.
+        let big = Arc::new(gif(12, 1200));
+        let picture = decode_streamed(big.clone(), None).unwrap();
+        assert!(
+            matches!(picture.moving, Some(Moving::Frames(_))),
+            "fits 96 MB"
+        );
+        let picture = decode_streamed(big, Some(1000)).unwrap();
+        assert!(matches!(picture.moving, Some(Moving::Stream(_))));
+        assert_eq!(picture.still.size(0).width.0, 1000, "not made smaller");
+        let small = decode_streamed(Arc::new(gif(3, 64)), Some(480)).unwrap();
+        assert!(matches!(small.moving, Some(Moving::Frames(_))));
+        let still = decode_streamed(Arc::new(gif(1, 64)), Some(480)).unwrap();
+        assert!(still.moving.is_none());
+    }
+
+    /// Times decoding an animation from `HERMES_ANIM_SAMPLE` (run with `--ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn time_an_animation() {
+        let Ok(path) = std::env::var("HERMES_ANIM_SAMPLE") else {
+            return;
+        };
+        let bytes = std::fs::read(path).unwrap();
+        let start = std::time::Instant::now();
+        let picture = decode_streamed(Arc::new(bytes.clone()), None).unwrap();
+        let size = picture.still.size(0);
+        let how = match &picture.moving {
+            None => "still".to_owned(),
+            Some(Moving::Frames(f)) => format!("{} frames held", f.frame_count()),
+            Some(Moving::Stream(_)) => "streamed".to_owned(),
+        };
+        eprintln!(
+            "viewer: {}x{} {how} in {:?}",
+            size.width.0,
+            size.height.0,
+            start.elapsed()
+        );
+        // HERMES_ANIM_OUT: the held frames as PNGs there, to look at.
+        if let (Ok(out), Some(Moving::Frames(frames))) =
+            (std::env::var("HERMES_ANIM_OUT"), &picture.moving)
+        {
+            for n in 0..frames.frame_count() {
+                let size = frames.size(n);
+                let mut pixels = image::RgbaImage::from_raw(
+                    size.width.0 as u32,
+                    size.height.0 as u32,
+                    frames.as_bytes(n).unwrap().to_vec(),
+                )
+                .unwrap();
+                to_bgra(&mut pixels);
+                pixels.save(format!("{out}/frame{n}.png")).unwrap();
+            }
+        }
+        let start = std::time::Instant::now();
+        let Ok(Some(frames)) = animation_decoder(&bytes) else {
+            return;
+        };
+        let mut n = 0;
+        for frame in frames {
+            frame.unwrap();
+            n += 1;
+        }
+        let total = start.elapsed();
+        eprintln!("{n} frames in {total:?}: {:?} each", total / n.max(1));
     }
 
     #[test]

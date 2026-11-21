@@ -1739,6 +1739,9 @@ impl Render for Shell {
             self.taskbar_count = Some(count);
         }
         self.advance_media(window);
+        if crate::images::advance_streams(window) {
+            window.request_animation_frame();
+        }
         self.advance_selection(window);
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);

@@ -129,40 +129,122 @@ fn over(under: [u8; 4], top: [u8; 4]) -> [u8; 4] {
     out
 }
 
+/// The canvas size and frame count of an animated WebP, read from its chunks only.
+pub fn size_and_count(bytes: &[u8]) -> Option<((u32, u32), usize)> {
+    parse(bytes).map(|(canvas, parts)| (canvas, parts.len()))
+}
+
+/// One frame's own picture, decoded on its own.
+fn decode_part(part: &Part) -> image::ImageResult<RgbaImage> {
+    image::load_from_memory_with_format(&still(part), image::ImageFormat::WebP)
+        .map(|image| image.into_rgba8())
+}
+
+/// How many frames are decoded side by side: each frame's own picture does not depend on the
+/// others, only laying them onto the canvas goes in order.
+fn workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, |n| n.get())
+        .clamp(1, 4)
+}
+
+/// `pixels` laid onto `canvas` at (`x`, `y`): over what is there when `blend`, else in its place.
+fn lay(canvas: &mut RgbaImage, pixels: &RgbaImage, x: u32, y: u32, blend: bool) {
+    let (width, height) = canvas.dimensions();
+    if x >= width || y >= height {
+        return;
+    }
+    let w = pixels.width().min(width - x) as usize;
+    let rows = pixels.height().min(height - y);
+    let stride = width as usize * 4;
+    let source_stride = pixels.width() as usize * 4;
+    let canvas = &mut **canvas;
+    for row in 0..rows as usize {
+        let at = (y as usize + row) * stride + x as usize * 4;
+        let target = &mut canvas[at..at + w * 4];
+        let source = &pixels.as_raw()[row * source_stride..row * source_stride + w * 4];
+        if !blend {
+            target.copy_from_slice(source);
+            continue;
+        }
+        for (t, s) in target
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(source.as_chunks::<4>().0)
+        {
+            *t = over(*t, *s);
+        }
+    }
+}
+
+/// Clears the area (`x`, `y`, `w`, `h`) of `canvas` to see-through.
+fn clear_area(canvas: &mut RgbaImage, (x, y, w, h): (u32, u32, u32, u32)) {
+    let (width, height) = canvas.dimensions();
+    if x >= width || y >= height {
+        return;
+    }
+    let w = w.min(width - x) as usize;
+    let stride = width as usize * 4;
+    let canvas = &mut **canvas;
+    for row in y..(y + h).min(height) {
+        let at = row as usize * stride + x as usize * 4;
+        canvas[at..at + w * 4].fill(0);
+    }
+}
+
 /// The frames of an animated WebP, each the whole canvas; `None` if it is not one. Frames are
-/// decoded as they are asked for.
+/// decoded as they are asked for, a few at once on as many threads.
 pub fn frames(bytes: &[u8]) -> Option<Frames<'_>> {
     let ((width, height), parts) = parse(bytes)?;
     let mut canvas = RgbaImage::new(width, height);
     // The area the frame before asked to be cleared.
     let mut clear: Option<(u32, u32, u32, u32)> = None;
-    let mut parts = parts.into_iter();
+    let mut parts = parts.into_iter().peekable();
+    let workers = workers();
+    let mut ready: std::collections::VecDeque<(Part, image::ImageResult<RgbaImage>)> =
+        std::collections::VecDeque::new();
     Some(Frames::new(Box::new(std::iter::from_fn(move || {
-        let part = parts.next()?;
-        if let Some((x, y, w, h)) = clear.take() {
-            for py in y..(y + h).min(height) {
-                for px in x..(x + w).min(width) {
-                    canvas.put_pixel(px, py, image::Rgba([0, 0, 0, 0]));
-                }
-            }
-        }
-        let pixels =
-            match image::load_from_memory_with_format(&still(&part), image::ImageFormat::WebP) {
-                Ok(image) => image.to_rgba8(),
-                Err(err) => return Some(Err(err)),
-            };
-        for (fx, fy, pixel) in pixels.enumerate_pixels() {
-            let (cx, cy) = (part.x + fx, part.y + fy);
-            if cx >= width || cy >= height {
-                continue;
-            }
-            let value = if part.blend {
-                over(canvas.get_pixel(cx, cy).0, pixel.0)
+        if ready.is_empty() {
+            let batch: Vec<Part> = parts.by_ref().take(workers).collect();
+            if batch.len() <= 1 {
+                ready.extend(batch.into_iter().map(|p| {
+                    let pixels = decode_part(&p);
+                    (p, pixels)
+                }));
             } else {
-                pixel.0
-            };
-            canvas.put_pixel(cx, cy, image::Rgba(value));
+                let decoded: Vec<_> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = batch
+                        .iter()
+                        .map(|p| scope.spawn(move || decode_part(p)))
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(image::ImageError::Decoding(
+                                    image::error::DecodingError::from_format_hint(
+                                        image::error::ImageFormatHint::Exact(
+                                            image::ImageFormat::WebP,
+                                        ),
+                                    ),
+                                ))
+                            })
+                        })
+                        .collect()
+                });
+                ready.extend(batch.into_iter().zip(decoded));
+            }
         }
+        let (part, pixels) = ready.pop_front()?;
+        if let Some(area) = clear.take() {
+            clear_area(&mut canvas, area);
+        }
+        let pixels = match pixels {
+            Ok(pixels) => pixels,
+            Err(err) => return Some(Err(err)),
+        };
+        lay(&mut canvas, &pixels, part.x, part.y, part.blend);
         if part.dispose {
             clear = Some((part.x, part.y, part.width, part.height));
         }
