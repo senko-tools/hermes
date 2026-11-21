@@ -250,13 +250,22 @@ pub fn router(state: Arc<AppState>) -> Router {
                     .is_some_and(|t| t.as_bytes().starts_with(b"application/json"))
             },
         ))
-        .layer(axum::middleware::map_request(limit_body_idle));
+        .layer(axum::middleware::map_request(limit_body_idle))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(tokio::sync::Semaphore::new(
+                limits.max_inflight_requests.max(1) as usize,
+            )),
+            limit_inflight,
+        ));
     let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);
-    Router::new()
-        .nest("/api/v1", api)
+    let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/", get(pages::landing))
-        .route("/invite/{code}", get(pages::invite))
+        .route("/invite/{code}", get(pages::invite));
+    let public = ratelimit::limit_public(public, trusted);
+    Router::new()
+        .nest("/api/v1", api)
+        .merge(public)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             log_request,
@@ -289,6 +298,31 @@ async fn log_request(
         started.elapsed().as_millis()
     );
     response
+}
+
+/// How long a request turned away by [`limit_inflight`] is asked to wait.
+const BUSY_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `limits.max_inflight_requests`: past it a request is turned away at once (`RATE_LIMITED`,
+/// which clients already wait out) instead of queueing behind the others. Uploads are left out:
+/// a slow one would hold its turn for as long as its body takes.
+async fn limit_inflight(
+    axum::extract::State(turns): axum::extract::State<Arc<tokio::sync::Semaphore>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.method() == axum::http::Method::POST
+        && request.uri().path().ends_with("/attachments")
+    {
+        return next.run(request).await;
+    }
+    match turns.try_acquire_owned() {
+        Ok(_turn) => next.run(request).await,
+        Err(_) => {
+            ratelimit::note_busy();
+            ratelimit::rate_limited(BUSY_RETRY)
+        }
+    }
 }
 
 /// A request body that stops arriving ends the request, instead of holding it open.
@@ -515,4 +549,55 @@ pub fn user_ref(segment: &str, me: Id) -> ApiResult<Id> {
     segment
         .parse()
         .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid user ID"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn requests_past_the_inflight_cap_are_turned_away() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let turns = Arc::new(tokio::sync::Semaphore::new(1));
+        let app = Router::new()
+            .route(
+                "/slow",
+                get({
+                    let release = release.clone();
+                    move || async move { release.notified().await }
+                }),
+            )
+            .route("/attachments", post(|| async {}))
+            .layer(axum::middleware::from_fn_with_state(
+                turns.clone(),
+                limit_inflight,
+            ));
+        let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", tcp.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(tcp, app).await });
+        // reqwest is built without a default crypto provider; building a client still needs one.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::new();
+
+        let slow = tokio::spawn({
+            let (client, url) = (client.clone(), format!("{root}/slow"));
+            async move { client.get(url).send().await.unwrap().status() }
+        });
+        while turns.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+        let busy = client.get(format!("{root}/slow")).send().await.unwrap();
+        assert_eq!(busy.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(busy.headers().contains_key("retry-after"));
+        // Uploads do not wait for a turn.
+        let upload = client
+            .post(format!("{root}/attachments"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+
+        release.notify_one();
+        assert_eq!(slow.await.unwrap(), StatusCode::OK);
+    }
 }

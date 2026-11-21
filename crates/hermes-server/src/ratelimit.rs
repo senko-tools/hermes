@@ -33,17 +33,76 @@ use crate::state::client_ip;
 pub const GATEWAY_OPS_PERIOD: Duration = Duration::from_secs(60);
 /// The window of `limits.messages_per_5s`.
 pub const MESSAGES_PERIOD: Duration = Duration::from_secs(5);
-/// What a person can do too often. The value divides `limits.actions_per_minute`.
+/// What a person can do too often; each kind has its own bucket of a fraction of
+/// `limits.actions_per_minute` ([`Action::divisor`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
-    Edit = 1,
-    React = 2,
-    Typing = 3,
-    Search = 4,
-    Upload = 5,
-    Friend = 6,
-    Ring = 12,
-    Password = 24,
+    Edit,
+    React,
+    Typing,
+    /// Opening someone's profile card (`GET /users/{id}`).
+    Profile,
+    Search,
+    Upload,
+    Friend,
+    Ring,
+    Password,
+    /// `GET /users/@me/export`: everything of mine at once.
+    Export,
+}
+
+impl Action {
+    /// `limits.actions_per_minute` divided by this is the burst per minute.
+    pub fn divisor(self) -> u32 {
+        match self {
+            Action::Edit => 1,
+            Action::React | Action::Profile => 2,
+            Action::Typing => 3,
+            Action::Search => 4,
+            Action::Upload => 5,
+            Action::Friend => 6,
+            Action::Ring => 12,
+            Action::Password => 24,
+            Action::Export => 120,
+        }
+    }
+}
+
+/// What was turned away since the last [`report_task`] line.
+static TURNED_AWAY: [std::sync::atomic::AtomicU64; 4] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+const AWAY_REST: usize = 0;
+const AWAY_ACTIONS: usize = 1;
+const AWAY_SIGN_INS: usize = 2;
+const AWAY_BUSY: usize = 3;
+
+fn note(kind: usize) {
+    TURNED_AWAY[kind].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A request turned away by `limits.max_inflight_requests`.
+pub fn note_busy() {
+    note(AWAY_BUSY);
+}
+
+/// How often [`report_task`] says what the limits turned away.
+const REPORT_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Once a minute, if any limit turned something away, says how much, so a flood shows in the
+/// console without a line per request.
+pub async fn report_task() {
+    let mut interval = tokio::time::interval(REPORT_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let [rest, actions, sign_ins, busy] =
+            std::array::from_fn(|i| TURNED_AWAY[i].swap(0, std::sync::atomic::Ordering::Relaxed));
+        if rest + actions + sign_ins + busy > 0 {
+            tracing::warn!(
+                "rate limits in the last minute turned away {rest} REST requests, {actions}                  actions, {sign_ins} gateway sign-ins and {busy} requests while busy"
+            );
+        }
+    }
 }
 
 /// One address may make this many times the REST requests of one session.
@@ -232,6 +291,7 @@ macro_rules! governor_layer {
 fn governor_error(err: GovernorError) -> Response<Body> {
     match err {
         GovernorError::TooManyRequests { wait_time, .. } => {
+            note(AWAY_REST);
             // tower_governor only reports whole seconds; at least 1 s.
             rate_limited(Duration::from_secs(wait_time.max(1)))
         }
@@ -270,11 +330,68 @@ pub fn limit_rest<S: Clone + Send + Sync + 'static>(
 impl crate::state::AppState {
     /// One more `action` of `user`, unless they have done too many this minute.
     pub fn throttle(&self, user: hermes_proto::id::Id, action: Action) -> Result<(), Error> {
-        let burst = (self.config.limits.actions_per_minute / action as u32).max(1);
+        let burst = (self.config.limits.actions_per_minute / action.divisor()).max(1);
         self.action_limiter
             .check(&(user, action), burst, Duration::from_secs(60))
-            .map_err(|wait| Error(ApiError::rate_limited(retry_ms(wait))))
+            .map_err(|wait| {
+                note(AWAY_ACTIONS);
+                Error(ApiError::rate_limited(retry_ms(wait)))
+            })
     }
+}
+
+/// Who signs in to the gateway, for `limits.gateway_identifies_per_minute`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignInKey {
+    User(hermes_proto::id::Id),
+    Ip(IpAddr),
+}
+
+/// One address may sign in this many times as often as one person (several may share it).
+const SIGN_IN_IP_FACTOR: u32 = 10;
+
+impl crate::state::AppState {
+    /// One more gateway sign-in (identify or resume) from `ip`, unless it has made too many.
+    /// Checked before the token, so guessing tokens costs too.
+    pub fn sign_in_from(&self, ip: IpAddr) -> Result<(), Duration> {
+        let burst = self
+            .config
+            .limits
+            .gateway_identifies_per_minute
+            .saturating_mul(SIGN_IN_IP_FACTOR);
+        self.sign_in_limiter
+            .check(&SignInKey::Ip(ip), burst, GATEWAY_OPS_PERIOD)
+            .inspect_err(|_| note(AWAY_SIGN_INS))
+    }
+
+    /// One more gateway sign-in of `user`. Each one builds a `ready` or replays events and tells
+    /// everyone who sees them that they came online, so they are rarer than other ops.
+    pub fn sign_in_as(&self, user: hermes_proto::id::Id) -> Result<(), Duration> {
+        let burst = self.config.limits.gateway_identifies_per_minute;
+        self.sign_in_limiter
+            .check(&SignInKey::User(user), burst, GATEWAY_OPS_PERIOD)
+            .inspect_err(|_| note(AWAY_SIGN_INS))
+    }
+}
+
+/// Requests per second one address may make to the web pages and `/healthz`, which need no
+/// session.
+pub const PUBLIC_PER_SECOND: u32 = 10;
+
+/// Applies [`PUBLIC_PER_SECOND`] per IP to every route of `router`. Must run inside a tokio
+/// runtime.
+pub fn limit_public<S: Clone + Send + Sync + 'static>(
+    router: Router<S>,
+    trusted_proxies: &[ProxyRange],
+) -> Router<S> {
+    let extractor = ClientIp {
+        trusted_proxies: trusted_proxies.into(),
+    };
+    router.layer(governor_layer!(
+        extractor,
+        PUBLIC_PER_SECOND,
+        Duration::from_secs(1)
+    ))
 }
 
 /// Applies `limits.login_attempts_per_minute` per IP to one route.

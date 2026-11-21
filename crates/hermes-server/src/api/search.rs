@@ -94,6 +94,7 @@ pub async fn search(
     auth: Auth,
     Query(q): Query<SearchQuery>,
 ) -> ApiResult<Json<SearchResponse>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Search)?;
     if q.q.chars().count() > MAX_QUERY_CHARS {
         return Err(validate::field_error(
             "q",

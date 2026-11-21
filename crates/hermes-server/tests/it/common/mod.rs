@@ -110,6 +110,7 @@ pub async fn start_with(
     config.registration.mode = mode;
     // Rate limits are tested on their own; everything else may go fast.
     config.limits.requests_per_second = 100_000;
+    config.limits.gateway_identifies_per_minute = 100_000;
     config.limits.login_attempts_per_minute = 100_000;
     config.limits.messages_per_5s = 100_000;
     config.limits.actions_per_minute = 2_400_000;

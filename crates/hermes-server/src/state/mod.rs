@@ -43,6 +43,10 @@ pub struct AppState {
     pub message_limiter: KeyedLimiter<(Id, Id)>,
     /// `limits.actions_per_minute`.
     pub action_limiter: KeyedLimiter<(Id, crate::ratelimit::Action)>,
+    /// `limits.gateway_identifies_per_minute`, per person and per address.
+    pub sign_in_limiter: KeyedLimiter<crate::ratelimit::SignInKey>,
+    /// Sessions already looked up, so most requests do not ask the database who they are.
+    pub sessions: crate::auth::SessionCache,
     /// Guesses at one account's password, wherever they come from.
     pub account_limiter: KeyedLimiter<String>,
     /// Who may register: the config, unless an admin changed it while the server runs.
@@ -81,6 +85,8 @@ impl AppState {
             slowmode: Slowmode::default(),
             message_limiter: KeyedLimiter::default(),
             action_limiter: KeyedLimiter::default(),
+            sign_in_limiter: KeyedLimiter::default(),
+            sessions: Default::default(),
             account_limiter: KeyedLimiter::default(),
             registration: std::sync::RwLock::new(registration),
             files,
@@ -121,6 +127,13 @@ impl AppState {
 
     pub fn cache_mut(&self) -> RwLockWriteGuard<'_, Cache> {
         self.cache.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// After REST sessions are deleted from the database: their tokens stop working at once and
+    /// their gateway connections are closed (4011).
+    pub fn revoke_sessions(&self, session_ids: &[Id]) {
+        self.sessions.forget(session_ids);
+        self.gateway.revoke(session_ids);
     }
 
     /// The client's IP; see [`client_ip`].
@@ -694,6 +707,24 @@ impl Cache {
             users.extend(list.keys().copied());
         }
         users
+    }
+
+    /// Whether `viewer` may see `target`'s profile: `profile_audience(viewer)` contains
+    /// `target`, worked out without building that set.
+    pub fn can_see_profile(&self, viewer: Id, target: Id) -> bool {
+        viewer == target
+            || self
+                .relationships
+                .get(&viewer)
+                .is_some_and(|list| list.contains_key(&target))
+            || self.shares_space(viewer, target)
+            // A message request shares nothing until it is accepted, in either direction.
+            || self.dm_ids(viewer).any(|dm| {
+                let c = &self.channels[&dm];
+                c.requests.binary_search(&viewer).is_err()
+                    && c.requests.binary_search(&target).is_err()
+                    && c.recipient_ids.contains(&target)
+            })
     }
 
     pub fn shares_space(&self, a: Id, b: Id) -> bool {

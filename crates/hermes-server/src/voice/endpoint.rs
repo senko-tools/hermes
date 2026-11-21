@@ -1,9 +1,11 @@
 //! The voice QUIC endpoint (PLAN.md 12.2): its own self-signed certificate, one task per
 //! connection, the control stream, incoming datagrams and screen share streams.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::net::SocketAddr;
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hermes_proto::ErrorCode;
@@ -30,6 +32,79 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 const VIDEO_QUEUE: usize = 16;
 /// Unidirectional streams a peer may have open at once (one per share frame).
 pub const MAX_UNI_STREAMS: u32 = 32;
+/// Connections still shaking hands or not yet authenticated, in all; more are refused.
+const MAX_UNAUTHENTICATED: usize = 256;
+/// Past this many of those, a client whose address is not proven yet is sent a QUIC retry
+/// first: a forged source address cannot answer it, so it costs no handshake.
+const RETRY_ABOVE: usize = 32;
+
+/// Who may connect: at most `limits.max_connections_per_ip` connections per address (0 = no
+/// limit) and [`MAX_UNAUTHENTICATED`] that have not authenticated yet.
+#[derive(Debug, Default)]
+struct Admission {
+    per_ip: Mutex<HashMap<IpAddr, u32>>,
+    unauthenticated: AtomicUsize,
+}
+
+/// One connection of an address; dropping it frees the place.
+struct IpTurn {
+    admission: Arc<Admission>,
+    ip: IpAddr,
+}
+
+impl Drop for IpTurn {
+    fn drop(&mut self) {
+        let mut per_ip = self
+            .admission
+            .per_ip
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = per_ip.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                per_ip.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// A connection that has not authenticated yet; dropped once it has (or has gone).
+struct Unauthenticated(Arc<Admission>);
+
+impl Drop for Unauthenticated {
+    fn drop(&mut self) {
+        self.0.unauthenticated.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Admission {
+    /// A place for one more connection from `ip`, or `None` if it has to be refused.
+    fn admit(self: &Arc<Self>, ip: IpAddr, max_per_ip: u32) -> Option<(IpTurn, Unauthenticated)> {
+        if self.unauthenticated.fetch_add(1, Ordering::Relaxed) >= MAX_UNAUTHENTICATED {
+            self.unauthenticated.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        }
+        let waiting = Unauthenticated(self.clone());
+        let mut per_ip = self.per_ip.lock().unwrap_or_else(|e| e.into_inner());
+        let count = per_ip.entry(ip).or_insert(0);
+        if max_per_ip != 0 && *count >= max_per_ip {
+            return None;
+        }
+        *count += 1;
+        drop(per_ip);
+        Some((
+            IpTurn {
+                admission: self.clone(),
+                ip,
+            },
+            waiting,
+        ))
+    }
+
+    fn crowded(&self) -> bool {
+        self.unauthenticated.load(Ordering::Relaxed) > RETRY_ABOVE
+    }
+}
 
 #[derive(Debug)]
 pub enum EndpointError {
@@ -91,21 +166,34 @@ pub fn bind(config: &Config, addr: SocketAddr) -> Result<(quinn::Endpoint, Strin
     Ok((endpoint, fingerprint))
 }
 
-/// Accepts connections until the endpoint is closed.
+/// Accepts connections until the endpoint is closed, within [`Admission`]'s limits.
 pub async fn serve(state: Arc<AppState>, endpoint: quinn::Endpoint) {
+    let admission = Arc::new(Admission::default());
     while let Some(incoming) = endpoint.accept().await {
+        if admission.crowded() && !incoming.remote_address_validated() && incoming.may_retry() {
+            let _ = incoming.retry();
+            continue;
+        }
+        let remote = incoming.remote_address();
+        let ip = remote.ip().to_canonical();
+        let Some((turn, waiting)) = admission.admit(ip, state.config.limits.max_connections_per_ip)
+        else {
+            tracing::debug!("voice connection from {ip} refused: too many connections");
+            incoming.refuse();
+            continue;
+        };
         let state = state.clone();
         tokio::spawn(async move {
-            let remote = incoming.remote_address();
+            let _turn = turn;
             match incoming.await {
-                Ok(conn) => connection(state, conn).await,
+                Ok(conn) => connection(state, conn, waiting).await,
                 Err(err) => tracing::debug!("voice handshake from {remote} failed: {err}"),
             }
         });
     }
 }
 
-async fn connection(state: Arc<AppState>, conn: quinn::Connection) {
+async fn connection(state: Arc<AppState>, conn: quinn::Connection, waiting: Unauthenticated) {
     let (control, mut outbox) = mpsc::channel(CONTROL_QUEUE);
     let (video, video_out) = mpsc::channel(VIDEO_QUEUE);
     let conn_id = state.voice.register(Link {
@@ -115,7 +203,7 @@ async fn connection(state: Arc<AppState>, conn: quinn::Connection) {
     });
     let writer = tokio::spawn(write_video(conn.clone(), video_out));
     let reader = tokio::spawn(read_video(state.clone(), conn_id, conn.clone()));
-    let reason = run(&state, conn_id, &conn, &mut outbox).await;
+    let reason = run(&state, conn_id, &conn, &mut outbox, waiting).await;
     writer.abort();
     reader.abort();
     state.voice.unregister(&state, conn_id);
@@ -132,7 +220,9 @@ async fn run(
     conn_id: ConnId,
     conn: &quinn::Connection,
     outbox: &mut mpsc::Receiver<ServerControl>,
+    waiting: Unauthenticated,
 ) -> String {
+    let mut waiting = Some(waiting);
     let (mut send, recv) = match tokio::time::timeout(AUTH_TIMEOUT, conn.accept_bi()).await {
         Ok(Ok(streams)) => streams,
         Ok(Err(err)) => return err.to_string(),
@@ -156,6 +246,10 @@ async fn run(
                     None => break "control stream closed".into(),
                 };
                 let reply = handle(state, conn_id, &mut authed, msg);
+                if authed {
+                    // No longer counts against MAX_UNAUTHENTICATED.
+                    drop(waiting.take());
+                }
                 let fatal = matches!(reply, Some((_, true)));
                 if let Some((reply, _)) = reply
                     && write(&mut send, &reply).await.is_err()

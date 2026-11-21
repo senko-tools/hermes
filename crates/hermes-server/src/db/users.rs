@@ -48,13 +48,18 @@ pub async fn last_online(pool: &SqlitePool, user: Id) -> Result<Option<i64>, sql
         .map(Option::flatten)
 }
 
-/// Their "About me", if any.
-pub async fn bio(pool: &SqlitePool, user: Id) -> Result<Option<String>, sqlx::Error> {
-    let id = user.to_i64();
-    let bio = sqlx::query_scalar!("SELECT bio FROM users WHERE id = ?", id)
-        .fetch_optional(pool)
-        .await?;
-    Ok(bio.filter(|b| !b.is_empty()))
+/// Their "About me" (if any) and when they were last online, in one query.
+pub async fn bio_and_last_online(
+    pool: &SqlitePool,
+    user: Id,
+) -> Result<(Option<String>, Option<i64>), sqlx::Error> {
+    let row: Option<(Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT bio, last_online_at FROM users WHERE id = ?")
+            .bind(user.to_i64())
+            .fetch_optional(pool)
+            .await?;
+    let (bio, last_online) = row.unwrap_or_default();
+    Ok((bio.filter(|b| !b.is_empty()), last_online))
 }
 
 pub async fn set_bio(

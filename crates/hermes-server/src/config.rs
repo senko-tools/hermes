@@ -258,6 +258,11 @@ pub struct LimitsConfig {
     /// What can be limited without reading messages, even encrypted ones: 0 = no limit.
     pub max_mentions_per_message: u32,
     pub gateway_ops_per_minute: u32,
+    /// Gateway sign-ins (identify or resume) per person; one address gets ten times this.
+    pub gateway_identifies_per_minute: u32,
+    /// REST requests being answered at once, in all; past it new ones get 503 straight away.
+    /// Downloads and gateway connections are not counted.
+    pub max_inflight_requests: u32,
     /// How long a dropped connection can come back and catch up.
     pub resume_window_secs: u32,
     pub resume_buffer_events: u32,
@@ -279,6 +284,8 @@ impl Default for LimitsConfig {
             max_sessions_per_user: 64,
             max_mentions_per_message: 20,
             gateway_ops_per_minute: 120,
+            gateway_identifies_per_minute: 12,
+            max_inflight_requests: 512,
             resume_window_secs: 300,
             resume_buffer_events: 2000,
         }
@@ -531,6 +538,14 @@ impl Config {
         at_least_one(
             "limits.login_attempts_per_minute",
             self.limits.login_attempts_per_minute,
+        );
+        at_least_one(
+            "limits.gateway_identifies_per_minute",
+            self.limits.gateway_identifies_per_minute,
+        );
+        at_least_one(
+            "limits.max_inflight_requests",
+            self.limits.max_inflight_requests,
         );
         at_least_one("voice.max_users_per_room", self.voice.max_users_per_room);
 

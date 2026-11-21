@@ -61,6 +61,7 @@ pub async fn spawn(name: &str, voice: bool, configure: impl FnOnce(&mut Config))
     config.tls.mode = TlsMode::SelfSigned;
     config.registration.mode = RegistrationMode::Open;
     config.limits.requests_per_second = 100_000;
+    config.limits.gateway_identifies_per_minute = 100_000;
     config.limits.login_attempts_per_minute = 100_000;
     config.limits.messages_per_5s = 100_000;
     configure(&mut config);

@@ -353,7 +353,7 @@ pub async fn logout(
         "{} signed out from {ip}",
         logging::who(&state, auth.user_id)
     );
-    state.gateway.revoke(&[auth.session_id]);
+    state.revoke_sessions(&[auth.session_id]);
     super::devices::revoke_sessions(&state, &[auth.session_id]).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -384,7 +384,7 @@ pub async fn delete_session(
     Path(session_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
     if db::auth::delete_session(&state.db.write, auth.user_id, session_id).await? {
-        state.gateway.revoke(&[session_id]);
+        state.revoke_sessions(&[session_id]);
         super::devices::revoke_sessions(&state, &[session_id]).await?;
         Ok(StatusCode::NO_CONTENT)
     } else {

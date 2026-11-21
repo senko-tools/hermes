@@ -179,7 +179,7 @@ pub async fn unblock(
 
 /// Everything the server holds about me, as JSON. Encrypted messages stay as they are stored.
 pub async fn export(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<Json<Value>> {
-    state.throttle(auth.user_id, Action::Password)?;
+    state.throttle(auth.user_id, Action::Export)?;
     let id = auth.user_id.to_i64();
     let db = &state.db.read;
     let messages = sqlx::query(
@@ -363,7 +363,7 @@ pub async fn delete(
             cached.user.clone()
         })
     };
-    state.gateway.revoke(&sessions);
+    state.revoke_sessions(&sessions);
     for space in spaces {
         super::members::publish_removal(&state, space, auth.user_id);
     }

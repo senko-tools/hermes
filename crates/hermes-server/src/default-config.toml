@@ -52,6 +52,8 @@ session_idle_days = 180             # a session unused this long ends; 0 = never
 max_sessions_per_user = 64          # the most recently used are kept; 0 = no limit
 max_mentions_per_message = 20       # also works on encrypted messages; 0 = no limit
 gateway_ops_per_minute = 120
+gateway_identifies_per_minute = 12  # gateway sign-ins per person; one address gets 10x
+max_inflight_requests = 512         # REST requests answered at once; more get 503 at once
 resume_window_secs = 300            # how long a dropped connection can come back and catch up
 resume_buffer_events = 2000
 

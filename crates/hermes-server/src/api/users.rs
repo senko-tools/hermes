@@ -81,7 +81,7 @@ pub async fn change_password(
     db::auth::set_password_hash(&mut tx, auth.user_id, &new_hash).await?;
     let revoked = db::auth::delete_other_sessions(&mut tx, auth.user_id, auth.session_id).await?;
     tx.commit().await?;
-    state.gateway.revoke(&revoked);
+    state.revoke_sessions(&revoked);
     super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::debug!(user_id = %auth.user_id, revoked = revoked.len(), "password changed");
     Ok(StatusCode::NO_CONTENT)
@@ -247,10 +247,10 @@ pub async fn get(
     auth: Auth,
     Path(user_id): Path<Id>,
 ) -> ApiResult<Json<UserProfile>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Profile)?;
     let (user, mutual_space_ids, may_see_last_online) = {
         let cache = state.cache();
-        let visible =
-            user_id == auth.user_id || cache.profile_audience(auth.user_id).contains(&user_id);
+        let visible = cache.can_see_profile(auth.user_id, user_id);
         let user = cache
             .users
             .get(&user_id)
@@ -271,16 +271,12 @@ pub async fn get(
         let may_see = user_id == auth.user_id || (known && user.privacy.show_last_online);
         (user.user.clone(), mutual_space_ids, may_see)
     };
-    let last_online_at = if may_see_last_online {
-        db::users::last_online(&state.db.read, user_id).await?
-    } else {
-        None
-    };
+    let (bio, last_online_at) = db::users::bio_and_last_online(&state.db.read, user_id).await?;
     Ok(Json(UserProfile {
         user,
         mutual_space_ids,
-        last_online_at,
-        bio: db::users::bio(&state.db.read, user_id).await?,
+        last_online_at: last_online_at.filter(|_| may_see_last_online),
+        bio,
     }))
 }
 

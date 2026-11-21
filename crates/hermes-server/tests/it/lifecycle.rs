@@ -59,7 +59,7 @@ async fn rest_requests_are_limited_per_session_and_ip() {
         }
     }
     assert!(limited, "made-up tokens got past every limit");
-    // /healthz is not limited.
+    // /healthz is not under the REST limit (it has its own per address).
     for _ in 0..5 {
         let res = server
             .client()
@@ -69,6 +69,102 @@ async fn rest_requests_are_limited_per_session_and_ip() {
             .unwrap();
         assert_eq!(res.status().as_u16(), 200);
     }
+}
+
+#[tokio::test]
+async fn profile_search_and_export_have_their_own_limits() {
+    // 4 per minute: profiles get half (2), search a quarter (1), export at least 1.
+    let server = start_with("lifecycle-action-limits", RegistrationMode::Open, |state| {
+        state.config.limits.actions_per_minute = 4;
+    })
+    .await;
+    let (owner, owner_id, _) = server.owner().await;
+    for _ in 0..2 {
+        server
+            .get(&format!("/users/{owner_id}"), Some(&owner))
+            .await
+            .ok();
+    }
+    let res = server
+        .get(&format!("/users/{owner_id}"), Some(&owner))
+        .await;
+    res.err(429, "RATE_LIMITED");
+    server.get("/search?q=hello", Some(&owner)).await.ok();
+    server
+        .get("/search?q=hello", Some(&owner))
+        .await
+        .err(429, "RATE_LIMITED");
+    server.get("/users/@me/export", Some(&owner)).await.ok();
+    server
+        .get("/users/@me/export", Some(&owner))
+        .await
+        .err(429, "RATE_LIMITED");
+}
+
+#[tokio::test]
+async fn web_pages_are_limited_per_ip() {
+    let server = start("lifecycle-page-limit", RegistrationMode::Open).await;
+    let mut limited = false;
+    for _ in 0..50 {
+        let res = server
+            .client()
+            .get(format!("{}/invite/AAAAAAAAAA", server.root))
+            .send()
+            .await
+            .unwrap();
+        if res.status().as_u16() == 429 {
+            limited = true;
+            break;
+        }
+        assert_eq!(res.status().as_u16(), 404);
+    }
+    assert!(limited, "the invite page was never limited");
+}
+
+#[tokio::test]
+async fn gateway_sign_ins_are_limited_per_person() {
+    let server = start_with(
+        "lifecycle-identify-limit",
+        RegistrationMode::Open,
+        |state| {
+            state.config.limits.gateway_identifies_per_minute = 2;
+        },
+    )
+    .await;
+    let (owner, _, _) = server.owner().await;
+    for _ in 0..2 {
+        let (ws, _) = server.identify(&owner).await;
+        drop(ws);
+    }
+    let mut ws = server.connect().await;
+    ws.send_identify(&owner).await;
+    assert_eq!(ws.closed().await, 4008);
+}
+
+#[tokio::test]
+async fn revoked_sessions_stop_working_at_once() {
+    let server = start("lifecycle-session-cache", RegistrationMode::Open).await;
+    let (owner, _, _) = server.owner().await;
+    // Cached by this request.
+    server.get("/users/@me", Some(&owner)).await.ok();
+    server.post("/auth/logout", Some(&owner), json!({})).await;
+    server
+        .get("/users/@me", Some(&owner))
+        .await
+        .err(401, "UNAUTHORIZED");
+
+    // Deleted outside the server (the user commands): gone after the next refresh.
+    let token = server.login("owner", "correct horse").await.ok()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    server.get("/users/@me", Some(&token)).await.ok();
+    server.sql("DELETE FROM sessions").await;
+    hermes_server::users::refresh(&server.state).await.unwrap();
+    server
+        .get("/users/@me", Some(&token))
+        .await
+        .err(401, "UNAUTHORIZED");
 }
 
 #[tokio::test]

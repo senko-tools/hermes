@@ -16,8 +16,8 @@ use crate::state::AppState;
 /// How often the database is compared with the cache.
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Copies `disabled` / `instance_admin` from the database into the cache and closes gateway
-/// connections whose REST session was deleted (a password reset or a disabled account).
+/// Copies `disabled` / `instance_admin` from the database into the cache, forgets cached REST
+/// sessions and closes gateway connections whose REST session was deleted (a password reset or a disabled account).
 /// Returns how many users changed and how many connections were closed.
 pub async fn refresh(state: &AppState) -> Result<(usize, usize), sqlx::Error> {
     // Held so a handler (`PATCH /admin/users/{id}`, a rename) cannot commit and cache its change
@@ -62,6 +62,8 @@ pub async fn refresh(state: &AppState) -> Result<(usize, usize), sqlx::Error> {
         .await?
         .into_iter()
         .collect();
+    // Sessions deleted by the user commands stop working for REST too.
+    state.sessions.retain_live(&live);
     let gone: Vec<Id> = connected
         .into_iter()
         .filter(|id| !live.contains(id))

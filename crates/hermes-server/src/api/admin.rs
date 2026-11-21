@@ -267,7 +267,7 @@ pub async fn update_user(
             Audience::Users(audience.into_iter().collect()),
         );
     }
-    state.gateway.revoke(&revoked);
+    state.revoke_sessions(&revoked);
     super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::info!(%user_id, disabled, instance_admin, by = %auth.user_id, "admin changed a user");
     write_log(

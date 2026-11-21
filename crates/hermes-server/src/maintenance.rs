@@ -140,7 +140,7 @@ pub async fn run(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
                 .execute(&state.db.write)
                 .await?;
         }
-        state.gateway.revoke(&sessions);
+        state.revoke_sessions(&sessions);
     }
     sqlx::query("PRAGMA optimize")
         .execute(&state.db.write)

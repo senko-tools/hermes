@@ -130,6 +130,56 @@ async fn profile_changes_reach_everyone_who_sees_me() {
 }
 
 #[tokio::test]
+async fn profile_visibility_matches_the_profile_audience() {
+    let server = start("users-profile-visibility", RegistrationMode::Open).await;
+    let (owner, owner_id, space_id) = server.owner().await;
+    let (_, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let (stranger, stranger_id) = server.register("stranger", None).await;
+    let (loner, loner_id) = server.register("loner", None).await;
+    // A friend request from a stranger, a DM in the space and one (maybe a request) from outside.
+    let handle = |user: Value| match user["discriminator"].as_str() {
+        Some(tag) => format!("{}#{tag}", user["username"].as_str().unwrap()),
+        None => user["username"].as_str().unwrap().to_owned(),
+    };
+    let stranger_handle = handle(server.get("/users/@me", Some(&stranger)).await.ok());
+    server
+        .post(
+            "/users/@me/friends",
+            Some(&loner),
+            json!({ "handle": stranger_handle }),
+        )
+        .await
+        .ok();
+    server
+        .post("/dms", Some(&owner), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .ok();
+    let _ = server
+        .post(
+            "/dms",
+            Some(&stranger),
+            json!({ "recipient_ids": [owner_id] }),
+        )
+        .await;
+
+    let ids: Vec<hermes_proto::id::Id> = [&owner_id, &alice_id, &stranger_id, &loner_id]
+        .iter()
+        .map(|id| id.parse().unwrap())
+        .collect();
+    let cache = server.state.cache();
+    for &viewer in &ids {
+        let audience = cache.profile_audience(viewer);
+        for &target in &ids {
+            assert_eq!(
+                cache.can_see_profile(viewer, target),
+                audience.contains(&target),
+                "{viewer} looking at {target}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn notification_settings_are_saved_and_synced() {
     let server = start("users-notify", RegistrationMode::Open).await;
     let (owner, _, space_id) = server.owner().await;

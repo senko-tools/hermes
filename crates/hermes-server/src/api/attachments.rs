@@ -421,6 +421,7 @@ pub async fn set_poster(
     Path(id): Path<Id>,
     body: axum::body::Bytes,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Upload)?;
     if body.len() > MAX_POSTER_BYTES {
         return Err(Error::new(
             ErrorCode::PayloadTooLarge,

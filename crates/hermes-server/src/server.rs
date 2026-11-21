@@ -41,6 +41,7 @@ pub async fn run(
     let maintenance = tokio::spawn(crate::maintenance::task(state.clone()));
     let refresh = tokio::spawn(crate::users::refresh_task(state.clone()));
     let last_online = tokio::spawn(crate::gateway::last_online::flush_task(state.clone()));
+    let limits_report = tokio::spawn(crate::ratelimit::report_task());
     let (calls_stop, calls_stopped) = oneshot::channel::<()>();
     let calls = state.voice.take_after().map(|rx| {
         let stop = async move {
@@ -93,6 +94,7 @@ pub async fn run(
     maintenance.abort();
     refresh.abort();
     last_online.abort();
+    limits_report.abort();
     if let Some(quic) = &quic {
         quic.close(0u32.into(), b"server restarting");
         let _ = tokio::time::timeout(QUIC_CLOSE_TIMEOUT, quic.wait_idle()).await;
