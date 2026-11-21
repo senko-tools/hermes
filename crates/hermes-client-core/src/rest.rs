@@ -9,11 +9,11 @@ use hermes_proto::api::{
     CallRingRequest, ChangePasswordRequest, ChangeUsernameRequest, ChannelPosition,
     CreateChannelRequest, CreateDmRequest, CreateInviteRequest, CreateRoleRequest,
     CreateSpaceRequest, EditMessageRequest, HistoryQuery, InstanceResponse, LoginRequest,
-    NotificationSettingRequest, OverrideRequest, RegisterRequest, RolePosition, SearchQuery,
-    SearchResponse, SendMessageRequest, SessionInfo, TransferSpaceRequest, UpdateChannelRequest,
-    UpdateMeRequest, UpdateMemberRequest, UpdatePrivacyRequest, UpdateRoleRequest,
-    UpdateSpaceRequest, UserProfile, VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest,
-    VoiceStatePatchRequest,
+    NotificationSettingRequest, OverrideRequest, RegisterRequest, RemoveAttachmentResponse,
+    RolePosition, SearchQuery, SearchResponse, SendMessageRequest, SessionInfo,
+    TransferSpaceRequest, UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
+    UpdatePrivacyRequest, UpdateRoleRequest, UpdateSpaceRequest, UserProfile, VoiceJoinRequest,
+    VoiceJoinResponse, VoiceSelfStateRequest, VoiceStatePatchRequest,
 };
 use hermes_proto::compat::Lenient;
 use hermes_proto::e2ee::{
@@ -948,6 +948,21 @@ impl Rest {
             Method::PATCH,
             &format!("/channels/{channel}/messages/{message}"),
             Some(req),
+        )
+        .await
+    }
+
+    /// Takes one file off a message; `message: None` back when that left nothing of it.
+    pub async fn remove_attachment(
+        &self,
+        channel: Id,
+        message: Id,
+        attachment: Id,
+    ) -> Result<RemoveAttachmentResponse> {
+        self.call::<(), _>(
+            Method::DELETE,
+            &format!("/channels/{channel}/messages/{message}/attachments/{attachment}"),
+            None,
         )
         .await
     }

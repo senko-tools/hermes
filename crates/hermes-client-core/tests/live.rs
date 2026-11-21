@@ -1375,3 +1375,76 @@ async fn a_video_is_sent_with_its_size_and_poster() {
         .unwrap();
     assert!(image::load_from_memory(&thumb).is_ok());
 }
+
+#[tokio::test]
+async fn files_come_off_encrypted_messages_and_an_empty_one_goes() {
+    let server = start_with("channel-remove-file", true).await;
+    let (alice, _a_events, a, _, channel, _) = channel_pair(&server).await;
+    let mut files = Vec::new();
+    for name in ["one.txt", "two.txt", "three.txt"] {
+        let path = server.dir.join(name);
+        std::fs::write(&path, name).unwrap();
+        files.push(
+            alice
+                .upload_to(&a, channel, &path, Default::default())
+                .await
+                .unwrap(),
+        );
+    }
+    let send = |content: &str, attachments: Vec<_>| {
+        alice
+            .send_message(
+                &a,
+                channel,
+                Draft {
+                    content: content.into(),
+                    reply_to: None,
+                    attachments,
+                },
+            )
+            .unwrap();
+    };
+    let message = |text: &str| {
+        alice
+            .store()
+            .instance(&a)
+            .and_then(|s| s.window(channel))
+            .and_then(|w| w.messages.iter().find(|m| m.content == text).cloned())
+    };
+
+    // Text with two files: one goes, the text and the other stay.
+    send("note", vec![files[0].clone(), files[1].clone()]);
+    wait_for_window(&alice, &a, channel, "note").await;
+    let note = message("note").unwrap();
+    alice
+        .remove_attachment(&a, channel, note.id, files[0].id)
+        .await
+        .unwrap();
+    let note = message("note").unwrap();
+    assert_eq!(note.attachments.len(), 1);
+    assert_eq!(note.attachments[0].filename, "two.txt");
+    assert!(note.edited_at.is_some());
+    // The last one goes too: the text stays.
+    alice
+        .remove_attachment(&a, channel, note.id, files[1].id)
+        .await
+        .unwrap();
+    let note = message("note").unwrap();
+    assert!(note.attachments.is_empty() && !note.deleted);
+
+    // A file alone: when it goes nothing is left, so the message goes (the server cannot tell).
+    send("", vec![files[2].clone()]);
+    wait_for_window(&alice, &a, channel, "").await;
+    let only = message("").unwrap();
+    alice
+        .remove_attachment(&a, channel, only.id, files[2].id)
+        .await
+        .unwrap();
+    let raw = alice
+        .rest(&a)
+        .unwrap()
+        .message(channel, only.id)
+        .await
+        .unwrap();
+    assert!(raw.deleted);
+}

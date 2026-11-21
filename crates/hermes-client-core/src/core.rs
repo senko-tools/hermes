@@ -1954,6 +1954,65 @@ impl Core {
         Ok(())
     }
 
+    /// Takes one file off a message. The text is what a message is about, so it stays; with no
+    /// text and no other file nothing would be left, and the whole message is deleted. The server
+    /// cannot read an encrypted message, so that is decided here.
+    pub async fn remove_attachment(
+        &self,
+        inst: &str,
+        channel: Id,
+        message: Id,
+        attachment: Id,
+    ) -> Result<()> {
+        let encrypted = self.channel_is_encrypted(inst, channel);
+        let (last_thing, reseal) = {
+            let store = self.store();
+            let s = store.instance(inst);
+            let me = s.and_then(|s| s.me_id());
+            let found = s
+                .and_then(|s| s.window(channel))
+                .and_then(|w| w.messages.iter().find(|m| m.id == message));
+            (
+                found.is_some_and(|m| {
+                    m.content.trim().is_empty() && m.attachments.iter().all(|a| a.id == attachment)
+                }),
+                // My encrypted message is sealed again without the file: that marks it edited
+                // (the server cannot), and its envelope no longer names the file.
+                found
+                    .filter(|m| Some(m.author.id) == me)
+                    .filter(|_| encrypted)
+                    .map(|m| m.content.clone()),
+            )
+        };
+        if last_thing {
+            return self.delete_message(inst, channel, message).await;
+        }
+        let response = self
+            .rest(inst)?
+            .remove_attachment(channel, message, attachment)
+            .await?;
+        let event = match response.message {
+            Some(mut updated) => {
+                self.open_message(inst, &mut updated).await;
+                ServerEvent::MessageUpdate(updated)
+            }
+            None => {
+                self.index_remove(inst, message);
+                ServerEvent::MessageDelete {
+                    id: message,
+                    channel_id: channel,
+                }
+            }
+        };
+        let kept = matches!(event, ServerEvent::MessageUpdate(_));
+        let changed = self.with_store(inst, |s| s.apply(event, now_ms()));
+        self.changed(inst, changed.unwrap_or_default());
+        if let Some(content) = reseal.filter(|_| kept) {
+            self.edit_message(inst, channel, message, &content).await?;
+        }
+        Ok(())
+    }
+
     pub async fn delete_message(&self, inst: &str, channel: Id, message: Id) -> Result<()> {
         self.rest(inst)?.delete_message(channel, message).await?;
         self.index_remove(inst, message);
