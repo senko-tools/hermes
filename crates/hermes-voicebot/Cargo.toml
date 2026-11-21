@@ -16,7 +16,7 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 # The integration tests run a real server (PLAN.md section 19); never a normal dependency.
-hermes-server = { path = "../hermes-server" }
+hermes-server = { path = "../hermes-server", features = ["testing"] }
 rustls.workspace = true
 
 [lints]

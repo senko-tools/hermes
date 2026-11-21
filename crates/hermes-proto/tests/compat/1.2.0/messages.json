@@ -1,0 +1,27 @@
+[
+  {
+    "id": "100",
+    "channel_id": "11",
+    "author": {
+      "id": "1",
+      "username": "me",
+      "display_name": null,
+      "avatar": null,
+      "status_text": null
+    },
+    "content": "hello **world**",
+    "reply_to": null,
+    "edited_at": null,
+    "deleted": false,
+    "pinned": false,
+    "kind": "default",
+    "attachments": [],
+    "reactions": [],
+    "mentions": {
+      "users": [],
+      "roles": [],
+      "everyone": false,
+      "here": false
+    }
+  }
+]

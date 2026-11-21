@@ -2,7 +2,7 @@
 
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    AttachmentRef, Channel, ChannelKind, Override, PrivacySettings, Role, Space, User,
+    AttachmentRef, Channel, ChannelKind, Override, PrivacySettings, Role, Space, User, split_handle,
 };
 use hermes_proto::permissions::Permissions;
 use sqlx::SqlitePool;
@@ -24,6 +24,7 @@ pub struct MemberRow {
     pub user_id: Id,
     pub nickname: Option<String>,
     pub joined_at: i64,
+    pub timeout_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +46,29 @@ pub struct Snapshot {
     pub channels: Vec<Channel>,
     pub overrides: Vec<(Id, Override)>,
     pub dm_recipients: Vec<DmRecipientRow>,
+    pub relationships: Vec<super::friends::Row>,
+    pub blocks: Vec<(Id, Id)>,
+}
+
+async fn blocks(pool: &SqlitePool) -> Result<Vec<(Id, Id)>, sqlx::Error> {
+    let rows = sqlx::query!("SELECT user_id, blocked_id FROM user_blocks")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (Id::from_i64(r.user_id), Id::from_i64(r.blocked_id)))
+        .collect())
+}
+
+/// Who may register, if an instance admin changed it from the config file's.
+pub async fn registration_override(
+    pool: &SqlitePool,
+) -> Result<Option<crate::config::RegistrationMode>, sqlx::Error> {
+    let value =
+        sqlx::query_scalar!("SELECT value FROM instance_settings WHERE key = 'registration_mode'")
+            .fetch_optional(pool)
+            .await?;
+    Ok(value.and_then(|v| serde_json::from_str(&v).ok()))
 }
 
 pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
@@ -57,6 +81,8 @@ pub async fn load(pool: &SqlitePool) -> Result<Snapshot, sqlx::Error> {
         channels: channels(pool).await?,
         overrides: overrides(pool).await?,
         dm_recipients: dm_recipients(pool).await?,
+        relationships: super::friends::all(pool).await?,
+        blocks: blocks(pool).await?,
     })
 }
 
@@ -77,26 +103,33 @@ async fn users(pool: &SqlitePool) -> Result<Vec<UserRow>, sqlx::Error> {
         r#"SELECT u.id, u.username, u.display_name, u.status_text,
                   u.instance_admin AS "instance_admin: bool", u.disabled AS "disabled: bool",
                   u.dm_from, u.message_requests AS "message_requests: bool",
-                  u.avatar_id, a.filename AS "avatar_filename?"
-           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id"#
+                  u.show_last_online AS "show_last_online: bool",
+                  u.avatar_id, a.filename AS "avatar_filename?",
+                  u.banner_id, b.filename AS "banner_filename?"
+           FROM users u LEFT JOIN attachments a ON a.id = u.avatar_id
+                        LEFT JOIN attachments b ON b.id = u.banner_id"#
     )
     .fetch_all(pool)
     .await?
     .into_iter()
     .map(|r| {
+        let (name, tag) = split_handle(&r.username);
         Ok(UserRow {
             user: User {
                 id: Id::from_i64(r.id),
-                username: r.username,
+                username: name.to_owned(),
+                discriminator: tag.map(str::to_owned),
                 display_name: r.display_name,
                 avatar: attachment(r.avatar_id, r.avatar_filename),
                 status_text: r.status_text,
+                banner: attachment(r.banner_id, r.banner_filename),
             },
             instance_admin: r.instance_admin,
             disabled: r.disabled,
             privacy: PrivacySettings {
                 dm_from: super::users::parse_dm_from(&r.dm_from),
                 message_requests: r.message_requests,
+                show_last_online: r.show_last_online,
             },
         })
     })
@@ -148,9 +181,11 @@ async fn roles(pool: &SqlitePool) -> Result<Vec<Role>, sqlx::Error> {
 }
 
 async fn members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
-    let rows = sqlx::query!("SELECT space_id, user_id, nickname, joined_at FROM space_members")
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query!(
+        "SELECT space_id, user_id, nickname, joined_at, timeout_until FROM space_members"
+    )
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|r| MemberRow {
@@ -158,6 +193,7 @@ async fn members(pool: &SqlitePool) -> Result<Vec<MemberRow>, sqlx::Error> {
             user_id: Id::from_i64(r.user_id),
             nickname: r.nickname,
             joined_at: r.joined_at,
+            timeout_until: r.timeout_until,
         })
         .collect())
 }

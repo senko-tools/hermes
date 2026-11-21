@@ -1,4 +1,4 @@
-//! UI sounds (join/leave/mute/ping/ring), synthesized at 48 kHz so no asset files are needed.
+//! UI sounds (join/leave/mute/message/ping/ring), synthesized at 48 kHz so no asset files are needed.
 
 use std::f32::consts::TAU;
 
@@ -12,71 +12,83 @@ pub enum Sound {
     Leave,
     Mute,
     Unmute,
-    /// A mention or message ping.
+    /// A new message (DMs, and channels set to notify for every message).
+    Message,
+    /// A mention, or one of my words.
     Ping,
     /// One ring of an incoming call (about 1.6 s; the UI repeats it for up to 30 s).
     Ring,
 }
 
 impl Sound {
-    pub const ALL: [Sound; 6] = [
+    pub const ALL: [Sound; 7] = [
         Sound::Join,
         Sound::Leave,
         Sound::Mute,
         Sound::Unmute,
+        Sound::Message,
         Sound::Ping,
         Sound::Ring,
     ];
 
-    /// The samples of this sound at 48 kHz mono, peak about 0.5.
-    pub fn samples(self) -> Vec<f32> {
+    /// The notes of this sound, `(frequency, seconds)`. A test keeps them all low, so none of
+    /// them is sharp.
+    fn notes(self) -> &'static [(f32, f32)] {
         match self {
-            // Low and soft (G4 and C5): a rising pair to join, falling to leave.
-            Sound::Join => soft_notes(&[(392.0, 0.09), (523.25, 0.16)]),
-            Sound::Leave => soft_notes(&[(523.25, 0.09), (392.0, 0.16)]),
-            Sound::Mute => soft_notes(&[(330.0, 0.08)]),
-            Sound::Unmute => soft_notes(&[(440.0, 0.08)]),
-            Sound::Ping => notes(&[(1046.5, 0.05), (1318.5, 0.09)]),
-            Sound::Ring => {
-                let mut out = notes(&[(784.0, 0.15), (659.3, 0.15), (784.0, 0.15), (659.3, 0.15)]);
-                // A pause before the next ring.
-                out.resize(out.len() + SAMPLE_RATE as usize, 0.0);
-                out
-            }
+            // A rising pair to join, falling to leave.
+            Sound::Join => &[(392.0, 0.09), (523.25, 0.16)],
+            Sound::Leave => &[(523.25, 0.09), (392.0, 0.16)],
+            Sound::Mute => &[(330.0, 0.08)],
+            Sound::Unmute => &[(440.0, 0.08)],
+            // A low, short pair under the ping, so a plain message stands out less.
+            Sound::Message => &[(349.23, 0.08), (440.0, 0.14)],
+            Sound::Ping => &[(440.0, 0.10), (554.37, 0.18)],
+            Sound::Ring => &[(523.25, 0.30), (392.0, 0.30)],
         }
+    }
+
+    /// The samples of this sound at 48 kHz mono, peak at most [`PEAK`].
+    pub fn samples(self) -> Vec<f32> {
+        let mut out = soft_notes(self.notes());
+        if self == Sound::Ring {
+            // A pause before the next ring.
+            out.resize(out.len() + SAMPLE_RATE as usize, 0.0);
+        }
+        out
     }
 }
 
-/// Sine notes `(frequency, seconds)` one after another, each with a short fade in and out.
-fn notes(notes: &[(f32, f32)]) -> Vec<f32> {
-    let rate = SAMPLE_RATE as f32;
-    let mut out = Vec::new();
-    for &(freq, secs) in notes {
-        let len = (secs * rate) as usize;
-        let fade = (0.008 * rate) as usize;
-        for i in 0..len {
-            let env = (i.min(len - i) as f32 / fade as f32).min(1.0);
-            out.push(0.5 * env * (TAU * freq * i as f32 / rate).sin());
-        }
-    }
-    out
+/// How loud a sound gets before the volume setting, which is well under full scale.
+const PEAK: f32 = 0.26;
+/// The highest note any sound may use: higher ones sting.
+#[cfg(test)]
+const HIGHEST_HZ: f32 = 660.0;
+/// Seconds a note takes to fade in; long enough that it never clicks or pricks.
+const ATTACK: f32 = 0.02;
+/// Seconds a note takes to fade out.
+const RELEASE: f32 = 0.04;
+
+/// A curve from 0 to 1 that starts and ends flat.
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
-/// Like [`notes`], but rounder: a slower attack and a decay through each note, at a lower
-/// level, so they do not sting.
+/// Sine notes `(frequency, seconds)` one after another: a gentle attack and a decay through each
+/// note, so they do not sting.
 fn soft_notes(notes: &[(f32, f32)]) -> Vec<f32> {
     let rate = SAMPLE_RATE as f32;
     let mut out = Vec::new();
     for &(freq, secs) in notes {
         let len = (secs * rate) as usize;
-        let attack = (0.012 * rate) as usize;
-        let release = (0.02 * rate) as usize;
+        let attack = ATTACK * rate;
+        let release = RELEASE * rate;
         for i in 0..len {
             let t = i as f32 / len as f32;
-            let rise = (i as f32 / attack as f32).min(1.0);
-            let fall = ((len - i) as f32 / release as f32).min(1.0);
+            let rise = smooth(i as f32 / attack);
+            let fall = smooth((len - i) as f32 / release);
             let decay = (-2.5 * t).exp();
-            out.push(0.38 * rise * fall * decay * (TAU * freq * i as f32 / rate).sin());
+            out.push(PEAK * rise * fall * decay * (TAU * freq * i as f32 / rate).sin());
         }
     }
     out
@@ -133,9 +145,23 @@ mod tests {
             let s = sound.samples();
             assert!(!s.is_empty());
             assert!(s.len() < SAMPLE_RATE as usize * 2, "{sound:?}");
-            assert!(s.iter().all(|x| x.abs() <= 0.5), "{sound:?}");
+            assert!(s.iter().all(|x| x.abs() <= PEAK), "{sound:?}");
             // Fades in and out, so no clicks.
             assert!(s[0].abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn sounds_are_soft() {
+        for sound in Sound::ALL {
+            for &(freq, secs) in sound.notes() {
+                assert!(freq <= HIGHEST_HZ, "{sound:?} has a sharp note: {freq} Hz");
+                assert!(secs > ATTACK + RELEASE, "{sound:?} has no room to fade");
+            }
+            // Nothing jumps out: the first millisecond is still nearly silent.
+            let first_ms = SAMPLE_RATE as usize / 1000;
+            let s = sound.samples();
+            assert!(s[..first_ms].iter().all(|x| x.abs() < 0.01), "{sound:?}");
         }
     }
 

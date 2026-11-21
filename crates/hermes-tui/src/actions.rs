@@ -2,6 +2,7 @@
 //! result lists with jump-to (search, mentions, pins), and the space management commands
 //! (PLAN.md section 16.2 and Phase 6).
 
+use hermes_client_core::menus::{self, Action as Shared, Target};
 use hermes_client_core::proto::api::{
     BanRequest, CreateChannelRequest, NotificationSettingRequest, SearchQuery,
     UpdateChannelRequest, UpdateMeRequest, UpdateMemberRequest,
@@ -249,22 +250,23 @@ impl App {
         let s = store.instance(&inst)?;
         let msg = s.window(channel)?.get(id)?;
         let own = s.me_id() == Some(author);
-        let dm = s.dms.contains_key(&channel);
-        let manage = view::can(s, channel, Permissions::MANAGE_MESSAGES);
+        // The same rules as the desktop client's menu.
+        let allowed = menus::allowed_actions(&Target::Message(inst.clone(), channel, id), s);
+        let may = |a: Shared| allowed.contains(&a);
         let mut out = Menu::new();
-        if view::can(s, channel, Permissions::SEND_MESSAGES) {
+        if may(Shared::Reply) {
             out.push(item("Reply", MenuItem::Key(Action::Reply)));
         }
-        out.push(item("React", MenuItem::Key(Action::React)));
-        if own {
+        if may(Shared::AddReaction) {
+            out.push(item("React", MenuItem::Key(Action::React)));
+        }
+        if may(Shared::Edit) {
             out.push(item("Edit", MenuItem::Key(Action::Edit)));
         }
-        if manage || dm {
-            if msg.pinned {
-                out.push(item("Unpin", MenuItem::Pin(false)));
-            } else {
-                out.push(item("Pin", MenuItem::Pin(true)));
-            }
+        if may(Shared::Unpin) {
+            out.push(item("Unpin", MenuItem::Pin(false)));
+        } else if may(Shared::Pin) {
+            out.push(item("Pin", MenuItem::Pin(true)));
         }
         if !msg.attachments.is_empty() {
             out.push(item("Open the attachment", MenuItem::Run(Command::Open(1))));
@@ -277,7 +279,7 @@ impl App {
             ));
             out.push(item("Mention the author", MenuItem::Mention(username)));
         }
-        if own || (manage && !dm) {
+        if may(Shared::DeleteMessage) {
             out.push(item("Delete", MenuItem::Key(Action::Delete)));
         }
         let title = format!("message by {}", s.display_name(s.space_of(channel), author));
@@ -294,7 +296,7 @@ impl App {
             return Vec::new();
         };
         match s.space_of(*channel) {
-            Some(space) => view::member_groups(s, space)
+            Some(space) => view::member_groups(s, space, Some(*channel))
                 .into_iter()
                 .flat_map(|g| g.members.into_iter().map(|m| m.user_id))
                 .collect(),
@@ -322,9 +324,11 @@ impl App {
         }
         out.push(item("Mention", MenuItem::Mention(username.clone())));
         if let Some(space) = space {
-            let can = |p| view::can_in_space(s, space, p);
-            let above = view::outranks(s, space, user);
-            if can(Permissions::MANAGE_ROLES) {
+            // The same rules as the desktop client's menu.
+            let allowed =
+                menus::allowed_actions(&Target::Member(inst.clone(), Some(space), user), s);
+            let may = |a: Shared| allowed.contains(&a);
+            if may(Shared::ManageRoles) {
                 out.push(item(
                     "Give a role…",
                     MenuItem::Prefill(format!("role {username} +")),
@@ -334,13 +338,13 @@ impl App {
                     MenuItem::Prefill(format!("role {username} -")),
                 ));
             }
-            if above && can(Permissions::KICK_MEMBERS) {
+            if may(Shared::Kick) {
                 out.push(item(
                     "Kick",
                     MenuItem::Kick(inst.clone(), space, user, s.display_name(Some(space), user)),
                 ));
             }
-            if above && can(Permissions::BAN_MEMBERS) {
+            if may(Shared::Ban) {
                 out.push(item("Ban…", MenuItem::Prefill(format!("ban {username} "))));
             }
         }
@@ -654,6 +658,7 @@ impl App {
                 let req = BanRequest {
                     reason: (!reason.is_empty()).then_some(reason),
                     delete_messages_hours: None,
+                    duration_hours: None,
                 };
                 self.rest(&inst, &format!("banned {name}"), move |r| async move {
                     r.ban(space, user, &req).await
@@ -665,15 +670,13 @@ impl App {
                 let rest = self.core.rest(&inst);
                 tokio::spawn(async move {
                     let result = async {
-                        let rest = rest.map_err(|e| e.to_string())?;
-                        let bans = rest.bans(space).await.map_err(|e| e.to_string())?;
+                        let rest = rest?;
+                        let bans = rest.bans(space).await?;
                         let ban = bans
                             .iter()
                             .find(|b| b.user.username.eq_ignore_ascii_case(&name))
                             .ok_or_else(|| format!("{name} is not banned"))?;
-                        rest.unban(space, ban.user.id)
-                            .await
-                            .map_err(|e| e.to_string())?;
+                        rest.unban(space, ban.user.id).await?;
                         Ok::<_, String>(format!("unbanned {name}"))
                     }
                     .await;
@@ -808,8 +811,11 @@ impl App {
             limit: Some(50),
             ..SearchQuery::default()
         };
+        let (core, searched) = (self.core.clone(), inst.clone());
         self.results(&inst, title, move |r| async move {
-            r.search(&query).await.map(|res| res.messages)
+            core.search_with(&r, &searched, &query)
+                .await
+                .map(|res| res.messages)
         });
     }
 
@@ -828,13 +834,17 @@ impl App {
         let rest = self.core.rest(inst);
         let tasks = self.tasks.clone();
         let inst = inst.clone();
+        let core = self.core.clone();
         tokio::spawn(async move {
             let msg = match rest {
                 Ok(rest) => match f(rest).await {
-                    Ok(items) => TaskMsg::Results {
-                        title,
-                        items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
-                    },
+                    Ok(mut items) => {
+                        core.open_messages(&inst, &mut items).await;
+                        TaskMsg::Results {
+                            title,
+                            items: items.into_iter().map(|m| (inst.clone(), m)).collect(),
+                        }
+                    }
                     Err(err) => TaskMsg::Error(err.to_string()),
                 },
                 Err(err) => TaskMsg::Error(err.to_string()),

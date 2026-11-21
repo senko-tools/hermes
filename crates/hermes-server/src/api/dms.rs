@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateDmRequest, UpdateChannelRequest};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -41,13 +40,16 @@ pub async fn list(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<J
     Ok(Json(dms))
 }
 
-/// `dm_policy`: with `shared_space`, the caller must share a space with `other`.
+/// `dm_policy`: with `shared_space`, the caller must share a space with `other` or be their friend.
 fn check_policy(state: &AppState, cache: &Cache, user_id: Id, other: Id) -> ApiResult<()> {
     match state.config.privacy.dm_policy {
         DmPolicy::Anyone => Ok(()),
-        DmPolicy::SharedSpace if cache.shares_space(user_id, other) => Ok(()),
-        DmPolicy::SharedSpace => Err(Error::new(
-            ErrorCode::MissingPermission,
+        DmPolicy::SharedSpace
+            if cache.shares_space(user_id, other) || cache.are_friends(user_id, other) =>
+        {
+            Ok(())
+        }
+        DmPolicy::SharedSpace => Err(Error::forbidden(
             "You can only message users who share a space with you",
         )),
     }
@@ -61,20 +63,21 @@ fn as_request(cache: &Cache, sender: Id, other: Id) -> ApiResult<bool> {
         .get(&other)
         .map(|u| u.privacy)
         .unwrap_or_default();
-    let allowed = match privacy.dm_from {
-        DmFrom::Everyone => true,
-        DmFrom::Spaces => cache.shares_space(sender, other),
-        DmFrom::Nobody => false,
-    };
+    if cache.blocked(other, sender) {
+        return Err(Error::dms_not_accepted());
+    }
+    let allowed = cache.are_friends(sender, other)
+        || match privacy.dm_from {
+            DmFrom::Everyone => true,
+            DmFrom::Spaces => cache.shares_space(sender, other),
+            DmFrom::Nobody => false,
+        };
     if allowed {
         Ok(false)
     } else if privacy.message_requests {
         Ok(true)
     } else {
-        Err(Error::new(
-            ErrorCode::MissingPermission,
-            "This user does not accept direct messages from you",
-        ))
+        Err(Error::dms_not_accepted())
     }
 }
 
@@ -93,10 +96,7 @@ fn publish_each(state: &AppState, channel_id: Id, users: &[Id], event: fn(Channe
 }
 
 fn group_too_large(max: u32) -> Error {
-    Error::new(
-        ErrorCode::BadRequest,
-        format!("A group DM can have at most {max} people"),
-    )
+    Error::bad_request(format!("A group DM can have at most {max} people"))
 }
 
 /// One other user: their existing 1:1 DM, or a new one. Two or more: a new group DM owned by the
@@ -265,10 +265,7 @@ pub async fn close(
         match access.channel.kind {
             ChannelKind::Dm => {}
             ChannelKind::GroupDm => {
-                return Err(Error::new(
-                    ErrorCode::BadRequest,
-                    "Group DMs are left, not closed",
-                ));
+                return Err(Error::bad_request("Group DMs are left, not closed"));
             }
             _ => return Err(Error::not_found("channel")),
         }
@@ -351,8 +348,7 @@ fn group_dm(cache: &Cache, channel_id: Id, user_id: Id) -> ApiResult<(Channel, V
             access.channel.clone(),
             cache.channels[&channel_id].recipient_ids.clone(),
         )),
-        ChannelKind::Dm => Err(Error::new(
-            ErrorCode::BadRequest,
+        ChannelKind::Dm => Err(Error::bad_request(
             "The recipients of a 1:1 DM cannot change",
         )),
         _ => Err(Error::not_found("channel")),
@@ -422,8 +418,7 @@ async fn remove(state: &AppState, actor: Id, channel_id: Id, user_id: Id) -> Api
         let cache = state.cache();
         let (channel, recipients) = group_dm(&cache, channel_id, actor)?;
         if user_id != actor && channel.owner_id != Some(actor) {
-            return Err(Error::new(
-                ErrorCode::MissingPermission,
+            return Err(Error::forbidden(
                 "Only the owner of the group DM can remove others",
             ));
         }

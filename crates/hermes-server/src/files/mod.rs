@@ -37,6 +37,8 @@ pub struct Files {
     /// Bytes of all stored originals, for `storage.max_total_storage_gb`.
     used: AtomicU64,
     decodes: Semaphore,
+    /// Uploads running per person.
+    uploads: std::sync::Mutex<std::collections::HashMap<Id, u32>>,
 }
 
 impl Files {
@@ -54,6 +56,7 @@ impl Files {
             root,
             used: AtomicU64::new(used),
             decodes: Semaphore::new(PARALLEL_DECODES),
+            uploads: std::sync::Mutex::default(),
         })
     }
 
@@ -126,7 +129,7 @@ pub struct ImageInfo {
     pub has_thumb: bool,
 }
 
-/// `Some` if `file` is a PNG, JPEG, GIF or WebP image (detected from its bytes) that decodes
+/// `Some` if `file` is a PNG, JPEG, GIF, WebP, BMP, TIFF or ICO image (detected from its bytes) that decodes
 /// within the limits. With `thumb`, a WebP thumbnail fitting in [`THUMB_SIZE`]² is written there;
 /// an image that fails to decode then counts as no image at all.
 pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
@@ -141,10 +144,15 @@ pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
     };
     let reader = open()?;
     let content_type = match reader.format()? {
+        // An animated PNG says so: clients load its original to play it.
+        ImageFormat::Png if is_apng(file) => "image/apng",
         ImageFormat::Png => "image/png",
         ImageFormat::Jpeg => "image/jpeg",
         ImageFormat::Gif => "image/gif",
         ImageFormat::WebP => "image/webp",
+        ImageFormat::Bmp => "image/bmp",
+        ImageFormat::Tiff => "image/tiff",
+        ImageFormat::Ico => "image/x-icon",
         _ => return None,
     };
     let (width, height) = reader.into_dimensions().ok()?;
@@ -160,13 +168,13 @@ pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
         });
     };
     // GIFs and animated WebPs decode to their first frame.
-    let image = open()?.decode().ok()?;
+    let image = open()?.decode().ok()?.to_rgba8();
     let image = if width > THUMB_SIZE || height > THUMB_SIZE {
-        image.thumbnail(THUMB_SIZE, THUMB_SIZE)
+        thumbnail(image, THUMB_SIZE)
     } else {
         image
     };
-    let image = image::DynamicImage::ImageRgba8(image.to_rgba8());
+    let image = image::DynamicImage::ImageRgba8(image);
     let has_thumb = match image.save_with_format(thumb, ImageFormat::WebP) {
         Ok(()) => true,
         Err(err) => {
@@ -181,6 +189,109 @@ pub fn probe(file: &Path, thumb: Option<&Path>) -> Option<ImageInfo> {
         height,
         has_thumb,
     })
+}
+
+/// Whether the PNG at `file` is animated.
+fn is_apng(file: &Path) -> bool {
+    let Ok(f) = std::fs::File::open(file) else {
+        return false;
+    };
+    image::codecs::png::PngDecoder::new(std::io::BufReader::new(f))
+        .and_then(|d| d.is_apng())
+        .unwrap_or(false)
+}
+
+/// `pixels` shrunk to fit `side`, keeping its shape. The colour is weighted by alpha while
+/// shrinking (the scaler mixes neighbours as they are), so clear pixels, often stored black,
+/// leave no dark rim on soft edges.
+fn thumbnail(mut pixels: image::RgbaImage, side: u32) -> image::RgbaImage {
+    let soft = pixels
+        .as_raw()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|p| p[3] != u8::MAX);
+    if soft {
+        for p in pixels.as_mut().as_chunks_mut::<4>().0 {
+            let a = u32::from(p[3]);
+            for c in &mut p[..3] {
+                *c = ((u32::from(*c) * a + 127) / 255) as u8;
+            }
+        }
+    }
+    let (w, h) = pixels.dimensions();
+    let scale = f64::from(side) / f64::from(w.max(h));
+    let (nw, nh) = (
+        ((f64::from(w) * scale).round() as u32).max(1),
+        ((f64::from(h) * scale).round() as u32).max(1),
+    );
+    let mut out = image::imageops::thumbnail(&pixels, nw, nh);
+    if soft {
+        for p in out.as_mut().as_chunks_mut::<4>().0 {
+            let a = u32::from(p[3]);
+            match a {
+                0 => p[..3].fill(0),
+                255 => {}
+                _ => {
+                    for c in &mut p[..3] {
+                        *c = ((u32::from(*c) * 255 + a / 2) / a).min(255) as u8;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Removes the files of a message just deleted, instead of leaving them for the hourly round.
+pub async fn purge(state: &AppState, stored: Vec<db::attachments::Expired>) {
+    for (id, sha256, size) in stored {
+        match db::attachments::delete_if_unused(&state.db.write, id).await {
+            Ok(true) => {
+                state.files.remove(&sha256, id);
+                state.files.release(size);
+            }
+            Ok(false) => {}
+            Err(err) => tracing::error!("could not delete attachment {id}: {err}"),
+        }
+    }
+}
+
+/// Uploads one person may have running at once.
+const MAX_UPLOADS_AT_ONCE: u32 = 8;
+
+/// A running upload; gives its place back when dropped.
+pub struct UploadSlot<'a> {
+    running: &'a std::sync::Mutex<std::collections::HashMap<Id, u32>>,
+    user: Id,
+}
+
+impl Drop for UploadSlot<'_> {
+    fn drop(&mut self) {
+        let mut running = self.running.lock().expect("uploads");
+        if let Some(count) = running.get_mut(&self.user) {
+            *count -= 1;
+            if *count == 0 {
+                running.remove(&self.user);
+            }
+        }
+    }
+}
+
+impl Files {
+    /// A place for one more upload of `user`, unless they have all they may.
+    pub fn upload_slot(&self, user: Id) -> Option<UploadSlot<'_>> {
+        let mut running = self.uploads.lock().expect("uploads");
+        let count = running.entry(user).or_insert(0);
+        if *count >= MAX_UPLOADS_AT_ONCE {
+            return None;
+        }
+        *count += 1;
+        Some(UploadSlot {
+            running: &self.uploads,
+            user,
+        })
+    }
 }
 
 /// Deletes uploads that were not attached within [`UNATTACHED_TTL_MS`] (avatars and icons stay).
@@ -281,6 +392,23 @@ mod tests {
             image::guess_format(&std::fs::read(&thumb).unwrap()).unwrap(),
             ImageFormat::WebP
         );
+    }
+
+    #[test]
+    fn soft_edges_get_no_dark_rim_in_thumbnails() {
+        // Half white and solid, half clear (stored black).
+        let pixels = image::RgbaImage::from_fn(800, 8, |x, _| {
+            if x < 400 {
+                image::Rgba([255, 255, 255, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let out = thumbnail(pixels, 300);
+        assert_eq!(out.dimensions(), (300, 3));
+        for p in out.pixels().filter(|p| p[3] > 0) {
+            assert!(p[0] >= 250, "{p:?}");
+        }
     }
 
     #[test]

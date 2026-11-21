@@ -1,22 +1,12 @@
 //! Users and sessions (PLAN.md sections 7.3 and 13).
 
 use hermes_proto::id::Id;
-use sqlx::{SqliteConnection, SqliteExecutor};
+use sqlx::{SqliteConnection, SqliteExecutor, SqlitePool};
 
 pub async fn count_users(e: impl SqliteExecutor<'_>) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar!(r#"SELECT COUNT(*) AS "count!: i64" FROM users"#)
         .fetch_one(e)
         .await
-}
-
-pub async fn username_taken(
-    e: impl SqliteExecutor<'_>,
-    username: &str,
-) -> Result<bool, sqlx::Error> {
-    let found = sqlx::query_scalar!("SELECT id FROM users WHERE username = ?", username)
-        .fetch_optional(e)
-        .await?;
-    Ok(found.is_some())
 }
 
 /// What login needs to know about a user.
@@ -25,6 +15,35 @@ pub struct Credentials {
     pub user_id: Id,
     pub password_hash: String,
     pub disabled: bool,
+    pub totp_secret: Option<String>,
+}
+
+/// The stored handle a login name means: itself if an account has exactly that handle, or, for a
+/// name without a tag, the one account of that name. `Err(())`: several, it needs the tag.
+pub async fn resolve_handle(
+    pool: &SqlitePool,
+    login: &str,
+) -> Result<Result<Option<String>, ()>, sqlx::Error> {
+    let exact = sqlx::query_scalar!("SELECT username FROM users WHERE username = ?", login)
+        .fetch_optional(pool)
+        .await?;
+    if exact.is_some() || login.contains('#') {
+        return Ok(Ok(exact));
+    }
+    // `$` is the character after `#`: every `name#...` and nothing else.
+    let (from, to) = (format!("{login}#"), format!("{login}$"));
+    let mut rows = sqlx::query_scalar!(
+        "SELECT username FROM users WHERE username >= ? AND username < ? LIMIT 2",
+        from,
+        to
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(match rows.len() {
+        0 => Ok(None),
+        1 => Ok(rows.pop()),
+        _ => Err(()),
+    })
 }
 
 pub async fn credentials_by_username(
@@ -32,7 +51,8 @@ pub async fn credentials_by_username(
     username: &str,
 ) -> Result<Option<Credentials>, sqlx::Error> {
     let row = sqlx::query!(
-        r#"SELECT id, password_hash, disabled AS "disabled: bool" FROM users WHERE username = ?"#,
+        r#"SELECT id, password_hash, disabled AS "disabled: bool", totp_secret
+           FROM users WHERE username = ?"#,
         username
     )
     .fetch_optional(e)
@@ -41,6 +61,7 @@ pub async fn credentials_by_username(
         user_id: Id::from_i64(r.id),
         password_hash: r.password_hash,
         disabled: r.disabled,
+        totp_secret: r.totp_secret,
     }))
 }
 
@@ -152,17 +173,11 @@ pub async fn touch_session(
     e: impl SqliteExecutor<'_>,
     session_id: Id,
     now: i64,
-    ip: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let id = session_id.to_i64();
-    sqlx::query!(
-        "UPDATE sessions SET last_seen_at = ?, last_ip = COALESCE(?, last_ip) WHERE id = ?",
-        now,
-        ip,
-        id
-    )
-    .execute(e)
-    .await?;
+    sqlx::query!("UPDATE sessions SET last_seen_at = ? WHERE id = ?", now, id)
+        .execute(e)
+        .await?;
     Ok(())
 }
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reports WHERE id = ? AND space_id IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "0b04f087e7ec4160a1a3cdb1e82525d58f9159960b1156918d4a147129d5b408"
+}

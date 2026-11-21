@@ -58,9 +58,15 @@ pub struct InstanceResponse {
     /// Server version (`CARGO_PKG_VERSION`).
     pub version: String,
     pub protocol_version: u32,
+    /// A mode from a newer server reads as `invite_only`.
+    #[serde(deserialize_with = "crate::compat::or_default")]
     pub registration_mode: RegistrationMode,
     pub limits: InstanceLimits,
     pub voice: InstanceVoice,
+    /// What this server can do beyond protocol 2 ([`crate::compat::features`]). Older servers
+    /// send none.
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +90,95 @@ pub struct LoginRequest {
     pub username: String,
     pub password: String,
     pub device_name: String,
+    /// The code from an authenticator, on accounts that have two-factor login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorStatus {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorPassword {
+    pub password: String,
+}
+
+/// To put in an authenticator app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorSecret {
+    pub secret: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorCode {
+    pub code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorDisable {
+    pub password: String,
+    pub code: String,
+}
+
+/// `POST /users/@me/delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    pub password: String,
+    #[serde(default)]
+    pub delete_messages: bool,
+}
+
+/// `POST /channels/{id}/messages/{mid}/report`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportRequest {
+    pub reason: String,
+    /// What the reporter shows of it: the server cannot read an encrypted message.
+    #[serde(default)]
+    pub excerpt: String,
+}
+
+impl ReportRequest {
+    pub const MAX_REASON_CHARS: usize = 300;
+    pub const MAX_EXCERPT_CHARS: usize = 2000;
+}
+
+/// `POST /channels/{id}/messages/bulk-delete`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BulkDeleteRequest {
+    pub ids: Vec<Id>,
+}
+
+impl BulkDeleteRequest {
+    pub const MAX_IDS: usize = 100;
+}
+
+/// `GET /admin/users/{id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminUserDetail {
+    pub created_at: i64,
+    pub last_online_at: Option<i64>,
+    pub sessions: u32,
+    pub storage_bytes: u64,
+    pub spaces: u32,
+}
+
+/// `GET /admin/log`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminLogEntry {
+    pub id: Id,
+    pub actor_id: Id,
+    pub target_id: Option<Id>,
+    pub action: String,
+    pub details: String,
+    pub created_at: i64,
+}
+
+/// `GET`/`PATCH /admin/settings`: what an instance admin can change while the server runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminSettings {
+    pub registration_mode: RegistrationMode,
 }
 
 /// Response of register and login. `token` is sent as `Authorization: Bearer <token>`.
@@ -133,11 +228,30 @@ pub struct UpdateMeRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub status_text: Patch<String>,
+    /// The profile banner, from an image upload.
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub banner_id: Patch<Id>,
+    /// "About me" (the `bio` feature); a few lines.
+    #[serde(
+        default,
+        deserialize_with = "patch",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bio: Patch<String>,
 }
+
+/// The largest file an avatar, a profile banner or a server icon may be.
+pub const PICTURE_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 impl UpdateMeRequest {
     pub const DISPLAY_NAME_CHARS: (usize, usize) = (1, 32);
     pub const STATUS_TEXT_CHARS: usize = 128;
+    pub const BIO_CHARS: usize = 190;
+    pub const BIO_LINES: usize = 6;
 }
 
 /// `GET /users/{id}`: the user and the spaces we share.
@@ -146,6 +260,13 @@ pub struct UserProfile {
     #[serde(flatten)]
     pub user: User,
     pub mutual_space_ids: Vec<Id>,
+    /// When they were last online (Unix ms), if known. Being idle or invisible does not count,
+    /// except for writing in a server or going into a server's voice channel.
+    #[serde(default)]
+    pub last_online_at: Option<i64>,
+    /// Their "About me". Older servers send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
 }
 
 /// `PUT /users/@me/notification-settings/{target_id}`.
@@ -157,9 +278,53 @@ pub struct NotificationSettingRequest {
     pub muted_until: Option<i64>,
 }
 
-/// `GET /search`.
+/// How search results are ordered (`GET /search?sort=`, `search_rank`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSort {
+    /// Newest first; later pages go on with `before`.
+    #[default]
+    Newest,
+    /// Best matches first; later pages go on with `offset`.
+    Relevance,
+}
+
+/// What a found message must have (`GET /search?has=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchHas {
+    /// Any attachment.
+    File,
+    /// An attached picture.
+    Image,
+    /// A web link in its text.
+    Link,
+}
+
+impl SearchHas {
+    pub const ALL: [SearchHas; 3] = [SearchHas::File, SearchHas::Image, SearchHas::Link];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SearchHas::File => "file",
+            SearchHas::Image => "image",
+            SearchHas::Link => "link",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim().to_lowercase();
+        Self::ALL
+            .into_iter()
+            .find(|h| h.as_str() == name || (name == "files" && *h == SearchHas::File))
+    }
+}
+
+/// `GET /search`. With the `search_filters` feature the words may be left out when a filter is
+/// given (`author_id`, `before`, `after` or `has`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchQuery {
+    #[serde(default)]
     pub q: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_id: Option<Id>,
@@ -169,11 +334,33 @@ pub struct SearchQuery {
     pub author_id: Option<Id>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<Id>,
+    /// Only messages newer than this (`search_filters`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Id>,
+    /// Only messages with this (`search_filters`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has: Option<SearchHas>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// The order (`search_rank`); newest first without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SearchSort>,
+    /// Results to skip, for later pages sorted by relevance (`search_rank`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u32>,
 }
 
-/// The answer of `GET /search`: newest first.
+impl SearchQuery {
+    /// Whether anything besides the words narrows the search.
+    pub fn has_filters(&self) -> bool {
+        self.author_id.is_some()
+            || self.before.is_some()
+            || self.after.is_some()
+            || self.has.is_some()
+    }
+}
+
+/// The answer of `GET /search`: newest first, or best first when asked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchResponse {
     pub messages: Vec<Message>,
@@ -197,6 +384,22 @@ pub struct AdminUserPatch {
     pub disabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_admin: Option<bool>,
+    /// Lets the account go without a `#1234` tag (`true`), or gives it one again (`false`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tagless: Option<bool>,
+}
+
+/// `POST /users/@me/username`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeUsernameRequest {
+    pub username: String,
+    pub current_password: String,
+}
+
+/// `POST /users/@me/friends`: `handle` is `name#1234`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddFriendRequest {
+    pub handle: String,
 }
 
 /// `POST /spaces/{id}/invites`.
@@ -262,11 +465,25 @@ pub struct UpdateMemberRequest {
     pub role_ids: Option<Vec<Id>>,
 }
 
+/// `PUT /spaces/{id}/members/{uid}/timeout`: the member may only read for this long; 0 ends it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeoutRequest {
+    pub seconds: u32,
+}
+
+impl TimeoutRequest {
+    /// 28 days.
+    pub const MAX_SECONDS: u32 = 28 * 24 * 60 * 60;
+}
+
 /// `PUT /spaces/{id}/bans/{uid}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BanRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Ends the ban by itself after this many hours; none = until lifted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_hours: Option<u32>,
     /// Soft-deletes the user's messages in the space from the last N hours.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delete_messages_hours: Option<u32>,
@@ -427,17 +644,33 @@ pub struct SendMessageRequest {
     /// Own uploads that are not attached to a message yet.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_ids: Vec<Id>,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
+    /// Who an encrypted message mentions, since the server cannot read it to find out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<crate::models::Mentions>,
 }
 
 impl SendMessageRequest {
     pub const MAX_NONCE_CHARS: usize = 64;
-    pub const MAX_ATTACHMENTS: usize = 10;
+    /// Files a message can carry.
+    pub const MAX_FILES: usize = 10;
+    /// Uploads it can link: its files, and the encrypted preview of each.
+    pub const MAX_ATTACHMENTS: usize = 2 * Self::MAX_FILES;
 }
 
 /// `PATCH /channels/{id}/messages/{mid}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditMessageRequest {
+    #[serde(default)]
     pub content: String,
+    /// The encrypted message: `content` must be empty then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
+    /// Who an encrypted message mentions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<crate::models::Mentions>,
 }
 
 /// `POST /channels/{id}/ack`.
@@ -460,6 +693,8 @@ pub struct UpdatePrivacyRequest {
     pub dm_from: Option<DmFrom>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_requests: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_last_online: Option<bool>,
 }
 
 /// `POST /voice/join`.
@@ -550,9 +785,11 @@ mod tests {
                 user: User {
                     id: Id(5),
                     username: "senko".into(),
+                    discriminator: None,
                     display_name: None,
                     avatar: None,
                     status_text: None,
+                    banner: None,
                 },
                 instance_admin: true,
             },

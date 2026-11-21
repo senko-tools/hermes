@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::address::{Fingerprint, HostPort};
-use crate::config::{ConfigError, write_atomic};
+use crate::config::{ConfigError, WriteOptions, write_atomic_with};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownHosts {
@@ -78,7 +78,13 @@ impl KnownHosts {
             std::fs::create_dir_all(parent).map_err(|e| ConfigError::Io(parent.to_owned(), e))?;
         }
         let text = format!("# Pinned certificate fingerprints, managed by Hermes.\n{text}");
-        write_atomic(path, text.as_bytes()).map_err(|e| ConfigError::Io(path.to_owned(), e))
+        // A pin lost to a power cut would be asked about, and trusted on first use, again.
+        let options = WriteOptions {
+            durable: true,
+            private: false,
+        };
+        write_atomic_with(path, text.as_bytes(), options)
+            .map_err(|e| ConfigError::Io(path.to_owned(), e))
     }
 }
 

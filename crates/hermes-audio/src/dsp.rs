@@ -7,23 +7,35 @@ use std::time::Duration;
 use nnnoiseless::DenoiseState;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{
-    Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+    Async, FixedAsync, Resampler as _, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
 };
 
-use crate::{FRAME, SAMPLE_RATE};
+use crate::FRAME;
 
 /// Resampler for one mono stream, or a passthrough when the rates match.
-pub struct MonoResampler {
+pub type MonoResampler = Resampler;
+
+/// Resampler for one stream of interleaved channels, or a passthrough when the rates match.
+pub struct Resampler {
     inner: Option<Async<f32>>,
+    channels: usize,
     out_buf: Vec<f32>,
 }
 
-impl MonoResampler {
+impl Resampler {
+    /// A mono resampler.
     pub fn new(from: u32, to: u32) -> Self {
+        Self::interleaved(from, to, 1)
+    }
+
+    /// A resampler for `channels` interleaved channels.
+    pub fn interleaved(from: u32, to: u32, channels: usize) -> Self {
+        let channels = channels.max(1);
         if from == to {
             return Self {
                 inner: None,
+                channels,
                 out_buf: Vec::new(),
             };
         }
@@ -36,41 +48,44 @@ impl MonoResampler {
             1.1,
             &params,
             chunk,
-            1,
+            channels,
             FixedAsync::Input,
         )
         .expect("valid resampler parameters");
-        let out_buf = vec![0.0; inner.output_frames_max()];
+        let out_buf = vec![0.0; inner.output_frames_max() * channels];
         Self {
             inner: Some(inner),
+            channels,
             out_buf,
         }
     }
 
-    /// Consumes as many whole chunks of `input` as possible and appends the result to `output`.
+    /// Consumes as many whole chunks of `input` (interleaved) as possible and appends the
+    /// result to `output`.
     pub fn process(&mut self, input: &mut Vec<f32>, output: &mut Vec<f32>) {
         let Some(r) = self.inner.as_mut() else {
             output.append(input);
             return;
         };
+        let ch = self.channels;
         let mut used = 0;
         loop {
             let need = r.input_frames_next();
-            if input.len() - used < need {
+            if (input.len() - used) / ch < need {
                 break;
             }
-            let src =
-                InterleavedSlice::new(&input[used..used + need], 1, need).expect("input adapter");
-            let frames = self.out_buf.len();
+            let src = InterleavedSlice::new(&input[used..used + need * ch], ch, need)
+                .expect("input adapter");
+            let frames = self.out_buf.len() / ch;
             let mut dst =
-                InterleavedSlice::new_mut(&mut self.out_buf, 1, frames).expect("output adapter");
+                InterleavedSlice::new_mut(&mut self.out_buf, ch, frames).expect("output adapter");
             match r.process_into_buffer(&src, &mut dst, None) {
                 Ok((n_in, n_out)) => {
-                    used += n_in;
-                    output.extend_from_slice(&self.out_buf[..n_out]);
+                    used += n_in * ch;
+                    output.extend_from_slice(&self.out_buf[..n_out * ch]);
                 }
                 Err(_) => {
-                    used += need;
+                    used += need * ch;
                 }
             }
         }
@@ -79,11 +94,75 @@ impl MonoResampler {
 }
 
 /// Appends the average of each interleaved frame of `data`, scaled by `gain`.
-pub fn downmix(data: &[f32], channels: usize, gain: f32, out: &mut Vec<f32>) {
-    let channels = channels.max(1);
-    for frame in data.chunks_exact(channels) {
-        out.push(frame.iter().sum::<f32>() / channels as f32 * gain);
+/// Interleaved device samples to mono, with the microphone volume applied. Channels with next to no
+/// signal are left out of the average: many devices offer a stereo stream with the microphone on one
+/// side, and averaging with the silent side would halve its level.
+#[derive(Debug, Default)]
+pub struct Downmix {
+    /// Each channel's recent power, smoothed so a pause on one side does not change the level.
+    power: Vec<f32>,
+    /// Scratch space for one call, kept so a call does not allocate: each channel's power in
+    /// this block, and which channels are counted.
+    block: Vec<f32>,
+    counted: Vec<bool>,
+}
+
+impl Downmix {
+    /// A channel counts unless it is this far below the loudest (-30 dB).
+    const QUIET: f32 = 0.001;
+    /// How much of the smoothed power each block of samples replaces.
+    const SMOOTHING: f32 = 0.05;
+
+    pub fn process(&mut self, data: &[f32], channels: usize, gain: f32, out: &mut Vec<f32>) {
+        let channels = channels.max(1);
+        let frames = (data.len() / channels).max(1);
+        self.block.clear();
+        self.block.resize(channels, 0.0);
+        for frame in data.chunks_exact(channels) {
+            for (power, sample) in self.block.iter_mut().zip(frame) {
+                *power += sample * sample;
+            }
+        }
+        if self.power.len() != channels {
+            self.power.clear();
+            self.power
+                .extend(self.block.iter().map(|p| p / frames as f32));
+        } else {
+            for (smooth, power) in self.power.iter_mut().zip(&self.block) {
+                *smooth += (power / frames as f32 - *smooth) * Self::SMOOTHING;
+            }
+        }
+        let loudest = self.power.iter().copied().fold(0.0, f32::max);
+        let floor = loudest * Self::QUIET;
+        self.counted.clear();
+        self.counted.extend(self.power.iter().map(|p| *p >= floor));
+        let count = self.counted.iter().filter(|c| **c).count().max(1) as f32;
+        for frame in data.chunks_exact(channels) {
+            let sum: f32 = frame
+                .iter()
+                .zip(&self.counted)
+                .filter(|(_, counted)| **counted)
+                .map(|(sample, _)| sample)
+                .sum();
+            let sample = sum / count * gain;
+            out.push(if gain > 1.0 {
+                soft_limit(sample)
+            } else {
+                sample
+            });
+        }
     }
+}
+
+/// Keeps a boosted sample below full scale without the crackle of clipping: below the knee it is
+/// untouched, above it bends smoothly towards 1.
+pub fn soft_limit(sample: f32) -> f32 {
+    const KNEE: f32 = 0.8;
+    let size = sample.abs();
+    if size <= KNEE {
+        return sample;
+    }
+    sample.signum() * (KNEE + (1.0 - KNEE) * ((size - KNEE) / (1.0 - KNEE)).tanh())
 }
 
 pub fn rms(samples: &[f32]) -> f32 {
@@ -152,11 +231,16 @@ impl Denoiser {
 #[derive(Debug, Clone)]
 pub struct Agc {
     gain: f32,
+    /// What it aims for, dBFS.
+    pub target_db: f32,
 }
 
 impl Default for Agc {
     fn default() -> Self {
-        Agc { gain: 1.0 }
+        Agc {
+            gain: 1.0,
+            target_db: Self::TARGET_DB,
+        }
     }
 }
 
@@ -178,7 +262,7 @@ impl Agc {
     pub fn process(&mut self, frame: &mut [f32]) {
         let level_db = to_db(rms(frame));
         if level_db > Self::VOICE_FLOOR_DB {
-            let wanted = from_db(Self::TARGET_DB - level_db).clamp(Self::MIN_GAIN, Self::MAX_GAIN);
+            let wanted = from_db(self.target_db - level_db).clamp(Self::MIN_GAIN, Self::MAX_GAIN);
             let rate = if wanted < self.gain {
                 Self::ATTACK
             } else {
@@ -207,6 +291,10 @@ pub struct Gate {
     /// RMS threshold of voice activity, dBFS.
     pub sensitivity_db: f32,
     pub ptt_release_delay: Duration,
+    /// Voice activity stays open this long after the last voiced frame.
+    pub hold: Duration,
+    /// Only the level opens voice activity, not noise suppression's voice detection.
+    pub level_only: bool,
     pub muted: bool,
     ptt_pressed: bool,
     /// Frames the gate stays open after the last voiced (or held) frame.
@@ -219,6 +307,8 @@ impl Default for Gate {
             mode: InputMode::VoiceActivity,
             sensitivity_db: -50.0,
             ptt_release_delay: Duration::from_millis(150),
+            hold: Self::HANGOVER,
+            level_only: false,
             muted: false,
             ptt_pressed: false,
             hold_frames: 0,
@@ -229,7 +319,7 @@ impl Default for Gate {
 impl Gate {
     /// RNNoise voice probability that opens the gate on its own.
     pub const VOICE_PROBABILITY: f32 = 0.9;
-    /// Voice activity stays open this long after the last voiced frame.
+    /// Voice activity stays open this long after the last voiced frame, unless set otherwise.
     pub const HANGOVER: Duration = Duration::from_millis(300);
 
     pub fn set_ptt(&mut self, pressed: bool) {
@@ -250,9 +340,10 @@ impl Gate {
             InputMode::PushToTalk => self.ptt_pressed,
             InputMode::VoiceActivity => {
                 let voiced = level_db > self.sensitivity_db
-                    || voice_probability.is_some_and(|p| p > Self::VOICE_PROBABILITY);
+                    || (!self.level_only
+                        && voice_probability.is_some_and(|p| p > Self::VOICE_PROBABILITY));
                 if voiced {
-                    self.hold_frames = frames(Self::HANGOVER);
+                    self.hold_frames = frames(self.hold);
                 }
                 voiced
             }
@@ -273,11 +364,6 @@ fn frames(d: Duration) -> u32 {
     (d.as_millis() / 20) as u32
 }
 
-/// Duration of `samples` at 48 kHz.
-pub fn duration_of(samples: usize) -> Duration {
-    Duration::from_micros(samples as u64 * 1_000_000 / u64::from(SAMPLE_RATE))
-}
-
 /// Soft clipping: linear-ish near zero, never beyond ±1.
 pub fn soft_clip(s: f32) -> f32 {
     s.tanh()
@@ -290,8 +376,50 @@ mod tests {
     #[test]
     fn downmix_averages_channels() {
         let mut out = Vec::new();
-        downmix(&[1.0, 0.0, 0.5, 0.5], 2, 2.0, &mut out);
-        assert_eq!(out, vec![1.0, 1.0]);
+        Downmix::default().process(&[0.2, 0.1, 0.4, 0.3], 2, 1.0, &mut out);
+        assert!((out[0] - 0.15).abs() < 1e-6, "{out:?}");
+        assert!((out[1] - 0.35).abs() < 1e-6, "{out:?}");
+    }
+
+    #[test]
+    fn downmix_ignores_a_silent_channel() {
+        let mut out = Vec::new();
+        Downmix::default().process(&[0.4, 0.0, -0.4, 0.0], 2, 1.0, &mut out);
+        assert_eq!(out, [0.4, -0.4], "the level is not halved");
+    }
+
+    #[test]
+    fn downmix_keeps_counting_a_channel_during_a_short_pause() {
+        let mut downmix = Downmix::default();
+        let mut out = Vec::new();
+        downmix.process(&[0.4, 0.4, 0.4, 0.4], 2, 1.0, &mut out);
+        out.clear();
+        downmix.process(&[0.4, 0.0], 2, 1.0, &mut out);
+        assert_eq!(out, [0.2]);
+    }
+
+    #[test]
+    fn the_limiter_only_touches_what_would_clip() {
+        for quiet in [0.0, 0.3, -0.5, 0.8] {
+            assert_eq!(soft_limit(quiet), quiet);
+        }
+        let mut last = soft_limit(0.8);
+        for step in 1..200 {
+            let limited = soft_limit(0.8 + step as f32 * 0.05);
+            assert!(limited > last - 1e-6 && limited <= 1.0, "{limited}");
+            last = limited;
+        }
+        assert_eq!(soft_limit(-3.0), -soft_limit(3.0));
+    }
+
+    #[test]
+    fn a_boost_goes_through_the_limiter_but_unity_does_not() {
+        let mut out = Vec::new();
+        Downmix::default().process(&[0.9], 1, 1.0, &mut out);
+        assert_eq!(out, [0.9]);
+        out.clear();
+        Downmix::default().process(&[0.9], 1, 4.0, &mut out);
+        assert!(out[0] <= 1.0 && out[0] > 0.8, "{out:?}");
     }
 
     #[test]
@@ -359,6 +487,38 @@ mod tests {
         assert!(gate.update(-70.0, Some(0.1)));
         gate.muted = true;
         assert!(!gate.update(-10.0, Some(1.0)));
+    }
+
+    #[test]
+    fn the_hold_time_and_level_only_can_be_set() {
+        let mut gate = Gate {
+            hold: Duration::from_millis(100),
+            level_only: true,
+            ..Gate::default()
+        };
+        assert!(gate.update(-30.0, None));
+        // 100 ms = 5 frames.
+        for _ in 0..5 {
+            assert!(gate.update(-70.0, None));
+        }
+        assert!(!gate.update(-70.0, None));
+        assert!(
+            !gate.update(-70.0, Some(0.99)),
+            "noise suppression alone does not open it"
+        );
+    }
+
+    #[test]
+    fn agc_aims_for_its_target() {
+        let mut agc = Agc {
+            target_db: -12.0,
+            ..Agc::default()
+        };
+        for _ in 0..500 {
+            let mut frame = vec![from_db(-30.0); FRAME];
+            agc.process(&mut frame);
+        }
+        assert!((agc.gain() - from_db(18.0)).abs() < 0.3, "{}", agc.gain());
     }
 
     #[test]

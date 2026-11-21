@@ -76,7 +76,83 @@ pub struct NetworkConfig {
     pub bind: IpAddr,
     /// TCP (HTTPS/WSS) and UDP (QUIC voice) both use this port.
     pub port: u16,
-    pub trusted_proxies: Vec<IpAddr>,
+    pub trusted_proxies: Vec<ProxyRange>,
+}
+
+/// A proxy's address, or a whole range of them (`10.0.0.0/8`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ProxyRange {
+    addr: IpAddr,
+    bits: u8,
+}
+
+impl ProxyRange {
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr.to_canonical(), ip.to_canonical()) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => {
+                let mask = u32::MAX.checked_shl(32 - u32::from(self.bits)).unwrap_or(0);
+                u32::from(a) & mask == u32::from(b) & mask
+            }
+            (IpAddr::V6(a), IpAddr::V6(b)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.bits))
+                    .unwrap_or(0);
+                u128::from(a) & mask == u128::from(b) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+impl std::str::FromStr for ProxyRange {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let (ip, bits) = text
+            .split_once('/')
+            .map_or((text, None), |(a, b)| (a, Some(b)));
+        let addr: IpAddr = ip
+            .parse()
+            .map_err(|_| format!("`{text}` is not an address or a range"))?;
+        let max = if addr.to_canonical().is_ipv4() {
+            32
+        } else {
+            128
+        };
+        let bits = match bits {
+            None => max,
+            Some(bits) => bits
+                .parse::<u8>()
+                .ok()
+                .filter(|b| *b <= max)
+                .ok_or_else(|| format!("`{text}` has an impossible range"))?,
+        };
+        Ok(ProxyRange { addr, bits })
+    }
+}
+
+impl TryFrom<String> for ProxyRange {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        text.parse()
+    }
+}
+
+impl From<ProxyRange> for String {
+    fn from(range: ProxyRange) -> String {
+        let max = if range.addr.to_canonical().is_ipv4() {
+            32
+        } else {
+            128
+        };
+        if range.bits == max {
+            range.addr.to_string()
+        } else {
+            format!("{}/{}", range.addr, range.bits)
+        }
+    }
 }
 
 impl Default for NetworkConfig {
@@ -119,6 +195,10 @@ pub struct StorageConfig {
     pub max_upload_mb: u32,
     /// 0 = unlimited.
     pub max_total_storage_gb: u32,
+    /// What one person's uploads may take up in all. 0 = unlimited.
+    pub max_user_storage_mb: u32,
+    /// Whether the database (the text of messages) counts towards `max_total_storage_gb`.
+    pub limit_includes_messages: bool,
     pub thumbnails: bool,
 }
 
@@ -128,6 +208,8 @@ impl Default for StorageConfig {
             data_dir: PathBuf::from("./data"),
             max_upload_mb: 25,
             max_total_storage_gb: 0,
+            max_user_storage_mb: 10240,
+            limit_includes_messages: false,
             thumbnails: true,
         }
     }
@@ -162,6 +244,28 @@ pub struct LimitsConfig {
     pub requests_per_second: u32,
     /// Per IP.
     pub login_attempts_per_minute: u32,
+    /// Per person and kind of action (edits, reactions, typing and the like). The rarer kinds,
+    /// such as calling or changing a password, get a fraction of this.
+    pub actions_per_minute: u32,
+    /// Open connections in all.
+    pub max_connections: u32,
+    /// Open connections from one address; 0 = no limit. Trusted proxies have none.
+    pub max_connections_per_ip: u32,
+    /// A session not used for this long ends; 0 = never.
+    pub session_idle_days: u32,
+    /// Only this many sessions per person are kept, the most recently used; 0 = no limit.
+    pub max_sessions_per_user: u32,
+    /// What can be limited without reading messages, even encrypted ones: 0 = no limit.
+    pub max_mentions_per_message: u32,
+    pub gateway_ops_per_minute: u32,
+    /// Gateway sign-ins (identify or resume) per person; one address gets ten times this.
+    pub gateway_identifies_per_minute: u32,
+    /// REST requests being answered at once, in all; past it new ones get 503 straight away.
+    /// Downloads and gateway connections are not counted.
+    pub max_inflight_requests: u32,
+    /// How long a dropped connection can come back and catch up.
+    pub resume_window_secs: u32,
+    pub resume_buffer_events: u32,
 }
 
 impl Default for LimitsConfig {
@@ -173,14 +277,49 @@ impl Default for LimitsConfig {
             messages_per_5s: 5,
             requests_per_second: 30,
             login_attempts_per_minute: 5,
+            actions_per_minute: 120,
+            max_connections: 4096,
+            max_connections_per_ip: 128,
+            session_idle_days: 180,
+            max_sessions_per_user: 64,
+            max_mentions_per_message: 20,
+            gateway_ops_per_minute: 120,
+            gateway_identifies_per_minute: 12,
+            max_inflight_requests: 512,
+            resume_window_secs: 300,
+            resume_buffer_events: 2000,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacyConfig {
     pub dm_policy: DmPolicy,
+    /// Refuse direct messages that are not end-to-end encrypted, so a client from before
+    /// encryption gets an error instead of leaking what it sends.
+    pub require_dm_encryption: bool,
+    /// Refuse messages in server channels that are not end-to-end encrypted.
+    pub require_channel_encryption: bool,
+    /// Messages older than this are deleted for good; 0 = kept.
+    pub message_retention_days: u32,
+    /// What is left of deleted messages goes after this long; 0 = kept.
+    pub deleted_message_retention_days: u32,
+    /// Audit log entries older than this go; 0 = kept.
+    pub audit_retention_days: u32,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        PrivacyConfig {
+            dm_policy: DmPolicy::default(),
+            require_dm_encryption: true,
+            require_channel_encryption: true,
+            message_retention_days: 0,
+            deleted_message_retention_days: 0,
+            audit_retention_days: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -219,6 +358,9 @@ pub struct LogConfig {
     #[serde(deserialize_with = "lossy::string")]
     pub level: String,
     pub format: LogFormat,
+    /// What else is shown at startup, on top of `level` (see [`LogTopic`]); the console's
+    /// `log <topic> on|off` changes it while the server runs.
+    pub topics: Vec<LogTopic>,
 }
 
 impl Default for LogConfig {
@@ -226,7 +368,51 @@ impl Default for LogConfig {
         Self {
             level: "info".into(),
             format: LogFormat::Pretty,
+            topics: vec![LogTopic::Gateway, LogTopic::Voice, LogTopic::Auth],
         }
+    }
+}
+
+/// A kind of event that can be shown in the log or hidden, whatever `log.level` says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogTopic {
+    /// Every TCP/TLS connection opened and closed, and handshakes that fail.
+    Connections,
+    /// Every HTTP request: method, path, status and time.
+    Requests,
+    /// Gateway sessions starting, resuming and ending.
+    Gateway,
+    /// Joining and leaving voice channels.
+    Voice,
+    /// Sign-ins, failed sign-ins, new accounts and sign-outs.
+    Auth,
+}
+
+impl LogTopic {
+    pub const ALL: [LogTopic; 5] = [
+        LogTopic::Connections,
+        LogTopic::Requests,
+        LogTopic::Gateway,
+        LogTopic::Voice,
+        LogTopic::Auth,
+    ];
+
+    /// The name used in the config and the console.
+    pub fn name(self) -> &'static str {
+        match self {
+            LogTopic::Connections => "connections",
+            LogTopic::Requests => "requests",
+            LogTopic::Gateway => "gateway",
+            LogTopic::Voice => "voice",
+            LogTopic::Auth => "auth",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<LogTopic> {
+        LogTopic::ALL
+            .into_iter()
+            .find(|t| t.name().eq_ignore_ascii_case(name))
     }
 }
 
@@ -352,6 +538,14 @@ impl Config {
         at_least_one(
             "limits.login_attempts_per_minute",
             self.limits.login_attempts_per_minute,
+        );
+        at_least_one(
+            "limits.gateway_identifies_per_minute",
+            self.limits.gateway_identifies_per_minute,
+        );
+        at_least_one(
+            "limits.max_inflight_requests",
+            self.limits.max_inflight_requests,
         );
         at_least_one("voice.max_users_per_room", self.voice.max_users_per_room);
 

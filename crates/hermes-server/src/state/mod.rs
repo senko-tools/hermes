@@ -12,12 +12,12 @@ use axum::http::HeaderMap;
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
 use hermes_proto::models::{
-    Channel, CurrentUser, Member, Presence, PresenceStatus, PrivacySettings, Role, Space,
-    SpacePreview, Status, User, VoiceState,
+    Channel, CurrentUser, Member, Presence, PresenceStatus, PrivacySettings, Relationship,
+    RelationshipKind, Role, Space, SpacePreview, Status, User, VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
-use crate::config::Config;
+use crate::config::{Config, ProxyRange};
 use crate::db::Db;
 use crate::db::state::Snapshot;
 use crate::files::Files;
@@ -41,8 +41,20 @@ pub struct AppState {
     pub slowmode: Slowmode,
     /// `limits.messages_per_5s`, keyed by `(channel_id, user_id)`.
     pub message_limiter: KeyedLimiter<(Id, Id)>,
+    /// `limits.actions_per_minute`.
+    pub action_limiter: KeyedLimiter<(Id, crate::ratelimit::Action)>,
+    /// `limits.gateway_identifies_per_minute`, per person and per address.
+    pub sign_in_limiter: KeyedLimiter<crate::ratelimit::SignInKey>,
+    /// Sessions already looked up, so most requests do not ask the database who they are.
+    pub sessions: crate::auth::SessionCache,
+    /// Guesses at one account's password, wherever they come from.
+    pub account_limiter: KeyedLimiter<String>,
+    /// Who may register: the config, unless an admin changed it while the server runs.
+    registration: std::sync::RwLock<crate::config::RegistrationMode>,
     /// Uploaded files on disk.
     pub files: Files,
+    /// Who has been visibly online since when.
+    pub last_online: crate::gateway::last_online::LastOnline,
     /// Gateway sessions and the EventBus.
     pub gateway: Gateway,
     /// Voice rooms, join tokens and the QUIC endpoint's address.
@@ -57,9 +69,13 @@ impl AppState {
     pub async fn load(config: Config) -> Result<Self, sqlx::Error> {
         let db = Db::open(&config.storage.data_dir).await?;
         let cache = load_from_db(&db).await?;
+        let registration = crate::db::state::registration_override(&db.read)
+            .await?
+            .unwrap_or(config.registration.mode);
         let used = crate::db::attachments::total_size(&db.read).await?;
         let files = Files::open(&config.storage.data_dir, used)?;
         let voice = crate::voice::Voice::new(config.voice.enabled);
+        let config_limits = config.limits.clone();
         Ok(Self {
             config,
             db,
@@ -68,8 +84,20 @@ impl AppState {
             writes: tokio::sync::Mutex::new(()),
             slowmode: Slowmode::default(),
             message_limiter: KeyedLimiter::default(),
+            action_limiter: KeyedLimiter::default(),
+            sign_in_limiter: KeyedLimiter::default(),
+            sessions: Default::default(),
+            account_limiter: KeyedLimiter::default(),
+            registration: std::sync::RwLock::new(registration),
             files,
-            gateway: Gateway::default(),
+            last_online: Default::default(),
+            gateway: Gateway::new(crate::gateway::bus::Timings {
+                resume_window: std::time::Duration::from_secs(u64::from(
+                    config_limits.resume_window_secs,
+                )),
+                resume_buffer: config_limits.resume_buffer_events as usize,
+                ..Default::default()
+            }),
             voice,
             fingerprint: None,
         })
@@ -101,7 +129,22 @@ impl AppState {
         self.cache.write().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// After REST sessions are deleted from the database: their tokens stop working at once and
+    /// their gateway connections are closed (4011).
+    pub fn revoke_sessions(&self, session_ids: &[Id]) {
+        self.sessions.forget(session_ids);
+        self.gateway.revoke(session_ids);
+    }
+
     /// The client's IP; see [`client_ip`].
+    pub fn registration_mode(&self) -> crate::config::RegistrationMode {
+        *self.registration.read().expect("registration")
+    }
+
+    pub fn set_registration_mode(&self, mode: crate::config::RegistrationMode) {
+        *self.registration.write().expect("registration") = mode;
+    }
+
     pub fn client_ip(&self, peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
         client_ip(&self.config.network.trusted_proxies, peer, headers)
     }
@@ -110,8 +153,8 @@ impl AppState {
 /// The client's IP: the TCP peer, or, when the peer is one of `trusted` (proxies), the last
 /// `X-Forwarded-For` entry that is not a trusted proxy. IPv4-mapped IPv6 addresses
 /// (`::ffff:a.b.c.d`, seen on dual-stack sockets) are converted to plain IPv4.
-pub fn client_ip(trusted: &[IpAddr], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
-    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.to_canonical() == *ip);
+pub fn client_ip(trusted: &[ProxyRange], peer: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|t| t.contains(*ip));
     let mut ip = peer.ip().to_canonical();
     if !is_trusted(&ip) {
         return ip;
@@ -143,6 +186,14 @@ pub async fn load_from_db(db: &Db) -> Result<Cache, sqlx::Error> {
 /// Members included in a [`SpaceSnapshot`]; larger spaces lazy-load the rest via REST.
 pub const SNAPSHOT_MEMBER_CAP: usize = 1000;
 
+/// A friend request or friendship between two people.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedRelationship {
+    pub requester: Id,
+    pub created_at: i64,
+    pub accepted_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedUser {
     pub user: User,
@@ -165,7 +216,15 @@ pub struct MemberState {
     /// Explicitly assigned roles, sorted; `@everyone` is implicit.
     pub role_ids: Vec<Id>,
     pub joined_at: i64,
+    /// Until when they may only read (Unix milliseconds).
+    pub timeout_until: Option<i64>,
 }
+
+/// What a member in a timeout cannot do.
+const TIMED_OUT_LOSES: Permissions = Permissions::SEND_MESSAGES
+    .union(Permissions::ADD_REACTIONS)
+    .union(Permissions::SPEAK)
+    .union(Permissions::STREAM);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelState {
@@ -189,6 +248,10 @@ pub struct Cache {
     pub presences: HashMap<Id, PresenceStatus>,
     /// Runtime only, keyed by user (one voice room per user).
     pub voice_states: HashMap<Id, VoiceState>,
+    /// Friends and friend requests, under both people.
+    pub relationships: HashMap<Id, HashMap<Id, CachedRelationship>>,
+    /// Who each person has blocked.
+    pub blocks: HashMap<Id, HashSet<Id>>,
 }
 
 impl CachedUser {
@@ -241,6 +304,17 @@ impl Cache {
                 .collect(),
             ..Cache::default()
         };
+        for r in s.relationships {
+            cache.insert_relationship(
+                r.user_low,
+                r.user_high,
+                CachedRelationship {
+                    requester: r.requester,
+                    created_at: r.created_at,
+                    accepted_at: r.accepted_at,
+                },
+            );
+        }
 
         for space in s.spaces {
             let state = SpaceState {
@@ -249,6 +323,9 @@ impl Cache {
                 members: HashMap::new(),
             };
             cache.spaces.insert(state.space.id, state);
+        }
+        for (user, blocked) in s.blocks {
+            cache.blocks.entry(user).or_default().insert(blocked);
         }
         for role in s.roles {
             if let Some(space) = cache.spaces.get_mut(&role.space_id) {
@@ -261,6 +338,7 @@ impl Cache {
                     nickname: m.nickname,
                     role_ids: Vec::new(),
                     joined_at: m.joined_at,
+                    timeout_until: m.timeout_until,
                 };
                 space.members.insert(m.user_id, member);
             }
@@ -349,6 +427,7 @@ impl Cache {
                     nickname: None,
                     role_ids: Vec::new(),
                     joined_at,
+                    timeout_until: None,
                 },
             );
         }
@@ -437,6 +516,20 @@ impl Cache {
     }
 
     /// The wire `Member` of `user_id` in `space_id`, if they are a member.
+    /// Whether `by` has blocked `who`.
+    pub fn blocked(&self, by: Id, who: Id) -> bool {
+        self.blocks.get(&by).is_some_and(|list| list.contains(&who))
+    }
+
+    /// The instance's oldest admin.
+    pub fn first_admin(&self) -> Option<Id> {
+        self.users
+            .iter()
+            .filter(|(_, u)| u.instance_admin)
+            .map(|(id, _)| *id)
+            .min()
+    }
+
     pub fn member(&self, space_id: Id, user_id: Id) -> Option<Member> {
         let member = self.spaces.get(&space_id)?.members.get(&user_id)?;
         Some(Member {
@@ -522,16 +615,135 @@ impl Cache {
     }
 
     /// Whether two users are members of at least one common space.
+    pub fn insert_relationship(&mut self, a: Id, b: Id, relationship: CachedRelationship) {
+        self.relationships
+            .entry(a)
+            .or_default()
+            .insert(b, relationship);
+        self.relationships
+            .entry(b)
+            .or_default()
+            .insert(a, relationship);
+    }
+
+    pub fn accept_relationship(&mut self, a: Id, b: Id, now: i64) {
+        for (me, other) in [(a, b), (b, a)] {
+            if let Some(r) = self
+                .relationships
+                .get_mut(&me)
+                .and_then(|list| list.get_mut(&other))
+            {
+                r.accepted_at = Some(now);
+            }
+        }
+    }
+
+    pub fn remove_relationship(&mut self, a: Id, b: Id) {
+        for (me, other) in [(a, b), (b, a)] {
+            if let Some(list) = self.relationships.get_mut(&me) {
+                list.remove(&other);
+            }
+        }
+    }
+
+    pub fn are_friends(&self, a: Id, b: Id) -> bool {
+        self.relationships
+            .get(&a)
+            .and_then(|list| list.get(&b))
+            .is_some_and(|r| r.accepted_at.is_some())
+    }
+
+    /// How `other` stands to `me`.
+    pub fn relationship(&self, me: Id, other: Id) -> Option<Relationship> {
+        let r = self.relationships.get(&me)?.get(&other)?;
+        let user = self.users.get(&other)?.user.clone();
+        let (kind, since) = match r.accepted_at {
+            Some(at) => (RelationshipKind::Friend, at),
+            None if r.requester == me => (RelationshipKind::Outgoing, r.created_at),
+            None => (RelationshipKind::Incoming, r.created_at),
+        };
+        Some(Relationship { user, kind, since })
+    }
+
+    /// Everyone in `me`'s friend list and requests, by name.
+    pub fn relationships_of(&self, me: Id) -> Vec<Relationship> {
+        let mut all: Vec<Relationship> = self
+            .relationships
+            .get(&me)
+            .into_iter()
+            .flat_map(|list| list.keys())
+            .filter_map(|other| self.relationship(me, *other))
+            .collect();
+        all.sort_by(|a, b| a.user.username.cmp(&b.user.username));
+        all
+    }
+
+    /// Whether an account other than `except` has this name and tag.
+    pub fn handle_taken(&self, name: &str, tag: Option<&str>, except: Id) -> bool {
+        self.users.values().any(|u| {
+            u.user.id != except && u.user.username == name && u.user.discriminator.as_deref() == tag
+        })
+    }
+
+    /// A random tag nobody called `name` has; `None` when all 9999 are taken.
+    pub fn free_tag(&self, name: &str) -> Option<String> {
+        let used: HashSet<&str> = self
+            .users
+            .values()
+            .filter(|u| u.user.username == name)
+            .filter_map(|u| u.user.discriminator.as_deref())
+            .collect();
+        let start = rand::random_range(0..9999u16);
+        (0..9999u16)
+            .map(|i| format!("{:04}", (start + i) % 9999 + 1))
+            .find(|tag| !used.contains(tag.as_str()))
+    }
+
+    /// Who hears about `user_id`'s profile changes: the presence audience and everyone in their
+    /// friend requests.
+    pub fn profile_audience(&self, user_id: Id) -> HashSet<Id> {
+        let mut users = self.presence_audience(user_id);
+        if let Some(list) = self.relationships.get(&user_id) {
+            users.extend(list.keys().copied());
+        }
+        users
+    }
+
+    /// Whether `viewer` may see `target`'s profile: `profile_audience(viewer)` contains
+    /// `target`, worked out without building that set.
+    pub fn can_see_profile(&self, viewer: Id, target: Id) -> bool {
+        viewer == target
+            || self
+                .relationships
+                .get(&viewer)
+                .is_some_and(|list| list.contains_key(&target))
+            || self.shares_space(viewer, target)
+            // A message request shares nothing until it is accepted, in either direction.
+            || self.dm_ids(viewer).any(|dm| {
+                let c = &self.channels[&dm];
+                c.requests.binary_search(&viewer).is_err()
+                    && c.requests.binary_search(&target).is_err()
+                    && c.recipient_ids.contains(&target)
+            })
+    }
+
     pub fn shares_space(&self, a: Id, b: Id) -> bool {
         self.spaces
             .values()
             .any(|s| s.members.contains_key(&a) && s.members.contains_key(&b))
     }
 
-    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, and
-    /// themselves.
+    /// Users who see `user_id`'s presence: everyone sharing a space or a DM with them, their
+    /// friends, and themselves.
     pub fn presence_audience(&self, user_id: Id) -> HashSet<Id> {
         let mut users = HashSet::from([user_id]);
+        if let Some(list) = self.relationships.get(&user_id) {
+            users.extend(
+                list.iter()
+                    .filter(|(_, r)| r.accepted_at.is_some())
+                    .map(|(id, _)| *id),
+            );
+        }
         for space in self.spaces.values() {
             if space.members.contains_key(&user_id) {
                 users.extend(space.members.keys().copied());
@@ -566,12 +778,13 @@ impl Cache {
 
     /// A user's space-level permissions; empty if they are not a member.
     pub fn space_permissions(&self, space_id: Id, user_id: Id) -> Permissions {
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, None)
+        let Some(member) = space.members.get(&user_id) else {
+            return Permissions::empty();
+        };
+        permissions::compute_for(&space.space, &space.roles, user_id, &member.role_ids, None)
     }
 
     /// A user's permissions in a channel; empty if they cannot see it.
@@ -586,12 +799,29 @@ impl Cache {
                 Permissions::empty()
             };
         };
-        let (Some(space), Some(member)) =
-            (self.spaces.get(&space_id), self.member(space_id, user_id))
-        else {
+        let Some(space) = self.spaces.get(&space_id) else {
             return Permissions::empty();
         };
-        permissions::compute(&space.space, &space.roles, &member, Some(&state.channel))
+        let Some(member) = space.members.get(&user_id) else {
+            return Permissions::empty();
+        };
+        let perms = permissions::compute_for(
+            &space.space,
+            &space.roles,
+            user_id,
+            &member.role_ids,
+            Some(&state.channel),
+        );
+        // Owners and administrators cannot be silenced.
+        if member
+            .timeout_until
+            .is_some_and(|until| until > crate::time::now_ms())
+            && !perms.contains(Permissions::ADMINISTRATOR)
+        {
+            perms - TIMED_OUT_LOSES
+        } else {
+            perms
+        }
     }
 }
 
@@ -764,6 +994,34 @@ mod tests {
         );
         assert!(cache.channel_permissions(DM, OWNER).is_empty());
         assert!(cache.channel_permissions(Id(999), ALICE).is_empty());
+    }
+
+    #[tokio::test]
+    async fn permission_checks_match_compute_on_full_members() {
+        let dir = TempDir::new("cache-perm-member");
+        let db = Db::open(dir.path()).await.unwrap();
+        fixture(&db).await;
+        let cache = load_from_db(&db).await.unwrap();
+        db.close().await;
+
+        let space = &cache.spaces[&SPACE];
+        for user_id in [OWNER, ALICE, BOB, Id(999)] {
+            let full = cache.member(SPACE, user_id);
+            let expected = |channel: Option<&Channel>| {
+                full.as_ref().map_or(Permissions::empty(), |m| {
+                    permissions::compute(&space.space, &space.roles, m, channel)
+                })
+            };
+            assert_eq!(cache.space_permissions(SPACE, user_id), expected(None));
+            for channel_id in [GENERAL, SECRET, VOICE] {
+                let channel = &cache.channels[&channel_id].channel;
+                assert_eq!(
+                    cache.channel_permissions(channel_id, user_id),
+                    expected(Some(channel)),
+                    "user {user_id} in channel {channel_id}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

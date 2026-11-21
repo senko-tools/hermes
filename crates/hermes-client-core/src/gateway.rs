@@ -22,6 +22,8 @@ use crate::tls::{self, Trust};
 /// How long the server has to send `hello` (and `ready`/`resumed`) before the attempt counts as
 /// failed.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Each of the server's addresses gets this long to accept the TCP connection.
+const TCP_CONNECT_EACH: Duration = Duration::from_secs(5);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Connection status reported to the UI.
@@ -80,6 +82,7 @@ impl Gateway {
         let (tx, rx) = mpsc::unbounded_channel();
         let task = Task {
             url: format!("wss://{}/api/v1/gateway", host.authority()),
+            host,
             trust,
             token,
             client,
@@ -103,6 +106,9 @@ impl Drop for Gateway {
         let _ = self.tx.send(Command::Shutdown);
     }
 }
+
+/// How far apart clients spread out when an established connection ends.
+const RECONNECT_SPREAD_MS: u64 = 5_000;
 
 /// Backoff before reconnect attempt `attempt` (1-based): 1 s, 2 s, 4 s, … capped at 30 s,
 /// with ±20 % jitter.
@@ -132,6 +138,7 @@ enum End {
 
 struct Task {
     url: String,
+    host: HostPort,
     trust: Trust,
     token: String,
     client: ClientInfo,
@@ -152,13 +159,20 @@ impl Task {
 
     async fn run(mut self) {
         let mut attempt = 0u32;
+        let mut lost_session = false;
         let mut min_wait = Duration::ZERO;
         loop {
             if attempt > 0 {
                 if !self.emit(GatewayEvent::Status(ConnStatus::Reconnecting { attempt })) {
                     return;
                 }
-                let wait = backoff(attempt).max(min_wait);
+                // After a server restart everyone comes back: not all in the same second.
+                let spread = if lost_session {
+                    Duration::from_millis(rand::random_range(0..RECONNECT_SPREAD_MS))
+                } else {
+                    Duration::ZERO
+                };
+                let wait = backoff(attempt).max(min_wait) + spread;
                 if self.wait(wait).await {
                     return;
                 }
@@ -189,6 +203,7 @@ impl Task {
                 }
                 End::Shutdown => return,
             }
+            lost_session = connected;
             attempt = if connected { 1 } else { attempt + 1 };
         }
     }
@@ -231,18 +246,30 @@ impl Task {
     async fn connect(&self) -> Result<Ws, String> {
         let config = tls::client_config(self.trust, false).map_err(|e| e.to_string())?;
         let connector = tokio_tungstenite::Connector::Rustls(config);
-        let (ws, _) = timeout(
-            HANDSHAKE_TIMEOUT,
-            tokio_tungstenite::connect_async_tls_with_config(
+        let (host, port) = (self.host.host.as_str(), self.host.port);
+        // Looked up before the handshake timeout starts, which a slow DNS server would use up.
+        crate::net::warm(host)
+            .await
+            .map_err(|e| format!("could not look up {host}: {e}"))?;
+        let handshake = async {
+            // Our own connect, so the gateway skips an address family that does not answer
+            // like HTTPS does (see `net`).
+            let tcp = crate::net::connect_tcp(host, port, TCP_CONNECT_EACH)
+                .await
+                .map_err(|e| e.to_string())?;
+            let _ = tcp.set_nodelay(true);
+            tokio_tungstenite::client_async_tls_with_config(
                 self.url.as_str(),
+                tcp,
                 None,
-                true,
                 Some(connector),
-            ),
-        )
-        .await
-        .map_err(|_| "connection timed out".to_owned())?
-        .map_err(|e| e.to_string())?;
+            )
+            .await
+            .map_err(|e| e.to_string())
+        };
+        let (ws, _) = timeout(HANDSHAKE_TIMEOUT, handshake)
+            .await
+            .map_err(|_| "connection timed out".to_owned())??;
         Ok(ws)
     }
 

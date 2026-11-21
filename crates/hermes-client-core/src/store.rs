@@ -3,13 +3,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use hermes_proto::api::SearchQuery;
 use hermes_proto::gateway::{
     InstanceInfo, ReactionEvent, Ready, ServerEvent, SpaceSnapshot, VoiceInfo, VoiceStateUpdate,
 };
 use hermes_proto::id::Id;
 use hermes_proto::models::{
     Attachment, Channel, ChannelKind, CurrentUser, Member, Message, NotificationSetting,
-    PrivacySettings, ReactionSummary, ReadState, Role, Space, Status, User, VoiceState,
+    PrivacySettings, ReactionSummary, ReadState, Relationship, Role, Space, Status, User,
+    VoiceState,
 };
 use hermes_proto::permissions::{self, Permissions};
 
@@ -51,7 +53,7 @@ pub struct PendingMessage {
 }
 
 /// Where to load history from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HistoryAnchor {
     /// The newest page (opening a channel, jump to present).
     Latest,
@@ -142,6 +144,8 @@ pub enum Changed {
     Dms,
     VoiceStates,
     NotificationSettings,
+    /// Friends and friend requests.
+    Relationships,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +206,12 @@ pub struct InstanceStore {
     pub voice_states: HashMap<Id, VoiceState>,
     /// My privacy settings on this instance.
     pub privacy: PrivacySettings,
+    /// My friends and friend requests, by the other person.
+    pub relationships: HashMap<Id, Relationship>,
+    /// People I blocked.
+    pub blocked: std::collections::HashSet<Id>,
+    /// Names I gave people, shown only to me.
+    pub local_names: HashMap<Id, String>,
     /// channel → space, for space channels.
     channel_space: HashMap<Id, Id>,
 }
@@ -209,6 +219,73 @@ pub struct InstanceStore {
 impl InstanceStore {
     pub fn me_id(&self) -> Option<Id> {
         self.me.as_ref().map(|m| m.user.id)
+    }
+
+    /// The largest file the server takes, in MB (as it counts them: MiB). `None` before it said.
+    /// Whether what is written in this channel is end-to-end encrypted.
+    pub fn channel_encrypted(&self, channel: Id) -> bool {
+        let Some(c) = self.channel(channel) else {
+            return false;
+        };
+        c.kind.is_private()
+            || (c.kind.has_messages()
+                && self
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.limits.channels_encrypted))
+    }
+
+    /// Whether everything a search would look through is encrypted, so that the server can find
+    /// nothing in it. DMs always are.
+    pub fn search_only_sealed(&self, query: &SearchQuery) -> bool {
+        match query.channel_id {
+            Some(channel) => self.channel_encrypted(channel),
+            None => self
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.limits.channels_encrypted),
+        }
+    }
+
+    /// Whether this server can do `feature` ([`hermes_proto::compat::features`]). Servers from
+    /// before the list can do none of them.
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(|i| hermes_proto::compat::has_feature(&i.features, feature))
+    }
+
+    /// Whether this server can do things this build doesn't know about: it is newer.
+    pub fn server_is_newer(&self) -> bool {
+        self.instance.as_ref().is_some_and(|i| {
+            i.features
+                .iter()
+                .any(|f| !hermes_proto::compat::features::ALL.contains(&f.as_str()))
+        })
+    }
+
+    /// The longest message this server takes, in characters.
+    pub fn max_message_length(&self) -> Option<u32> {
+        self.instance.as_ref().map(|i| i.limits.max_message_length)
+    }
+
+    /// Why a message of `text` cannot be sent here, if it is longer than the server takes.
+    /// Counted like the server does: in characters.
+    pub fn message_refusal(&self, text: &str) -> Option<String> {
+        let max = self.max_message_length()? as usize;
+        let len = text.chars().count();
+        (len > max).then(|| format!("This message is {len} characters; the limit here is {max}."))
+    }
+
+    pub fn max_upload_mb(&self) -> Option<u32> {
+        self.instance.as_ref().map(|i| i.limits.max_upload_mb)
+    }
+
+    /// Why a file of `size` bytes cannot be uploaded here, if it is larger than the server takes.
+    /// The server refuses it anyway; this says so before it is sent.
+    pub fn upload_refusal(&self, size: u64) -> Option<String> {
+        let mb = self.max_upload_mb()?;
+        (size > u64::from(mb) << 20).then(|| format!("Files on this server may be at most {mb} MB"))
     }
 
     /// Replaces everything with a fresh `ready`. Message windows are stale and get reloaded;
@@ -233,6 +310,11 @@ impl InstanceStore {
             .insert(ready.user.user.id, ready.user.user.clone());
         self.me = Some(ready.user);
         self.privacy = ready.privacy;
+        self.relationships.clear();
+        for r in ready.relationships {
+            self.users.insert(r.user.id, r.user.clone());
+            self.relationships.insert(r.user.id, r);
+        }
         self.instance = Some(ready.instance);
         self.voice = Some(ready.voice);
         for snapshot in ready.spaces {
@@ -332,6 +414,9 @@ impl InstanceStore {
 
     /// Display name in a space (nickname, display name, username) or globally.
     pub fn display_name(&self, space: Option<Id>, user: Id) -> String {
+        if let Some(name) = self.local_names.get(&user) {
+            return name.clone();
+        }
         if let Some(member) = space.and_then(|s| self.member(s, user)) {
             if let Some(nick) = &member.nickname {
                 return nick.clone();
@@ -383,6 +468,26 @@ impl InstanceStore {
         self.read_states
             .get(&channel)
             .is_none_or(|r| r.last_read_id < last)
+    }
+
+    /// Read marks the server may not know (not sent yet, or kept on this device): a channel is
+    /// read up to the newer of the two.
+    pub fn merge_read_marks(&mut self, marks: &[(Id, Id)]) {
+        for &(channel, message) in marks {
+            let last = self.channel(channel).and_then(|c| c.last_message_id);
+            let state = self.read_states.entry(channel).or_insert(ReadState {
+                channel_id: channel,
+                last_read_id: Id(0),
+                mention_count: 0,
+            });
+            if state.last_read_id < message {
+                state.last_read_id = message;
+                // Mentions may be newer than the mark; read to the end, none are left.
+                if last.is_none_or(|last| message >= last) {
+                    state.mention_count = 0;
+                }
+            }
+        }
     }
 
     pub fn mention_count(&self, channel: Id) -> u32 {
@@ -633,6 +738,9 @@ impl InstanceStore {
 
     fn update_user_everywhere(&mut self, user: &User) {
         self.users.insert(user.id, user.clone());
+        if let Some(r) = self.relationships.get_mut(&user.id) {
+            r.user = user.clone();
+        }
         if let Some(me) = &mut self.me
             && me.user.id == user.id
         {
@@ -904,6 +1012,20 @@ impl InstanceStore {
                 self.privacy = privacy;
                 vec![C::Me]
             }
+            ServerEvent::RelationshipUpdate(r) => {
+                self.users.insert(r.user.id, r.user.clone());
+                self.relationships.insert(r.user.id, r);
+                vec![C::Relationships]
+            }
+            ServerEvent::RelationshipRemove { user_id } => {
+                self.relationships.remove(&user_id);
+                vec![C::Relationships]
+            }
+            // Handled before this: public keys are not part of the store.
+            ServerEvent::DevicesUpdate { .. }
+            | ServerEvent::ChannelKeyRequest(_)
+            | ServerEvent::ChannelKeysDelivered { .. }
+            | ServerEvent::ChannelKeyEpoch { .. } => vec![],
         }
     }
 
@@ -927,9 +1049,11 @@ pub(crate) mod tests {
         User {
             id: Id(id),
             username: name.into(),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         }
     }
 
@@ -968,6 +1092,9 @@ pub(crate) mod tests {
             reactions: vec![],
             mentions: Mentions::default(),
             nonce: None,
+            e2ee: None,
+            lock: Default::default(),
+            message_key: None,
         }
     }
 
@@ -1010,6 +1137,7 @@ pub(crate) mod tests {
             }],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            relationships: vec![],
             privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,
@@ -1021,7 +1149,9 @@ pub(crate) mod tests {
                 limits: InstanceLimits {
                     max_upload_mb: 25,
                     max_message_length: 4000,
+                    channels_encrypted: false,
                 },
+                features: Vec::new(),
             },
         }
     }
@@ -1034,6 +1164,35 @@ pub(crate) mod tests {
 
     fn live_window(s: &mut InstanceStore, channel: u64) {
         s.merge_history(Id(channel), HistoryAnchor::Latest, vec![], PAGE);
+    }
+
+    #[test]
+    fn search_stays_on_the_device_only_where_everything_is_sealed() {
+        let mut s = store();
+        let query = SearchQuery {
+            q: "soup".into(),
+            space_id: None,
+            channel_id: None,
+            author_id: None,
+            before: None,
+            limit: None,
+            ..SearchQuery::default()
+        };
+        assert!(!s.search_only_sealed(&query));
+        s.instance.as_mut().unwrap().limits.channels_encrypted = true;
+        assert!(s.search_only_sealed(&query));
+    }
+
+    #[test]
+    fn uploads_follow_the_servers_limit() {
+        assert_eq!(InstanceStore::default().upload_refusal(u64::MAX), None);
+        let s = store();
+        assert_eq!(s.max_upload_mb(), Some(25));
+        assert_eq!(s.upload_refusal(25 << 20), None);
+        assert_eq!(
+            s.upload_refusal((25 << 20) + 1).as_deref(),
+            Some("Files on this server may be at most 25 MB")
+        );
     }
 
     #[test]
@@ -1221,6 +1380,26 @@ pub(crate) mod tests {
         );
         assert_eq!(s.mention_count(Id(11)), 0);
         assert!(!s.unread(Id(11)));
+    }
+
+    #[test]
+    fn merged_read_marks_keep_the_newer() {
+        let mut s = store();
+        let bob = user(2, "bob");
+        let mut m = message(100, 11, &bob, "<@1>");
+        m.mentions.users = vec![Id(1)];
+        s.apply(ServerEvent::MessageCreate(m), 0);
+        assert!(s.unread(Id(11)));
+        // A mark before the mention keeps it counted; one at the end reads the channel.
+        s.merge_read_marks(&[(Id(11), Id(50))]);
+        assert_eq!(s.read_states[&Id(11)].last_read_id, Id(50));
+        assert_eq!(s.mention_count(Id(11)), 1);
+        assert!(s.unread(Id(11)));
+        s.merge_read_marks(&[(Id(11), Id(100))]);
+        assert!(!s.unread(Id(11)));
+        assert_eq!(s.mention_count(Id(11)), 0);
+        s.merge_read_marks(&[(Id(11), Id(60))]);
+        assert_eq!(s.read_states[&Id(11)].last_read_id, Id(100));
     }
 
     #[test]

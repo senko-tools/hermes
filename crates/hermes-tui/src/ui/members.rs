@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 store
                     .instance(inst)
                     .map_or_else(Vec::new, |s| match s.space_of(*channel) {
-                        Some(space) => view::member_groups(s, space),
+                        Some(space) => view::member_groups(s, space, Some(*channel)),
                         None => {
                             let members = s
                                 .channel(*channel)

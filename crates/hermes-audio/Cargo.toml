@@ -10,6 +10,7 @@ homepage.workspace = true
 
 [dependencies]
 hermes-proto.workspace = true
+aec3.workspace = true
 cpal.workspace = true
 nnnoiseless.workspace = true
 opus.workspace = true

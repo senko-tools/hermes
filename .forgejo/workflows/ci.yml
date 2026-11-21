@@ -1,0 +1,98 @@
+name: CI
+
+# Linux CI on Forgejo Actions (git.8w.fi): the same fmt, clippy and test checks as
+# .github/workflows/ci.yml, which still runs the Windows build on GitHub.
+#
+# Runner image: whatever the runner maps `ubuntu-latest` to (often a Debian image with only
+# node.js, sometimes running as root without sudo), so every job installs what it needs and
+# actions are named by full URL so the instance's default actions mirror does not matter.
+#
+# Caching: Swatinem/rust-cache keeps ~/.cargo/registry, ~/.cargo/git and the dependency part of
+# target/ in the runner's cache server, under one fixed key (`shared-key`) plus a hash of the
+# toolchain, Cargo.lock/Cargo.toml and the CARGO*/RUST* environment. So:
+#   - clippy and test run in one job with one cache, and the env below is identical for both,
+#     so build scripts and proc macros are compiled once;
+#   - only runs on main and dev (pushes and manual runs) save the cache; pull requests restore
+#     it but never write it, so they cannot evict or poison it;
+#   - a new toolchain or changed Cargo.lock starts a fresh entry, an unchanged one is reused.
+# Formatting needs no build, so it is a separate small job without a cache.
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ forgejo.workflow }}-${{ forgejo.ref }}
+  # A newer push to a pull request replaces the running check; branch pushes queue instead,
+  # so every main/dev commit gets checked and can save the cache.
+  cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
+
+env:
+  CI: true # crates/hermes-voicebot/tests/exchange.rs relaxes its latency limits on CI
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+  # Full debug info for every test binary fills the runner's disk; line tables are enough
+  # for backtraces.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  SQLX_OFFLINE: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install git and curl
+        # Checkout needs git, rustup's installer needs curl; skip apt when the image has both.
+        run: |
+          if ! command -v git >/dev/null || ! command -v curl >/dev/null; then
+            # `env` because sudo drops DEBIAN_FRONTEND from the environment.
+            apt="$(command -v sudo || true) env DEBIAN_FRONTEND=noninteractive apt-get"
+            $apt update
+            $apt install -y --no-install-recommends git curl ca-certificates
+          fi
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format
+        run: cargo fmt --all --check
+
+  check:
+    name: clippy and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Install system libraries
+        # C and C++ compilers and cmake for opusic-sys, libsqlite3-sys and ring; ALSA for cpal;
+        # GTK, libxdo and appindicator for the GUI's tray icon (tray-icon, muda); xkbcommon,
+        # fontconfig, freetype and Wayland for gpui (hermes-gui). Same names on Debian and Ubuntu.
+        run: |
+          apt="$(command -v sudo || true) env DEBIAN_FRONTEND=noninteractive apt-get"
+          $apt update
+          $apt install -y --no-install-recommends \
+            build-essential cmake pkg-config git curl ca-certificates \
+            libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev
+      - uses: https://code.forgejo.org/actions/checkout@v7
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: https://github.com/Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-check
+          cache-on-failure: true
+          # Nothing is `cargo install`ed, and where the toolchain action had to install rustup,
+          # ~/.cargo/bin holds only rustup's own proxies.
+          cache-bin: false
+          save-if: ${{ forgejo.event_name != 'pull_request' && (forgejo.ref == 'refs/heads/main' || forgejo.ref == 'refs/heads/dev') }}
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked

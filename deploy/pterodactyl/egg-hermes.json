@@ -90,7 +90,7 @@
     },
     {
       "name": "Bind address",
-      "description": "Leave as 0.0.0.0.",
+      "description": "0.0.0.0 listens on IPv4 only. If the public host has an IPv6 address (an AAAA record), give the server an extra allocation on that IPv6 address and set this to :: (IPv4 and IPv6); otherwise voice fails for people whose computer prefers IPv6.",
       "env_variable": "HERMES__NETWORK__BIND",
       "default_value": "0.0.0.0",
       "user_viewable": false,

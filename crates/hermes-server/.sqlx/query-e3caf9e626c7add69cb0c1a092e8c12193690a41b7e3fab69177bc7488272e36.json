@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT filename FROM attachments\n         WHERE id = ? AND uploader_id = ? AND content_type LIKE 'image/%'\n           AND width IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "filename",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "filename"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e3caf9e626c7add69cb0c1a092e8c12193690a41b7e3fab69177bc7488272e36"
+}

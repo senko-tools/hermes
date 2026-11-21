@@ -72,6 +72,141 @@ impl ConfigPaths {
     pub fn user_volumes(&self) -> PathBuf {
         self.dir.join(crate::volumes::USER_VOLUMES_FILE)
     }
+
+    pub fn read_marks(&self) -> PathBuf {
+        self.dir.join(crate::read_marks::READ_MARKS_FILE)
+    }
+}
+
+/// A setting with a few named values, written as text in `config.toml` (`motion_speed =
+/// "calm"`). Reading ignores case, and a value it does not know means the default (with a
+/// warning in the log), as when these were plain strings.
+macro_rules! choice {
+    (
+        $(#[$meta:meta])*
+        $name:ident, default $default:ident {
+            $($(#[$vmeta:meta])* $variant:ident = $text:literal),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum $name {
+            $($(#[$vmeta])* $variant),+
+        }
+
+        impl $name {
+            /// Every value, in the order they are offered.
+            pub const ALL: &'static [$name] = &[$($name::$variant),+];
+
+            /// How it is written in `config.toml`.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
+                }
+            }
+
+            /// The value written as `text`, ignoring case.
+            pub fn parse(text: &str) -> Option<$name> {
+                Self::ALL
+                    .iter()
+                    .copied()
+                    .find(|v| v.as_str().eq_ignore_ascii_case(text.trim()))
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                $name::$default
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(d)?;
+                Ok($name::parse(&text).unwrap_or_else(|| {
+                    tracing::warn!(
+                        "config: {text:?} is not one of the values of {}; using {}",
+                        stringify!($name),
+                        $name::$default.as_str()
+                    );
+                    $name::$default
+                }))
+            }
+        }
+    };
+}
+
+choice! {
+    /// `general.motion_speed`: how long things take to slide and fade.
+    MotionSpeed, default Normal { Snappy = "snappy", Normal = "normal", Calm = "calm" }
+}
+
+choice! {
+    /// `general.avatar_shape`: how people's pictures are cut, everywhere they show.
+    AvatarShape, default Circle { Circle = "circle", Squircle = "squircle" }
+}
+
+choice! {
+    /// `sidebar.position`.
+    SidebarPosition, default Left { Left = "left", Right = "right" }
+}
+
+choice! {
+    /// `voice.join_on`: what joins a voice channel in the sidebar.
+    JoinOn, default DoubleClick { DoubleClick = "double_click", SingleClick = "single_click" }
+}
+
+choice! {
+    /// `voice.mode`: when the microphone goes through.
+    VoiceMode, default VoiceActivity {
+        VoiceActivity = "voice_activity",
+        PushToTalk = "push_to_talk",
+    }
+}
+
+choice! {
+    /// `voice.share_resolution`: the largest size a share is sent at.
+    ShareResolution, default P1080 {
+        P720 = "720p",
+        P1080 = "1080p",
+        P1440 = "1440p",
+        P2160 = "2160p",
+        Native = "native",
+    }
+}
+
+choice! {
+    /// `voice.share_preference`: what a share keeps when it cannot keep up.
+    SharePreference, default Smoothness {
+        /// The frame rate.
+        Smoothness = "smoothness",
+        Mixed = "mixed",
+        /// Sharp, full-size pictures.
+        Clarity = "clarity",
+    }
+}
+
+choice! {
+    /// `privacy.warn_unencrypted`: when opening a chat the server can read shows a warning.
+    WarnUnencrypted, default First {
+        /// Every time.
+        Every = "every",
+        /// The first time for each chat.
+        First = "first",
+        Never = "never",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,6 +218,7 @@ pub struct ClientConfig {
     pub buffer: Buffer,
     pub voice: Voice,
     pub notifications: Notifications,
+    pub privacy: Privacy,
     /// GUI keybinds, action = "key combo".
     pub keys: BTreeMap<String, String>,
     pub tui: Tui,
@@ -100,6 +236,7 @@ impl Default for ClientConfig {
             buffer: Buffer::default(),
             voice: Voice::default(),
             notifications: Notifications::default(),
+            privacy: Privacy::default(),
             keys: [
                 ("command_bar", "Ctrl+K"),
                 ("toggle_mute", "Ctrl+Shift+M"),
@@ -122,6 +259,36 @@ pub struct General {
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub check_for_updates: bool,
+    /// A newer version found on start is installed right away (the app restarts).
+    pub auto_update: bool,
+    /// Hermes starts when I sign in to the computer.
+    pub start_on_login: bool,
+    /// How long a line in the status bar stays, in seconds.
+    pub status_seconds: u32,
+    /// Minutes without input before the status turns idle; 0 = never.
+    pub auto_idle_minutes: u32,
+    /// The status chosen last: `online`, `idle`, `dnd` or `invisible`.
+    pub presence: String,
+    /// No sliding or fading, whatever the system says.
+    pub reduce_motion: bool,
+    /// How long things take to slide and fade: `snappy`, `normal` or `calm`.
+    pub motion_speed: MotionSpeed,
+    /// How people's pictures are cut: `circle` or `squircle` (a rounded square).
+    pub avatar_shape: AvatarShape,
+    /// The mouse wheel glides instead of jumping.
+    pub smooth_scroll: bool,
+    /// How far a wheel notch goes, as a multiple of the plain distance.
+    pub scroll_speed: f64,
+    /// GIFs and other animated pictures move while the window has the focus.
+    pub animate_pictures: bool,
+    /// Where downloads go; empty = the Downloads folder.
+    pub download_dir: String,
+    /// Ask for a place each time something is downloaded.
+    pub ask_where_to_save: bool,
+    /// Settings groups shown folded (by key), e.g. the voice processing details.
+    pub folded_settings: Vec<String>,
+    /// Shows what only developers and admins need, such as copying IDs from menus.
+    pub developer_mode: bool,
 }
 
 impl Default for General {
@@ -131,6 +298,21 @@ impl Default for General {
             start_minimized: false,
             close_to_tray: true,
             check_for_updates: true,
+            auto_update: false,
+            start_on_login: false,
+            status_seconds: 5,
+            auto_idle_minutes: 10,
+            presence: "online".into(),
+            reduce_motion: false,
+            motion_speed: MotionSpeed::Normal,
+            avatar_shape: AvatarShape::Circle,
+            smooth_scroll: true,
+            scroll_speed: 1.25,
+            animate_pictures: true,
+            download_dir: String::new(),
+            ask_where_to_save: false,
+            folded_settings: vec!["processing".into()],
+            developer_mode: false,
         }
     }
 }
@@ -142,6 +324,8 @@ pub struct Font {
     pub mono_family: String,
     pub size: u16,
     pub ui_scale: f64,
+    /// How much larger titles are than the text.
+    pub heading_extra: i32,
 }
 
 impl Default for Font {
@@ -149,8 +333,9 @@ impl Default for Font {
         Font {
             family: "JetBrainsMono Nerd Font".into(),
             mono_family: "JetBrainsMono Nerd Font".into(),
-            size: 13,
+            size: 11,
             ui_scale: 1.0,
+            heading_extra: 4,
         }
     }
 }
@@ -158,20 +343,33 @@ impl Default for Font {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sidebar {
-    pub position: String,
+    pub position: SidebarPosition,
     pub width: u16,
     pub show_voice_users: bool,
     /// Width of the member list (desktop client).
     pub member_list_width: u16,
+    /// The servers on the rail, as `instance/id`; those not listed follow.
+    pub server_order: Vec<String>,
+    /// The member list shows beside a chat.
+    pub show_members: bool,
+    /// The sidebar shows (Ctrl+B hides it).
+    pub visible: bool,
+    pub show_unread_dots: bool,
+    pub show_mention_counts: bool,
 }
 
 impl Default for Sidebar {
     fn default() -> Self {
         Sidebar {
-            position: "left".into(),
+            position: SidebarPosition::Left,
             width: 240,
             show_voice_users: true,
             member_list_width: 232,
+            server_order: Vec::new(),
+            show_members: true,
+            visible: true,
+            show_unread_dots: true,
+            show_mention_counts: true,
         }
     }
 }
@@ -181,10 +379,27 @@ impl Default for Sidebar {
 pub struct Buffer {
     pub show_avatars: bool,
     pub timestamp_format: String,
+    /// The date on the dividers between days (same tokens as the time).
+    pub date_format: String,
     pub group_minutes: u32,
     pub enter_sends: bool,
     pub image_previews: bool,
     pub show_typing: bool,
+    /// Bold, code blocks and the like are drawn; off shows messages as they were typed.
+    pub markdown: bool,
+    /// Compact messages: time, a small picture, the name and the text on one line.
+    pub compact: bool,
+    /// What is being written shows formatted above the message box.
+    pub composer_preview: bool,
+    /// Linked pages are fetched by this device to show their title and picture (off: nothing is
+    /// fetched).
+    pub link_previews: bool,
+    /// Pictures and videos in the chat, in percent of their normal size.
+    pub media_scale: u32,
+    /// The reactions offered first, separated by spaces.
+    pub quick_reactions: String,
+    /// The emoji picked last, newest first, separated by spaces.
+    pub recent_emoji: String,
 }
 
 impl Default for Buffer {
@@ -192,10 +407,18 @@ impl Default for Buffer {
         Buffer {
             show_avatars: true,
             timestamp_format: "%H:%M".into(),
+            date_format: "%B %e, %Y".into(),
             group_minutes: 7,
             enter_sends: true,
             image_previews: true,
             show_typing: true,
+            markdown: true,
+            compact: false,
+            composer_preview: false,
+            link_previews: false,
+            media_scale: 100,
+            quick_reactions: "👍 ❤️ 😂 😮 😢 🎉 👀 🔥".into(),
+            recent_emoji: String::new(),
         }
     }
 }
@@ -203,40 +426,85 @@ impl Default for Buffer {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Voice {
-    pub join_on: String,
+    pub join_on: JoinOn,
     pub input_device: String,
     pub output_device: String,
     pub input_volume: f64,
     pub output_volume: f64,
-    pub mode: String,
+    pub mode: VoiceMode,
     pub ptt_key: String,
     pub ptt_release_delay_ms: u32,
     pub vad_sensitivity: i32,
+    /// How long voice activity stays open after you stop, in ms.
+    pub vad_hold_ms: u32,
+    /// Only loudness opens voice activity (noise suppression's voice detection can't).
+    pub vad_level_only: bool,
     pub noise_suppression: bool,
     pub auto_gain: bool,
+    /// How loud automatic gain makes you, dBFS.
+    pub agc_target_db: i32,
+    /// Takes what the speakers play out of the microphone.
+    pub echo_cancellation: bool,
+    /// While someone speaks, screen share and media sound go down by `ducking_db`.
+    pub ducking: bool,
+    pub ducking_db: u32,
+    /// While muted the microphone is really closed, so the system shows it as unused.
+    pub close_mic_when_muted: bool,
+    /// Sends extra data so that lost packets can be rebuilt.
+    pub opus_fec: bool,
+    /// Sends nothing at all during silence.
+    pub opus_dtx: bool,
     pub sounds: bool,
     pub sounds_volume: f64,
+    /// The volume of sound and video files in the chat, as a slider position (1.0 = 100 %).
+    pub media_volume: f64,
+    /// Sound and video files play silently.
+    pub media_muted: bool,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
+    /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
+    pub share_resolution: ShareResolution,
+    /// Frames per second a share is sent at (at most 60).
+    pub share_fps: u32,
+    /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
+    /// `clarity` (sharp, full-size pictures).
+    pub share_preference: SharePreference,
+    /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
+    pub share_sound: bool,
 }
 
 impl Default for Voice {
     fn default() -> Self {
         Voice {
-            join_on: "double_click".into(),
+            join_on: JoinOn::DoubleClick,
             input_device: "default".into(),
             output_device: "default".into(),
             input_volume: 1.0,
             output_volume: 1.0,
-            mode: "voice_activity".into(),
+            mode: VoiceMode::VoiceActivity,
             ptt_key: String::new(),
             ptt_release_delay_ms: 150,
             vad_sensitivity: -50,
+            vad_hold_ms: 300,
+            vad_level_only: false,
             noise_suppression: true,
             auto_gain: false,
+            agc_target_db: -18,
+            echo_cancellation: false,
+            ducking: false,
+            ducking_db: 12,
+            close_mic_when_muted: false,
+            opus_fec: true,
+            opus_dtx: true,
             sounds: true,
             sounds_volume: 0.6,
+            media_volume: 1.0,
+            media_muted: false,
             share_screen: String::new(),
+            share_resolution: ShareResolution::P1080,
+            share_fps: 60,
+            share_preference: SharePreference::Smoothness,
+            share_sound: true,
         }
     }
 }
@@ -248,6 +516,17 @@ pub struct Notifications {
     pub sound: bool,
     pub show_preview: bool,
     pub flash_taskbar: bool,
+    pub toast_dms: bool,
+    pub toast_mentions: bool,
+    pub toast_other: bool,
+    pub sound_dms: bool,
+    pub sound_mentions: bool,
+    pub sound_other: bool,
+    /// No notifications between these times (`HH:MM`, local); empty = none.
+    pub quiet_from: String,
+    pub quiet_to: String,
+    /// Words that notify like a mention, separated by spaces.
+    pub keywords: String,
 }
 
 impl Default for Notifications {
@@ -257,6 +536,45 @@ impl Default for Notifications {
             sound: true,
             show_preview: true,
             flash_taskbar: true,
+            toast_dms: true,
+            toast_mentions: true,
+            toast_other: true,
+            sound_dms: true,
+            sound_mentions: true,
+            sound_other: true,
+            quiet_from: String::new(),
+            quiet_to: String::new(),
+            keywords: String::new(),
+        }
+    }
+}
+
+/// What this device tells the server. Who may reach me is kept on the server instead
+/// (`/users/@me/privacy`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Privacy {
+    /// Others see that I am typing.
+    pub send_typing: bool,
+    /// The server keeps what I have read, which also syncs it to my other devices.
+    pub send_read_marks: bool,
+    /// Searches never leave this device, so older unencrypted messages are not found.
+    pub local_search_only: bool,
+    /// When opening a chat that is not end-to-end encrypted shows a warning: `"every"` time,
+    /// the `"first"` time for each chat, or `"never"`. Kept on this device only.
+    pub warn_unencrypted: WarnUnencrypted,
+    /// The chats that warning was shown for (`instance/channel`), for `"first"`.
+    pub warned_unencrypted: Vec<String>,
+}
+
+impl Default for Privacy {
+    fn default() -> Self {
+        Privacy {
+            send_typing: true,
+            send_read_marks: true,
+            local_search_only: false,
+            warn_unencrypted: WarnUnencrypted::First,
+            warned_unencrypted: Vec::new(),
         }
     }
 }
@@ -474,11 +792,178 @@ pub fn set_value(
         .map_err(|e: toml::de::Error| ConfigError::InvalidSetting(format!("`{key}`: {e}")))
 }
 
+/// How [`write_atomic_with`] writes a file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WriteOptions {
+    /// Flushed to the disk before it replaces the old file, so even a power cut leaves the old
+    /// or the new contents. Costs a disk flush; [`write_atomic`] always pays it.
+    pub durable: bool,
+    /// Readable by this user only (Unix; on Windows the per-user config directory is private).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub private: bool,
+}
+
 /// Writes through a temporary file and a rename, so a crash never leaves half a file.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    // What is renamed has reached the disk.
+    write_atomic_with(
+        path,
+        bytes,
+        WriteOptions {
+            durable: true,
+            private: false,
+        },
+    )
+}
+
+/// [`write_atomic`] with options. The temporary file has a name of its own (process and
+/// counter), so two writers of the same file, here or in the other client, never write into
+/// each other's half-written copy, and one left over by a crash is never read.
+pub(crate) fn write_atomic_with(
+    path: &Path,
+    bytes: &[u8],
+    options: WriteOptions,
+) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a file path"))?;
+    let mut tmp_name = name.to_owned();
+    tmp_name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let tmp = path.with_file_name(tmp_name);
+    let result = write_new(&tmp, bytes, options).and_then(|()| replace(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    if options.durable {
+        sync_dir(path);
+    }
+    remove_stale(path, name);
+    result
+}
+
+/// Makes the rename itself survive a power cut (Unix; NTFS journals it).
+fn sync_dir(path: &Path) {
+    #[cfg(unix)]
+    if let Some(dir) = path.parent()
+        && let Ok(dir) = std::fs::File::open(if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        })
+    {
+        let _ = dir.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// Temporary files of `path` left by a crash in the middle of a write (they may hold tokens), and
+/// the ones older versions used (`<stem>.tmp` and `<stem>.<pid>.<n>.tmp`). Only old ones: a fresh
+/// one may be another process's write in progress.
+fn remove_stale(path: &Path, name: &std::ffi::OsStr) {
+    const STALE: Duration = Duration::from_secs(60);
+    let Some(dir) = path.parent() else {
+        return;
+    };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let (prefix, legacy) = (
+        format!("{}.", name.to_string_lossy()),
+        path.with_extension("tmp"),
+    );
+    let stem_prefix = path
+        .file_stem()
+        .map(|stem| format!("{}.", stem.to_string_lossy()));
+    // `<stem>.<pid>.<n>.tmp`
+    let numbered = |entry_name: &str| {
+        stem_prefix
+            .as_deref()
+            .and_then(|p| entry_name.strip_prefix(p))
+            .and_then(|rest| rest.strip_suffix(".tmp"))
+            .and_then(|rest| rest.split_once('.'))
+            .is_some_and(|(pid, n)| {
+                [pid, n]
+                    .iter()
+                    .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+            })
+    };
+    for entry in entries.flatten() {
+        let entry_name = entry.file_name();
+        let entry_name = entry_name.to_string_lossy();
+        let ours = (entry_name.starts_with(&prefix) && entry_name.ends_with(".tmp"))
+            || numbered(&entry_name);
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE);
+        if (ours || entry.path() == legacy) && old && entry.path() != path {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn write_new(tmp: &Path, bytes: &[u8], options: WriteOptions) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    if options.private {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open.mode(0o600);
+    }
+    let mut file = open.open(tmp)?;
+    // `mode` only applies to a new file; a stale one of the same name keeps its own.
+    #[cfg(unix)]
+    if options.private {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    if options.durable {
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Renames `from` over `to`. On Windows a virus scanner or indexer that has `to` open for a moment
+/// makes the rename fail, so it is tried again a few times.
+fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::io::ErrorKind;
+        let mut tries: u64 = 0;
+        loop {
+            match std::fs::rename(from, to) {
+                // Errors that waiting does not mend are returned at once.
+                Err(err)
+                    if tries < 5
+                        && !matches!(err.kind(), ErrorKind::NotFound | ErrorKind::InvalidInput) =>
+                {
+                    tracing::debug!("{} not replaced yet ({err}), trying again", to.display());
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(25 * tries));
+                }
+                result => return result,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    std::fs::rename(from, to)
 }
 
 /// Watches `config.toml` and sends the newly loaded config on every change (debounced by
@@ -489,7 +974,9 @@ pub fn watch(
 ) -> notify::Result<notify::RecommendedWatcher> {
     use notify::Watcher;
 
-    let (raw_tx, mut raw_rx) = mpsc::unbounded_channel();
+    // One waiting signal is enough: a burst of events (an editor saving, every write of this
+    // client) is one reload, and nothing piles up while a reload waits.
+    let (raw_tx, mut raw_rx) = mpsc::channel(1);
     let file_name = path.file_name().map(|n| n.to_owned());
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res
@@ -499,23 +986,46 @@ pub fn watch(
                 .iter()
                 .any(|p| p.file_name() == file_name.as_deref())
         {
-            let _ = raw_tx.send(());
+            let _ = raw_tx.try_send(());
         }
     })?;
     let dir = path.parent().unwrap_or(Path::new(".")).to_owned();
     std::fs::create_dir_all(&dir).map_err(notify::Error::io)?;
     watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
     tokio::spawn(async move {
-        let mut last: Option<String> = std::fs::read_to_string(&path).ok();
+        let mut last: Option<String> = tokio::fs::read_to_string(&path).await.ok();
         while raw_rx.recv().await.is_some() {
             tokio::time::sleep(Duration::from_millis(250)).await;
             while raw_rx.try_recv().is_ok() {}
-            let text = std::fs::read_to_string(&path).ok();
-            if text == last {
+            let mut tries = 0;
+            let text = loop {
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(text) => break Some(text),
+                    // Gone for a moment (an editor that deletes and writes again): not a change
+                    // to the defaults. Taken in once it is back.
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => break None,
+                    // Held open by another program for a moment, say.
+                    Err(err) if tries < 4 => {
+                        tries += 1;
+                        tracing::debug!("{} not read yet ({err}), trying again", path.display());
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                    Err(err) => {
+                        tracing::warn!("{} not reloaded: {err}", path.display());
+                        break None;
+                    }
+                }
+            };
+            let Some(text) = text else {
+                continue;
+            };
+            if last.as_ref() == Some(&text) {
                 continue;
             }
-            last = text;
-            if tx.send(ClientConfig::load(&path)).is_err() {
+            let loaded =
+                ClientConfig::parse(&text).map_err(|e| ConfigError::Parse(path.clone(), e));
+            last = Some(text);
+            if tx.send(loaded).is_err() {
                 break;
             }
         }
@@ -526,6 +1036,63 @@ pub fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A setting changed in code is written exactly like the same setting typed as text, so
+    /// moving the GUI to typed changes left `config.toml` as it was.
+    #[test]
+    fn typed_and_text_changes_write_the_same_file() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-typed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = "# mine
+[buffer]
+compact = false # keep this comment
+[unknown]
+x = 1
+";
+        let (by_text, by_code) = (dir.join("text.toml"), dir.join("code.toml"));
+        std::fs::write(&by_text, start).unwrap();
+        std::fs::write(&by_code, start).unwrap();
+        let config: ClientConfig = toml::from_str(start).unwrap();
+
+        let mut text = set_value(&config, "buffer.compact", "true").unwrap();
+        text = set_value(&text, "sidebar.width", "300").unwrap();
+        text = set_value(&text, "buffer.date_format", "%e %B").unwrap();
+        save(&by_text, &text).unwrap();
+        let mut code = config.clone();
+        code.buffer.compact = true;
+        code.sidebar.width = 300;
+        code.buffer.date_format = "%e %B".into();
+        save(&by_code, &code).unwrap();
+
+        let written = std::fs::read_to_string(&by_code).unwrap();
+        assert_eq!(std::fs::read_to_string(&by_text).unwrap(), written);
+        assert!(written.contains("# keep this comment") && written.contains("[unknown]"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The settings with a few named values read like the strings they were: any case, and
+    /// an unknown value is the default instead of a broken file.
+    #[test]
+    fn choices_read_leniently_and_write_as_before() {
+        let config: ClientConfig = toml::from_str(
+            "[general]
+motion_speed = \"CALM\"
+[voice]
+share_resolution = \"bogus\"
+mode = \"push_to_talk\"
+",
+        )
+        .unwrap();
+        assert_eq!(config.general.motion_speed, MotionSpeed::Calm);
+        assert_eq!(config.voice.share_resolution, ShareResolution::default());
+        assert_eq!(config.voice.mode, VoiceMode::PushToTalk);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("motion_speed = \"calm\""), "{text}");
+        assert!(text.contains("share_resolution = \"1080p\""), "{text}");
+        let set = set_value(&config, "sidebar.position", "\"right\"").unwrap();
+        assert_eq!(set.sidebar.position, SidebarPosition::Right);
+    }
 
     #[test]
     fn defaults_match_the_plan() {
@@ -589,6 +1156,63 @@ mod tests {
         assert!(set_value(&c, "buffer.nope", "1").is_err());
         assert!(set_value(&c, "buffer", "1").is_err());
         assert!(set_value(&c, "buffer.group_minutes", "many").is_err());
+    }
+
+    #[test]
+    fn atomic_writes_replace_whole_files_only() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(CONFIG_FILE);
+        write_atomic(&path, b"first").unwrap();
+        // What a crash in the middle of a write leaves: a temporary file, and the old file whole.
+        let stale = dir.join(format!("{CONFIG_FILE}.{}-0.tmp", std::process::id()));
+        std::fs::write(&stale, b"half of a ne").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"first");
+        // Writing again replaces the file over the existing one, whatever is lying around.
+        let options = WriteOptions {
+            durable: true,
+            private: true,
+        };
+        write_atomic_with(&path, b"second", options).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names.len(),
+            2,
+            "a fresh leftover may be a write in progress: {names:?}"
+        );
+        assert!(names.contains(&CONFIG_FILE.to_owned()));
+        // An old one goes, and so does the temporary file of older versions.
+        let legacy = dir.join("config.tmp");
+        std::fs::write(&legacy, b"old").unwrap();
+        let numbered = dir.join("config.4242.7.tmp");
+        std::fs::write(&numbered, b"old").unwrap();
+        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        for old in [&stale, &legacy, &numbered] {
+            std::fs::File::options()
+                .write(true)
+                .open(old)
+                .unwrap()
+                .set_modified(an_hour_ago)
+                .unwrap();
+        }
+        write_atomic(&path, b"third").unwrap();
+        assert!(!stale.exists() && !legacy.exists() && !numbered.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"third");
+        // Not a file.
+        assert!(write_atomic(Path::new("/"), b"x").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

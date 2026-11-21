@@ -92,6 +92,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
             .get(&user_id)
             .map(|u| u.privacy)
             .unwrap_or_default(),
+        relationships: cache.relationships_of(user_id),
         voice: VoiceInfo {
             enabled: endpoint.is_some(),
             quic_port: endpoint.map(|e| e.port),
@@ -102,7 +103,9 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
             limits: InstanceLimits {
                 max_upload_mb: config.storage.max_upload_mb,
                 max_message_length: config.limits.max_message_length,
+                channels_encrypted: config.privacy.require_channel_encryption,
             },
+            features: crate::api::instance::features(),
         },
     })
 }

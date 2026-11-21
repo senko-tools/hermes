@@ -7,7 +7,8 @@
 //! means the device is gone rebuilds the stream on the default device (PLAN.md 12.5).
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -28,8 +29,11 @@ const OUTPUT_TARGET: Duration = Duration::from_millis(30);
 const OUTPUT_IDLE: Duration = Duration::from_secs(3);
 /// How long to wait before retrying a device that could not be opened.
 const RETRY: Duration = Duration::from_secs(2);
-/// Input level reports per second while metering.
-const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
+/// How often a chosen device that is missing is looked for.
+const DEVICE_CHECK_EVERY: Duration = Duration::from_secs(5);
+/// The shortest time between input level reports while metering: less than the 20 ms tick, so every
+/// tick reports (one frame of audio, 50 times a second).
+const LEVEL_INTERVAL: Duration = Duration::from_millis(15);
 const TICK: Duration = Duration::from_millis(20);
 
 /// A device replacement for headless use (the voicebot, tests): 48 kHz mono in 20 ms frames,
@@ -55,8 +59,10 @@ pub enum AudioEvent {
         participant: Option<u16>,
         speaking: bool,
     },
-    /// dBFS of the processed microphone signal, 20 times a second while metering.
-    InputLevel(f32),
+    /// The processed microphone signal, 50 times a second while metering: its level in dBFS,
+    /// and whether it would go through (the gate is open: voice activity, push-to-talk held,
+    /// the hold time, not muted).
+    InputLevel { db: f32, open: bool },
     /// A device was lost (or the chosen one is missing) and another one is used.
     DeviceChanged { input: bool, name: String },
     /// No device could be opened.
@@ -71,6 +77,9 @@ enum Command {
     SelfDeaf(bool),
     Ptt(bool),
     Receive(u16, Vec<u8>),
+    ReceiveShare(u16, Vec<u8>),
+    ShareVolume(u16, f32),
+    RemoveShare(u16),
     RemoveParticipant(u16),
     ClearParticipants,
     Volume(u16, f32),
@@ -141,6 +150,24 @@ impl Engine {
         self.send(Command::Receive(participant, datagram));
     }
 
+    /// A share audio datagram of `participant`'s screen share.
+    pub fn receive_share(&self, participant: u16, datagram: Vec<u8>) {
+        self.send(Command::ReceiveShare(participant, datagram));
+    }
+
+    /// The volume of `participant`'s screen share sound, as a slider position.
+    pub fn set_share_volume(&self, participant: u16, volume: f32) {
+        self.send(Command::ShareVolume(
+            participant,
+            crate::volume_gain(volume),
+        ));
+    }
+
+    /// Stops playing `participant`'s screen share sound (no longer watched, or stopped).
+    pub fn remove_share(&self, participant: u16) {
+        self.send(Command::RemoveShare(participant));
+    }
+
     pub fn remove_participant(&self, participant: u16) {
         self.send(Command::RemoveParticipant(participant));
     }
@@ -149,9 +176,9 @@ impl Engine {
         self.send(Command::ClearParticipants);
     }
 
-    /// 0–2 (200 %).
+    /// A participant's volume, as a slider position.
     pub fn set_volume(&self, participant: u16, volume: f32) {
-        self.send(Command::Volume(participant, volume));
+        self.send(Command::Volume(participant, crate::volume_gain(volume)));
     }
 
     pub fn set_local_mute(&self, participant: u16, muted: bool) {
@@ -171,7 +198,7 @@ impl Engine {
         self.send(Command::MicTest(on));
     }
 
-    /// Reports [`AudioEvent::InputLevel`] 20 times a second (opens the microphone).
+    /// Reports [`AudioEvent::InputLevel`] 50 times a second (opens the microphone).
     pub fn set_level_meter(&self, on: bool) {
         self.send(Command::Meter(on));
     }
@@ -195,6 +222,8 @@ enum Backend {
         input_retry: Option<Instant>,
         output_retry: Option<Instant>,
         input_buf: Vec<f32>,
+        /// Packet numbers, kept across changes of microphone.
+        sequence: Arc<AtomicU16>,
     },
     Virtual {
         io: Box<dyn VirtualIo>,
@@ -205,6 +234,8 @@ enum Backend {
 }
 
 struct Worker {
+    /// When the chosen devices were last looked for.
+    device_check: Instant,
     settings: AudioSettings,
     events: Box<dyn Fn(AudioEvent) + Send>,
     backend: Backend,
@@ -216,6 +247,7 @@ struct Worker {
     ptt: bool,
     bitrate: u32,
     volumes: HashMap<u16, f32>,
+    share_volumes: HashMap<u16, f32>,
     local_mutes: HashMap<u16, bool>,
     speaking: HashMap<Option<u16>, bool>,
     /// Sounds requested while the output was closed.
@@ -235,6 +267,7 @@ impl Worker {
                 input_retry: None,
                 output_retry: None,
                 input_buf: vec![0.0; 48_000],
+                sequence: Arc::default(),
             },
             Io::Virtual(io) => Backend::Virtual {
                 io,
@@ -244,6 +277,7 @@ impl Worker {
             },
         };
         let mut worker = Worker {
+            device_check: Instant::now(),
             settings,
             events,
             backend,
@@ -255,6 +289,7 @@ impl Worker {
             ptt: false,
             bitrate,
             volumes: HashMap::new(),
+            share_volumes: HashMap::new(),
             local_mutes: HashMap::new(),
             speaking: HashMap::new(),
             pending_sounds: Vec::new(),
@@ -345,11 +380,23 @@ impl Worker {
                 let volume = self.volumes.get(&participant).copied().unwrap_or(1.0);
                 let muted = self.local_mutes.get(&participant).copied().unwrap_or(false);
                 self.with_playback(|p| {
-                    p.push(participant, &datagram, now, volume);
+                    p.push(participant, datagram, now, volume);
                     if muted {
                         p.set_muted(participant, true);
                     }
                 });
+            }
+            Command::ReceiveShare(participant, datagram) => {
+                let now = self.now_ms();
+                let volume = self.share_volumes.get(&participant).copied().unwrap_or(1.0);
+                self.with_playback(|p| p.push_share(participant, datagram, now, volume));
+            }
+            Command::ShareVolume(participant, volume) => {
+                self.share_volumes.insert(participant, volume);
+                self.with_playback(|p| p.set_share_volume(participant, volume));
+            }
+            Command::RemoveShare(participant) => {
+                self.with_playback(|p| p.remove_share(participant));
             }
             Command::RemoveParticipant(participant) => {
                 self.with_playback(|p| p.remove(participant));
@@ -436,7 +483,8 @@ impl Worker {
     }
 
     fn wants_input(&self) -> bool {
-        self.transmitting || self.mic_test || self.meter
+        let closed = self.settings.close_mic_when_muted && self.self_mute;
+        (self.transmitting && !closed) || self.mic_test || self.meter
     }
 
     /// Sends what the capture produced: to the server while transmitting, to yourself while
@@ -445,14 +493,19 @@ impl Worker {
         events: &dyn Fn(AudioEvent),
         transmitting: bool,
         mic_test: bool,
-        datagram: &[u8],
+        datagram: Vec<u8>,
         loopback: &mut Vec<Vec<u8>>,
     ) {
-        if transmitting {
-            events(AudioEvent::Packet(datagram.to_vec()));
-        }
         if mic_test {
-            loopback.push(datagram.to_vec());
+            loopback.push(if transmitting {
+                datagram.clone()
+            } else {
+                datagram
+            });
+            return;
+        }
+        if transmitting {
+            events(AudioEvent::Packet(datagram));
         }
     }
 
@@ -476,7 +529,7 @@ impl Worker {
             });
         }
         for datagram in loopback {
-            playback.push(MIC_TEST, &datagram, now, 1.0);
+            playback.push(MIC_TEST, datagram, now, 1.0);
         }
         io.write(playback.render_48k());
         self.report(now);
@@ -499,11 +552,13 @@ impl Worker {
         if let Some((device, capture)) = input {
             let channels = device.stream.channels;
             loop {
-                let n = device.ring.pop_slice(input_buf);
+                // Whole interleaved frames only, so the channels stay aligned between pops.
+                let n = device.ring.occupied_len().min(input_buf.len());
                 let n = n - n % channels;
                 if n == 0 {
                     break;
                 }
+                let n = device.ring.pop_slice(&mut input_buf[..n]);
                 capture.push(&input_buf[..n], |d| {
                     Self::captured(&*self.events, transmitting, mic_test, d, &mut loopback);
                 });
@@ -511,9 +566,10 @@ impl Worker {
         }
         if let Some((device, playback)) = output {
             for datagram in loopback {
-                playback.push(MIC_TEST, &datagram, now, 1.0);
+                playback.push(MIC_TEST, datagram, now, 1.0);
             }
-            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize;
+            // Stereo samples: two per frame.
+            let target = (device.stream.rate as f64 * OUTPUT_TARGET.as_secs_f64()) as usize * 2;
             while device.ring.occupied_len() < target {
                 let samples = playback.render();
                 device.ring.push_slice(samples);
@@ -534,6 +590,7 @@ impl Worker {
             output,
             input_retry,
             output_retry,
+            sequence,
             ..
         } = &mut self.backend
         else {
@@ -549,6 +606,28 @@ impl Worker {
             *input = None;
             *input_retry = None;
         }
+        // The device someone chose came back: use it again instead of the fallback.
+        if self.device_check.elapsed() >= DEVICE_CHECK_EVERY {
+            self.device_check = Instant::now();
+            let wanted =
+                |name: &Option<String>| name.clone().filter(|n| !n.is_empty() && n != "default");
+            if let (Some(name), Some((device, _))) =
+                (wanted(&settings.input_device), input.as_ref())
+                && device.name() != name
+                && devices::find(Some(&name), true).is_ok()
+            {
+                *input = None;
+                *input_retry = None;
+            }
+            if let (Some(name), Some((device, _))) =
+                (wanted(&settings.output_device), output.as_ref())
+                && device.name() != name
+                && devices::find(Some(&name), false).is_ok()
+            {
+                *output = None;
+                *output_retry = None;
+            }
+        }
         if !wants_input {
             *input = None;
         } else if input.is_none() && input_retry.is_none_or(|t| t.elapsed() >= RETRY) {
@@ -559,7 +638,8 @@ impl Worker {
                         device.stream.channels,
                         &settings,
                         bitrate,
-                    );
+                    )
+                    .continuing(sequence.clone());
                     capture.gate.muted = mute;
                     capture.gate.set_ptt(ptt);
                     *input = Some((device, capture));
@@ -630,6 +710,7 @@ impl Worker {
                 speaking(playback, now),
             ),
         };
+        let gate_open = own;
         let own = own && self.transmitting && !self.self_mute;
         let changes: Vec<(Option<u16>, bool)> = std::iter::once((None, own))
             .chain(remote.into_iter().map(|(p, s)| (Some(p), s)))
@@ -644,7 +725,10 @@ impl Worker {
         }
         if self.meter && self.last_level.elapsed() >= LEVEL_INTERVAL {
             self.last_level = Instant::now();
-            (self.events)(AudioEvent::InputLevel(level));
+            (self.events)(AudioEvent::InputLevel {
+                db: level,
+                open: gate_open && !self.self_mute,
+            });
         }
     }
 }
@@ -658,8 +742,9 @@ fn speaking(playback: &Playback, now: f64) -> Vec<(u16, bool)> {
 }
 
 fn configure_playback(playback: &mut Playback, settings: &AudioSettings, deaf: bool) {
-    playback.output_volume = settings.output_volume.clamp(0.0, 2.0);
+    playback.output_volume = crate::volume_gain(settings.output_volume);
     playback.sounds_enabled = settings.sounds;
+    playback.set_ducking(settings.ducking_db);
     playback.sounds_volume = settings.sounds_volume;
     playback.deafened = deaf;
 }
@@ -751,6 +836,58 @@ mod tests {
         }
     }
 
+    /// The meter says whether the microphone would go through as the input mode decides: in
+    /// push-to-talk a loud tone is not "open" until the key is held, even outside a call.
+    #[test]
+    fn the_meter_follows_push_to_talk() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let engine = {
+            let events = events.clone();
+            Engine::start(
+                Io::Virtual(Box::new(Loop {
+                    phase: 0,
+                    recorded: Arc::new(Mutex::new(Vec::new())),
+                })),
+                AudioSettings {
+                    mode: crate::InputMode::PushToTalk,
+                    ptt_release_delay: Duration::ZERO,
+                    ..settings()
+                },
+                move |e| events.lock().unwrap().push(e),
+            )
+        };
+        let readings = |events: &Mutex<Vec<AudioEvent>>| -> Vec<(f32, bool)> {
+            std::mem::take(&mut *events.lock().unwrap())
+                .into_iter()
+                .filter_map(|e| match e {
+                    AudioEvent::InputLevel { db, open } => Some((db, open)),
+                    _ => None,
+                })
+                .collect()
+        };
+        engine.set_level_meter(true);
+        thread::sleep(Duration::from_millis(300));
+        let released = readings(&events);
+        assert!(
+            released.iter().any(|(db, _)| *db > -20.0),
+            "the tone is heard"
+        );
+        assert!(
+            released.iter().all(|(_, open)| !open),
+            "but not open: {released:?}"
+        );
+
+        engine.set_ptt(true);
+        thread::sleep(Duration::from_millis(100));
+        readings(&events);
+        thread::sleep(Duration::from_millis(200));
+        let held = readings(&events);
+        assert!(
+            !held.is_empty() && held.iter().all(|(_, open)| *open),
+            "{held:?}"
+        );
+    }
+
     #[test]
     fn virtual_engine_sends_receives_and_reports() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -788,7 +925,7 @@ mod tests {
             assert!(
                 events
                     .iter()
-                    .any(|e| matches!(e, AudioEvent::InputLevel(l) if *l > -20.0))
+                    .any(|e| matches!(e, AudioEvent::InputLevel { db, open: true } if *db > -20.0))
             );
         }
 

@@ -3,19 +3,21 @@
 //! event stream.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
+use std::fmt::{self, Write as _};
+use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use hermes_proto::api::{HistoryQuery, InstanceResponse, LoginRequest, RegisterRequest};
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
+use hermes_proto::markup;
 use hermes_proto::models::{Attachment, Invite, Message, PresenceStatus};
-use hermes_proto::{ErrorCode, PROTOCOL_VERSION};
+use hermes_proto::{ErrorCode, MIN_SERVER_PROTOCOL};
 use tokio::sync::{Notify, mpsc};
 use tokio::time::Instant;
 
@@ -24,6 +26,7 @@ use crate::config::{self, ClientConfig, ConfigError, ConfigPaths, InstanceEntry}
 use crate::gateway::{self, Command, ConnStatus, Gateway, GatewayEvent};
 use crate::known_hosts::KnownHosts;
 use crate::notify::{self, Notification};
+use crate::read_marks::LocalReadMarks;
 use crate::rest::{self, Rest};
 use crate::store::{
     Changed, HistoryAnchor, InstanceStore, LocalId, PAGE, PendingMessage, PendingState,
@@ -73,6 +76,8 @@ pub enum CoreEvent {
     },
     /// Something the user should see (failed background action).
     Error(String),
+    /// Something the user should know, that went fine.
+    Info(String),
     VoiceStatus(VoiceStatus),
     /// Someone in your voice room (you included) started or stopped speaking.
     Speaking {
@@ -80,8 +85,12 @@ pub enum CoreEvent {
         user: Id,
         speaking: bool,
     },
-    /// Microphone level in dBFS, 20 times a second while [`Core::set_level_meter`] is on.
-    InputLevel(f32),
+    /// Microphone level in dBFS, 50 times a second while [`Core::set_level_meter`] is on, and
+    /// whether the microphone would go through now (the input mode's gate is open).
+    InputLevel {
+        db: f32,
+        open: bool,
+    },
     /// Who shares their screen in your voice room changed, or your own share started or
     /// stopped ([`Core::screen_sharers`], [`Core::sharing_screen`]).
     ScreenShares,
@@ -106,9 +115,17 @@ pub enum CoreError {
         pinned: Fingerprint,
         now: Fingerprint,
     },
+    /// Reading or writing a file failed.
     Io(String),
     /// Joining or keeping voice failed.
     Voice(String),
+    /// Encrypting or decrypting failed, or it is not safe to send yet (a new device, keys not
+    /// shared with this device).
+    Encryption(String),
+    /// This instance has no account keys yet: not signed in, or still starting.
+    NotSignedIn,
+    /// Not done on purpose: too large a file, voice needed first.
+    Refused(String),
 }
 
 impl fmt::Display for CoreError {
@@ -120,13 +137,8 @@ impl fmt::Display for CoreError {
             CoreError::UnknownInstance(id) => write!(f, "no instance {id}"),
             CoreError::UnsupportedProtocol { server } => write!(
                 f,
-                "this server uses protocol version {server}, this client supports {PROTOCOL_VERSION}; \
-                 update the {} side",
-                if *server > PROTOCOL_VERSION {
-                    "client"
-                } else {
-                    "server"
-                }
+                "this server uses protocol version {server}, older than this client can talk to \
+                 ({MIN_SERVER_PROTOCOL}); the server needs an update"
             ),
             CoreError::UntrustedCertificate(fp) => write!(
                 f,
@@ -140,12 +152,23 @@ impl fmt::Display for CoreError {
                 pinned.colon_hex(),
                 now.colon_hex()
             ),
-            CoreError::Io(e) | CoreError::Voice(e) => f.write_str(e),
+            CoreError::Io(e)
+            | CoreError::Voice(e)
+            | CoreError::Encryption(e)
+            | CoreError::Refused(e) => f.write_str(e),
+            CoreError::NotSignedIn => f.write_str("Not signed in yet"),
         }
     }
 }
 
 impl std::error::Error for CoreError {}
+
+/// The text shown for an error: lets a front end that reports errors as text write `?`.
+impl From<CoreError> for String {
+    fn from(e: CoreError) -> String {
+        e.to_string()
+    }
+}
 
 impl From<rest::Error> for CoreError {
     fn from(e: rest::Error) -> Self {
@@ -209,6 +232,50 @@ impl Store {
     }
 }
 
+/// A read lock on the [`Store`] (see [`Core::store`]).
+pub struct StoreRef<'a>(RwLockReadGuard<'a, Store>);
+
+#[cfg(debug_assertions)]
+thread_local! {
+    /// Store read locks this thread holds.
+    static HELD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+impl StoreRef<'_> {
+    fn enter() {
+        Self::check_unlocked();
+        #[cfg(debug_assertions)]
+        HELD.with(|h| h.set(h.get() + 1));
+    }
+
+    /// Panics (debug builds) when this thread already holds a store lock: locking it again
+    /// can deadlock.
+    fn check_unlocked() {
+        #[cfg(debug_assertions)]
+        HELD.with(|h| {
+            assert!(
+                h.get() == 0,
+                "the store is locked again on a thread that already holds it; this can deadlock"
+            );
+        });
+    }
+}
+
+impl Deref for StoreRef<'_> {
+    type Target = Store;
+
+    fn deref(&self) -> &Store {
+        &self.0
+    }
+}
+
+impl Drop for StoreRef<'_> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        HELD.with(|h| h.set(h.get() - 1));
+    }
+}
+
 /// Options for [`Core::new`].
 pub struct CoreOptions {
     /// Sent in `identify` (`hermes-gui`, `hermes-tui`).
@@ -220,7 +287,13 @@ pub struct CoreOptions {
     pub user_volumes: UserVolumes,
     /// The audio devices, or a virtual device (voicebot, tests).
     pub audio: Io,
+    /// How long what the server said about a channel's keys is used before asking again.
+    /// [`DEFAULT_CHANNEL_STATE_MAX_AGE`] except in tests that wait it out.
+    pub channel_state_max_age: Duration,
 }
+
+/// [`CoreOptions::channel_state_max_age`] outside tests.
+pub const DEFAULT_CHANNEL_STATE_MAX_AGE: Duration = Duration::from_secs(15);
 
 impl fmt::Debug for CoreOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -246,6 +319,7 @@ impl CoreOptions {
             user_volumes: UserVolumes::load(&paths.user_volumes()),
             audio: Io::Devices,
             paths: Some(paths),
+            channel_state_max_age: DEFAULT_CHANNEL_STATE_MAX_AGE,
         })
     }
 
@@ -258,21 +332,53 @@ impl CoreOptions {
             known_hosts: KnownHosts::in_memory(),
             user_volumes: UserVolumes::in_memory(),
             audio: Io::Devices,
+            channel_state_max_age: DEFAULT_CHANNEL_STATE_MAX_AGE,
         }
     }
 }
 
+/// `StoreChanged` events in the stream that the UI has not received yet, per instance.
+type Unseen = Arc<Mutex<HashMap<InstanceId, HashSet<Changed>>>>;
+
 /// The event stream of a [`Core`].
+///
+/// A `StoreChanged` is not queued again while the same one (same instance and [`Changed`]) is
+/// still waiting in the stream and no other event (but `InputLevel`) was queued since: the UI
+/// reads the store when it handles the waiting one, after the later change was made, so it sees
+/// both, and the order relative to other events stays as emitted. This keeps bursts from
+/// piling up while the UI is busy (a burst of messages in one channel is one redraw, not
+/// hundreds).
 #[derive(Debug)]
-pub struct CoreEvents(mpsc::UnboundedReceiver<CoreEvent>);
+pub struct CoreEvents {
+    rx: mpsc::UnboundedReceiver<CoreEvent>,
+    unseen: Unseen,
+}
 
 impl CoreEvents {
     pub async fn recv(&mut self) -> Option<CoreEvent> {
-        self.0.recv().await
+        let event = self.rx.recv().await;
+        self.received(event)
     }
 
     pub fn try_recv(&mut self) -> Option<CoreEvent> {
-        self.0.try_recv().ok()
+        let event = self.rx.try_recv().ok();
+        self.received(event)
+    }
+
+    /// Lets the next identical `StoreChanged` through again. Runs before the UI sees the
+    /// event, so whatever it then reads from the store is at least as new as every change
+    /// whose event was folded into this one.
+    fn received(&self, event: Option<CoreEvent>) -> Option<CoreEvent> {
+        if let Some(CoreEvent::StoreChanged { inst, what }) = &event
+            && let Some(waiting) = self
+                .unseen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get_mut(inst.as_str())
+        {
+            waiting.remove(what);
+        }
+        event
     }
 }
 
@@ -280,7 +386,8 @@ impl futures_util::Stream for CoreEvents {
     type Item = CoreEvent;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<CoreEvent>> {
-        self.0.poll_recv(cx)
+        let event = std::task::ready!(self.rx.poll_recv(cx));
+        Poll::Ready(self.received(event))
     }
 }
 
@@ -290,16 +397,24 @@ struct Outbox {
     wake: Notify,
 }
 
+type HistoryRequests = HashMap<(Id, HistoryAnchor), tokio::sync::watch::Sender<Option<Result<()>>>>;
+
 #[derive(Debug)]
 struct InstanceHandle {
     username: String,
+    history: Mutex<HistoryRequests>,
     rest: Rest,
     gateway: Gateway,
     status: Mutex<ConnStatus>,
+    /// Since when the status has not been `Connected`; `None` while connected.
+    down_since: Mutex<Option<std::time::Instant>>,
     connected: tokio::sync::watch::Sender<bool>,
     outbox: Outbox,
-    /// channel → newest message to ack, waiting for the debounce.
+    /// channel → newest message to ack, waiting for the debounce or a reconnect after a failed
+    /// send.
     read_marks: Mutex<HashMap<Id, Id>>,
+    /// A send of the read marks is scheduled.
+    read_debounce: AtomicBool,
     typing_sent: Mutex<HashMap<Id, Instant>>,
 }
 
@@ -309,6 +424,10 @@ struct Focus {
     visible: HashSet<(InstanceId, Id)>,
 }
 
+/// This file takes every lock with `unwrap_or_else(PoisonError::into_inner)`, like the server:
+/// tokio keeps running after a task panics, and a lock that task held must not make every later
+/// call (and the UI reading the store) panic too. The state stays usable; at worst one update is
+/// half applied.
 pub(crate) struct Inner {
     client_name: String,
     paths: Option<ConfigPaths>,
@@ -318,11 +437,18 @@ pub(crate) struct Inner {
     store: RwLock<Store>,
     instances: Mutex<HashMap<InstanceId, Arc<InstanceHandle>>>,
     events: mpsc::UnboundedSender<CoreEvent>,
+    /// Shared with [`CoreEvents`].
+    unseen: Unseen,
     next_local: AtomicU64,
     focus: Mutex<Focus>,
     presence: Mutex<PresenceStatus>,
     watcher: Mutex<Option<::notify::RecommendedWatcher>>,
     pub(crate) voice: Voice,
+    pub(crate) accounts: crate::secure::Accounts,
+    /// What I have read, kept on this device while syncing read marks is off.
+    local_reads: Mutex<LocalReadMarks>,
+    /// [`CoreOptions::channel_state_max_age`], in milliseconds.
+    pub(crate) channel_state_max_age_ms: i64,
 }
 
 /// The client core. Cheap to clone. Must be created inside a tokio runtime.
@@ -337,6 +463,36 @@ impl fmt::Debug for Core {
     }
 }
 
+/// Sends the waiting read marks; a mark is dropped once the server has it, and kept (for the
+/// next reconnect) when sending failed.
+async fn send_read_marks(handle: &InstanceHandle) {
+    let marks: Vec<(Id, Id)> = handle
+        .read_marks
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(|(c, m)| (*c, *m))
+        .collect();
+    for (channel, message) in marks {
+        let done = match handle.rest.ack(channel, message).await {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::info!("ack {channel}: {err}");
+                // Not a network error: the message or channel is gone, no use trying again.
+                !err.is_network()
+            }
+        };
+        let mut marks = handle
+            .read_marks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // A newer mark that came meanwhile still waits.
+        if done && marks.get(&channel) == Some(&message) {
+            marks.remove(&channel);
+        }
+    }
+}
+
 /// Unix ms now.
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -344,12 +500,33 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| d.as_millis() as i64)
 }
 
+const fn presence_name(status: PresenceStatus) -> &'static str {
+    match status {
+        PresenceStatus::Online => "online",
+        PresenceStatus::Idle => "idle",
+        PresenceStatus::Dnd => "dnd",
+        PresenceStatus::Invisible => "invisible",
+    }
+}
+
+fn parse_presence(name: &str) -> PresenceStatus {
+    match name {
+        "idle" => PresenceStatus::Idle,
+        "dnd" => PresenceStatus::Dnd,
+        "invisible" => PresenceStatus::Invisible,
+        _ => PresenceStatus::Online,
+    }
+}
+
 /// A random UUID v4 string, used as the message nonce.
 pub fn uuid_v4() -> String {
     let mut b: [u8; 16] = rand::random();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
-    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    let hex: String = b.iter().fold(String::with_capacity(32), |mut hex, x| {
+        let _ = write!(hex, "{x:02x}");
+        hex
+    });
     format!(
         "{}-{}-{}-{}-{}",
         &hex[0..8],
@@ -362,9 +539,11 @@ pub fn uuid_v4() -> String {
 
 impl Core {
     pub fn new(config: ClientConfig, options: CoreOptions) -> (Core, CoreEvents) {
+        let presence = parse_presence(&config.general.presence);
         // rustls needs a process-wide provider for reqwest's internals.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let unseen = Unseen::default();
         let (audio_tx, audio_rx) = mpsc::unbounded_channel();
         let voice = Voice::new(
             options.audio,
@@ -372,8 +551,17 @@ impl Core {
             options.user_volumes,
             audio_tx,
         );
+        let local_reads = options
+            .paths
+            .as_ref()
+            .map_or_else(LocalReadMarks::in_memory, |p| {
+                LocalReadMarks::load(&p.read_marks())
+            });
         let core = Core {
             inner: Arc::new(Inner {
+                local_reads: Mutex::new(local_reads),
+                channel_state_max_age_ms: i64::try_from(options.channel_state_max_age.as_millis())
+                    .unwrap_or(i64::MAX),
                 client_name: options.client_name,
                 paths: options.paths,
                 config: RwLock::new(config),
@@ -382,19 +570,21 @@ impl Core {
                 store: RwLock::new(Store::default()),
                 instances: Mutex::new(HashMap::new()),
                 events: tx,
+                unseen: unseen.clone(),
                 next_local: AtomicU64::new(1),
                 focus: Mutex::new(Focus {
                     app_focused: true,
                     visible: HashSet::new(),
                 }),
-                presence: Mutex::new(PresenceStatus::Online),
+                presence: Mutex::new(presence),
                 watcher: Mutex::new(None),
                 voice,
+                accounts: Mutex::default(),
             }),
         };
         core.spawn_ticker();
         core.spawn_audio_events(audio_rx);
-        (core, CoreEvents(rx))
+        (core, CoreEvents { rx, unseen })
     }
 
     /// Engine events (speaking, levels, devices) into core events. Holds the core weakly.
@@ -411,30 +601,99 @@ impl Core {
     }
 
     pub(crate) fn emit(&self, event: CoreEvent) {
-        let _ = self.inner.events.send(event);
-    }
-
-    fn changed(&self, inst: &str, what: impl IntoIterator<Item = Changed>) {
-        for what in what {
-            self.emit(CoreEvent::StoreChanged {
-                inst: inst.to_owned(),
-                what,
-            });
+        match event {
+            CoreEvent::StoreChanged { inst, what } => self.changed(&inst, [what]),
+            // A meter reading says nothing about the store, so changes fold across it.
+            event @ CoreEvent::InputLevel { .. } => {
+                let _ = self.inner.events.send(event);
+            }
+            event => {
+                // Changes after this event are reported after it, never folded into one
+                // before it (`Changed::All` after `LoggedOut` must come after it).
+                let mut unseen = self
+                    .inner
+                    .unseen
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                unseen.clear();
+                let _ = self.inner.events.send(event);
+            }
         }
     }
 
-    /// Read access to every instance's state. Do not hold it across an `.await`.
-    pub fn store(&self) -> RwLockReadGuard<'_, Store> {
-        self.inner.store.read().expect("store lock")
+    pub(crate) fn tokens(&self) -> &TokenStore {
+        &self.inner.tokens
     }
 
-    fn with_store<T>(&self, inst: &str, f: impl FnOnce(&mut InstanceStore) -> T) -> Option<T> {
-        let mut store = self.inner.store.write().expect("store lock");
+    /// Emits `StoreChanged` for each `what`, unless the same one is still waiting in the
+    /// stream (see [`CoreEvents`]). Call it after changing the store.
+    pub(crate) fn changed(&self, inst: &str, what: impl IntoIterator<Item = Changed>) {
+        let mut unseen = self
+            .inner
+            .unseen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for what in what {
+            let fresh = match unseen.get_mut(inst) {
+                Some(waiting) => waiting.insert(what),
+                None => {
+                    unseen.insert(inst.to_owned(), HashSet::from([what]));
+                    true
+                }
+            };
+            if fresh {
+                let _ = self.inner.events.send(CoreEvent::StoreChanged {
+                    inst: inst.to_owned(),
+                    what,
+                });
+            }
+        }
+    }
+
+    /// Whether notifications are on, without cloning the whole config (once per message).
+    fn notifications_enabled(&self) -> bool {
+        self.inner
+            .config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .notifications
+            .enabled
+    }
+
+    /// Read access to every instance's state. Do not hold it across an `.await`, and do not
+    /// call `store()` (or anything that locks the store) while holding it: the lock lets
+    /// waiting writers go first, so a second read on the same thread waits for a writer that
+    /// waits for the first read, and the thread hangs. Debug builds panic on that instead.
+    pub fn store(&self) -> StoreRef<'_> {
+        StoreRef::enter();
+        StoreRef(
+            self.inner
+                .store
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    pub(crate) fn with_store<T>(
+        &self,
+        inst: &str,
+        f: impl FnOnce(&mut InstanceStore) -> T,
+    ) -> Option<T> {
+        StoreRef::check_unlocked();
+        let mut store = self
+            .inner
+            .store
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         store.instances.get_mut(inst).map(f)
     }
 
     pub fn config(&self) -> ClientConfig {
-        self.inner.config.read().expect("config lock").clone()
+        self.inner
+            .config
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     pub fn paths(&self) -> Option<&ConfigPaths> {
@@ -449,10 +708,28 @@ impl Core {
         Ok(())
     }
 
-    /// Changes one setting (`:set buffer.group_minutes 10`) and writes `config.toml`.
+    /// Changes the config in code (`|c| c.buffer.compact = true`) and writes `config.toml`.
+    /// Comments and unknown keys in the file stay as they were.
+    pub fn update_config(&self, change: impl FnOnce(&mut ClientConfig)) -> Result<()> {
+        change(
+            &mut self
+                .inner
+                .config
+                .write()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        self.save_config()
+    }
+
+    /// Changes one setting given as text (`:set buffer.group_minutes 10`, the TUI) and writes
+    /// `config.toml`. Code that knows the setting uses [`Core::update_config`].
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         let new = config::set_value(&self.config(), key, value)?;
-        *self.inner.config.write().expect("config lock") = new;
+        *self
+            .inner
+            .config
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = new;
         self.save_config()
     }
 
@@ -464,13 +741,21 @@ impl Core {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let watcher =
             config::watch(paths.config(), tx).map_err(|e| CoreError::Io(e.to_string()))?;
-        *self.inner.watcher.lock().expect("watcher lock") = Some(watcher);
+        *self
+            .inner
+            .watcher
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(watcher);
         let core = self.clone();
         tokio::spawn(async move {
             while let Some(result) = rx.recv().await {
                 match result {
                     Ok(loaded) => {
-                        *core.inner.config.write().expect("config lock") = loaded.config;
+                        *core
+                            .inner
+                            .config
+                            .write()
+                            .unwrap_or_else(PoisonError::into_inner) = loaded.config;
                         core.apply_audio_settings();
                         core.emit(CoreEvent::ConfigReloaded {
                             warnings: loaded.warnings,
@@ -485,21 +770,46 @@ impl Core {
 
     // ---- instances ------------------------------------------------------------------------
 
+    /// Signed-in usernames by host, for scoping desktop media caches.
+    pub fn connected_accounts(&self) -> HashMap<InstanceId, String> {
+        self.inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(host, handle)| (host.clone(), handle.username.clone()))
+            .collect()
+    }
+
     pub fn instance_ids(&self) -> Vec<InstanceId> {
         self.config().instances.into_iter().map(|i| i.id).collect()
     }
 
     pub fn status(&self, inst: &str) -> ConnStatus {
         self.handle(inst).map_or(ConnStatus::LoggedOut, |h| {
-            h.status.lock().expect("status").clone()
+            h.status
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
         })
+    }
+
+    /// How long `inst` has not been connected; `None` while it is (or when it is unknown). A
+    /// short blip, such as resuming, can be told apart from a real outage with it.
+    pub fn down_for(&self, inst: &str) -> Option<std::time::Duration> {
+        let handle = self.handle(inst)?;
+        let since = *handle
+            .down_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        since.map(|at| at.elapsed())
     }
 
     fn handle(&self, inst: &str) -> Option<Arc<InstanceHandle>> {
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(inst)
             .cloned()
     }
@@ -519,7 +829,7 @@ impl Core {
             .inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host)
         {
             Some(fp) => Trust::Pinned(fp),
@@ -534,18 +844,69 @@ impl Core {
             if !entry.autoconnect {
                 continue;
             }
-            match self.inner.tokens.get(&entry.id, &entry.username) {
-                Some(token) => {
-                    if let Err(err) = self.connect(&entry, &token) {
-                        self.emit(CoreEvent::Error(format!("{}: {err}", entry.id)));
-                    }
-                }
-                None => self.emit(CoreEvent::InstanceStatus {
-                    inst: entry.id.clone(),
-                    status: ConnStatus::LoggedOut,
-                }),
-            }
+            self.start_saved(&entry);
         }
+    }
+
+    fn start_saved(&self, entry: &InstanceEntry) {
+        match self.inner.tokens.get(&entry.id, &entry.username) {
+            Some(token) => {
+                if self.handle(&entry.id).is_some()
+                    || self.config().instance(&entry.id) != Some(entry)
+                {
+                    return;
+                }
+                if let Err(err) = self.connect(entry, &token) {
+                    self.emit(CoreEvent::Error(format!("{}: {err}", entry.id)));
+                }
+            }
+            None => self.emit(CoreEvent::InstanceStatus {
+                inst: entry.id.clone(),
+                status: ConnStatus::LoggedOut,
+            }),
+        }
+    }
+
+    /// Begin credential lookups on blocking workers. A launch link can await just its host.
+    pub fn start_desktop_accounts(
+        &self,
+        preferred: Option<InstanceId>,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        use futures_util::StreamExt;
+        let mut entries = self.config().instances;
+        entries.retain(|entry| entry.autoconnect);
+        entries.sort_by_key(|entry| Some(&entry.id) != preferred.as_ref());
+        let (ready, receiver) = tokio::sync::oneshot::channel();
+        let mut ready = Some(ready);
+        let jobs: Vec<_> = entries
+            .into_iter()
+            .map(|entry| {
+                let signal = if Some(&entry.id) == preferred.as_ref() {
+                    ready.take()
+                } else {
+                    None
+                };
+                (entry, signal)
+            })
+            .collect();
+        drop(ready);
+        let core = self.clone();
+        tokio::spawn(async move {
+            futures_util::stream::iter(jobs)
+                .for_each_concurrent(2, |(entry, signal)| {
+                    let core = core.clone();
+                    async move {
+                        let setup =
+                            tokio::task::spawn_blocking(move || core.start_saved(&entry)).await;
+                        if let Err(err) = setup {
+                            tracing::error!("saved account setup failed: {err}");
+                        }
+                        drop(signal);
+                    }
+                })
+                .await;
+        });
+        receiver
     }
 
     /// `GET /instance` plus the certificate, before adding an instance.
@@ -559,19 +920,9 @@ impl Core {
         let seen = recorder
             .seen()
             .ok_or_else(|| CoreError::Io("no certificate seen".into()))?;
-        let pinned = self
-            .inner
-            .known_hosts
-            .lock()
-            .expect("known hosts")
-            .get(host);
-        let cert = match pinned {
-            Some(p) if p == seen.fingerprint => CertStatus::Pinned,
-            Some(pinned) => CertStatus::Changed { pinned },
-            None if seen.ca_valid => CertStatus::Trusted,
-            None => CertStatus::Unknown,
-        };
-        if info.protocol_version != PROTOCOL_VERSION {
+        let cert = self.cert_status(host, &seen);
+        // A newer server is fine: what it adds is announced in `features` and skipped here.
+        if info.protocol_version < MIN_SERVER_PROTOCOL {
             return Err(CoreError::UnsupportedProtocol {
                 server: info.protocol_version,
             });
@@ -584,13 +935,33 @@ impl Core {
         })
     }
 
+    /// How the certificate `seen` at `host` compares with what this client trusts for it.
+    pub(crate) fn cert_status(
+        &self,
+        host: &HostPort,
+        seen: &crate::tls::SeenCertificate,
+    ) -> CertStatus {
+        let pinned = self
+            .inner
+            .known_hosts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(host);
+        match pinned {
+            Some(p) if p == seen.fingerprint => CertStatus::Pinned,
+            Some(pinned) => CertStatus::Changed { pinned },
+            None if seen.ca_valid => CertStatus::Trusted,
+            None => CertStatus::Unknown,
+        }
+    }
+
     /// Pins a fingerprint for a host (trust on first use, an invite's `#fp=`, or "I re-generated
     /// the certificate").
     pub fn trust_fingerprint(&self, host: &HostPort, fingerprint: Fingerprint) -> Result<()> {
         self.inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .trust(host, fingerprint)?;
         Ok(())
     }
@@ -610,7 +981,11 @@ impl Core {
             .instances
             .iter()
             .any(|i| i.url.authority() == host.authority());
-        let mut known = self.inner.known_hosts.lock().expect("known hosts");
+        let mut known = self
+            .inner
+            .known_hosts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if added || known.get(host).is_some() {
             return Ok(false);
         }
@@ -641,6 +1016,17 @@ impl Core {
         username: &str,
         password: &str,
     ) -> Result<InstanceId> {
+        self.login_with_code(host, username, password, None).await
+    }
+
+    /// [`Core::login`] with the code of an account that has two-factor login.
+    pub async fn login_with_code(
+        &self,
+        host: &HostPort,
+        username: &str,
+        password: &str,
+        totp: Option<&str>,
+    ) -> Result<InstanceId> {
         self.check_trusted(host).await?;
         let rest = Rest::new(host, self.trust(host))?;
         let res = rest
@@ -648,6 +1034,7 @@ impl Core {
                 username: username.into(),
                 password: password.into(),
                 device_name: self.device_name(),
+                totp: totp.map(str::to_owned),
             })
             .await?;
         self.signed_in(host, &res.user.user.username, &res.token)
@@ -693,12 +1080,10 @@ impl Core {
             username: username.to_owned(),
             autoconnect: true,
         };
-        {
-            let mut config = self.inner.config.write().expect("config lock");
+        self.update_config(|config| {
             config.instances.retain(|i| i.id != id);
             config.instances.push(entry.clone());
-        }
-        self.save_config()?;
+        })?;
         self.connect(&entry, token)?;
         Ok(id)
     }
@@ -715,30 +1100,37 @@ impl Core {
             gateway::client_info(&self.inner.client_name),
             tx,
         );
-        let presence = *self.inner.presence.lock().expect("presence");
+        let presence = *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if presence != PresenceStatus::Online {
             gateway.send(Command::Presence(presence));
         }
         let (connected, _) = tokio::sync::watch::channel(false);
         let handle = Arc::new(InstanceHandle {
             username: entry.username.clone(),
+            history: Mutex::default(),
             rest,
             gateway,
             status: Mutex::new(ConnStatus::Connecting),
+            down_since: Mutex::new(Some(std::time::Instant::now())),
             connected,
             outbox: Outbox::default(),
             read_marks: Mutex::new(HashMap::new()),
+            read_debounce: AtomicBool::new(false),
             typing_sent: Mutex::new(HashMap::new()),
         });
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(entry.id.clone(), handle.clone());
         self.inner
             .store
             .write()
-            .expect("store lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .instances
             .entry(entry.id.clone())
             .or_default();
@@ -751,7 +1143,12 @@ impl Core {
     /// instance stays in the config so signing in again is quick.
     pub async fn logout(&self, inst: &str) -> Result<()> {
         let handle = self.handle_or_err(inst)?;
-        let _ = handle.rest.logout().await;
+        if let Err(err) = handle.rest.logout().await {
+            self.emit(CoreEvent::Error(format!(
+                "Signed out here, but the server could not be told ({err}). End this session \
+                 from another device if it matters."
+            )));
+        }
         self.disconnect(inst, &handle);
         Ok(())
     }
@@ -762,12 +1159,12 @@ impl Core {
         self.inner
             .instances
             .lock()
-            .expect("instances lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .remove(inst);
         self.inner
             .store
             .write()
-            .expect("store lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .instances
             .remove(inst);
         self.emit(CoreEvent::InstanceStatus {
@@ -782,13 +1179,36 @@ impl Core {
         if self.handle(inst).is_some() {
             self.logout(inst).await?;
         }
-        self.inner
-            .config
-            .write()
-            .expect("config lock")
-            .instances
-            .retain(|i| i.id != inst);
-        self.save_config()
+        self.wipe_local_keys(inst);
+        self.update_config(|config| config.instances.retain(|i| i.id != inst))
+    }
+
+    /// Asks who I have blocked: the server does not put that in `ready`.
+    fn spawn_blocks(&self, inst: &str) {
+        let core = self.clone();
+        let inst = inst.to_owned();
+        tokio::spawn(async move {
+            if let Ok(rest) = core.rest(&inst)
+                && let Ok(list) = rest.blocks().await
+            {
+                core.with_store(&inst, |s| s.blocked = list.into_iter().collect());
+                core.changed(&inst, [Changed::Users]);
+            }
+            core.load_local_names(&inst);
+            core.resend_outbox(&inst);
+        });
+    }
+
+    /// I blocked or unblocked someone: their messages show accordingly at once.
+    pub fn set_blocked(&self, inst: &str, user: Id, blocked: bool) {
+        self.with_store(inst, |s| {
+            if blocked {
+                s.blocked.insert(user);
+            } else {
+                s.blocked.remove(&user);
+            }
+        });
+        self.changed(inst, [Changed::Users]);
     }
 
     /// Goes offline (keeping the session to resume) or back online.
@@ -804,14 +1224,37 @@ impl Core {
 
     /// Changes my presence on every instance.
     pub fn set_presence(&self, status: PresenceStatus) {
-        *self.inner.presence.lock().expect("presence") = status;
-        for handle in self.inner.instances.lock().expect("instances").values() {
+        self.set_presence_for_now(status);
+        // Whoever goes invisible stays invisible after a restart.
+        if let Err(err) = self.set_setting("general.presence", presence_name(status)) {
+            tracing::warn!("presence not saved: {err}");
+        }
+    }
+
+    /// Changes my presence without making it the status chosen: going idle by itself.
+    pub fn set_presence_for_now(&self, status: PresenceStatus) {
+        *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = status;
+        for handle in self
+            .inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+        {
             handle.gateway.send(Command::Presence(status));
         }
     }
 
     pub fn presence(&self) -> PresenceStatus {
-        *self.inner.presence.lock().expect("presence")
+        *self
+            .inner
+            .presence
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The web invite link for `code`, with `#fp=` when the instance's certificate is pinned.
@@ -822,7 +1265,7 @@ impl Core {
             .inner
             .known_hosts
             .lock()
-            .expect("known hosts")
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host)
             .map_or_else(String::new, |fp| format!("#fp={fp}"));
         Some(format!("{}/invite/{code}{fragment}", host.url()))
@@ -862,7 +1305,18 @@ impl Core {
             }
             match event {
                 GatewayEvent::Status(status) => {
-                    *handle.status.lock().expect("status") = status.clone();
+                    *handle.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
+                    {
+                        let mut since = handle
+                            .down_since
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if status == ConnStatus::Connected {
+                            *since = None;
+                        } else if since.is_none() {
+                            *since = Some(std::time::Instant::now());
+                        }
+                    }
                     let _ = handle.connected.send(status == ConnStatus::Connected);
                     if status == ConnStatus::Connected {
                         handle.outbox.wake.notify_one();
@@ -883,7 +1337,10 @@ impl Core {
                         .map(|s| s.space.id)
                         .collect();
                     self.with_store(&inst, |s| s.apply_ready(*ready));
+                    self.restore_read_marks(&inst, &handle);
                     self.changed(&inst, [Changed::All]);
+                    self.publish_device(&inst);
+                    self.spawn_blocks(&inst);
                     for space in spaces {
                         self.spawn_members(&inst, space);
                     }
@@ -899,8 +1356,47 @@ impl Core {
                         });
                     }
                 }
-                GatewayEvent::Resumed => {}
-                GatewayEvent::Dispatch(event) => self.dispatch(&inst, *event),
+                GatewayEvent::Resumed => {
+                    // Marks that failed while the connection was down.
+                    let handle = handle.clone();
+                    tokio::spawn(async move { send_read_marks(&handle).await });
+                }
+                GatewayEvent::Dispatch(mut event) => {
+                    match event.as_mut() {
+                        // Opened here, in order, so nothing else ever sees the sealed form.
+                        ServerEvent::MessageCreate(m) | ServerEvent::MessageUpdate(m) => {
+                            self.open_message(&inst, m).await;
+                        }
+                        ServerEvent::DevicesUpdate { user_id, devices } => {
+                            self.devices_changed(&inst, *user_id, std::mem::take(devices));
+                        }
+                        ServerEvent::MessageDelete { id, .. } => {
+                            self.index_remove(&inst, *id);
+                        }
+                        ServerEvent::MessageDeleteBulk { ids, .. } => {
+                            for id in ids.iter() {
+                                self.index_remove(&inst, *id);
+                            }
+                        }
+                        ServerEvent::ChannelKeyRequest(request) => {
+                            self.key_requested(&inst, request.clone());
+                        }
+                        ServerEvent::ChannelKeysDelivered { channel_id } => {
+                            self.keys_delivered(&inst, *channel_id);
+                        }
+                        ServerEvent::ChannelKeyEpoch { channel_id, .. } => {
+                            self.key_epoch_changed(&inst, *channel_id);
+                        }
+                        ServerEvent::ReactionAdd(reaction)
+                        | ServerEvent::ReactionRemove(reaction) => {
+                            if !self.open_reaction_event(&inst, reaction) {
+                                continue;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.dispatch(&inst, *event);
+                }
             }
         }
     }
@@ -925,16 +1421,21 @@ impl Core {
             }
             _ => {}
         }
+        // The store takes the event: keep what the notification checks need, only when they run.
+        let notify = self.notifications_enabled();
         let message = match &event {
-            ServerEvent::MessageCreate(m) => Some(m.clone()),
+            ServerEvent::MessageCreate(m) if notify => Some(m.clone()),
             _ => None,
         };
         // A message request notifies once, when it first arrives.
         let request = match &event {
-            ServerEvent::DmCreate(dm) if dm.request => self
-                .with_store(inst, |s| !s.dms.get(&dm.id).is_some_and(|d| d.request))
-                .unwrap_or(false)
-                .then(|| dm.clone()),
+            ServerEvent::DmCreate(dm) if dm.request && notify => {
+                let first = self
+                    .store()
+                    .instance(inst)
+                    .is_some_and(|s| !s.dms.get(&dm.id).is_some_and(|d| d.request));
+                first.then(|| dm.clone())
+            }
             _ => None,
         };
         let Some(changed) = self.with_store(inst, |s| s.apply(event, now)) else {
@@ -944,9 +1445,7 @@ impl Core {
         if let Some(message) = message {
             self.maybe_notify(inst, &message, now);
         }
-        if let Some(dm) = request
-            && self.config().notifications.enabled
-        {
+        if let Some(dm) = request {
             let notification = {
                 let store = self.store();
                 store
@@ -962,23 +1461,34 @@ impl Core {
         }
     }
 
+    /// Only called while notifications are on.
     fn maybe_notify(&self, inst: &str, message: &Message, now: i64) {
-        if !self.config().notifications.enabled {
-            return;
-        }
         let focused = {
-            let focus = self.inner.focus.lock().expect("focus");
+            let focus = self
+                .inner
+                .focus
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             focus.app_focused
                 && focus
                     .visible
-                    .contains(&(inst.to_owned(), message.channel_id))
+                    .iter()
+                    .any(|(i, c)| i == inst && *c == message.channel_id)
         };
         let presence = self.presence();
         let store = self.store();
         let Some(s) = store.instance(inst) else {
             return;
         };
-        if let Some(notification) = notify::check(s, message, focused, presence, now) {
+        let rules = self.config().notifications;
+        let offset = crate::time::local_offset_secs();
+        let minute = ((now / 1000 + offset).rem_euclid(86_400) / 60) as u32;
+        if notify::quiet(&rules.quiet_from, &rules.quiet_to, minute) {
+            return;
+        }
+        let keyword = notify::has_keyword(&rules.keywords, &message.content);
+        if let Some(notification) = notify::check_with(s, message, focused, presence, now, keyword)
+        {
             drop(store);
             self.emit(CoreEvent::Notification {
                 inst: inst.to_owned(),
@@ -1012,25 +1522,37 @@ impl Core {
         let now = now_ms();
         let visible: HashSet<_> = channels.into_iter().collect();
         {
-            let mut store = self.inner.store.write().expect("store lock");
+            let mut store = self
+                .inner
+                .store
+                .write()
+                .unwrap_or_else(PoisonError::into_inner);
             for (inst, channel) in &visible {
                 if let Some(s) = store.instances.get_mut(inst) {
                     s.window_mut(*channel).last_viewed = now;
                 }
             }
         }
-        self.inner.focus.lock().expect("focus").visible = visible;
+        self.inner
+            .focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .visible = visible;
     }
 
     pub fn set_app_focused(&self, focused: bool) {
-        self.inner.focus.lock().expect("focus").app_focused = focused;
+        self.inner
+            .focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .app_focused = focused;
     }
 
     fn visible_channels(&self, inst: &str) -> Vec<Id> {
         self.inner
             .focus
             .lock()
-            .expect("focus")
+            .unwrap_or_else(PoisonError::into_inner)
             .visible
             .iter()
             .filter(|(i, _)| i == inst)
@@ -1057,7 +1579,58 @@ impl Core {
     // ---- messages -------------------------------------------------------------------------
 
     pub async fn load_history(&self, inst: &str, channel: Id, anchor: HistoryAnchor) -> Result<()> {
-        let rest = self.rest(inst)?;
+        let handle = self.handle_or_err(inst)?;
+        let key = (channel, anchor);
+        let mut result = {
+            let mut active = handle
+                .history
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some(sender) = active.get(&key) {
+                sender.subscribe()
+            } else {
+                let (sender, receiver) = tokio::sync::watch::channel(None);
+                active.insert(key, sender);
+                let core = self.clone();
+                let handle = handle.clone();
+                let inst = inst.to_owned();
+                tokio::spawn(async move {
+                    use futures_util::FutureExt as _;
+                    // A panic still ends the request, or every later load of it would wait forever.
+                    let fetched = std::panic::AssertUnwindSafe(
+                        core.fetch_history(&inst, &handle, channel, anchor),
+                    )
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| Err(CoreError::Io("loading history failed".into())));
+                    if let Some(sender) = handle
+                        .history
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&key)
+                    {
+                        sender.send_replace(Some(fetched));
+                    }
+                });
+                receiver
+            }
+        };
+        result
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|e| CoreError::Io(e.to_string()))?
+            .clone()
+            .unwrap()
+    }
+
+    async fn fetch_history(
+        &self,
+        inst: &str,
+        handle: &Arc<InstanceHandle>,
+        channel: Id,
+        anchor: HistoryAnchor,
+    ) -> Result<()> {
+        let rest = &handle.rest;
         let mut query = HistoryQuery {
             limit: Some(PAGE),
             ..HistoryQuery::default()
@@ -1068,7 +1641,14 @@ impl Core {
             HistoryAnchor::After(id) => query.after = Some(id),
             HistoryAnchor::Around(id) => query.around = Some(id),
         }
-        let page = rest.messages(channel, &query).await?;
+        let mut page = rest.messages(channel, &query).await?;
+        self.open_messages(inst, &mut page).await;
+        if !self
+            .handle(inst)
+            .is_some_and(|current| Arc::ptr_eq(&current, handle))
+        {
+            return Err(CoreError::NotSignedIn);
+        }
         self.with_store(inst, |s| s.merge_history(channel, anchor, page, PAGE));
         self.changed(inst, [Changed::Messages(channel)]);
         Ok(())
@@ -1079,7 +1659,12 @@ impl Core {
     pub fn send_message(&self, inst: &str, channel: Id, draft: Draft) -> Result<LocalId> {
         let handle = self.handle_or_err(inst)?;
         let local_id = self.inner.next_local.fetch_add(1, Ordering::Relaxed);
-        let queued = handle.outbox.queue.lock().expect("outbox").len();
+        let queued = handle
+            .outbox
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         let state = if queued >= MAX_QUEUED {
             PendingState::Failed("Too many unsent messages".into())
         } else if *handle.connected.borrow() {
@@ -1105,7 +1690,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .push_back((channel, local_id));
             handle.outbox.wake.notify_one();
         }
@@ -1125,7 +1710,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .push_back((channel, local_id));
             handle.outbox.wake.notify_one();
             self.changed(inst, [Changed::Messages(channel)]);
@@ -1140,7 +1725,7 @@ impl Core {
                 .outbox
                 .queue
                 .lock()
-                .expect("outbox")
+                .unwrap_or_else(PoisonError::into_inner)
                 .retain(|&(_, id)| id != local_id);
         }
         self.with_store(inst, |s| s.remove_pending(channel, local_id));
@@ -1159,6 +1744,8 @@ impl Core {
     /// Sends queued messages one at a time, in order, while connected.
     async fn outbox(self, inst: InstanceId, handle: Arc<InstanceHandle>) {
         let mut connected = handle.connected.subscribe();
+        // Times in a row the channel had a newer key than the message was sealed with.
+        let mut conflicts = 0u8;
         loop {
             // Stop when the instance was removed or replaced.
             if !self.handle(&inst).is_some_and(|h| Arc::ptr_eq(&h, &handle)) {
@@ -1171,7 +1758,12 @@ impl Core {
                 }
                 continue;
             }
-            let next = handle.outbox.queue.lock().expect("outbox").pop_front();
+            let next = handle
+                .outbox
+                .queue
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop_front();
             let Some((channel, local_id)) = next else {
                 tokio::select! {
                     () = handle.outbox.wake.notified() => {}
@@ -1182,20 +1774,76 @@ impl Core {
             let request = self.with_store(&inst, |s| {
                 s.pending_mut(channel, local_id).map(|p| {
                     p.state = PendingState::Sending;
-                    hermes_proto::api::SendMessageRequest {
-                        content: p.content.clone(),
-                        nonce: p.nonce.clone(),
-                        reply_to_id: p.reply_to,
-                        attachment_ids: p.attachments.iter().map(|a| a.id).collect(),
-                    }
+                    (
+                        hermes_proto::api::SendMessageRequest {
+                            content: p.content.clone(),
+                            nonce: p.nonce.clone(),
+                            reply_to_id: p.reply_to,
+                            attachment_ids: p
+                                .attachments
+                                .iter()
+                                .flat_map(|a| {
+                                    let thumb = a.sealed.as_ref().and_then(|s| s.thumb.as_ref());
+                                    std::iter::once(a.id).chain(thumb.map(|t| t.id))
+                                })
+                                .collect(),
+                            e2ee: None,
+                            mentions: None,
+                        },
+                        p.attachments.clone(),
+                    )
                 })
             });
-            let Some(Some(request)) = request else {
+            let Some(Some((mut request, attachments))) = request else {
                 continue; // discarded meanwhile
             };
             self.changed(&inst, [Changed::Messages(channel)]);
+            // What is encrypted here leaves this device sealed, or not at all.
+            if self.channel_is_encrypted(&inst, channel) {
+                match self
+                    .seal(
+                        &inst,
+                        channel,
+                        &request.content,
+                        &attachments,
+                        request.reply_to_id,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(envelope) => {
+                        if !self.channel_is_private(&inst, channel) {
+                            request.mentions = Some(markup::extract_mentions(&request.content));
+                        }
+                        request.content.clear();
+                        request.e2ee = Some(envelope);
+                    }
+                    Err(CoreError::Rest(err)) if err.is_network() => {
+                        handle
+                            .outbox
+                            .queue
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push_front((channel, local_id));
+                        self.set_pending_state(&inst, channel, local_id, PendingState::Queued);
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                    Err(err) => {
+                        self.set_pending_state(
+                            &inst,
+                            channel,
+                            local_id,
+                            PendingState::Failed(err.to_string()),
+                        );
+                        continue;
+                    }
+                }
+            }
             match handle.rest.send_message(channel, &request).await {
-                Ok(message) => {
+                Ok(mut message) => {
+                    conflicts = 0;
+                    self.open_message(&inst, &mut message).await;
                     let id = message.id;
                     self.with_store(&inst, |s| s.resolve_pending(local_id, message));
                     self.changed(
@@ -1204,12 +1852,28 @@ impl Core {
                     );
                     self.mark_read(&inst, channel, id);
                 }
+                // The channel moved to a newer key meanwhile: sealed again under that one.
+                Err(rest::Error::Api(err))
+                    if err.code == ErrorCode::Conflict
+                        && request.e2ee.is_some()
+                        && conflicts < 3 =>
+                {
+                    conflicts += 1;
+                    self.key_epoch_changed(&inst, channel);
+                    handle
+                        .outbox
+                        .queue
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push_front((channel, local_id));
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
                 Err(rest::Error::Api(err)) if err.code == ErrorCode::RateLimited => {
                     handle
                         .outbox
                         .queue
                         .lock()
-                        .expect("outbox")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .push_front((channel, local_id));
                     let wait = err.retry_after_ms.unwrap_or(1000).clamp(100, 60_000);
                     tokio::time::sleep(Duration::from_millis(wait)).await;
@@ -1219,7 +1883,7 @@ impl Core {
                         .outbox
                         .queue
                         .lock()
-                        .expect("outbox")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .push_front((channel, local_id));
                     self.set_pending_state(&inst, channel, local_id, PendingState::Queued);
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1243,10 +1907,46 @@ impl Core {
         message: Id,
         content: &str,
     ) -> Result<()> {
-        let updated = self
+        let request = if self.channel_is_encrypted(inst, channel) {
+            let (attachments, reply_to) = {
+                let store = self.store();
+                let found = store
+                    .instance(inst)
+                    .and_then(|s| s.window(channel))
+                    .and_then(|w| w.messages.iter().find(|m| m.id == message));
+                (
+                    found.map(|m| m.attachments.clone()).unwrap_or_default(),
+                    found.and_then(|m| m.reply_to.as_ref().map(|r| r.id)),
+                )
+            };
+            let envelope = self
+                .seal(
+                    inst,
+                    channel,
+                    content,
+                    &attachments,
+                    reply_to,
+                    Some(message),
+                )
+                .await?;
+            hermes_proto::api::EditMessageRequest {
+                content: String::new(),
+                e2ee: Some(envelope),
+                mentions: (!self.channel_is_private(inst, channel))
+                    .then(|| markup::extract_mentions(content)),
+            }
+        } else {
+            hermes_proto::api::EditMessageRequest {
+                content: content.to_owned(),
+                e2ee: None,
+                mentions: None,
+            }
+        };
+        let mut updated = self
             .rest(inst)?
-            .edit_message(channel, message, content)
+            .edit_message(channel, message, &request)
             .await?;
+        self.open_message(inst, &mut updated).await;
         let changed = self.with_store(inst, |s| {
             s.apply(ServerEvent::MessageUpdate(updated), now_ms())
         });
@@ -1256,6 +1956,7 @@ impl Core {
 
     pub async fn delete_message(&self, inst: &str, channel: Id, message: Id) -> Result<()> {
         self.rest(inst)?.delete_message(channel, message).await?;
+        self.index_remove(inst, message);
         let changed = self.with_store(inst, |s| {
             s.apply(
                 ServerEvent::MessageDelete {
@@ -1270,15 +1971,57 @@ impl Core {
     }
 
     pub async fn react(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.react(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.react(channel, message, &emoji).await?)
     }
 
     pub async fn unreact(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> Result<()> {
-        Ok(self.rest(inst)?.unreact(channel, message, emoji).await?)
+        let emoji = self.reaction_form(inst, channel, message, emoji);
+        Ok(self.rest(inst)?.unreact(channel, message, &emoji).await?)
+    }
+
+    /// An emoji as the server gets it on this message: sealed if the message is.
+    fn reaction_form(&self, inst: &str, channel: Id, message: Id, emoji: &str) -> String {
+        let store = self.store();
+        let key = store
+            .instance(inst)
+            .and_then(|s| s.window(channel)?.get(message)?.message_key.clone());
+        match key {
+            Some(key) => crate::e2ee::seal_reaction(&key, emoji).unwrap_or_else(|err| {
+                tracing::warn!("could not seal a reaction: {err}");
+                emoji.to_owned()
+            }),
+            None => emoji.to_owned(),
+        }
+    }
+
+    /// Opens a reaction from the gateway. `false` if this client cannot show it.
+    fn open_reaction_event(
+        &self,
+        inst: &str,
+        reaction: &mut hermes_proto::gateway::ReactionEvent,
+    ) -> bool {
+        if !reaction.emoji.starts_with(crate::e2ee::REACTION_PREFIX) {
+            return true;
+        }
+        let store = self.store();
+        let opened = store
+            .instance(inst)
+            .and_then(|s| s.window(reaction.channel_id)?.get(reaction.message_id))
+            .and_then(|m| m.message_key.as_deref())
+            .and_then(|key| crate::e2ee::open_reaction(key, &reaction.emoji));
+        match opened {
+            Some(emoji) => {
+                reaction.emoji = emoji;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Marks a channel read up to `message`: shown at once, sent to the server after 1 s
-    /// (only the newest mark of a burst is sent).
+    /// (only the newest mark of a burst is sent). A mark that could not be sent is kept and sent
+    /// again after the next reconnect. With syncing off it is kept on this device instead.
     pub fn mark_read(&self, inst: &str, channel: Id, message: Id) {
         let Some(handle) = self.handle(inst) else {
             return;
@@ -1304,27 +2047,165 @@ impl Core {
             return;
         }
         self.changed(inst, [Changed::ReadState(channel)]);
-        let first = handle
-            .read_marks
-            .lock()
-            .expect("read marks")
-            .insert(channel, message)
-            .is_none();
-        if first {
+        if !self.config().privacy.send_read_marks {
+            self.keep_read_mark(inst, channel, message);
+            return;
+        }
+        {
+            let mut marks = handle
+                .read_marks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let mark = marks.entry(channel).or_insert(message);
+            *mark = (*mark).max(message);
+        }
+        if !handle.read_debounce.swap(true, Ordering::SeqCst) {
             tokio::spawn(async move {
                 tokio::time::sleep(READ_DEBOUNCE).await;
-                let mark = handle
-                    .read_marks
+                handle.read_debounce.store(false, Ordering::SeqCst);
+                send_read_marks(&handle).await;
+            });
+        }
+    }
+
+    /// After `ready`: read marks the server does not have yet (not sent, or kept on this device
+    /// with syncing off) still count, and waiting ones are sent again.
+    fn restore_read_marks(&self, inst: &str, handle: &Arc<InstanceHandle>) {
+        let mut marks: Vec<(Id, Id)> = handle
+            .read_marks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(c, m)| (*c, *m))
+            .collect();
+        let sync = self.config().privacy.send_read_marks;
+        if !sync {
+            marks.extend(
+                self.inner
+                    .local_reads
                     .lock()
-                    .expect("read marks")
-                    .remove(&channel);
-                if let Some(message) = mark
-                    && let Err(err) = handle.rest.ack(channel, message).await
-                {
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .of(inst),
+            );
+        }
+        if marks.is_empty() {
+            return;
+        }
+        self.with_store(inst, |s| s.merge_read_marks(&marks));
+        if sync {
+            let handle = handle.clone();
+            tokio::spawn(async move { send_read_marks(&handle).await });
+        }
+    }
+
+    /// Sends every waiting read mark now (the app is closing or losing the focus).
+    pub async fn flush_read_marks(&self) {
+        let handles: Vec<_> = self
+            .inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        futures_util::future::join_all(handles.iter().map(|h| send_read_marks(h))).await;
+    }
+
+    /// [`flush_read_marks`](Self::flush_read_marks), waiting at most `timeout`: for the UI
+    /// thread right before the app quits. Needs a tokio runtime entered on this thread.
+    pub fn flush_read_marks_blocking(&self, timeout: Duration) {
+        let pending = self
+            .inner
+            .instances
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|h| {
+                !h.read_marks
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_empty()
+            });
+        if !pending {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let core = self.clone();
+        tokio::spawn(async move {
+            core.flush_read_marks().await;
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(timeout);
+    }
+
+    /// Keeps a read mark on this device (syncing is off); the file is written off this thread.
+    fn keep_read_mark(&self, inst: &str, channel: Id, message: Id) {
+        let changed = self
+            .inner
+            .local_reads
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .set(inst, channel, message);
+        if !changed {
+            return;
+        }
+        let core = self.clone();
+        tokio::task::spawn_blocking(move || {
+            // Saved under the lock, so the last write has the newest marks.
+            if let Err(err) = core
+                .inner
+                .local_reads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .save()
+            {
+                tracing::warn!("read marks: {err}");
+            }
+        });
+    }
+
+    /// Puts a channel back to unread from `message` on.
+    pub fn mark_unread(&self, inst: &str, channel: Id, message: Id) {
+        let Some(handle) = self.handle(inst) else {
+            return;
+        };
+        // A waiting read mark would undo this.
+        handle
+            .read_marks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&channel);
+        let before = Id(message.0.saturating_sub(1));
+        self.with_store(inst, |s| {
+            let mention_count = s.read_states.get(&channel).map_or(0, |r| r.mention_count);
+            s.read_states.insert(
+                channel,
+                hermes_proto::models::ReadState {
+                    channel_id: channel,
+                    last_read_id: before,
+                    mention_count,
+                },
+            );
+        });
+        self.changed(inst, [Changed::ReadState(channel)]);
+        if self.config().privacy.send_read_marks {
+            tokio::spawn(async move {
+                if let Err(err) = handle.rest.ack(channel, before).await {
                     tracing::info!("ack {channel}: {err}");
                 }
             });
+        } else {
+            self.keep_read_mark(inst, channel, before);
         }
+    }
+
+    /// Whether this instance connects when Hermes starts.
+    pub fn set_autoconnect(&self, inst: &str, autoconnect: bool) -> Result<()> {
+        self.update_config(|config| {
+            for entry in config.instances.iter_mut().filter(|e| e.id == inst) {
+                entry.autoconnect = autoconnect;
+            }
+        })
     }
 
     /// Tells others I am typing (at most every 8 s per channel).
@@ -1333,7 +2214,10 @@ impl Core {
             return;
         };
         {
-            let mut sent = handle.typing_sent.lock().expect("typing");
+            let mut sent = handle
+                .typing_sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let now = Instant::now();
             if sent
                 .get(&channel)
@@ -1343,6 +2227,10 @@ impl Core {
             }
             sent.insert(channel, now);
         }
+        let invisible = self.presence() == PresenceStatus::Invisible;
+        if invisible || !self.config().privacy.send_typing {
+            return;
+        }
         tokio::spawn(async move {
             let _ = handle.rest.typing(channel).await;
         });
@@ -1350,6 +2238,18 @@ impl Core {
 
     /// Uploads a file; attach the result to a [`Draft`].
     pub async fn upload(&self, inst: &str, path: &Path) -> Result<Attachment> {
+        self.upload_with_info(inst, path, &crate::secure::FileInfo::default())
+            .await
+    }
+
+    /// [`Core::upload`] with what was measured of it: a sound's waveform, a length, a video's
+    /// size and poster. A poster the server will not take is left out (an older server).
+    pub async fn upload_with_info(
+        &self,
+        inst: &str,
+        path: &Path,
+        info: &crate::secure::FileInfo,
+    ) -> Result<Attachment> {
         let bytes = tokio::fs::read(path)
             .await
             .map_err(|e| CoreError::Io(format!("{}: {e}", path.display())))?;
@@ -1357,10 +2257,22 @@ impl Core {
             .file_name()
             .map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
         let content_type = content_type(&filename);
-        Ok(self
-            .rest(inst)?
-            .upload(&filename, content_type, bytes)
-            .await?)
+        let rest = self.rest(inst)?;
+        let measured = crate::rest::Measured {
+            waveform: info.waveform.as_deref(),
+            duration_ms: info.duration_ms,
+            size: info.size.filter(|_| content_type.starts_with("video/")),
+        };
+        let mut attachment = rest
+            .upload_measured(&filename, content_type, bytes, measured)
+            .await?;
+        if let Some(poster) = info.poster.clone() {
+            match rest.set_poster(attachment.id, poster).await {
+                Ok(()) => attachment.has_thumb = true,
+                Err(err) => tracing::debug!("poster of {filename} not kept: {err}"),
+            }
+        }
+        Ok(attachment)
     }
 
     /// Expires typing indicators every second and trims idle message windows every minute.
@@ -1383,12 +2295,16 @@ impl Core {
                         .inner
                         .focus
                         .lock()
-                        .expect("focus")
+                        .unwrap_or_else(PoisonError::into_inner)
                         .visible
                         .iter()
                         .cloned()
                         .collect();
-                    let mut store = core.inner.store.write().expect("store lock");
+                    let mut store = core
+                        .inner
+                        .store
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
                     for (inst, s) in &mut store.instances {
                         for channel in s.expire_typing(now) {
                             changes.push((inst.clone(), Changed::Typing(channel)));
@@ -1420,18 +2336,37 @@ pub fn content_type(filename: &str) -> &'static str {
         .map(|(_, e)| e.to_ascii_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
+        "svg" => "image/svg+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "apng" => "image/apng",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        "ico" => "image/x-icon",
         "txt" | "log" | "md" => "text/plain",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
         "mp3" => "audio/mpeg",
-        "ogg" | "opus" => "audio/ogg",
+        "ogg" | "oga" => "audio/ogg",
+        "opus" => "audio/opus",
         "wav" => "audio/wav",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
         "mp4" => "video/mp4",
+        "m4v" => "video/x-m4v",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
+        "avi" => "video/x-msvideo",
+        "ogv" => "video/ogg",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "3gp" => "video/3gpp",
+        "wma" => "audio/x-ms-wma",
+        "aiff" => "audio/aiff",
         "json" => "application/json",
         _ => "application/octet-stream",
     }
@@ -1454,5 +2389,62 @@ mod tests {
     fn content_types() {
         assert_eq!(content_type("Cat.PNG"), "image/png");
         assert_eq!(content_type("notes"), "application/octet-stream");
+        assert_eq!(content_type("clip.MKV"), "video/x-matroska");
+        assert_eq!(content_type("clip.mov"), "video/quicktime");
+        assert_eq!(content_type("song.flac"), "audio/flac");
+    }
+
+    #[tokio::test]
+    async fn waiting_store_changes_are_not_queued_twice() {
+        use futures_util::StreamExt;
+
+        let changed = |inst: &str, what| CoreEvent::StoreChanged {
+            inst: inst.into(),
+            what,
+        };
+        let (core, mut events) = Core::new(ClientConfig::default(), CoreOptions::in_memory("t"));
+        let m1 = Changed::Messages(Id(1));
+        core.changed("a", [m1, m1, Changed::Dms]);
+        core.changed("a", [m1]);
+        core.emit(changed("a", Changed::Dms));
+        core.changed("b", [m1]);
+        // A meter reading does not stop the folding.
+        core.emit(CoreEvent::InputLevel {
+            db: -20.0,
+            open: true,
+        });
+        core.changed("b", [m1]);
+        // Other events are never folded, and changes after one come after it.
+        core.emit(CoreEvent::Error("x".into()));
+        core.emit(CoreEvent::Error("x".into()));
+        core.changed("a", [m1]);
+        let mut got = Vec::new();
+        while let Some(event) = events.try_recv() {
+            got.push(event);
+        }
+        assert_eq!(
+            got,
+            [
+                changed("a", m1),
+                changed("a", Changed::Dms),
+                changed("b", m1),
+                CoreEvent::InputLevel {
+                    db: -20.0,
+                    open: true,
+                },
+                CoreEvent::Error("x".into()),
+                CoreEvent::Error("x".into()),
+                changed("a", m1),
+            ]
+        );
+
+        // Once received (through any of the three ways), the same change is reported again.
+        core.changed("a", [m1]);
+        assert_eq!(events.recv().await, Some(changed("a", m1)));
+        core.changed("a", [m1]);
+        assert_eq!(events.next().await, Some(changed("a", m1)));
+        core.changed("a", [m1]);
+        assert_eq!(events.try_recv(), Some(changed("a", m1)));
+        assert_eq!(events.try_recv(), None);
     }
 }

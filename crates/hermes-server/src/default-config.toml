@@ -30,6 +30,8 @@ key_file = ""                       # mode = "files": PEM private key
 data_dir = "./data"                 # hermes.db, files/, certs/ live here
 max_upload_mb = 25
 max_total_storage_gb = 0            # 0 = unlimited; uploads rejected when exceeded
+max_user_storage_mb = 10240         # what one person's uploads may take up in all; 0 = unlimited
+limit_includes_messages = false     # true: the database (message text) counts towards max_total_storage_gb
 thumbnails = true
 
 [registration]
@@ -43,9 +45,25 @@ max_group_dm_size = 10
 messages_per_5s = 5                 # per user per channel
 requests_per_second = 30            # per session, REST
 login_attempts_per_minute = 5       # per IP
+actions_per_minute = 120            # per person and kind of action; rarer kinds get a fraction
+max_connections = 4096
+max_connections_per_ip = 128        # 0 = no limit; trusted proxies have none
+session_idle_days = 180             # a session unused this long ends; 0 = never
+max_sessions_per_user = 64          # the most recently used are kept; 0 = no limit
+max_mentions_per_message = 20       # also works on encrypted messages; 0 = no limit
+gateway_ops_per_minute = 120
+gateway_identifies_per_minute = 12  # gateway sign-ins per person; one address gets 10x
+max_inflight_requests = 512         # REST requests answered at once; more get 503 at once
+resume_window_secs = 300            # how long a dropped connection can come back and catch up
+resume_buffer_events = 2000
 
 [privacy]
 dm_policy = "shared_space"          # "shared_space" | "anyone"
+require_dm_encryption = true        # refuse DMs that are not end-to-end encrypted (old clients)
+require_channel_encryption = true   # refuse server channel messages that are not end-to-end encrypted
+message_retention_days = 0          # messages older than this are deleted for good; 0 = kept
+deleted_message_retention_days = 0  # what is left of deleted messages goes after this long; 0 = kept
+audit_retention_days = 0            # audit log entries older than this go; 0 = kept
 
 [voice]
 enabled = true
@@ -56,3 +74,7 @@ max_users_per_room = 25
 [log]
 level = "info"                      # trace | debug | info | warn | error, or an EnvFilter string
 format = "pretty"                   # "pretty" | "json"
+# Shown on top of the level: connections (every TCP/TLS connection), requests (every HTTP request),
+# gateway (sessions), voice (joins and leaves), auth (sign-ins). Type "help" in the console to
+# switch them while the server runs.
+topics = ["gateway", "voice", "auth"]
