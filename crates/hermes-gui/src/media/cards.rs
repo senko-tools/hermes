@@ -52,8 +52,10 @@ const VOLUME_SHOWN_FOR: Duration = Duration::from_millis(1100);
 const PILL_W: f32 = 4.;
 /// The hover group of a volume control's speaker.
 const SPEAKER_GROUP: &str = "media-speaker";
-/// How wide a volume slider opens: its track, and the percentage beside it.
-const SLIDER_TRACK_W: f32 = 84.;
+/// How wide a volume slider opens: its track, and the percentage beside it. The track is over
+/// 100 px between the knob's ends, so one pixel is at most 1 %.
+const SLIDER_TRACK_W: f32 = 120.;
+const _: () = assert!(SLIDER_TRACK_W - KNOB_HELD >= 100.);
 const SLIDER_TEXT_W: f32 = 44.;
 /// The volume knob, at rest and while hovered or held.
 const KNOB: f32 = 10.;
@@ -147,6 +149,8 @@ pub struct Media {
     volume_shown: Option<MediaKey>,
     /// Counts volume changes; it is saved once one stays the last for a moment.
     volume_changes: u64,
+    /// Wheel scrolling not yet worth a whole percent.
+    wheel_rest: f64,
     /// A seek bar being held.
     scrub: Option<Scrub>,
     /// The volume control the mouse is over.
@@ -197,6 +201,11 @@ fn clock(ms: u64) -> String {
 fn fraction_along(bounds: Bounds<Pixels>, at: Point<Pixels>) -> Option<f32> {
     let width = bounds.size.width.as_f32();
     (width > 0.).then(|| ((at.x - bounds.origin.x).as_f32() / width).clamp(0., 1.))
+}
+
+/// A volume rounded to a whole percent, between 0 and 100 %.
+fn whole_percent(volume: f64) -> f64 {
+    ((volume * 100.).round() / 100.).clamp(0., 1.)
 }
 
 /// The video's size inside `max`, keeping its shape.
@@ -482,8 +491,15 @@ impl Shell {
         if pixels == 0. {
             return;
         }
+        // The volume moves in whole percents; smooth scrolling builds up until it is one.
+        let wanted = self.media.wheel_rest + pixels * VOLUME_PER_PIXEL;
+        let steps = (wanted * 100.).trunc();
+        self.media.wheel_rest = wanted - steps / 100.;
+        if steps == 0. {
+            return;
+        }
         let voice = &mut self.config.voice;
-        voice.media_volume = (voice.media_volume + pixels * VOLUME_PER_PIXEL).clamp(0., 1.);
+        voice.media_volume = whole_percent(voice.media_volume + steps / 100.);
         if pixels > 0. {
             voice.media_muted = false;
         }
@@ -784,7 +800,7 @@ impl Shell {
             return;
         };
         let voice = &mut self.config.voice;
-        voice.media_volume = f64::from(fraction);
+        voice.media_volume = whole_percent(f64::from(fraction));
         voice.media_muted = false;
         self.media_volume_changed(&bar.0, cx);
     }
@@ -1244,7 +1260,8 @@ impl Shell {
                     .child(pill)
             }));
         let meta = div()
-            .flex_shrink_0()
+            .min_w_0()
+            .truncate()
             .text_size(theme::caption_size())
             .text_color(theme::text_tertiary())
             .child(self.media_meta(&key, a));
@@ -1257,7 +1274,8 @@ impl Shell {
             .items_center()
             .gap(px(12.))
             .cursor_default()
-            .w(px(420.))
+            .w(px(520.))
+            .max_w_full()
             .pl(px(12.))
             .pr(px(8.))
             .py(px(8.))
@@ -1289,6 +1307,7 @@ impl Shell {
                             .items_center()
                             .gap(px(6.))
                             .h(px(22.))
+                            .overflow_hidden()
                             .text_size(theme::secondary_size())
                             .child(icon(media_icons::MUSIC, 14., theme::accent()))
                             .child(
@@ -1747,6 +1766,13 @@ mod tests {
         assert_eq!(fraction_along(bounds, at(125.)), Some(0.5));
         assert_eq!(fraction_along(bounds, at(40.)), Some(0.));
         assert_eq!(fraction_along(bounds, at(400.)), Some(1.));
+    }
+
+    #[test]
+    fn the_volume_moves_in_whole_percents() {
+        assert!((whole_percent(0.4349) - 0.43).abs() < 1e-9);
+        assert_eq!(whole_percent(1.2), 1.);
+        assert_eq!(whole_percent(-0.1), 0.);
     }
 
     /// Moving the bar of a file nobody played must neither fetch it nor start it.
