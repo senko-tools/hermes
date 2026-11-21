@@ -1740,7 +1740,30 @@ impl Shell {
                 })
                 .collect()
         };
-        drag::slot_for(&rows, y, category)
+        drag::slot_for(&rows, y, category).filter(|slot| self.slot_moves(dragged, *slot))
+    }
+
+    /// Whether letting `dragged` go at `slot` changes the order at all. A drop on itself or
+    /// on an edge it already touches does nothing, so it gets no line and no request.
+    fn slot_moves(&self, dragged: &Item, slot: Slot) -> bool {
+        let store = self.core.store();
+        let Some(s) = store.instance(&dragged.inst) else {
+            return false;
+        };
+        let (target, place) = match slot {
+            Slot::At(target, place) => (target, place),
+            Slot::End => {
+                let last = view::channel_tree(s, dragged.space)
+                    .into_iter()
+                    .rfind(|c| c.depth == 0)
+                    .map(|c| c.id);
+                match last {
+                    Some(last) => (last, Place::After),
+                    None => return false,
+                }
+            }
+        };
+        view::channel_move_changes(s, dragged.space, dragged.id, target, place)
     }
 
     /// The space under a channel list: shows an accent line along its top while a dragged

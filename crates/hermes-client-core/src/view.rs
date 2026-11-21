@@ -123,11 +123,63 @@ pub fn move_channel(
     let Some(state) = store.spaces.get(&space) else {
         return Vec::new();
     };
+    match move_target(state, moved, onto, place) {
+        Some((m, parent, anchor)) => place_channel(state, m, parent, anchor),
+        None => Vec::new(),
+    }
+}
+
+/// Whether dropping channel `moved` at `place` of `onto` changes where it is shown: its parent
+/// or its place among its siblings. Unlike [`move_channel`], gaps in the stored positions
+/// don't count, so a drop on the edge it already touches is no move.
+pub fn channel_move_changes(
+    store: &InstanceStore,
+    space: Id,
+    moved: Id,
+    onto: Id,
+    place: Place,
+) -> bool {
+    let Some(state) = store.spaces.get(&space) else {
+        return false;
+    };
+    let Some((m, parent, anchor)) = move_target(state, moved, onto, place) else {
+        return false;
+    };
+    let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
+    if parent_of(m) != parent {
+        return true;
+    }
+    let mut siblings: Vec<&Channel> = state
+        .channels
+        .values()
+        .filter(|c| parent_of(c) == parent)
+        .collect();
+    siblings.sort_by(|a, b| order(a, b));
+    let now = siblings.iter().position(|c| c.id == moved);
+    siblings.retain(|c| c.id != moved);
+    let index = match anchor {
+        None => 0,
+        Some((anchor, place)) => {
+            let at = siblings.iter().position(|c| c.id == anchor).unwrap_or(0);
+            if place == Place::After { at + 1 } else { at }
+        }
+    };
+    now != Some(index.min(siblings.len()))
+}
+
+/// The channel being moved, the parent it goes under and the sibling it goes next to, for a
+/// drop of `moved` at `place` of `onto`; `None` when nothing would move.
+fn move_target(
+    state: &crate::store::SpaceState,
+    moved: Id,
+    onto: Id,
+    place: Place,
+) -> Option<(&Channel, Option<Id>, Option<(Id, Place)>)> {
     let (Some(m), Some(t)) = (state.channels.get(&moved), state.channels.get(&onto)) else {
-        return Vec::new();
+        return None;
     };
     if moved == onto {
-        return Vec::new();
+        return None;
     }
     let parent_of = |c: &Channel| c.parent_id.filter(|p| state.channels.contains_key(p));
     let (parent, anchor) = if m.kind == ChannelKind::Category {
@@ -147,9 +199,9 @@ pub fn move_channel(
         (parent_of(t), Some((onto, place)))
     };
     if anchor.is_some_and(|(a, _)| a == moved) {
-        return Vec::new();
+        return None;
     }
-    place_channel(state, m, parent, anchor)
+    Some((m, parent, anchor))
 }
 
 /// `m` among the children of `parent`: before or after `anchor`, or first without one.
@@ -1091,6 +1143,29 @@ mod tests {
             move_channel(&s, Id(10), Id(20), Id(21), Place::Before).is_empty(),
             "next to its own channel"
         );
+    }
+
+    #[test]
+    fn a_drop_on_its_own_edges_is_no_move() {
+        let mut s = store();
+        let general = channel_tree(&s, Id(10))[0].id;
+        // Gaps in the stored positions: 0 (general), 5, 9.
+        let mut memes = channel(22, Some(10), ChannelKind::Text, "memes");
+        memes.position = 5;
+        let mut art = channel(23, Some(10), ChannelKind::Text, "art");
+        art.position = 9;
+        for c in [memes, art] {
+            s.apply(ServerEvent::ChannelCreate(c), 0);
+        }
+        let changes = |moved, onto, place| channel_move_changes(&s, Id(10), moved, onto, place);
+        // memes sits between general and art.
+        assert!(!changes(Id(22), Id(22), Place::Before), "on itself");
+        assert!(!changes(Id(22), general, Place::After), "edge above it");
+        assert!(!changes(Id(22), Id(23), Place::Before), "edge below it");
+        assert!(changes(Id(22), general, Place::Before));
+        assert!(changes(Id(22), Id(23), Place::After));
+        // move_channel would still renumber the gaps here: that is why the check exists.
+        assert!(!move_channel(&s, Id(10), Id(22), general, Place::After).is_empty());
     }
 
     #[test]
