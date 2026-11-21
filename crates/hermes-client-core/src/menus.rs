@@ -297,6 +297,11 @@ impl Action {
             | Action::Unmute => Some("Mute"),
             // What a message's menu offers less often.
             Action::QuoteText
+            | Action::Save
+            | Action::Unsave
+            | Action::Forward
+            | Action::Pin
+            | Action::Unpin
             | Action::MarkUnreadHere
             | Action::CopyLink
             | Action::SelectMessage
@@ -613,6 +618,10 @@ pub fn entries_with(
                 push(&mut out, [Action::Edit]);
             }
             push(&mut out, [Action::CopyText]);
+            // More ▸
+            if can_send {
+                push(&mut out, [Action::QuoteText]);
+            }
             push(
                 &mut out,
                 [if extra.saved {
@@ -626,10 +635,6 @@ pub fn entries_with(
             }
             if manage {
                 push(&mut out, [if pinned { Action::Unpin } else { Action::Pin }]);
-            }
-            // More ▸
-            if can_send {
-                push(&mut out, [Action::QuoteText]);
             }
             push(&mut out, [Action::MarkUnreadHere, Action::CopyLink]);
             if deletable {
@@ -1022,6 +1027,55 @@ mod tests {
     }
 
     #[test]
+    fn a_message_menu_keeps_everyday_entries_on_top_and_the_rest_under_more() {
+        let s = crate::testing::fixtures::store();
+        let entries = entries_with(
+            &Target::Message("h".into(), Id(11), Id(100)),
+            &ConnStatus::Connected,
+            Some(&s),
+            Extra::default(),
+        );
+        let lines = grouped(&entries);
+        let top: Vec<Action> = lines
+            .iter()
+            .filter_map(|l| match l {
+                Grouped::Entry(e) => Some(e.action),
+                _ => None,
+            })
+            .collect();
+        let more: Vec<Action> = lines
+            .iter()
+            .find_map(|l| match l {
+                Grouped::Submenu {
+                    label: "More",
+                    entries,
+                } => Some(actions(entries)),
+                _ => None,
+            })
+            .expect("a More submenu");
+        for action in [Action::Save, Action::Pin, Action::QuoteText] {
+            assert!(more.contains(&action), "{action:?} under More: {more:?}");
+            assert!(!top.contains(&action), "{action:?} not on top: {top:?}");
+        }
+        assert!(
+            top.iter().all(|a| matches!(
+                a,
+                Action::Reply
+                    | Action::AddReaction
+                    | Action::Edit
+                    | Action::CopyText
+                    | Action::CopyMessageId
+                    | Action::DeleteMessage
+            )),
+            "{top:?}"
+        );
+        assert_eq!(
+            top[..3],
+            [Action::Reply, Action::AddReaction, Action::CopyText]
+        );
+    }
+
+    #[test]
     fn the_mutes_get_a_submenu_beside_the_levels() {
         let entry = |action: Action| Some(Entry::from(action));
         let lines = grouped(&[
@@ -1073,6 +1127,11 @@ mod tests {
         assert!(dev.contains(&Action::CopyChannelId), "{dev:?}");
         for more in [
             Action::QuoteText,
+            Action::Save,
+            Action::Unsave,
+            Action::Forward,
+            Action::Pin,
+            Action::Unpin,
             Action::MarkUnreadHere,
             Action::CopyLink,
             Action::SelectMessage,
