@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Patched copies of crates.io crates (see vendor/README.md), not workspace members.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "1.3.0"
@@ -153,3 +155,9 @@ openh264-sys2 = { opt-level = 3 }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# gpui's image shader with sharp pixels when a picture is drawn larger than it is (see
+# vendor/README.md). Both are exact copies of the crates.io versions plus that one change.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
