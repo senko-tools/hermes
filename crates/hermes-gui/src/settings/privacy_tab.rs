@@ -25,7 +25,7 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            crate::ui::chip(self, ("dm-from", n), name, privacy.dm_from == value, cx).on_click(
+            crate::ui::segment(self, ("dm-from", n), name, privacy.dm_from == value, cx).on_click(
                 cx.listener(move |this, _, _, cx| {
                     this.set_privacy(
                         UpdatePrivacyRequest {
@@ -41,7 +41,7 @@ impl Shell {
             setting(
                 "Direct messages from",
                 "Who can start a conversation with you.",
-                wrap().children(dm_chips),
+                crate::ui::segments().children(dm_chips),
             ),
             setting(
                 "Message requests",

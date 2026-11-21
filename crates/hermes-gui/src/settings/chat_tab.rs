@@ -102,20 +102,25 @@ impl Shell {
                         setting(
                             "Status line stays",
                             &format!("{} seconds", self.config.general.status_seconds),
-                            wrap().children([3, 5, 10].into_iter().enumerate().map(|(n, secs)| {
-                                crate::ui::chip(
-                                    self,
-                                    ("status-seconds", n),
-                                    format!("{secs} s"),
-                                    self.config.general.status_seconds == secs,
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_config(|c| c.general.status_seconds = secs, cx);
-                                    },
-                                ))
-                            })),
+                            crate::ui::segments().children([3, 5, 10].into_iter().enumerate().map(
+                                |(n, secs)| {
+                                    crate::ui::segment(
+                                        self,
+                                        ("status-seconds", n),
+                                        format!("{secs} s"),
+                                        self.config.general.status_seconds == secs,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.set_config(
+                                                |c| c.general.status_seconds = secs,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                },
+                            )),
                         ),
                         flag!(
                             self,
@@ -154,22 +159,24 @@ impl Shell {
                 setting(
                     "Motion speed",
                     "How long things take to slide and fade.",
-                    wrap().children(theme::MOTION_SPEEDS.into_iter().enumerate().map(
-                        |(n, (value, label, _))| {
-                            crate::ui::chip(
-                                self,
-                                ("settings-motion", n),
-                                label,
-                                g.motion_speed == value,
-                                cx,
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.set_config(|c| c.general.motion_speed = value, cx);
-                                },
-                            ))
-                        },
-                    )),
+                    crate::ui::segments().children(
+                        theme::MOTION_SPEEDS.into_iter().enumerate().map(
+                            |(n, (value, label, _))| {
+                                crate::ui::segment(
+                                    self,
+                                    ("settings-motion", n),
+                                    label,
+                                    g.motion_speed == value,
+                                    cx,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.set_config(|c| c.general.motion_speed = value, cx);
+                                    },
+                                ))
+                            },
+                        ),
+                    ),
                 ),
                 flag!(
                     self,
@@ -189,6 +196,13 @@ impl Shell {
                     "Animate pictures",
                     "GIFs move while the window has the focus.",
                     general.animate_pictures
+                ),
+                flag!(
+                    self,
+                    cx,
+                    "Animate in the background",
+                    "GIFs keep moving while another window has the focus.",
+                    general.animate_unfocused
                 ),
             ],
         )
@@ -256,12 +270,12 @@ impl Shell {
                 setting(
                     "Size of pictures and videos",
                     &format!("{} %", self.config.buffer.media_scale),
-                    wrap().children(
+                    crate::ui::segments().children(
                         [(75, "Small"), (100, "Normal"), (150, "Large")]
                             .into_iter()
                             .enumerate()
                             .map(|(n, (scale, name))| {
-                                crate::ui::chip(
+                                crate::ui::segment(
                                     self,
                                     ("media-scale", n),
                                     name,

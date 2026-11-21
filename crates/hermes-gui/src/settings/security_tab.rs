@@ -159,7 +159,7 @@ impl Shell {
         .enumerate()
         .map(|(n, (mode, name))| {
             let inst = inst.clone();
-            crate::ui::chip(self, ("registration", n), name, current == Some(mode), cx).on_click(
+            crate::ui::segment(self, ("registration", n), name, current == Some(mode), cx).on_click(
                 cx.listener(move |this, _, _, cx| {
                     let core = this.core.clone();
                     let inst = inst.clone();
@@ -258,7 +258,7 @@ impl Shell {
                         setting(
                             "Registration",
                             "Takes effect at once, and over the config file.",
-                            wrap().children(chips),
+                            crate::ui::segments().children(chips),
                         ),
                         setting(
                             "Channels must be encrypted",

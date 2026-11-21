@@ -72,6 +72,88 @@ pub fn chip(
         .child(face)
 }
 
+/// The track a setting's [`segment`]s sit in, side by side: one inset strip, the chosen one
+/// filled with the accent. It wraps onto more lines when the row is too narrow.
+pub fn segments() -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .max_w_full()
+        .gap(px(2.))
+        .p(px(3.))
+        .rounded(theme::radius_small())
+        .bg(theme::background())
+}
+
+/// What a [`segment`] shows before its label, drawn in the segment's text colour of the
+/// moment (it turns `on_accent` when chosen).
+pub type Preview = std::rc::Rc<dyn Fn(gpui_kit::Rgba) -> gpui_kit::AnyElement>;
+
+/// An icon as a [`segment`]'s picture.
+pub fn icon_preview(glyph: &'static str) -> Preview {
+    std::rc::Rc::new(move |color| icon(glyph, 14., color).into_any_element())
+}
+
+/// One choice of a [`segments`] track: transparent at rest, its text turns accent under the
+/// pointer and the accent fills in when chosen. The caller adds what a click does.
+pub fn segment(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    label: impl Into<SharedString>,
+    chosen: bool,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    segment_with(shell, id, None, label, chosen, cx)
+}
+
+/// [`segment`] with a small picture before the label (an icon, a shape, a layout).
+pub fn segment_with(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    preview: Option<Preview>,
+    label: impl Into<SharedString>,
+    chosen: bool,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id = id.into();
+    let hover = SharedString::from(format!("{id:?}-hover"));
+    let to = state(shell.is_hovered(&hover), chosen);
+    let label: SharedString = label.into();
+    let face = div()
+        .id("face")
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .px(px(10.))
+        .py(px(4.))
+        .rounded(theme::radius_small())
+        .with_spring(
+            SharedString::from(format!("{id:?}-chosen")),
+            spring(to),
+            move |d, t| {
+                let t = t.clamp(0., 2.);
+                let hover = t.min(1.);
+                let fill = (t - 1.).max(0.);
+                let text = theme::mix(theme::text_secondary(), theme::accent(), hover);
+                let text = theme::mix(text, theme::on_accent(), fill);
+                d.bg(theme::alpha(theme::accent(), fill))
+                    .text_color(text)
+                    .children(preview.as_ref().map(|p| p(text)))
+                    .child(div().truncate().child(label.clone()))
+            },
+        );
+    div()
+        .id(id)
+        .rounded(theme::radius_small())
+        .cursor_pointer()
+        .max_w_full()
+        .overflow_hidden()
+        .text_size(theme::secondary_size())
+        .on_hover(shell.track_hover(hover, cx))
+        .child(face)
+}
+
 /// An entry of a page's navigation column (settings tabs, server settings tabs). The caller
 /// adds what a click does.
 pub fn nav_item(

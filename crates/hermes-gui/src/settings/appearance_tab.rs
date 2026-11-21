@@ -89,14 +89,15 @@ impl Shell {
                 setting(
                     "Size of titles",
                     "",
-                    wrap().children(
-                        [(2, "Small"), (4, "Normal"), (8, "Large")]
+                    crate::ui::segments().children(
+                        [(2, "Small", 11.), (4, "Normal", 13.), (8, "Large", 16.)]
                             .into_iter()
                             .enumerate()
-                            .map(|(n, (extra, name))| {
-                                crate::ui::chip(
+                            .map(|(n, (extra, name, size))| {
+                                crate::ui::segment_with(
                                     self,
                                     ("heading-extra", n),
+                                    Some(title_preview(size)),
                                     name,
                                     config.font.heading_extra == extra,
                                     cx,
@@ -121,7 +122,7 @@ impl Shell {
             let value = *value;
             let chosen =
                 (config.font.ui_scale - value).abs() < 0.001 && self.ui_scale_draft.is_none();
-            crate::ui::chip(
+            crate::ui::segment(
                 self,
                 ("scale-preset", n),
                 format!("{:.0}%", value * 100.),
@@ -137,9 +138,10 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            crate::ui::chip(
+            crate::ui::segment_with(
                 self,
                 ("sidebar-position", n),
+                Some(layout_preview(value == config::SidebarPosition::Left)),
                 name,
                 config.sidebar.position == value,
                 cx,
@@ -155,9 +157,10 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            crate::ui::chip(
+            crate::ui::segment_with(
                 self,
                 ("avatar-shape", n),
+                Some(shape_preview(value)),
                 name,
                 config.general.avatar_shape == value,
                 cx,
@@ -181,14 +184,19 @@ impl Shell {
                         .flex_col()
                         .w_full()
                         .gap(px(8.))
-                        .child(wrap().children(presets))
+                        .items_end()
+                        .child(crate::ui::segments().children(presets))
                         .child(self.slider(page, SliderKind::UiScale)),
                 ),
-                setting("Sidebar position", "", wrap().children(position_chips)),
+                setting(
+                    "Sidebar position",
+                    "",
+                    crate::ui::segments().children(position_chips),
+                ),
                 setting(
                     "Avatar shape",
                     "How people's pictures are cut, everywhere.",
-                    wrap().children(shape_chips),
+                    crate::ui::segments().children(shape_chips),
                 ),
                 setting(
                     "Panel widths",
@@ -222,4 +230,50 @@ impl Shell {
             ],
         )
     }
+}
+
+/// "Aa" at `size`, for the size of titles.
+fn title_preview(size: f32) -> crate::ui::Preview {
+    std::rc::Rc::new(move |color| {
+        div()
+            .text_size(px(size))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(color)
+            .child("Aa")
+            .into_any_element()
+    })
+}
+
+/// A tiny window with its sidebar on the left or the right.
+fn layout_preview(left: bool) -> crate::ui::Preview {
+    std::rc::Rc::new(move |color| {
+        let bar = div().w(px(5.)).h_full().bg(color);
+        div()
+            .flex()
+            .when(!left, |d| d.justify_end())
+            .w(px(18.))
+            .h(px(12.))
+            .rounded(px(2.))
+            .border_1()
+            .border_color(color)
+            .overflow_hidden()
+            .child(bar)
+            .into_any_element()
+    })
+}
+
+/// A filled picture in `shape`.
+fn shape_preview(shape: config::AvatarShape) -> crate::ui::Preview {
+    const SIZE: f32 = 12.;
+    let radius = match shape {
+        config::AvatarShape::Circle => SIZE / 2.,
+        config::AvatarShape::Squircle => SIZE * 0.3,
+    };
+    std::rc::Rc::new(move |color| {
+        div()
+            .size(px(SIZE))
+            .rounded(px(radius))
+            .bg(color)
+            .into_any_element()
+    })
 }

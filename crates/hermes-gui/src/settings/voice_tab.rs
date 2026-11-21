@@ -44,17 +44,31 @@ impl Shell {
         );
         let ptt_mode = v.mode == config::VoiceMode::PushToTalk;
         let mode_chips = [
-            (config::VoiceMode::VoiceActivity, "Voice activity"),
-            (config::VoiceMode::PushToTalk, "Push-to-talk"),
+            (
+                config::VoiceMode::VoiceActivity,
+                "Voice activity",
+                assets::WAVEFORM,
+            ),
+            (
+                config::VoiceMode::PushToTalk,
+                "Push-to-talk",
+                assets::KEYBOARD,
+            ),
         ]
         .into_iter()
         .enumerate()
-        .map(|(n, (value, name))| {
-            crate::ui::chip(self, ("voice-mode", n), name, v.mode == value, cx).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.change_voice(cx, move |voice| voice.mode = value);
-                }),
+        .map(|(n, (value, name, glyph))| {
+            crate::ui::segment_with(
+                self,
+                ("voice-mode", n),
+                Some(crate::ui::icon_preview(glyph)),
+                name,
+                v.mode == value,
+                cx,
             )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.change_voice(cx, move |voice| voice.mode = value);
+            }))
         });
         // The bar moves smoothly; it is green while the microphone would go through, as the
         // input mode decides: above the line, or while push-to-talk is held.
@@ -87,7 +101,11 @@ impl Shell {
                         },
                     ),
             );
-        let mut input_rows = vec![setting("Input mode", "", wrap().children(mode_chips))];
+        let mut input_rows = vec![setting(
+            "Input mode",
+            "",
+            crate::ui::segments().children(mode_chips),
+        )];
         if ptt_mode {
             input_rows.push(setting(
                 "Push-to-talk key",
@@ -251,7 +269,7 @@ impl Shell {
         .into_iter()
         .enumerate()
         .map(|(n, (value, name))| {
-            crate::ui::chip(self, ("join-on", n), name, v.join_on == value, cx).on_click(
+            crate::ui::segment(self, ("join-on", n), name, v.join_on == value, cx).on_click(
                 cx.listener(move |this, _, _, cx| {
                     this.set_config(|c| c.voice.join_on = value, cx);
                 }),
@@ -272,7 +290,11 @@ impl Shell {
                     &format!("{:.0} %", v.sounds_volume * 100.),
                     self.slider(page, SliderKind::SoundsVolume),
                 ),
-                setting("Join a voice channel with", "", wrap().children(join_chips)),
+                setting(
+                    "Join a voice channel with",
+                    "",
+                    crate::ui::segments().children(join_chips),
+                ),
             ],
             cx,
         );

@@ -949,7 +949,8 @@ impl Shell {
 
     /// Whether animated pictures move right now.
     pub fn animating(&self) -> bool {
-        self.focused && self.config.general.animate_pictures
+        let general = &self.config.general;
+        general.animate_pictures && (self.focused || general.animate_unfocused)
     }
 
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {

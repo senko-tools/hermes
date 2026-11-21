@@ -371,7 +371,7 @@ impl Shell {
             .enumerate()
             .map(|(n, (format, shown))| {
                 let chosen = !custom && *current == format;
-                crate::ui::chip(self, (id, n), shown, chosen, cx)
+                crate::ui::segment(self, (id, n), shown, chosen, cx)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_pattern(which, format.clone(), false, window, cx);
                     }))
@@ -379,7 +379,7 @@ impl Shell {
             })
             .collect();
         chips.push(
-            crate::ui::chip(self, (id, 99usize), "Custom", custom, cx)
+            crate::ui::segment(self, (id, 99usize), "Custom", custom, cx)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(page) = this.settings.as_mut() {
                         match which {
@@ -423,7 +423,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .items_end()
-                .child(wrap().justify_end().children(chips))
+                .child(crate::ui::segments().children(chips))
                 .children(field),
         )
     }
@@ -714,6 +714,10 @@ fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
         .children(children)
 }
 
+/// How wide a group may grow: it takes the window's width, and only a very wide window leaves
+/// room beside it (rows that long would be hard to read across).
+pub const CONTENT_MAX_W: f32 = 1100.;
+
 /// The title line over the card (none while folded).
 fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
     div()
@@ -721,7 +725,8 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
         .flex_col()
         .flex_shrink_0()
         .gap(px(10.))
-        .max_w(px(760.))
+        .w_full()
+        .max_w(px(CONTENT_MAX_W))
         .child(header)
         .children(card)
         .into_any_element()

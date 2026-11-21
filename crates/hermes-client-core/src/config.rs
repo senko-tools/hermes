@@ -281,6 +281,9 @@ pub struct General {
     pub scroll_speed: f64,
     /// GIFs and other animated pictures move while the window has the focus.
     pub animate_pictures: bool,
+    /// Animated pictures keep moving while another window has the focus (with
+    /// `animate_pictures` on).
+    pub animate_unfocused: bool,
     /// Where downloads go; empty = the Downloads folder.
     pub download_dir: String,
     /// Ask for a place each time something is downloaded.
@@ -309,6 +312,7 @@ impl Default for General {
             smooth_scroll: true,
             scroll_speed: 1.25,
             animate_pictures: true,
+            animate_unfocused: false,
             download_dir: String::new(),
             ask_where_to_save: false,
             folded_settings: vec!["processing".into()],

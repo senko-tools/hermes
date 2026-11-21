@@ -37,12 +37,12 @@ impl Shell {
                     setting(
                         "Go idle after",
                         "With nothing touched for this long.",
-                        wrap().children(
+                        crate::ui::segments().children(
                             [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")]
                                 .into_iter()
                                 .enumerate()
                                 .map(|(n, (minutes, name))| {
-                                    crate::ui::chip(
+                                    crate::ui::segment(
                                         self,
                                         ("idle-after", n),
                                         name,
@@ -109,7 +109,7 @@ impl Shell {
                 .collect()
         };
         let screen_chips = screens.into_iter().enumerate().map(|(n, (screen, name))| {
-            crate::ui::chip(
+            crate::ui::segment(
                 self,
                 ("settings-screen", n),
                 name,
@@ -130,7 +130,7 @@ impl Shell {
                     ShareResolution::Native => "Native",
                     _ => value.as_str(),
                 };
-                crate::ui::chip(
+                crate::ui::segment(
                     self,
                     ("settings-res", n),
                     name,
@@ -142,7 +142,7 @@ impl Shell {
                 }))
             });
         let fps_chips = FRAME_RATES.into_iter().enumerate().map(|(n, fps)| {
-            crate::ui::chip(
+            crate::ui::segment(
                 self,
                 ("settings-fps", n),
                 format!("{fps} fps"),
@@ -155,7 +155,7 @@ impl Shell {
         });
         let current = Preference::from_config(v.share_preference);
         let pref_chips = PREFERENCES.into_iter().enumerate().map(|(n, preference)| {
-            crate::ui::chip(
+            crate::ui::segment(
                 self,
                 ("settings-pref", n),
                 preference.label(),
@@ -172,16 +172,20 @@ impl Shell {
         let sharing = group(
             "What you share",
             vec![
-                setting("Screen to share", "", wrap().children(screen_chips)),
+                setting(
+                    "Screen to share",
+                    "",
+                    crate::ui::segments().children(screen_chips),
+                ),
                 setting(
                     "Resolution",
                     "From your next share",
-                    wrap().children(res_chips),
+                    crate::ui::segments().children(res_chips),
                 ),
                 setting(
                     "Frame rate",
                     "From your next share",
-                    wrap().children(fps_chips),
+                    crate::ui::segments().children(fps_chips),
                 ),
                 setting(
                     "Share sound",
@@ -197,7 +201,7 @@ impl Shell {
                 setting(
                     "When it cannot keep up",
                     "What your share keeps when it falls behind",
-                    wrap().children(pref_chips),
+                    crate::ui::segments().children(pref_chips),
                 ),
             ],
         );

@@ -87,7 +87,7 @@ impl Shell {
             let chips = instances.iter().enumerate().map(|(n, inst)| {
                 let chosen = Some(inst) == selected.as_ref();
                 let inst = inst.clone();
-                crate::ui::chip(self, ("account-inst", n), inst.clone(), chosen, cx).on_click(
+                crate::ui::segment(self, ("account-inst", n), inst.clone(), chosen, cx).on_click(
                     cx.listener(move |this, _, _, cx| {
                         if let Some(page) = &mut this.settings {
                             page.account_inst = Some(inst.clone());
@@ -99,7 +99,7 @@ impl Shell {
             account_rows.push(setting(
                 "Account",
                 "Which account these settings are for.",
-                wrap().children(chips),
+                crate::ui::segments().children(chips),
             ));
         }
         let Some(me) = me else {
