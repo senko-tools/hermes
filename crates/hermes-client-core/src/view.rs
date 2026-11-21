@@ -152,25 +152,6 @@ pub fn move_channel(
     place_channel(state, m, parent, anchor)
 }
 
-/// The new positions after taking channel `moved` out of its category: first at the top level,
-/// above everything. Empty for a category, or a channel already there.
-pub fn move_channel_out(
-    store: &InstanceStore,
-    space: Id,
-    moved: Id,
-) -> Vec<hermes_proto::api::ChannelPosition> {
-    let Some(state) = store.spaces.get(&space) else {
-        return Vec::new();
-    };
-    let Some(m) = state.channels.get(&moved) else {
-        return Vec::new();
-    };
-    if m.kind == ChannelKind::Category {
-        return Vec::new();
-    }
-    place_channel(state, m, None, None)
-}
-
 /// `m` among the children of `parent`: before or after `anchor`, or first without one.
 fn place_channel(
     state: &crate::store::SpaceState,
@@ -1018,14 +999,7 @@ mod tests {
             s.apply(ServerEvent::ChannelCreate(c), 0);
         }
         let apply = |s: &mut InstanceStore, moves: Vec<hermes_proto::api::ChannelPosition>| {
-            for p in moves {
-                let mut c = s.channel(p.id).unwrap().clone();
-                c.position = p.position;
-                if let Some(parent) = p.parent_id {
-                    c.parent_id = parent;
-                }
-                s.apply(ServerEvent::ChannelUpdate(c), 0);
-            }
+            s.apply_channel_moves(&moves);
         };
         let names = |s: &InstanceStore| -> Vec<(String, u8)> {
             channel_tree(s, Id(10))
@@ -1071,22 +1045,22 @@ mod tests {
 
         assert!(move_channel(&s, Id(10), Id(22), Id(22), Place::After).is_empty());
 
-        // Out of the category: first at the top level.
-        let moves = move_channel_out(&s, Id(10), Id(22));
+        // Out of the category, before the category that heads the list: first at the top level.
+        let moves = move_channel(&s, Id(10), Id(22), Id(20), Place::Before);
         assert_eq!(
             moves.iter().find(|p| p.id == Id(22)).unwrap().parent_id,
             Some(None)
         );
         apply(&mut s, moves);
         assert_eq!(names(&s)[0], ("memes".to_owned(), 0));
-        assert!(
-            move_channel_out(&s, Id(10), Id(22)).is_empty(),
-            "already out"
-        );
-        assert!(
-            move_channel_out(&s, Id(10), Id(20)).is_empty(),
-            "a category"
-        );
+
+        // Refused by the server: put back as it was, in one step.
+        let before = names(&s);
+        let moves = move_channel(&s, Id(10), Id(22), general, Place::After);
+        let (old, _) = s.apply_channel_moves(&moves);
+        assert_ne!(names(&s), before);
+        s.restore_channels(old);
+        assert_eq!(names(&s), before);
         // Back into the category for the steps below.
         let moves = move_channel(&s, Id(10), Id(22), Id(21), Place::Before);
         apply(&mut s, moves);

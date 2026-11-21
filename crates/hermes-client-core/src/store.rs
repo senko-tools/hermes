@@ -392,6 +392,48 @@ impl InstanceStore {
         }
     }
 
+    /// Writes channel moves (from [`crate::view::move_channel`]) into the store all at once,
+    /// before the server confirms them: the server sends one `channel_update` per channel, and
+    /// applied one by one they would show the list half moved. Returns the channels as they
+    /// were, for [`Self::restore_channels`] when the server refuses.
+    pub fn apply_channel_moves(
+        &mut self,
+        moves: &[hermes_proto::api::ChannelPosition],
+    ) -> (Vec<Channel>, Vec<Changed>) {
+        let mut old = Vec::new();
+        let mut changed = Vec::new();
+        for p in moves {
+            let Some(space) = self.space_of(p.id) else {
+                continue;
+            };
+            let Some(channel) = self.channel_mut(p.id) else {
+                continue;
+            };
+            old.push(channel.clone());
+            channel.position = p.position;
+            if let Some(parent) = p.parent_id {
+                channel.parent_id = parent;
+            }
+            changed.extend([Changed::Channel(p.id), Changed::Space(space)]);
+        }
+        (old, changed)
+    }
+
+    /// Puts back channels taken from [`Self::apply_channel_moves`] (ones deleted since stay
+    /// deleted).
+    pub fn restore_channels(&mut self, old: Vec<Channel>) -> Vec<Changed> {
+        let mut changed = Vec::new();
+        for channel in old {
+            let (id, space) = (channel.id, self.space_of(channel.id));
+            if let Some(here) = self.channel_mut(id) {
+                *here = channel;
+                changed.push(Changed::Channel(id));
+                changed.extend(space.map(Changed::Space));
+            }
+        }
+        changed
+    }
+
     /// The space of a space channel (`None` for DMs and unknown channels).
     pub fn space_of(&self, channel: Id) -> Option<Id> {
         self.channel_space.get(&channel).copied()

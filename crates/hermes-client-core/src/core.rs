@@ -1654,6 +1654,28 @@ impl Core {
         Ok(())
     }
 
+    /// Moves channels in the store right away (the result of [`crate::view::move_channel`]),
+    /// before the server answers. Returns the channels as they were, for
+    /// [`Self::restore_channels`] when the server refuses the move.
+    pub fn apply_channel_moves(
+        &self,
+        inst: &str,
+        moves: &[hermes_proto::api::ChannelPosition],
+    ) -> Vec<hermes_proto::models::Channel> {
+        let Some((old, changed)) = self.with_store(inst, |s| s.apply_channel_moves(moves)) else {
+            return Vec::new();
+        };
+        self.changed(inst, changed);
+        old
+    }
+
+    /// Undoes [`Self::apply_channel_moves`].
+    pub fn restore_channels(&self, inst: &str, old: Vec<hermes_proto::models::Channel>) {
+        if let Some(changed) = self.with_store(inst, |s| s.restore_channels(old)) {
+            self.changed(inst, changed);
+        }
+    }
+
     /// Sends a message optimistically: it shows up as pending right away and is replaced by the
     /// real one when the server accepts it. While disconnected, up to 50 messages queue up.
     pub fn send_message(&self, inst: &str, channel: Id, draft: Draft) -> Result<LocalId> {
