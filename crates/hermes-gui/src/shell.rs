@@ -333,6 +333,8 @@ pub struct Shell {
     /// A share shown in a window of its own.
     pub popped_out: crate::screen::popout::PoppedOut,
     pub launched: std::time::Instant,
+    /// Whether a frame was rendered yet (the startup log).
+    first_frame: std::cell::Cell<bool>,
     pub first_chat: std::cell::Cell<bool>,
     /// Accounts whose gateway was READY once since the start (each is logged the first time).
     pub gateways_ready: std::collections::HashSet<InstanceId>,
@@ -508,6 +510,7 @@ impl Shell {
             tray,
             global_keys: None,
             launched,
+            first_frame: Default::default(),
             first_chat: Default::default(),
             gateways_ready: Default::default(),
             first_server: Default::default(),
@@ -1717,6 +1720,7 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        let first_frame = !self.first_frame.replace(true);
         self.prepare_media_frame(window, cx);
         self.images
             .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
@@ -1945,6 +1949,7 @@ impl Render for Shell {
             .children(self.render_modals(cx))
             .children(self.render_menu())
             .child(self.redraw_waker(cx))
+            .children(first_frame.then(|| self.first_paint_marker()))
     }
 }
 
@@ -1952,6 +1957,23 @@ impl Shell {
     /// Drawn last: by its paint every picture of this frame has said when it changes next (the
     /// chat's rows are built during layout, after `render`). One timer then draws the window
     /// again at the earliest of those moments, instead of on every screen refresh (#60).
+    /// Says in the log when the first frame is painted: the window shows something.
+    fn first_paint_marker(&self) -> AnyElement {
+        let launched = self.launched;
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, (), _, _| {
+                tracing::info!(
+                    elapsed_ms = launched.elapsed().as_millis(),
+                    "first frame painted"
+                );
+            },
+        )
+        .absolute()
+        .size_0()
+        .into_any_element()
+    }
+
     fn redraw_waker(&self, cx: &mut Context<Self>) -> AnyElement {
         let shell = cx.entity().downgrade();
         let pending = self.redraw_at.clone();

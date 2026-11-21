@@ -245,8 +245,11 @@ fn main() -> ExitCode {
                 cx.new(|cx| Shell::new(boot, window, cx))
             })
             .expect("failed to open the window");
-            // Up and running: an update that started this one is done.
-            hermes_client_core::updater::finish_started();
+            // Up and running: an update that started this one is done. It looks through the
+            // install folder, so not on this thread: the first events wait for it (#28).
+            let _ = std::thread::Builder::new()
+                .name("update-finish".into())
+                .spawn(hermes_client_core::updater::finish_started);
             // Only the main window ends the app: a popped-out share's window just closes.
             let main = main.window_id();
             cx.on_window_closed(move |cx, closed| {
