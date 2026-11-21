@@ -1147,6 +1147,12 @@ impl Shell {
         let mut opening: Option<(Id, u32)> = None;
         // What each row is, for where a drop near it lands: a category is open when its
         // channels show under it.
+        if tree_rows.peek().is_some() && !self.first_server.replace(true) {
+            tracing::info!(
+                elapsed_ms = self.launched.elapsed().as_millis(),
+                "first server drawn"
+            );
+        }
         {
             let mut shapes = self.sidebar_order.borrow_mut();
             shapes.clear();

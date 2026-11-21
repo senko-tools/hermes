@@ -891,15 +891,23 @@ impl Core {
             .collect();
         drop(ready);
         let core = self.clone();
+        let started = std::time::Instant::now();
         tokio::spawn(async move {
             futures_util::stream::iter(jobs)
                 .for_each_concurrent(2, |(entry, signal)| {
                     let core = core.clone();
                     async move {
+                        let inst = entry.id.clone();
                         let setup =
                             tokio::task::spawn_blocking(move || core.start_saved(&entry)).await;
-                        if let Err(err) = setup {
-                            tracing::error!("saved account setup failed: {err}");
+                        match setup {
+                            // How long from the start of the lookups until this one connects.
+                            Ok(()) => tracing::info!(
+                                elapsed_ms = started.elapsed().as_millis(),
+                                %inst,
+                                "saved account set up"
+                            ),
+                            Err(err) => tracing::error!("saved account setup failed: {err}"),
                         }
                         drop(signal);
                     }

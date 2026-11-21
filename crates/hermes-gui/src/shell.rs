@@ -325,7 +325,10 @@ pub struct Shell {
     pub popped_out: crate::screen::popout::PoppedOut,
     pub launched: std::time::Instant,
     pub first_chat: std::cell::Cell<bool>,
-    pub first_gateway: bool,
+    /// Accounts whose gateway was READY once since the start (each is logged the first time).
+    pub gateways_ready: std::collections::HashSet<InstanceId>,
+    /// The sidebar showed a server's channels once (logged for the startup time).
+    pub first_server: std::cell::Cell<bool>,
     pub tray: Option<Tray>,
     pub global_keys: Option<GlobalKeys>,
     /// The window is shown (not hidden in the tray).
@@ -495,7 +498,8 @@ impl Shell {
             global_keys: None,
             launched,
             first_chat: Default::default(),
-            first_gateway: false,
+            gateways_ready: Default::default(),
+            first_server: Default::default(),
             window_visible: !start_hidden,
             scale: window.scale_factor(),
             restore: None,
@@ -529,6 +533,10 @@ impl Shell {
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);
+        tracing::info!(
+            elapsed_ms = this.launched.elapsed().as_millis(),
+            "window opened"
+        );
         if let Some(warning) = warning {
             this.show_status(format!("config: {warning}"), Level::Warning, cx);
         }
@@ -736,18 +744,19 @@ impl Shell {
                 match what {
                     Changed::Messages(channel) => self.messages_changed(&inst, channel, cx),
                     Changed::All => {
-                        if !self.first_gateway
+                        if !self.gateways_ready.contains(&inst)
                             && self
                                 .core
                                 .store()
                                 .instance(&inst)
                                 .is_some_and(|s| s.me.is_some())
                         {
-                            self.first_gateway = true;
-                            tracing::info!(
-                                elapsed_ms = self.launched.elapsed().as_millis(),
-                                "authenticated gateway ready"
-                            );
+                            let elapsed_ms = self.launched.elapsed().as_millis();
+                            if self.gateways_ready.is_empty() {
+                                tracing::info!(elapsed_ms, "authenticated gateway ready");
+                            }
+                            tracing::info!(elapsed_ms, %inst, "gateway ready");
+                            self.gateways_ready.insert(inst.clone());
                         }
                         self.everything_changed(&inst, window, cx);
                         if self.restore.as_ref().is_some_and(|(i, _)| *i == inst)
