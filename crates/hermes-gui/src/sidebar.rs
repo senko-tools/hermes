@@ -15,7 +15,7 @@ use hermes_client_core::{InstanceId, view};
 
 use crate::assets::{self, icon};
 use crate::collapsed::Node;
-use crate::drag::{self, Ghost, Item, Kind, Place, Shape};
+use crate::drag::{self, Ghost, Item, Kind, Place, RowBox, Shape, Slot};
 use crate::menu_entries::Target;
 use crate::shell::{Page, Selected, Shell};
 use crate::theme::{self, px};
@@ -911,16 +911,10 @@ impl Shell {
             }
             Selected::Home => None,
         };
-        self.drop_out_strip.set(None);
         let rows = match self.selected.clone() {
             Selected::Home => self.home_rows(cx),
             Selected::Space(inst, space) => self.space_rows(inst, space, cx),
         };
-        let strip = self
-            .drop_out_strip
-            .take()
-            .filter(|_| cx.has_active_drag())
-            .map(|(inst, space)| self.render_drop_out(inst, space, cx));
 
         div()
             .flex()
@@ -966,25 +960,19 @@ impl Shell {
                     |d, t| d.opacity(t),
                 )
             }))
-            .child(
-                // The rows scroll; the drop strip stays over their left edge.
-                div()
-                    .relative()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.sidebar_rows(rows, cx))
-                    .children(strip),
-            )
+            .child(self.sidebar_rows(rows, cx))
     }
 
     /// The scrolling rows of the sidebar, and the empty space under them.
     fn sidebar_rows(&self, rows: Vec<AnyElement>, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::AnimationExt as _;
-        div()
-            .id("sidebar-rows")
-            .flex()
+        let list = div().id("sidebar-rows");
+        // A dragged channel lands wherever it is let go over the list: gaps and margins too.
+        let list = match &self.selected {
+            Selected::Space(inst, space) => self.channel_list_drop(list, inst.clone(), *space, cx),
+            Selected::Home => list,
+        };
+        list.flex()
             .flex_col()
             .flex_1()
             .min_h_0()
@@ -999,7 +987,7 @@ impl Shell {
                 let empty = div().id("sidebar-empty").flex_1().min_h(px(48.));
                 match &self.selected {
                     Selected::Space(inst, space) => {
-                        let empty = self.channel_end_drop(empty, inst.clone(), *space, cx);
+                        let empty = self.channel_end_drop(empty, cx);
                         self.with_menu(empty, Target::ChannelArea(inst.clone(), *space), cx)
                     }
                     Selected::Home => self.with_instances_menu(empty, cx),
@@ -1149,19 +1137,6 @@ impl Shell {
             out
         };
         let mut rows = self.instance_notices(cx);
-        // While a channel is dragged: the list's left edge takes it out of its category.
-        let can_move = tree_rows.iter().any(|row| {
-            matches!(
-                row,
-                Row::Channel {
-                    drag: Some(_),
-                    nested: true,
-                    ..
-                }
-            )
-        });
-        self.drop_out_strip
-            .set(can_move.then(|| (inst.clone(), space)));
         let show_people = self.config.sidebar.show_voice_users;
         let mut tree_rows = tree_rows
             .into_iter()
@@ -1170,8 +1145,8 @@ impl Shell {
         // The category last opened by a click, and how many of its rows came so far: they fade
         // in one after another.
         let mut opening: Option<(Id, u32)> = None;
-        // What each row is, for where a drop on it lands: a category is open when its channels
-        // show under it.
+        // What each row is, for where a drop near it lands: a category is open when its
+        // channels show under it.
         {
             let mut shapes = self.sidebar_order.borrow_mut();
             shapes.clear();
@@ -1179,13 +1154,13 @@ impl Shell {
             for row in tree_rows.clone() {
                 match row {
                     Row::Category { id, .. } => {
-                        shapes.insert(id, Shape::Category { open: false });
+                        shapes.insert(id, (Shape::Category { open: false }, false));
                         category = Some(id);
                     }
                     Row::Channel { id, nested, .. } => {
-                        shapes.insert(id, Shape::Channel);
+                        shapes.insert(id, (Shape::Channel, nested));
                         if let Some(c) = category.take().filter(|_| nested) {
-                            shapes.insert(c, Shape::Category { open: true });
+                            shapes.insert(c, (Shape::Category { open: true }, false));
                         }
                     }
                     _ => {}
@@ -1641,38 +1616,28 @@ impl Shell {
         name: String,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let Some(item) = drag else {
-            return element;
-        };
-        let shape = self
-            .sidebar_order
-            .borrow()
-            .get(&item.id)
-            .copied()
-            .unwrap_or(Shape::Channel);
-        self.channel_drag(element, item, shape, name, cx)
+        match drag {
+            Some(item) => self.channel_drag(element, item, name, cx),
+            None => element,
+        }
     }
 
-    /// Lets a channel list row (sidebar or space settings) be dragged, and take drops: the
-    /// pointer's place on the row it is over decides where the channel lands (`shape` is what
-    /// this row is), shown by an accent line on that edge or, into a category, a tinted row.
+    /// Lets a channel list row (sidebar or space settings) be dragged. Drops go to the whole
+    /// list ([`Self::channel_list_drop`]); the row tells it where it is, and shows where a
+    /// channel would land next to it: an accent line on that edge, or, into a category, a
+    /// tinted row. The row must be in [`Shell::sidebar_order`].
     pub(crate) fn channel_drag(
         &self,
         element: Stateful<Div>,
         item: Item,
-        shape: Shape,
         name: String,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let target = item.clone();
-        let over = item.clone();
-        let drop_at = self.drop_at.clone();
-        // Where a drag over this row would land, while one is: a line on that edge, or the whole
-        // row tinted when it goes into the category.
-        let place = drop_at
-            .get()
-            .filter(|(id, _)| *id == item.id && cx.has_active_drag())
-            .map(|(_, place)| place);
+        let id = item.id;
+        let place = match self.drop_at.get().filter(|_| cx.has_active_drag()) {
+            Some(Slot::At(at, place)) if at == id => Some(place),
+            _ => None,
+        };
         let line = |top: bool| {
             div()
                 .absolute()
@@ -1684,106 +1649,131 @@ impl Shell {
                 .when(top, |d| d.top(px(-1.)))
                 .when(!top, |d| d.bottom(px(-1.)))
         };
+        let rows = self.drag_rows.clone();
         element
             .relative()
+            .when(place == Some(Place::Into), |d| {
+                d.bg(theme::alpha(theme::accent(), 0.14))
+            })
             .children(match place {
                 Some(Place::Before) => Some(line(true)),
                 Some(Place::After) => Some(line(false)),
                 _ => None,
             })
             .on_drag(item, move |_, _, _, cx| cx.new(|_| Ghost(name.clone())))
-            .on_drag_move::<Item>(cx.listener(move |this, ev: &DragMoveEvent<Item>, _, cx| {
-                let at = ev.event.position;
-                if !ev.bounds.contains(&at) {
-                    return;
-                }
-                let dragged = ev.drag(cx);
-                if !dragged.can_drop_on(&over) {
-                    return;
-                }
-                let category = this
-                    .core
-                    .store()
-                    .instance(&dragged.inst)
-                    .and_then(|s| s.channel(dragged.id))
-                    .is_some_and(|c| c.kind == ChannelKind::Category);
-                let frac = (at.y - ev.bounds.top()) / ev.bounds.size.height;
-                let place = drag::place_for(frac, shape, category);
-                let now = Some((over.id, place));
-                if this.drop_at.replace(now) != now {
-                    cx.notify();
-                }
-            }))
-            .drag_over::<Item>(move |style, _, _, _| match place {
-                Some(Place::Into) => style.bg(theme::alpha(theme::accent(), 0.14)),
-                _ => style,
+            .on_drag_move::<Item>(move |ev: &DragMoveEvent<Item>, _, _| {
+                let b = ev.bounds;
+                rows.borrow_mut()
+                    .insert(id, (f32::from(b.top()), f32::from(b.bottom())));
             })
-            .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
-                let place = drop_at
-                    .take()
-                    .filter(|(id, _)| *id == target.id)
-                    .map_or(Place::Before, |(_, place)| place);
-                if dragged.can_drop_on(&target) {
-                    this.drop_item(dragged.clone(), target.clone(), place, cx);
-                }
-                cx.notify();
-            }))
     }
 
-    /// The space under a channel list: a channel dropped there goes last, after everything
-    /// (also after an open category, which a drop on its rows cannot reach). An accent line
-    /// along its top shows it while one is dragged over it.
-    pub(crate) fn channel_end_drop(
+    /// Lets a channel list (sidebar or space settings) take a dragged channel anywhere over
+    /// it, gaps, margins and the space under the rows included: where it lands comes from the
+    /// pointer's height ([`drag::slot_for`]), not from the row it is over.
+    pub(crate) fn channel_list_drop(
         &self,
         element: Stateful<Div>,
         inst: InstanceId,
         space: Id,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let fits = {
-            let inst = inst.clone();
-            move |dragged: &Item| {
-                dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
-            }
+        let fits = move |dragged: &Item| {
+            dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
         };
         let fits_drop = fits.clone();
         element
-            // Over here, no row shows where it would land: only this line.
-            .on_drag_move::<Item>(cx.listener(|this, ev: &DragMoveEvent<Item>, _, cx| {
-                if ev.bounds.contains(&ev.event.position) && this.drop_at.take().is_some() {
+            .on_drag_move::<Item>(cx.listener(move |this, ev: &DragMoveEvent<Item>, _, cx| {
+                let dragged = ev.drag(cx).clone();
+                let at = ev.event.position;
+                let slot = (fits(&dragged) && ev.bounds.contains(&at))
+                    .then(|| this.slot_at(&dragged, f32::from(at.y)))
+                    .flatten();
+                if this.drop_at.replace(slot) != slot {
                     cx.notify();
                 }
             }))
-            .drag_over::<Item>(move |style, dragged, _, _| {
-                if fits(dragged) {
-                    style.border_t_2().border_color(theme::accent())
-                } else {
-                    style
-                }
-            })
-            .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
-                if !fits_drop(dragged) {
-                    return;
-                }
-                // After the last thing at the top level, whatever it is.
-                let last = this.core.store().instance(&inst).and_then(|s| {
-                    view::channel_tree(s, space)
-                        .into_iter()
-                        .rfind(|c| c.depth == 0)
-                        .map(|c| c.id)
-                });
-                if let Some(last) = last.filter(|last| *last != dragged.id) {
-                    let target = Item {
-                        id: last,
-                        ..dragged.clone()
-                    };
-                    this.drop_item(dragged.clone(), target, Place::After, cx);
+            .on_drop(cx.listener(move |this, dragged: &Item, window, cx| {
+                this.drop_at.set(None);
+                if fits_drop(dragged) {
+                    let y = f32::from(window.mouse_position().y);
+                    match this.slot_at(dragged, y) {
+                        Some(Slot::At(target, place)) => {
+                            let target = Item {
+                                id: target,
+                                ..dragged.clone()
+                            };
+                            if dragged.can_drop_on(&target) {
+                                this.drop_item(dragged.clone(), target, place, cx);
+                            }
+                        }
+                        Some(Slot::End) => this.drop_at_end(dragged.clone(), cx),
+                        None => {}
+                    }
                 }
                 cx.notify();
             }))
     }
 
-    /// A channel was dropped at `place` of another: reorders the channels.
+    /// Where `dragged` lands when let go at height `y` over the channel list on screen.
+    fn slot_at(&self, dragged: &Item, y: f32) -> Option<Slot> {
+        let category = self
+            .core
+            .store()
+            .instance(&dragged.inst)
+            .and_then(|s| s.channel(dragged.id))
+            .is_some_and(|c| c.kind == ChannelKind::Category);
+        let rows: Vec<RowBox> = {
+            let shapes = self.sidebar_order.borrow();
+            let bounds = self.drag_rows.borrow();
+            shapes
+                .iter()
+                .filter_map(|(id, (shape, nested))| {
+                    let (top, bottom) = *bounds.get(id)?;
+                    Some(RowBox {
+                        id: *id,
+                        shape: *shape,
+                        nested: *nested,
+                        top,
+                        bottom,
+                    })
+                })
+                .collect()
+        };
+        drag::slot_for(&rows, y, category)
+    }
+
+    /// The space under a channel list: shows an accent line along its top while a dragged
+    /// channel would go last there (the list itself takes the drop).
+    pub(crate) fn channel_end_drop(
+        &self,
+        element: Stateful<Div>,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let end = cx.has_active_drag() && self.drop_at.get() == Some(Slot::End);
+        element.when(end, |d| d.border_t_2().border_color(theme::accent()))
+    }
+
+    /// A channel was dropped last: after the last thing at the top level, whatever it is.
+    fn drop_at_end(&mut self, dragged: Item, cx: &mut Context<Self>) {
+        let last = self.core.store().instance(&dragged.inst).and_then(|s| {
+            view::channel_tree(s, dragged.space)
+                .into_iter()
+                .rfind(|c| c.depth == 0)
+                .map(|c| c.id)
+        });
+        let Some(last) = last.filter(|last| *last != dragged.id) else {
+            return;
+        };
+        let target = Item {
+            id: last,
+            ..dragged.clone()
+        };
+        self.drop_item(dragged, target, Place::After, cx);
+    }
+
+    /// A channel was dropped at `place` of another: reorders the channels. The list changes
+    /// at once; the server's answer only confirms it (or puts it back).
     pub fn drop_item(&mut self, dragged: Item, target: Item, place: Place, cx: &mut Context<Self>) {
         let moves = {
             let store = self.core.store();
@@ -1795,74 +1785,28 @@ impl Shell {
         if moves.is_empty() {
             return;
         }
+        let inst = dragged.inst;
         let space = dragged.space;
-        self.call_status(
-            &dragged.inst,
-            "Channels reordered",
-            move |r| async move { r.reorder_channels(space, &moves).await },
+        let old = self.core.apply_channel_moves(&inst, &moves);
+        let core = self.core.clone();
+        let call_inst = inst.clone();
+        self.run(
             cx,
-        );
-    }
-
-    /// The strip at the top of a space's channels while one is dragged: dropped there, a
-    /// channel leaves its category for the top of the list.
-    /// While a channel inside a category is dragged: a strip over the list's left edge. Dropped
-    /// there, it leaves its category (#13). Nothing in the list moves for it; it lights up with
-    /// an accent bar while the channel is over it.
-    fn render_drop_out(&self, inst: InstanceId, space: Id, cx: &mut Context<Self>) -> AnyElement {
-        let fits = move |dragged: &Item| {
-            dragged.kind == Kind::Channel && dragged.inst == inst && dragged.space == space
-        };
-        let fits_drop = fits.clone();
-        div()
-            .id("drop-out-of-category")
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .w(px(18.))
-            .occlude()
-            .drag_over::<Item>(move |style, dragged, _, _| {
-                if !fits(dragged) {
-                    return style;
+            async move {
+                let rest = core.rest(&call_inst).map_err(|e| e.to_string())?;
+                rest.reorder_channels(space, &moves)
+                    .await
+                    .map_err(|e| e.to_string())
+            },
+            move |this, result, _, cx| match result {
+                Ok(_) => this.info("Channels reordered", cx),
+                Err(err) => {
+                    this.core.restore_channels(&inst, old);
+                    this.error(err, cx);
                 }
-                style
-                    .bg(theme::alpha(theme::accent(), 0.12))
-                    .border_l_3()
-                    .border_color(theme::accent())
-            })
-            .on_drop(cx.listener(move |this, dragged: &Item, _, cx| {
-                if fits_drop(dragged) {
-                    this.drop_out_of_category(dragged.clone(), cx);
-                }
-            }))
-            .tooltip(|window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(
-                    "Drop here to take it out of its category",
-                )
-                .build(window, cx)
-            })
-            .into_any_element()
-    }
-
-    fn drop_out_of_category(&mut self, dragged: Item, cx: &mut Context<Self>) {
-        let moves = {
-            let store = self.core.store();
-            store
-                .instance(&dragged.inst)
-                .map(|s| view::move_channel_out(s, dragged.space, dragged.id))
-                .unwrap_or_default()
-        };
-        if moves.is_empty() {
-            return;
-        }
-        let space = dragged.space;
-        self.call_status(
-            &dragged.inst,
-            "Channel moved out of its category",
-            move |r| async move { r.reorder_channels(space, &moves).await },
-            cx,
+            },
         );
+        cx.notify();
     }
 
     /// My name at the bottom: the status menu, the settings and the voice buttons.

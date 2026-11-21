@@ -1641,21 +1641,24 @@ impl Shell {
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
         let tree = view::channel_tree(s, space);
-        // A category is open when channels follow it (this list never folds).
-        let shapes: Vec<Shape> = tree
-            .iter()
-            .enumerate()
-            .map(|(n, c)| match c.kind {
-                ChannelKind::Category => Shape::Category {
-                    open: tree.get(n + 1).is_some_and(|next| next.depth > 0),
-                },
-                _ => Shape::Channel,
-            })
-            .collect();
+        // What each row is, for where a drop near it lands: a category is open when channels
+        // follow it (this list never folds).
+        {
+            let mut shapes = self.sidebar_order.borrow_mut();
+            shapes.clear();
+            for (n, c) in tree.iter().enumerate() {
+                let shape = match c.kind {
+                    ChannelKind::Category => Shape::Category {
+                        open: tree.get(n + 1).is_some_and(|next| next.depth > 0),
+                    },
+                    _ => Shape::Channel,
+                };
+                shapes.insert(c.id, (shape, c.depth > 0));
+            }
+        }
         let rows: Vec<AnyElement> = tree
             .into_iter()
-            .zip(shapes)
-            .map(|(c, shape)| {
+            .map(|c| {
                 let id = c.id;
                 let glyph = match c.kind {
                     ChannelKind::Category => assets::CHEVRON_DOWN,
@@ -1681,7 +1684,7 @@ impl Shell {
                         kind: Kind::Channel,
                         id,
                     };
-                    self.channel_drag(element, item, shape, c.name.clone(), cx)
+                    self.channel_drag(element, item, c.name.clone(), cx)
                 } else {
                     element
                 };
@@ -1726,18 +1729,26 @@ impl Shell {
                 )
                 .into_any_element()
         });
-        let mut rows = rows;
-        if manage {
-            rows.push(
-                self.channel_end_drop(
-                    div().id("channel-list-end").h(px(32.)),
-                    inst.clone(),
-                    space,
+        let rows = if manage {
+            // The whole list takes a dragged channel, gaps and the space under it too.
+            let list = div()
+                .id("settings-channel-list")
+                .flex()
+                .flex_col()
+                .flex_grow(1.)
+                .gap(px(1.))
+                .children(rows)
+                .child(self.channel_end_drop(
+                    div().id("channel-list-end").flex_grow(1.).min_h(px(32.)),
                     cx,
-                )
-                .into_any_element(),
-            );
-        }
+                ));
+            vec![
+                self.channel_list_drop(list, inst.clone(), space, cx)
+                    .into_any_element(),
+            ]
+        } else {
+            rows
+        };
         let list = side_list("Channels", actions, rows);
         let detail = match page.channel.and_then(|id| s.channel(id)) {
             Some(channel) if channel.space_id == Some(space) => {

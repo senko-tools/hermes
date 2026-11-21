@@ -149,10 +149,13 @@ pub struct Shell {
     /// Instances whose connection banner showed: `None` while it does, then when the
     /// connection came back (the banner says so for a moment).
     pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
-    /// What each channel list row in the sidebar is, as last drawn: a channel or a category.
-    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, crate::drag::Shape>>>,
-    /// The row a dragged channel is over and where on it it would land.
-    pub drop_at: std::rc::Rc<std::cell::Cell<Option<(Id, crate::drag::Place)>>>,
+    /// What each row of the channel list on screen (sidebar or space settings) is, as last
+    /// drawn: a channel or a category, and whether it is inside a category.
+    pub sidebar_order: std::rc::Rc<std::cell::RefCell<HashMap<Id, (crate::drag::Shape, bool)>>>,
+    /// Where those rows were, in window pixels, as dragging last saw them (top, bottom).
+    pub drag_rows: std::rc::Rc<std::cell::RefCell<HashMap<Id, (f32, f32)>>>,
+    /// Where a dragged channel would land.
+    pub drop_at: std::rc::Rc<std::cell::Cell<Option<crate::drag::Slot>>>,
     /// The voice panel's height as last painted, in window pixels.
     pub voice_panel_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Chat text selected with the mouse.
@@ -171,9 +174,6 @@ pub struct Shell {
     /// Bordered bars (the user panel, the voice panel, the page header): a menu over or under
     /// something inside one clears the whole bar, border included (#14).
     pub popup_bars: std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::Bounds<Pixels>>>>,
-    /// The server whose channels could be dragged out of a category this frame (the sidebar's
-    /// left-edge drop strip).
-    pub drop_out_strip: std::cell::Cell<Option<(InstanceId, Id)>>,
     /// The pointer is over a letter of selectable text: the root shows the text cursor.
     pub pointer_over_text: bool,
     /// The profile card that is open.
@@ -400,6 +400,7 @@ impl Shell {
             reactions_seen: Default::default(),
             reconnect_banner: Default::default(),
             sidebar_order: Default::default(),
+            drag_rows: Default::default(),
             drop_at: Default::default(),
             voice_panel_height: Default::default(),
             shown_page: None,
@@ -413,7 +414,6 @@ impl Shell {
             popup_triggers: Default::default(),
             popup_bars: Default::default(),
             pointer_over_text: false,
-            drop_out_strip: Default::default(),
             profile: None,
             profile_cache: HashMap::new(),
             confirm: None,
