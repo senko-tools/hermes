@@ -123,6 +123,18 @@ daily copies of the files that hard-link what has not changed, so they take litt
 - `[limits]`: `session_idle_days` and `max_sessions_per_user` end unused sessions, `max_connections` and
   `max_connections_per_ip` cap sockets, `actions_per_minute` limits edits, reactions and the like per person, and
   `max_mentions_per_message` also works on encrypted messages.
+- What else is limited, so a flood of requests is turned away cheaply instead of slowing everyone down:
+  - REST: `requests_per_second` per session (ten times that per address), and `max_inflight_requests` answered at
+    once in all; more get `RATE_LIMITED` straight away.
+  - Per person, as a fraction of `actions_per_minute`: opening profiles (1/2), search (1/4), uploads and video
+    posters (1/5), the data export (1/120), and more.
+  - Gateway: `gateway_ops_per_minute` per connection, `gateway_identifies_per_minute` sign-ins per person (ten
+    times that per address), and 5 presence changes per 10 s per connection (the latest of the rest is applied
+    later).
+  - The landing page, invite pages and `/healthz`: 10 requests per second per address.
+  - Voice (QUIC): `max_connections_per_ip` per address and 256 connections that have not authenticated yet; when
+    many are waiting, new clients must first prove their address (a QUIC retry).
+  - Once a minute, the log says what the limits turned away, if anything.
 - Instance admins can change who may register in the app (Settings, Instance). That wins over the config file.
 - Someone who lost their authenticator: `hermes-server user disable2fa <name>`.
 

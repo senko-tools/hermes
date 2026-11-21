@@ -63,7 +63,8 @@ Errors always look like:
 ```
 
 `VALIDATION_FAILED` adds `"fields": { "name": "what is wrong" }`; `RATE_LIMITED` (HTTP 429) sets
-`retry_after_ms`.
+`retry_after_ms`. It also answers when the server is too busy (`limits.max_inflight_requests`), with
+`retry_after_ms: 1000`.
 
 | Code | HTTP |
 |---|---|
@@ -190,7 +191,7 @@ update for the old channel's viewers, then the new state.
 | 4004 | authentication failed | stop, show login |
 | 4005 | already authenticated | reconnect |
 | 4007 | invalid seq | identify fresh |
-| 4008 | rate limited | reconnect after 5 s |
+| 4008 | rate limited (too many ops, or identify/resume too often) | reconnect after 5 s |
 | 4009 | session timed out / queue overflow | resume |
 | 4010 | unsupported protocol version | stop, ask to update |
 | 4011 | session revoked | stop, show login |
