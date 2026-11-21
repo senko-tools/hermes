@@ -673,6 +673,13 @@ pub struct EditMessageRequest {
     pub mentions: Option<crate::models::Mentions>,
 }
 
+/// `DELETE /channels/{id}/messages/{mid}/attachments/{aid}`: one file taken off a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveAttachmentResponse {
+    /// The message as it is now; `None` when nothing was left of it and it was deleted.
+    pub message: Option<Message>,
+}
+
 /// `POST /channels/{id}/ack`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AckRequest {

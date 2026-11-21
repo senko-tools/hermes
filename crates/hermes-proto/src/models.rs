@@ -442,13 +442,15 @@ pub enum AuditAction {
     KeyPolicyUpdate,
     /// Several messages deleted at once (`details.count`).
     MessageDeleteBulk,
+    /// A moderator took one file off someone else's message (`details.attachment_id`).
+    AttachmentRemove,
     /// An action from a newer server. Never written by a server; not in [`AuditAction::ALL`].
     #[serde(other)]
     Unknown,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 27] = [
+    pub const ALL: [AuditAction; 28] = [
         AuditAction::SpaceUpdate,
         AuditAction::SpaceTransfer,
         AuditAction::MemberUpdate,
@@ -476,6 +478,7 @@ impl AuditAction {
         AuditAction::InviteRevoke,
         AuditAction::KeyPolicyUpdate,
         AuditAction::MessageDeleteBulk,
+        AuditAction::AttachmentRemove,
     ];
 
     /// The snake_case name, as on the wire and in `audit_log.action`.
@@ -488,6 +491,7 @@ impl AuditAction {
             AuditAction::InviteRevoke => "invite_revoke",
             AuditAction::KeyPolicyUpdate => "key_policy_update",
             AuditAction::MessageDeleteBulk => "message_delete_bulk",
+            AuditAction::AttachmentRemove => "attachment_remove",
             AuditAction::SpaceUpdate => "space_update",
             AuditAction::SpaceTransfer => "space_transfer",
             AuditAction::MemberUpdate => "member_update",
