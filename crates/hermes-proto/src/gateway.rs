@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::id::Id;
 use crate::models::{
     Channel, CurrentUser, Member, Message, NotificationSetting, Presence, PresenceStatus,
-    PrivacySettings, ReadState, Role, Space, User, VoiceState,
+    PrivacySettings, ReadState, Relationship, Role, Space, User, VoiceState,
 };
 
 pub use crate::PROTOCOL_VERSION;
@@ -115,11 +115,15 @@ impl ClientMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpaceSnapshot {
     pub space: Space,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub roles: Vec<Role>,
     /// Only channels the user can `VIEW_CHANNEL`.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub channels: Vec<Channel>,
     /// Capped at 1000; larger spaces lazy-load the rest via REST.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub members: Vec<Member>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub voice_states: Vec<VoiceState>,
 }
 
@@ -132,16 +136,82 @@ pub struct VoiceInfo {
     pub cert_sha256: Option<String>,
 }
 
+/// What the instance admin set in `hermes.toml`. Fields added later read as the values every
+/// server had before they could be set, so an older server's limits come out right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceLimits {
     pub max_upload_mb: u32,
     pub max_message_length: u32,
+    /// Whether messages in server channels have to be end-to-end encrypted here.
+    #[serde(default)]
+    pub channels_encrypted: bool,
+    /// How long an invite made without a lifetime lasts.
+    #[serde(default = "limit_defaults::invite_default_secs")]
+    pub invite_default_secs: u64,
+    /// The longest lifetime an invite may have, other than "never".
+    #[serde(default = "limit_defaults::invite_max_secs")]
+    pub invite_max_secs: u64,
+    /// Files one message can carry (each may also link an encrypted preview).
+    #[serde(default = "limit_defaults::max_files")]
+    pub max_files: u32,
+    /// Different emoji on one message.
+    #[serde(default = "limit_defaults::max_reactions")]
+    pub max_reactions: u32,
+    /// The longest slow mode a channel can have.
+    #[serde(default = "limit_defaults::max_slowmode_secs")]
+    pub max_slowmode_secs: u32,
+    /// Pinned messages in one channel.
+    #[serde(default = "limit_defaults::max_pins")]
+    pub max_pins: u32,
+}
+
+impl Default for InstanceLimits {
+    fn default() -> Self {
+        Self {
+            max_upload_mb: 25,
+            max_message_length: 4000,
+            channels_encrypted: false,
+            invite_default_secs: limit_defaults::invite_default_secs(),
+            invite_max_secs: limit_defaults::invite_max_secs(),
+            max_files: limit_defaults::max_files(),
+            max_reactions: limit_defaults::max_reactions(),
+            max_slowmode_secs: limit_defaults::max_slowmode_secs(),
+            max_pins: limit_defaults::max_pins(),
+        }
+    }
+}
+
+/// The limits every server had before they could be set.
+pub mod limit_defaults {
+    use crate::api::{CreateInviteRequest, SendMessageRequest, UpdateChannelRequest};
+
+    pub fn invite_default_secs() -> u64 {
+        CreateInviteRequest::DEFAULT_EXPIRES_IN_SECS
+    }
+    pub fn invite_max_secs() -> u64 {
+        CreateInviteRequest::MAX_EXPIRES_IN_SECS
+    }
+    pub fn max_files() -> u32 {
+        SendMessageRequest::MAX_FILES as u32
+    }
+    pub fn max_reactions() -> u32 {
+        20
+    }
+    pub fn max_slowmode_secs() -> u32 {
+        UpdateChannelRequest::MAX_SLOWMODE_SECS
+    }
+    pub fn max_pins() -> u32 {
+        500
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceInfo {
     pub name: String,
     pub limits: InstanceLimits,
+    /// What this server can do beyond protocol 2 ([`crate::compat::features`]).
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// The full snapshot sent after `identify` (PLAN.md section 11.3).
@@ -149,19 +219,28 @@ pub struct InstanceInfo {
 pub struct Ready {
     pub session_id: String,
     pub user: CurrentUser,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub spaces: Vec<SpaceSnapshot>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub dms: Vec<Channel>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub read_states: Vec<ReadState>,
     /// Users sharing a space or DM with you.
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub presences: Vec<Presence>,
+    #[serde(deserialize_with = "crate::compat::lenient_vec")]
     pub notification_settings: Vec<NotificationSetting>,
     /// Voice states of DM and group DM calls you are a recipient of (space voice states are in
     /// `spaces[].voice_states`).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::compat::lenient_vec")]
     pub dm_voice_states: Vec<VoiceState>,
     /// Your privacy settings.
-    #[serde(default)]
+    /// A choice from a newer server reads as the defaults.
+    #[serde(default, deserialize_with = "crate::compat::or_default")]
     pub privacy: PrivacySettings,
+    /// Your friends and friend requests.
+    #[serde(default, deserialize_with = "crate::compat::lenient_vec")]
+    pub relationships: Vec<Relationship>,
     pub voice: VoiceInfo,
     pub instance: InstanceInfo,
 }
@@ -293,6 +372,28 @@ pub enum ServerEvent {
     },
     /// Own sessions only.
     PrivacyUpdate(PrivacySettings),
+    /// A friend request or friend, new or changed, as I see it. Own sessions only.
+    RelationshipUpdate(Relationship),
+    /// Removed, declined or taken back. Own sessions only.
+    RelationshipRemove {
+        user_id: Id,
+    },
+    /// A device has no keys for this channel yet (docs/e2ee.md).
+    ChannelKeyRequest(crate::e2ee::KeyRequest),
+    /// New keys of this channel wait for one of my devices.
+    ChannelKeysDelivered {
+        channel_id: Id,
+    },
+    /// This channel moved to a new key.
+    ChannelKeyEpoch {
+        channel_id: Id,
+        epoch: u32,
+    },
+    /// Someone's device keys changed (docs/e2ee.md).
+    DevicesUpdate {
+        user_id: Id,
+        devices: Vec<crate::e2ee::DeviceKeys>,
+    },
 }
 
 impl ServerEvent {
@@ -622,6 +723,7 @@ mod tests {
             presences: vec![],
             notification_settings: vec![],
             dm_voice_states: vec![],
+            relationships: vec![],
             privacy: Default::default(),
             voice: VoiceInfo {
                 enabled: true,
@@ -630,10 +732,8 @@ mod tests {
             },
             instance: InstanceInfo {
                 name: "Hermes".into(),
-                limits: InstanceLimits {
-                    max_upload_mb: 25,
-                    max_message_length: 4000,
-                },
+                limits: InstanceLimits::default(),
+                features: Vec::new(),
             },
         };
         let value = round_trip(&ServerMessage::control(ServerEvent::Ready(Box::new(ready))));
@@ -660,7 +760,7 @@ mod tests {
         assert_eq!(
             value,
             json!({ "op": "identify", "d": {
-                "token": "t", "protocol_version": 1,
+                "token": "t", "protocol_version": 2,
                 "client": { "name": "hermes-gui", "version": "0.1.0", "os": "windows" }
             }})
         );

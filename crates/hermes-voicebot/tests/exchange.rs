@@ -10,76 +10,34 @@ use std::time::{Duration, Instant};
 use hermes_client_core::address::{Fingerprint, HostPort, InviteLink};
 use hermes_client_core::proto::api::CreateInviteRequest;
 use hermes_client_core::{Core, CoreOptions};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
+use hermes_server::config::RegistrationMode;
 use hermes_server::state::AppState;
 use hermes_voicebot::{Bot, Login, signal, wav};
-use tokio::sync::Notify;
 
+/// A server with voice from `hermes_server::testing`, with what these tests use of its invite
+/// link.
 struct TestServer {
     host: HostPort,
     setup_code: String,
     fingerprint: Fingerprint,
     state: Arc<AppState>,
-    shutdown: Arc<Notify>,
     dir: PathBuf,
-}
-
-impl Drop for TestServer {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> TestServer {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let dir = std::env::temp_dir().join(format!("hermes-voicebot-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut config = Config::default();
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::InviteOnly;
-    config.limits.requests_per_second = 100_000;
-    config.limits.login_attempts_per_minute = 100_000;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let (quic, cert_sha256) =
-        hermes_server::voice::endpoint::bind(&config, "127.0.0.1:0".parse().unwrap()).unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    state
-        .voice
-        .set_endpoint(hermes_server::voice::EndpointInfo {
-            cert_sha256,
-            port: quic.local_addr().unwrap().port(),
-        });
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let link = InviteLink::parse(&links.web).unwrap();
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    let state = Arc::new(state);
-    tokio::spawn(hermes_server::server::run(
-        state.clone(),
-        tcp,
-        tls,
-        Some(quic),
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("voicebot-{name}"), true, |c| {
+        c.registration.mode = RegistrationMode::InviteOnly;
+    })
+    .await;
+    let link = InviteLink::parse(&server.link).unwrap();
     TestServer {
-        host: HostPort::parse(&format!("127.0.0.1:{port}")).unwrap(),
+        host: HostPort::parse(&server.host()).unwrap(),
         setup_code: link.code,
         fingerprint: link.fingerprint.unwrap(),
-        state,
-        shutdown,
-        dir,
+        state: server.state.clone(),
+        dir: server.dir.clone(),
+        _server: server,
     }
 }
 

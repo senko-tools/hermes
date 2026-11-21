@@ -9,8 +9,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
 
 use hermes_audio::{AudioEvent, AudioSettings, Engine, InputMode, Io, Sound};
 use hermes_proto::api::{VoiceJoinRequest, VoiceJoinResponse, VoiceSelfStateRequest};
@@ -18,7 +19,7 @@ use hermes_proto::id::Id;
 use hermes_proto::models::ChannelKind;
 use hermes_proto::permissions::Permissions;
 use hermes_proto::voice::{
-    self, AudioHeader, ClientControl, KickReason, Participant, ServerControl, VideoHeader,
+    self, AudioKind, ClientControl, KickReason, Participant, ServerControl, VideoHeader,
 };
 use quinn::crypto::rustls::QuicClientConfig;
 use tokio::sync::{mpsc, oneshot};
@@ -27,6 +28,8 @@ use tokio::task::JoinHandle;
 use crate::address::Fingerprint;
 use crate::config;
 use crate::core::{Core, CoreError, CoreEvent, InstanceId, Result, now_ms};
+use crate::e2ee::{self, VoiceCrypto};
+use crate::secure::{self, AccountKeys, DEVICES_MAX_AGE_MS};
 use crate::volumes::UserVolumes;
 
 pub const RECONNECT_ATTEMPTS: u32 = 5;
@@ -36,9 +39,20 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(2);
 /// Own screen share frames waiting to be sent; more are dropped (the next frame should then
 /// be a keyframe).
-const SCREEN_QUEUE: usize = 4;
+const SCREEN_QUEUE: usize = 8;
 /// A screen share frame must arrive completely within this time.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often the screen share transport's numbers are logged.
+const SCREEN_STATS_EVERY: Duration = Duration::from_secs(10);
+/// While a share waits for a keyframe here, how often to ask again (the server may have dropped
+/// a request that came too soon after another).
+const KEYFRAME_ASK_GAP: Duration = Duration::from_millis(500);
+/// How often who is in the room is compared with who has my sender key.
+const REKEY_CHECK: Duration = Duration::from_millis(250);
+/// A new sender key goes around this long before it is used, so nobody misses packets.
+const REKEY_SWITCH: Duration = Duration::from_millis(300);
+/// How long a failed key hand-out waits before trying again.
+const REKEY_RETRY: Duration = Duration::from_secs(2);
 
 /// One encoded frame of your own screen share.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +74,8 @@ pub struct RemoteFrame {
     pub header: VideoHeader,
     /// The H.264 access unit.
     pub data: Vec<u8>,
+    /// When the frame had arrived completely (to measure how long it waits for the decoder).
+    pub received: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,19 +86,62 @@ pub enum VoiceStatus {
     Reconnecting { attempt: u32 },
 }
 
+/// The voice connection's numbers right now, for the network graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceLink {
+    /// QUIC's own round trip estimate.
+    pub rtt_ms: u32,
+    pub sent_bytes: u64,
+    pub received_bytes: u64,
+    pub sent_packets: u64,
+    pub lost_packets: u64,
+    pub server: std::net::SocketAddr,
+}
+
+/// How the encryption of a voice session stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceEncryption {
+    /// My current sender key is in use and everyone in the room was given it.
+    pub ready: bool,
+    /// Those whose key has not arrived yet: I cannot hear them until it does.
+    pub waiting: Vec<Id>,
+    /// Those who cannot get my key, because they have no encryption keys (an old client).
+    pub no_keys: Vec<Id>,
+    /// The same on the screen of everyone in the room, if nobody put their own keys in between.
+    pub code: String,
+}
+
 /// The voice part of [`Core`].
+///
+/// Locking: none of these mutexes is held while another one (or the core's config, store or key
+/// directory lock) is taken, and none across an `.await`. The engine's thread takes `link` and
+/// then `crypto`, one after the other, once per packet; keeping every `crypto` guard short keeps
+/// that thread from waiting. `crypto` alone still fails closed on a poisoned lock (a panic halfway
+/// through a key change must not let a nonce be reused); the others hold plain data that stays
+/// valid, so they are taken with [`lock`], and one panic does not take voice down with it.
 pub(crate) struct Voice {
     engine: Engine,
     /// The connection captured packets go to.
     link: Arc<Mutex<Option<quinn::Connection>>>,
+    /// The end-to-end encryption of the session's audio and video.
+    crypto: Arc<Mutex<VoiceCrypto>>,
+    /// Someone else is in the room. Alone, my audio is not sent: nobody would hear it (like a
+    /// screen share nobody watches).
+    listeners: Arc<AtomicBool>,
     /// Where own screen share frames go (the current connection's writer).
     screen_out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     /// Where others' screen share frames go (set by the UI).
     screen_sink: Arc<Mutex<Option<mpsc::Sender<RemoteFrame>>>>,
     state: Mutex<State>,
-    volumes: Mutex<UserVolumes>,
+    volumes: Arc<Mutex<UserVolumes>>,
+    /// A background save of `volumes` is queued and has not taken its snapshot yet.
+    volumes_queued: Arc<AtomicBool>,
+    /// Background saves of `volumes` write one at a time, in order.
+    volumes_writer: Arc<Mutex<()>>,
     /// `PATCH /voice/@me` requests go out one at a time (see `apply_self_state`).
     rest_state: Arc<tokio::sync::Mutex<()>>,
+    /// The sequence number and timestamp of my screen share's next sound frame.
+    share_sound: Mutex<(u16, u32)>,
 }
 
 #[derive(Default)]
@@ -110,10 +169,23 @@ struct Session {
     sharing: HashSet<u16>,
     /// Shares this client receives.
     watching: HashSet<u16>,
+    /// The server forwards share audio (`ready.share_audio`).
+    share_audio: bool,
     /// My own screen share runs.
     my_share: bool,
+    /// How many watch my share (`share_watchers`); `None` until the server says, which an older
+    /// server never does: then frames are always sent.
+    my_watchers: Option<u16>,
     status: VoiceStatus,
     connected_once: bool,
+    /// Who my current sender key went to, and the keys known then. Different from now: a new key.
+    keyed_for: Option<(Vec<(u16, Id)>, u64)>,
+    /// A key hand-out is running.
+    rekeying: bool,
+    /// Counts rooms: a hand-out from an earlier room must not touch this one.
+    key_epoch: u64,
+    /// Those in the room who could not get my key: no encryption keys of theirs are known.
+    no_keys: Vec<Id>,
     /// A `join_voice` waiting for `ready` (or an error).
     pending: Option<oneshot::Sender<std::result::Result<(), String>>>,
     task: Option<JoinHandle<()>>,
@@ -129,14 +201,28 @@ impl Voice {
         events: mpsc::UnboundedSender<AudioEvent>,
     ) -> Self {
         let link: Arc<Mutex<Option<quinn::Connection>>> = Arc::default();
+        let crypto: Arc<Mutex<VoiceCrypto>> = Arc::default();
+        let listeners: Arc<AtomicBool> = Arc::default();
         let engine = {
             let link = link.clone();
+            let crypto = crypto.clone();
+            let listeners = listeners.clone();
             Engine::start(io, settings, move |event| match event {
                 AudioEvent::Packet(datagram) => {
-                    let conn = link.lock().expect("voice link").clone();
+                    if !listeners.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let conn = lock(&link).clone();
                     if let Some(conn) = conn {
-                        // Never blocks; a full buffer drops the packet.
-                        let _ = conn.send_datagram(datagram.into());
+                        // Nothing leaves in clear: without a key yet, the packet is dropped.
+                        let sealed = crypto
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .seal_audio(&datagram);
+                        if let Some(sealed) = sealed {
+                            // Never blocks; a full buffer drops the packet.
+                            let _ = conn.send_datagram(sealed.into());
+                        }
                     }
                 }
                 other => {
@@ -147,17 +233,55 @@ impl Voice {
         Voice {
             engine,
             link,
+            crypto,
+            listeners,
             screen_out: Mutex::default(),
             screen_sink: Arc::default(),
             state: Mutex::default(),
-            volumes: Mutex::new(volumes),
+            volumes: Arc::new(Mutex::new(volumes)),
+            volumes_queued: Arc::default(),
+            volumes_writer: Arc::default(),
             rest_state: Arc::default(),
+            share_sound: Mutex::default(),
         }
     }
 
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().expect("voice state")
+    fn state(&self) -> MutexGuard<'_, State> {
+        lock(&self.state)
     }
+
+    /// Writes `user_volumes.toml` without blocking the caller (the UI thread, many times a
+    /// second while a volume slider moves): a burst of changes becomes one or two writes on a
+    /// blocking thread, each with the newest volumes. Outside a tokio runtime it writes at once.
+    fn save_volumes(&self) -> std::result::Result<(), config::ConfigError> {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            let snapshot = lock(&self.volumes).clone();
+            return snapshot.save();
+        };
+        if self.volumes_queued.swap(true, Ordering::AcqRel) {
+            // The queued save has not taken its snapshot yet: it will include this change.
+            return Ok(());
+        }
+        let (volumes, queued, writer) = (
+            self.volumes.clone(),
+            self.volumes_queued.clone(),
+            self.volumes_writer.clone(),
+        );
+        runtime.spawn_blocking(move || {
+            let _turn = lock(&writer);
+            queued.store(false, Ordering::Release);
+            let snapshot = lock(&volumes).clone();
+            if let Err(err) = snapshot.save() {
+                tracing::warn!("user volumes not saved: {err}");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Locks `mutex` even if a thread panicked while holding it (see [`Voice`]).
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `[voice]` of the config as engine settings.
@@ -168,15 +292,22 @@ pub fn audio_settings(v: &config::Voice) -> AudioSettings {
         output_device: device(&v.output_device),
         input_volume: v.input_volume as f32,
         output_volume: v.output_volume as f32,
-        mode: if v.mode == "push_to_talk" {
-            InputMode::PushToTalk
-        } else {
-            InputMode::VoiceActivity
+        mode: match v.mode {
+            config::VoiceMode::PushToTalk => InputMode::PushToTalk,
+            config::VoiceMode::VoiceActivity => InputMode::VoiceActivity,
         },
         ptt_release_delay: Duration::from_millis(u64::from(v.ptt_release_delay_ms)),
         vad_sensitivity_db: v.vad_sensitivity as f32,
+        vad_hold: Duration::from_millis(u64::from(v.vad_hold_ms.clamp(50, 2000))),
+        vad_level_only: v.vad_level_only,
+        agc_target_db: v.agc_target_db.clamp(-40, -3) as f32,
         noise_suppression: v.noise_suppression,
         auto_gain: v.auto_gain,
+        ducking_db: v.ducking.then(|| v.ducking_db.clamp(3, 30) as f32),
+        echo_cancellation: v.echo_cancellation,
+        close_mic_when_muted: v.close_mic_when_muted,
+        opus_fec: v.opus_fec,
+        opus_dtx: v.opus_dtx,
         sounds: v.sounds,
         sounds_volume: v.sounds_volume as f32,
     }
@@ -189,14 +320,24 @@ fn store_settings(v: &mut config::Voice, s: &AudioSettings) {
     v.input_volume = f64::from(s.input_volume);
     v.output_volume = f64::from(s.output_volume);
     v.mode = match s.mode {
-        InputMode::PushToTalk => "push_to_talk",
-        InputMode::VoiceActivity => "voice_activity",
-    }
-    .into();
+        InputMode::PushToTalk => config::VoiceMode::PushToTalk,
+        InputMode::VoiceActivity => config::VoiceMode::VoiceActivity,
+    };
     v.ptt_release_delay_ms = u32::try_from(s.ptt_release_delay.as_millis()).unwrap_or(u32::MAX);
     v.vad_sensitivity = s.vad_sensitivity_db.round() as i32;
+    v.vad_hold_ms = u32::try_from(s.vad_hold.as_millis()).unwrap_or(u32::MAX);
+    v.vad_level_only = s.vad_level_only;
+    v.agc_target_db = s.agc_target_db.round() as i32;
     v.noise_suppression = s.noise_suppression;
     v.auto_gain = s.auto_gain;
+    v.echo_cancellation = s.echo_cancellation;
+    v.ducking = s.ducking_db.is_some();
+    if let Some(db) = s.ducking_db {
+        v.ducking_db = db.round() as u32;
+    }
+    v.close_mic_when_muted = s.close_mic_when_muted;
+    v.opus_fec = s.opus_fec;
+    v.opus_dtx = s.opus_dtx;
     v.sounds = s.sounds;
     v.sounds_volume = f64::from(s.sounds_volume);
 }
@@ -235,12 +376,9 @@ impl Core {
 
     /// Applies new audio settings and saves them to `[voice]` in `config.toml`.
     pub fn set_audio_settings(&self, settings: AudioSettings) -> Result<()> {
-        {
-            let mut config = self.inner.config.write().expect("config lock");
-            store_settings(&mut config.voice, &settings);
-        }
+        self.update_config(|config| store_settings(&mut config.voice, &settings))?;
         self.apply_audio_settings();
-        self.save_config()
+        Ok(())
     }
 
     /// Hands `[voice]` (forcing push-to-talk where voice activity is not allowed) to the engine.
@@ -273,7 +411,7 @@ impl Core {
         self.voice().engine.set_mic_test(on);
     }
 
-    /// Emits [`CoreEvent::InputLevel`] 20 times a second while on (opens the microphone).
+    /// Emits [`CoreEvent::InputLevel`] 50 times a second while on (opens the microphone).
     pub fn set_level_meter(&self, on: bool) {
         self.voice().engine.set_level_meter(on);
     }
@@ -287,27 +425,65 @@ impl Core {
         self.voice().engine.stop_sounds();
     }
 
+    // ---- encryption -----------------------------------------------------------------------------
+
+    /// How the encryption of my voice session stands, for the voice panel.
+    pub fn voice_encryption(&self) -> Option<VoiceEncryption> {
+        let (inst, participants, no_keys, settled) = {
+            let state = self.voice().state();
+            let s = state.session.as_ref()?;
+            let settled = !s.rekeying
+                && s.keyed_for
+                    .as_ref()
+                    .is_some_and(|(targets, _)| targets.len() == s.participants.len());
+            (
+                s.inst.clone(),
+                s.participants.clone(),
+                s.no_keys.clone(),
+                settled,
+            )
+        };
+        let keys = self.account_keys(&inst)?;
+        let crypto = self
+            .voice()
+            .crypto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let ready = settled && crypto.has_key();
+        let mut waiting: Vec<Id> = participants
+            .iter()
+            .filter(|(pid, _)| !crypto.has_key_of(**pid))
+            .map(|(_, user)| *user)
+            .collect();
+        drop(crypto);
+        waiting.sort_unstable();
+        let mut users: Vec<Id> = participants.into_values().collect();
+        users.push(keys.me);
+        users.sort_unstable();
+        users.dedup();
+        Some(VoiceEncryption {
+            ready,
+            waiting,
+            no_keys,
+            code: secure::keys_of(&keys, &users).safety_number,
+        })
+    }
+
     // ---- per-user volume ----------------------------------------------------------------------
 
     pub fn user_volume(&self, inst: &str, user: Id) -> f32 {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .get(inst, user)
+        lock(&self.voice().volumes).get(inst, user)
     }
 
-    /// 0–2 (200 %), saved in `user_volumes.toml`.
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml`. It
+    /// is heard at once; inside a tokio runtime the file is written in the background (a failure
+    /// is then logged, not returned).
     pub fn set_user_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
-        self.voice()
-            .volumes
-            .lock()
-            .expect("volumes")
-            .set(inst, user, volume)?;
+        let volume = lock(&self.voice().volumes).set_unsaved(inst, user, volume);
         if let Some(pid) = self.participant_of(inst, user) {
             self.voice().engine.set_volume(pid, volume);
         }
-        Ok(())
+        Ok(self.voice().save_volumes()?)
     }
 
     pub fn user_muted(&self, inst: &str, user: Id) -> bool {
@@ -346,6 +522,20 @@ impl Core {
     pub fn voice_channel(&self) -> Option<(InstanceId, Id)> {
         let state = self.voice().state();
         state.session.as_ref().map(|s| (s.inst.clone(), s.channel))
+    }
+
+    /// The voice connection's numbers, while one is up.
+    pub fn voice_link(&self) -> Option<VoiceLink> {
+        let conn = lock(&self.voice().link).clone()?;
+        let stats = conn.stats();
+        Some(VoiceLink {
+            rtt_ms: u32::try_from(stats.path.rtt.as_millis()).unwrap_or(u32::MAX),
+            sent_bytes: stats.udp_tx.bytes,
+            received_bytes: stats.udp_rx.bytes,
+            sent_packets: stats.path.sent_packets,
+            lost_packets: stats.path.lost_packets,
+            server: conn.remote_address(),
+        })
     }
 
     pub fn voice_status(&self) -> VoiceStatus {
@@ -470,6 +660,8 @@ impl Core {
     /// Joins (or switches to) the voice room of a voice channel, DM or group DM. Returns once
     /// the server has answered `ready`.
     pub async fn join_voice(&self, inst: &str, channel: Id) -> Result<()> {
+        let started = std::time::Instant::now();
+        tracing::info!("voice: joining {channel} on {inst}");
         let rest = self.rest(inst)?;
         let (mute, deaf) = Self::self_flags(&self.voice().state());
         let join = rest
@@ -478,7 +670,12 @@ impl Core {
                 self_mute: mute,
                 self_deaf: deaf,
             })
-            .await?;
+            .await
+            .inspect_err(|err| tracing::warn!("voice: the server did not let me join: {err}"))?;
+        tracing::info!(
+            "voice: the server let me join after {} ms",
+            started.elapsed().as_millis()
+        );
         let (tx, rx) = oneshot::channel();
         let switched = {
             let mut state = self.voice().state();
@@ -495,7 +692,17 @@ impl Core {
             self.leave_voice().await;
             self.start_session(inst, channel, join, tx);
         }
-        match tokio::time::timeout(READY_TIMEOUT, rx).await {
+        let result = tokio::time::timeout(READY_TIMEOUT, rx).await;
+        match &result {
+            Ok(Ok(Ok(()))) => tracing::info!(
+                "voice: in {channel} after {} ms",
+                started.elapsed().as_millis()
+            ),
+            Ok(Ok(Err(message))) => tracing::warn!("voice: joining {channel} failed: {message}"),
+            Ok(Err(_)) => tracing::warn!("voice: the connection closed before it was ready"),
+            Err(_) => tracing::warn!("voice: no answer within {READY_TIMEOUT:?}"),
+        }
+        match result {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(message))) => {
                 self.end_failed_join(inst, channel);
@@ -564,6 +771,7 @@ impl Core {
     pub async fn leave_voice(&self) {
         let session = self.voice().state().session.take();
         if let Some(session) = session {
+            tracing::info!("voice: leaving");
             let _ = session.control.send(ClientControl::Leave {});
             self.close_session(session, true);
         }
@@ -572,6 +780,7 @@ impl Core {
     /// Stops a session's audio and tells the UI. The driver task ends on its own when the
     /// control sender is dropped.
     fn close_session(&self, session: Session, sound: bool) {
+        self.set_listeners(false);
         let engine = &self.voice().engine;
         engine.set_transmitting(false);
         engine.clear_participants();
@@ -620,7 +829,7 @@ impl Core {
     /// Breaks the QUIC connection as if the network dropped (tests of the reconnect logic).
     #[doc(hidden)]
     pub fn drop_voice_connection(&self) {
-        if let Some(conn) = self.voice().link.lock().expect("voice link").as_ref() {
+        if let Some(conn) = lock(&self.voice().link).as_ref() {
             conn.close(1u32.into(), b"test");
         }
     }
@@ -646,9 +855,15 @@ impl Core {
                 me: None,
                 sharing: HashSet::new(),
                 watching: HashSet::new(),
+                share_audio: false,
                 my_share: false,
+                my_watchers: None,
                 status: VoiceStatus::Connecting,
                 connected_once: false,
+                keyed_for: None,
+                rekeying: false,
+                key_epoch: 0,
+                no_keys: Vec::new(),
                 pending: Some(pending),
                 task: None,
             });
@@ -678,11 +893,14 @@ impl Core {
         generation: u64,
         mut control: mpsc::UnboundedReceiver<ClientControl>,
     ) {
+        // Rejoins that never got a connection in a row: REST may work while QUIC does not.
+        let mut failed_in_a_row = 0;
         loop {
             let end = self
                 .connection(&mut channel, &join, generation, &mut control)
                 .await;
             let connected_once = self.with_session(generation, |s| s.connected_once);
+            let never_connected = matches!(end, End::Failed(_));
             match end {
                 End::Left => return,
                 End::Kicked(reason) => {
@@ -695,6 +913,18 @@ impl Core {
                 }
                 End::Failed(message) | End::Lost(message) => {
                     tracing::info!("voice connection lost: {message}");
+                    if never_connected {
+                        failed_in_a_row += 1;
+                    } else {
+                        failed_in_a_row = 0;
+                    }
+                    if failed_in_a_row > RECONNECT_ATTEMPTS {
+                        self.session_ended(
+                            generation,
+                            Some("Voice connection lost (is UDP blocked?)".into()),
+                        );
+                        return;
+                    }
                     match self.rejoin(&inst, channel, generation).await {
                         Some(next) => join = next,
                         None => {
@@ -710,12 +940,14 @@ impl Core {
         }
     }
 
-    /// Fresh `/voice/join` tokens for `channel`, with backoff. `None` when giving up.
+    /// Fresh `/voice/join` tokens for `channel`, with backoff (spread out so that a whole room
+    /// does not come back at the same moment). `None` when giving up.
     async fn rejoin(&self, inst: &str, channel: Id, generation: u64) -> Option<VoiceJoinResponse> {
-        *self.voice().link.lock().expect("voice link") = None;
+        *lock(&self.voice().link) = None;
         for attempt in 1..=RECONNECT_ATTEMPTS {
             self.set_status(generation, VoiceStatus::Reconnecting { attempt })?;
-            let delay = Duration::from_millis(500 * (1 << (attempt - 1)));
+            let delay = Duration::from_millis(500 * (1 << (attempt - 1)))
+                .mul_f64(rand::random_range(0.75..1.25));
             tokio::time::sleep(delay).await;
             self.with_session(generation, |_| ())?;
             let Ok(rest) = self.rest(inst) else {
@@ -764,14 +996,16 @@ impl Core {
         if write(&mut send, &auth).await.is_err() {
             return End::Failed("Voice connection failed".into());
         }
-        *self.voice().link.lock().expect("voice link") = Some(conn.clone());
+        *lock(&self.voice().link) = Some(conn.clone());
         let (frames_tx, mut frames) = mpsc::channel(32);
         let reader = tokio::spawn(read_frames(recv, frames_tx));
         let (screen_out, screen_frames) = mpsc::channel(SCREEN_QUEUE);
-        *self.voice().screen_out.lock().expect("screen out") = Some(screen_out);
+        let my_screen_out = screen_out.clone();
+        *lock(&self.voice().screen_out) = Some(screen_out);
         let screen_writer = tokio::spawn(write_screen(conn.clone(), screen_frames));
         let screen_reader = tokio::spawn(self.clone().read_screen(conn.clone(), generation));
         let mut ping = tokio::time::interval(PING_INTERVAL);
+        let mut rekey = tokio::time::interval(REKEY_CHECK);
         let mut authed = false;
 
         let end = loop {
@@ -792,19 +1026,24 @@ impl Core {
                         break End::Lost("control stream closed".into());
                     };
                     match msg {
-                        ServerControl::Ready { participant_id, room_id, bitrate, participants, sharing } => {
+                        ServerControl::Ready { participant_id, room_id, bitrate, participants, sharing, share_audio } => {
                             authed = true;
                             *channel = room_id;
                             self.on_ready(generation, participant_id, room_id, bitrate, participants);
                             // A new room: nothing is watched and my share (if any) has ended.
                             self.with_session(generation, |s| {
                                 s.sharing = sharing.into_iter().collect();
+                                s.share_audio = share_audio;
                                 s.watching.clear();
                                 s.my_share = false;
+                                s.my_watchers = None;
                             });
                             self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::ParticipantJoined(p) => self.on_joined(generation, p),
+                        ServerControl::VoiceKey { from, key } => {
+                            tokio::spawn(self.clone().receive_voice_key(generation, from, key));
+                        }
                         ServerControl::ShareStarted { participant_id } => {
                             self.with_session(generation, |s| s.sharing.insert(participant_id));
                             self.emit(CoreEvent::ScreenShares);
@@ -814,9 +1053,18 @@ impl Core {
                                 s.sharing.remove(&participant_id);
                                 s.watching.remove(&participant_id);
                             });
+                            self.voice().engine.remove_share(participant_id);
                             self.emit(CoreEvent::ScreenShares);
                         }
                         ServerControl::KeyframeRequested {} => self.emit(CoreEvent::KeyframeRequested),
+                        ServerControl::ShareWatchers { count } => {
+                            self.with_session(generation, |s| {
+                                if s.my_share {
+                                    s.my_watchers = Some(count);
+                                }
+                            });
+                            self.emit(CoreEvent::ScreenShares);
+                        }
                         ServerControl::ParticipantLeft { participant_id } => {
                             self.on_left(generation, participant_id);
                         }
@@ -853,13 +1101,33 @@ impl Core {
                     }
                 }
                 datagram = conn.read_datagram() => match datagram {
+                    // What does not open is not played: no key yet, or not from who it claims.
+                    // The guard is a temporary of this statement alone: not held while the
+                    // packet is handed on below (nor nested with the state lock).
                     Ok(data) => {
-                        if let Ok((header, _)) = AudioHeader::decode(&data) {
-                            self.voice().engine.receive(header.sender_id, data.to_vec());
+                        let opened = self.voice().crypto.lock().unwrap_or_else(PoisonError::into_inner).open_audio(&data);
+                        match opened {
+                        Some((AudioKind::Voice, sender, plain)) => {
+                            self.voice().engine.receive(sender, plain);
+                        }
+                        // Only from shares I watch (the server sends no others).
+                        Some((AudioKind::Share, sender, plain)) => {
+                            let watched = self
+                                .voice()
+                                .state()
+                                .session
+                                .as_ref()
+                                .is_some_and(|s| s.watching.contains(&sender));
+                            if watched {
+                                self.voice().engine.receive_share(sender, plain);
+                            }
+                        }
+                        None => {}
                         }
                     }
                     Err(err) => break End::Lost(err.to_string()),
                 },
+                _ = rekey.tick(), if authed => self.check_voice_keys(generation),
                 _ = ping.tick() => {
                     let _ = write(&mut send, &ClientControl::Ping { t: now_ms() as u64 }).await;
                 }
@@ -868,9 +1136,15 @@ impl Core {
         reader.abort();
         screen_writer.abort();
         screen_reader.abort();
-        *self.voice().screen_out.lock().expect("screen out") = None;
         {
-            let mut link = self.voice().link.lock().expect("voice link");
+            // Only this connection's: a newer one (a quick rejoin) may have set its own already.
+            let mut out = lock(&self.voice().screen_out);
+            if out.as_ref().is_some_and(|o| o.same_channel(&my_screen_out)) {
+                *out = None;
+            }
+        }
+        {
+            let mut link = lock(&self.voice().link);
             if link
                 .as_ref()
                 .is_some_and(|c| c.stable_id() == conn.stable_id())
@@ -915,12 +1189,25 @@ impl Core {
                 .iter()
                 .map(|p| (p.participant_id, p.user_id))
                 .collect();
+            self.set_listeners(!s.participants.is_empty());
             s.connected_once = true;
+            // A new room or connection: new participant IDs and new keys.
+            s.keyed_for = None;
+            s.rekeying = false;
+            s.key_epoch += 1;
+            s.no_keys.clear();
             if let Some(pending) = s.pending.take() {
                 let _ = pending.send(Ok(()));
             }
             s.inst.clone()
         });
+        if me.is_some() {
+            self.voice()
+                .crypto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .reset();
+        }
         let Some(inst) = me else {
             return;
         };
@@ -946,6 +1233,15 @@ impl Core {
         );
     }
 
+    fn set_listeners(&self, any: bool) {
+        self.voice().listeners.store(any, Ordering::Relaxed);
+    }
+
+    /// Whether my audio goes out: only while someone else is in the room.
+    pub fn voice_has_listeners(&self) -> bool {
+        self.voice().listeners.load(Ordering::Relaxed)
+    }
+
     fn configure_participant(&self, inst: &str, p: &Participant) {
         let engine = &self.voice().engine;
         engine.set_volume(p.participant_id, self.user_volume(inst, p.user_id));
@@ -955,6 +1251,7 @@ impl Core {
     fn on_joined(&self, generation: u64, p: Participant) {
         let Some(inst) = self.with_session(generation, |s| {
             s.participants.insert(p.participant_id, p.user_id);
+            self.set_listeners(true);
             s.inst.clone()
         }) else {
             return;
@@ -967,12 +1264,9 @@ impl Core {
         let left = self.with_session(generation, |s| {
             let shared = s.sharing.remove(&participant_id);
             s.watching.remove(&participant_id);
-            (
-                shared,
-                s.participants
-                    .remove(&participant_id)
-                    .map(|user| (s.inst.clone(), user)),
-            )
+            let user = s.participants.remove(&participant_id);
+            self.set_listeners(!s.participants.is_empty());
+            (shared, user.map(|user| (s.inst.clone(), user)))
         });
         let left = left.map(|(shared, left)| {
             if shared {
@@ -981,9 +1275,225 @@ impl Core {
             left
         });
         self.voice().engine.remove_participant(participant_id);
+        self.voice()
+            .crypto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove_participant(participant_id);
         if let Some(Some((inst, user))) = left {
             self.set_speaking(inst, user, false);
             self.voice().engine.play_sound(Sound::Leave);
+        }
+    }
+
+    /// Hands out a new sender key when who is in the room (or anyone's devices) changed. So someone
+    /// who leaves cannot follow what comes after, and someone who joins cannot read what came before.
+    /// Only people the gateway also shows in the room get it: a member the server invents on this
+    /// stream alone gets nothing, and one it invents on both shows up in everyone's list.
+    fn check_voice_keys(&self, generation: u64) {
+        let Some((inst, channel, epoch, participants, keyed_for)) = self
+            .with_session(generation, |s| {
+                (!s.rekeying).then(|| {
+                    (
+                        s.inst.clone(),
+                        s.channel,
+                        s.key_epoch,
+                        s.participants.clone(),
+                        s.keyed_for.clone(),
+                    )
+                })
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let Some(keys) = self.account_keys(&inst) else {
+            return;
+        };
+        let targets: Vec<(u16, Id)> = {
+            let store = self.store();
+            let Some(s) = store.instance(&inst) else {
+                return;
+            };
+            let mut targets: Vec<(u16, Id)> = participants
+                .into_iter()
+                .filter(|(_, user)| {
+                    s.voice_states
+                        .get(user)
+                        .is_some_and(|v| v.channel_id == channel)
+                })
+                .collect();
+            targets.sort_unstable();
+            targets
+        };
+        let revision = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revision();
+        if keyed_for.as_ref() == Some(&(targets.clone(), revision)) {
+            return;
+        }
+        self.with_session(generation, |s| s.rekeying = true);
+        tokio::spawn(
+            self.clone()
+                .hand_out_voice_key(generation, epoch, inst, channel, keys, targets),
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn hand_out_voice_key(
+        self,
+        generation: u64,
+        epoch: u64,
+        inst: InstanceId,
+        channel: Id,
+        keys: Arc<AccountKeys>,
+        targets: Vec<(u16, Id)>,
+    ) {
+        let users: Vec<Id> = targets.iter().map(|(_, user)| *user).collect();
+        if let Err(err) = self
+            .fetch_devices(&inst, &keys, &users, DEVICES_MAX_AGE_MS)
+            .await
+        {
+            tracing::warn!("could not ask for the voice room's encryption keys: {err}");
+            tokio::time::sleep(REKEY_RETRY).await;
+            self.with_session(generation, |s| {
+                if s.key_epoch == epoch {
+                    s.rekeying = false;
+                }
+            });
+            return;
+        }
+        let revision = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .revision();
+        let (key_generation, seed, first) = {
+            let mut crypto = self
+                .voice()
+                .crypto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let first = !crypto.has_key();
+            let (key_generation, seed) = crypto.new_key();
+            (key_generation, seed, first)
+        };
+        let mut no_keys = Vec::new();
+        for (participant, user) in &targets {
+            let devices = keys
+                .directory
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .live_devices(*user);
+            if devices.is_empty() {
+                no_keys.push(*user);
+                continue;
+            }
+            let sealed = e2ee::seal_voice_key(
+                &keys.identity,
+                channel,
+                keys.me,
+                *user,
+                &devices,
+                key_generation,
+                &seed,
+            );
+            let (Ok(sealed), control) = (
+                sealed,
+                self.with_session(generation, |s| {
+                    (s.key_epoch == epoch).then(|| s.control.clone())
+                })
+                .flatten(),
+            ) else {
+                continue;
+            };
+            let (Some(control), Ok(key)) = (control, serde_json::to_string(&sealed)) else {
+                return;
+            };
+            let _ = control.send(ClientControl::VoiceKey {
+                to: *participant,
+                key,
+            });
+        }
+        // Those already in the room get a moment to receive it; the very first key has nothing
+        // to wait for, since nobody could hear me before it anyway.
+        if !first {
+            tokio::time::sleep(REKEY_SWITCH).await;
+        }
+        let still_here = self.with_session(generation, |s| {
+            if s.key_epoch != epoch {
+                return false;
+            }
+            s.rekeying = false;
+            s.keyed_for = Some((targets, revision));
+            s.no_keys = no_keys;
+            true
+        });
+        if still_here == Some(true) {
+            self.voice()
+                .crypto
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .use_key(key_generation, &seed);
+            self.emit(CoreEvent::ScreenShares);
+        }
+    }
+
+    /// Someone's sender key arrived: checked against the devices pinned for them.
+    async fn receive_voice_key(self, generation: u64, from: u16, key: String) {
+        let Some((inst, channel, sender, watching)) = self
+            .with_session(generation, |s| {
+                s.participants
+                    .get(&from)
+                    .map(|user| (s.inst.clone(), s.channel, *user, s.watching.contains(&from)))
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let Ok(key) = serde_json::from_str::<hermes_proto::e2ee::VoiceKey>(&key) else {
+            return;
+        };
+        let Some(keys) = self.account_keys(&inst) else {
+            return;
+        };
+        let known = keys
+            .directory
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .device(sender, &key.device)
+            .cloned();
+        let device = match known {
+            Some(device) => Some(device),
+            None => {
+                let _ = self.fetch_devices(&inst, &keys, &[sender], 0).await;
+                keys.directory
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .device(sender, &key.device)
+                    .cloned()
+            }
+        };
+        let Some(device) = device else {
+            tracing::warn!("a voice key from an unknown device of user {sender} was ignored");
+            return;
+        };
+        match e2ee::open_voice_key(&keys.identity, channel, sender, keys.me, &device, &key) {
+            Ok(seed) => {
+                self.voice()
+                    .crypto
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .add_received(from, key.generation, &seed);
+                // The picture could not be read until now.
+                if watching {
+                    self.request_keyframe(sender);
+                }
+                self.emit(CoreEvent::ScreenShares);
+            }
+            Err(err) => tracing::warn!("a voice key from user {sender} was refused: {err}"),
         }
     }
 
@@ -1041,7 +1551,7 @@ impl Core {
                     self.set_speaking(inst, user, speaking);
                 }
             }
-            AudioEvent::InputLevel(db) => self.emit(CoreEvent::InputLevel(db)),
+            AudioEvent::InputLevel { db, open } => self.emit(CoreEvent::InputLevel { db, open }),
             AudioEvent::DeviceChanged { input, name } => {
                 let what = if input { "Microphone" } else { "Speakers" };
                 self.emit(CoreEvent::Error(format!(
@@ -1072,8 +1582,9 @@ impl Core {
                 .session
                 .as_mut()
                 .filter(|s| s.connected_once)
-                .ok_or_else(|| CoreError::Io("Join a voice channel first".into()))?;
+                .ok_or_else(|| CoreError::Refused("Join a voice channel first".into()))?;
             session.my_share = true;
+            session.my_watchers = None;
             session.control.clone()
         };
         let _ = control.send(ClientControl::ShareStart {});
@@ -1086,6 +1597,7 @@ impl Core {
             let mut state = self.voice().state();
             state.session.as_mut().filter(|s| s.my_share).map(|s| {
                 s.my_share = false;
+                s.my_watchers = None;
                 s.control.clone()
             })
         };
@@ -1102,6 +1614,17 @@ impl Core {
             .session
             .as_ref()
             .is_some_and(|s| s.my_share)
+    }
+
+    /// How many watch my screen share; `None` while not sharing or when the server does not
+    /// tell (an older one: assume someone does).
+    pub fn share_watchers(&self) -> Option<u16> {
+        self.voice()
+            .state()
+            .session
+            .as_ref()
+            .filter(|s| s.my_share)
+            .and_then(|s| s.my_watchers)
     }
 
     /// The others in my voice room who share their screen.
@@ -1132,19 +1655,57 @@ impl Core {
             .filter(|(pid, user)| users.contains(user) && s.sharing.contains(pid))
             .map(|(&pid, _)| pid)
             .collect();
+        // Their share volumes are looked up after the state lock is released.
+        let mut started = Vec::new();
         for &pid in wanted.difference(&s.watching) {
             let _ = s.control.send(ClientControl::Watch {
                 participant_id: pid,
                 watching: true,
             });
+            if let Some(&user) = s.participants.get(&pid) {
+                started.push((pid, user));
+            }
         }
         for &pid in s.watching.difference(&wanted) {
             let _ = s.control.send(ClientControl::Watch {
                 participant_id: pid,
                 watching: false,
             });
+            self.voice().engine.remove_share(pid);
         }
         s.watching = wanted;
+        let inst = s.inst.clone();
+        drop(state);
+        let volumes = lock(&self.voice().volumes);
+        for (pid, user) in started {
+            self.voice()
+                .engine
+                .set_share_volume(pid, volumes.get_share(&inst, user));
+        }
+    }
+
+    /// Whether the voice server forwards screen share sound (newer servers do).
+    pub fn share_audio_supported(&self) -> bool {
+        self.voice()
+            .state()
+            .session
+            .as_ref()
+            .is_some_and(|s| s.share_audio)
+    }
+
+    /// The volume of `user`'s screen share sound, 0–2.
+    pub fn share_volume(&self, inst: &str, user: Id) -> f32 {
+        lock(&self.voice().volumes).get_share(inst, user)
+    }
+
+    /// A slider position (see [`hermes_audio::volume_gain`]), saved in `user_volumes.toml` like
+    /// [`Core::set_user_volume`].
+    pub fn set_share_volume(&self, inst: &str, user: Id, volume: f32) -> Result<()> {
+        let volume = lock(&self.voice().volumes).set_share_unsaved(inst, user, volume);
+        if let Some(pid) = self.participant_of(inst, user) {
+            self.voice().engine.set_share_volume(pid, volume);
+        }
+        Ok(self.voice().save_volumes()?)
     }
 
     /// The picture of `user`'s share broke (a lost frame): ask them for a keyframe.
@@ -1160,6 +1721,43 @@ impl Core {
         }
     }
 
+    /// Sends one 20 ms frame of my screen share's sound (already Opus, stereo). Dropped while not
+    /// sharing, when the server does not forward share sound, or before there is a key.
+    pub fn send_share_sound(&self, opus: &[u8], level: f32) {
+        if !self.sharing_screen() || !self.share_audio_supported() {
+            return;
+        }
+        let Some(conn) = lock(&self.voice().link).clone() else {
+            return;
+        };
+        let (sequence, timestamp) = {
+            let mut next = lock(&self.voice().share_sound);
+            let now = *next;
+            *next = (
+                now.0.wrapping_add(1),
+                now.1.wrapping_add(voice::FRAME_SAMPLES),
+            );
+            now
+        };
+        let header = hermes_proto::voice::AudioHeader {
+            voice_active: true,
+            sender_id: 0,
+            timestamp,
+            sequence,
+            audio_level: voice::audio_level(level),
+        };
+        let datagram = header.encode_as(AudioKind::Share, opus);
+        let sealed = self
+            .voice()
+            .crypto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .seal_audio(&datagram);
+        if let Some(sealed) = sealed {
+            let _ = conn.send_datagram(sealed.into());
+        }
+    }
+
     /// Queues one frame of my screen share. `false` when it was dropped (no share, or the
     /// connection is behind): the next frame should be a keyframe.
     pub fn send_screen_frame(&self, frame: ScreenFrame) -> bool {
@@ -1168,7 +1766,7 @@ impl Core {
         {
             return false;
         }
-        let Some(out) = self.voice().screen_out.lock().expect("screen out").clone() else {
+        let Some(out) = lock(&self.voice().screen_out).clone() else {
             return false;
         };
         let header = VideoHeader {
@@ -1178,34 +1776,61 @@ impl Core {
             height: frame.height,
             timestamp: frame.timestamp,
         };
-        let mut data = Vec::with_capacity(voice::VIDEO_HEADER_LEN + frame.data.len());
-        data.extend_from_slice(&header.encode());
-        data.extend_from_slice(&frame.data);
+        let sealed = self
+            .voice()
+            .crypto
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .seal_video(&header.encode(), &frame.data);
+        // Nothing leaves in clear.
+        let Some(data) = sealed else {
+            return false;
+        };
+        if data.len() > voice::MAX_VIDEO_FRAME {
+            return false;
+        }
         out.try_send(data).is_ok()
     }
 
     /// Where others' screen share frames go (the UI's decoder). Frames are dropped while it is
     /// full.
     pub fn set_screen_sink(&self, sink: mpsc::Sender<RemoteFrame>) {
-        *self.voice().screen_sink.lock().expect("screen sink") = Some(sink);
+        *lock(&self.voice().screen_sink) = Some(sink);
     }
 
     /// Reads screen share frames from the server, one stream at a time (in order), and hands
     /// those of watched sharers to the sink.
     async fn read_screen(self, conn: quinn::Connection, generation: u64) {
+        let mut stats = TransportStats::new("received");
+        let mut holes: HashMap<u16, Instant> = HashMap::new();
         loop {
             let Ok(mut stream) = conn.accept_uni().await else {
                 return;
             };
+            let begin = Instant::now();
             let read =
                 tokio::time::timeout(FRAME_TIMEOUT, stream.read_to_end(voice::MAX_VIDEO_FRAME))
                     .await;
             let Ok(Ok(data)) = read else {
+                stats.failed += 1;
+                // Whose frame it was is unknown: every watched share may have a hole now.
+                let watched = self.with_session(generation, |s| {
+                    s.watching
+                        .iter()
+                        .filter_map(|id| Some((*id, *s.participants.get(id)?)))
+                        .collect::<Vec<_>>()
+                });
+                for (sender, user) in watched.unwrap_or_default() {
+                    holes.insert(sender, Instant::now());
+                    self.request_keyframe(user);
+                }
                 continue;
             };
             let Ok(header) = VideoHeader::decode(&data) else {
+                stats.failed += 1;
                 continue;
             };
+            stats.frame(data.len(), header.keyframe, begin.elapsed());
             let who = self.with_session(generation, |s| {
                 s.watching
                     .contains(&header.sender_id)
@@ -1214,59 +1839,309 @@ impl Core {
                     .map(|user| (s.inst.clone(), user))
             });
             let Some(Some((inst, user))) = who else {
+                stats.skipped += 1;
                 continue;
             };
-            let sink = self
-                .voice()
-                .screen_sink
-                .lock()
-                .expect("screen sink")
-                .clone();
+            // The server filled in the sender; that field is not part of what was sealed.
+            let opened = data
+                .first_chunk::<{ voice::VIDEO_HEADER_LEN }>()
+                .and_then(|clear| {
+                    self.voice()
+                        .crypto
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .open_video(header.sender_id, clear, &data[voice::VIDEO_HEADER_LEN..])
+                });
+            let Some(opened) = opened else {
+                stats.skipped += 1;
+                continue;
+            };
+            match past_hole(
+                &mut holes,
+                header.sender_id,
+                header.keyframe,
+                Instant::now(),
+            ) {
+                PastHole::Pass => {}
+                PastHole::Skip => {
+                    stats.skipped += 1;
+                    continue;
+                }
+                PastHole::SkipAndAsk => {
+                    stats.skipped += 1;
+                    self.request_keyframe(user);
+                    continue;
+                }
+            }
+            let sink = lock(&self.voice().screen_sink).clone();
             if let Some(sink) = sink {
-                let _ = sink.try_send(RemoteFrame {
+                let frame = RemoteFrame {
                     inst,
                     user,
                     header,
-                    data: data[voice::VIDEO_HEADER_LEN..].to_vec(),
-                });
+                    data: opened,
+                    received: Instant::now(),
+                };
+                if sink.try_send(frame).is_err() {
+                    stats.skipped += 1;
+                    holes.insert(header.sender_id, Instant::now());
+                    self.request_keyframe(user);
+                }
             }
+            stats.maybe_log();
         }
+    }
+}
+
+/// What to do with a frame of a share that may have lost frames here.
+#[derive(Debug, PartialEq, Eq)]
+enum PastHole {
+    /// Hand it to the decoder.
+    Pass,
+    /// A frame is missing before it, so it would only draw garbage.
+    Skip,
+    /// The same, and it is time to ask for a keyframe again.
+    SkipAndAsk,
+}
+
+/// Decides for one frame of `sender`. `holes` holds the sharers who lost a frame here and when a
+/// keyframe was last asked of them; their pictures wait for that keyframe, as the server's
+/// `resync` does for frames lost before they get here.
+fn past_hole(
+    holes: &mut HashMap<u16, Instant>,
+    sender: u16,
+    keyframe: bool,
+    now: Instant,
+) -> PastHole {
+    if keyframe {
+        holes.remove(&sender);
+        return PastHole::Pass;
+    }
+    match holes.get_mut(&sender) {
+        None => PastHole::Pass,
+        Some(asked) if now.duration_since(*asked) >= KEYFRAME_ASK_GAP => {
+            *asked = now;
+            PastHole::SkipAndAsk
+        }
+        Some(_) => PastHole::Skip,
+    }
+}
+
+/// The screen share transport's numbers in one direction, logged every [`SCREEN_STATS_EVERY`]
+/// while frames flow: together with the server's and the encoder's lines they show where a
+/// share loses time.
+struct TransportStats {
+    what: &'static str,
+    since: Instant,
+    frames: u32,
+    keyframes: u32,
+    bytes: u64,
+    /// Time from a frame's stream being opened (or accepted) to its last byte.
+    total: Duration,
+    slowest: Duration,
+    /// Received but not handed on (not watched, or the decoder's queue was full).
+    skipped: u32,
+    /// Streams that failed, timed out or carried an invalid header.
+    failed: u32,
+}
+
+impl TransportStats {
+    fn new(what: &'static str) -> Self {
+        TransportStats {
+            what,
+            since: Instant::now(),
+            frames: 0,
+            keyframes: 0,
+            bytes: 0,
+            total: Duration::ZERO,
+            slowest: Duration::ZERO,
+            skipped: 0,
+            failed: 0,
+        }
+    }
+
+    fn frame(&mut self, bytes: usize, keyframe: bool, took: Duration) {
+        self.frames += 1;
+        self.keyframes += u32::from(keyframe);
+        self.bytes += bytes as u64;
+        self.total += took;
+        self.slowest = self.slowest.max(took);
+    }
+
+    fn maybe_log(&mut self) {
+        let elapsed = self.since.elapsed();
+        if elapsed < SCREEN_STATS_EVERY {
+            return;
+        }
+        let secs = elapsed.as_secs_f64();
+        tracing::info!(
+            "screen share transport ({}): {:.1} fps ({} keyframes), {:.0} kbit/s, {:.1} ms per \
+             frame on the wire (slowest {:.1} ms), {} not handed on, {} failed",
+            self.what,
+            f64::from(self.frames) / secs,
+            self.keyframes,
+            self.bytes as f64 * 8.0 / 1000.0 / secs,
+            self.total.as_secs_f64() * 1000.0 / f64::from(self.frames.max(1)),
+            self.slowest.as_secs_f64() * 1000.0,
+            self.skipped,
+            self.failed,
+        );
+        *self = TransportStats::new(self.what);
     }
 }
 
 /// Writes my screen share frames, one unidirectional stream each, in order.
 async fn write_screen(conn: quinn::Connection, mut frames: mpsc::Receiver<Vec<u8>>) {
+    let mut stats = TransportStats::new("sent");
     while let Some(frame) = frames.recv().await {
+        let begin = Instant::now();
         let Ok(mut stream) = conn.open_uni().await else {
             return;
         };
         if stream.write_all(&frame).await.is_ok() {
             let _ = stream.finish();
+            let keyframe = VideoHeader::decode(&frame).is_ok_and(|h| h.keyframe);
+            stats.frame(frame.len(), keyframe, begin.elapsed());
+        } else {
+            stats.failed += 1;
         }
+        stats.maybe_log();
     }
 }
 
 /// Resolves the endpoint of a `/voice/join` answer and connects with the pinned certificate.
 async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connection, String> {
-    let failed = |e: &dyn std::fmt::Display| format!("Voice connection failed: {e}");
-    let fingerprint = Fingerprint::parse(&join.quic.cert_sha256).map_err(|e| failed(&e))?;
-    let crypto = crate::tls::voice_config(fingerprint).map_err(|e| failed(&e))?;
-    let crypto = QuicClientConfig::try_from(crypto).map_err(|e| failed(&e))?;
+    let started = std::time::Instant::now();
+    connect_quic(&join.quic)
+        .await
+        .map(|(addr, conn)| {
+            tracing::info!(
+                "voice: connected to {addr} in {} ms",
+                started.elapsed().as_millis()
+            );
+            conn
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Why a voice (QUIC) connection could not be made.
+#[derive(Debug, Clone)]
+pub enum QuicError {
+    /// The host did not resolve, or the certificate fingerprint was not valid.
+    Setup(String),
+    /// Every address failed: each with why.
+    Addresses(Vec<(SocketAddr, String)>),
+}
+
+impl std::fmt::Display for QuicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            QuicError::Setup(e) => write!(f, "Voice connection failed: {e}"),
+            QuicError::Addresses(failed) => {
+                let all_timed_out = failed.iter().all(|(_, e)| e == TIMED_OUT);
+                if all_timed_out {
+                    write!(f, "Voice connection timed out (is UDP blocked?)")?;
+                } else {
+                    write!(f, "Voice connection failed")?;
+                }
+                for (n, (addr, e)) in failed.iter().enumerate() {
+                    write!(f, "{} {addr}: {e}", if n == 0 { ":" } else { ";" })?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+const TIMED_OUT: &str = "timed out";
+
+/// The addresses `host` resolves to, without repeats, in the order to try them (see `net`).
+pub async fn resolve(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
+    crate::net::resolve(host, port).await
+}
+
+/// The order to try `addrs` in: the system's first choice, then the other family's first, then
+/// the rest, so one family that does not get through costs one timeout, not several.
+fn try_order(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let Some(&first) = addrs.first() else {
+        return Vec::new();
+    };
+    let mut order = vec![first];
+    if let Some(&other) = addrs.iter().find(|a| a.is_ipv6() != first.is_ipv6()) {
+        order.push(other);
+    }
+    for &addr in addrs {
+        if !order.contains(&addr) {
+            order.push(addr);
+        }
+    }
+    order
+}
+
+/// Connects to the voice endpoint `quic`, trying each of its addresses in turn: a server whose
+/// IPv6 does not reach it is still reached over IPv4, as the HTTPS connection is. Returns the
+/// address that answered.
+pub async fn connect_quic(
+    quic: &hermes_proto::api::QuicEndpoint,
+) -> std::result::Result<(SocketAddr, quinn::Connection), QuicError> {
+    let host = quic.host.as_str();
+    let addrs = resolve(host, quic.port)
+        .await
+        .map_err(|e| QuicError::Setup(e.to_string()))?;
+    if addrs.is_empty() {
+        return Err(QuicError::Setup("no address".into()));
+    }
+    // Every address together gets about as long as one did before, but at least a few seconds.
+    let each = (CONNECT_TIMEOUT / u32::try_from(addrs.len()).unwrap_or(u32::MAX))
+        .max(Duration::from_secs(4));
+    connect_any(quic, &addrs, each).await
+}
+
+/// [`connect_quic`] over `addrs` (as resolved), giving each `each` to answer.
+pub async fn connect_any(
+    quic: &hermes_proto::api::QuicEndpoint,
+    addrs: &[SocketAddr],
+    each: Duration,
+) -> std::result::Result<(SocketAddr, quinn::Connection), QuicError> {
+    let mut failed: Vec<(SocketAddr, String)> = Vec::new();
+    let note = |failed: &[(SocketAddr, String)]| {
+        if !failed.is_empty() {
+            let why: Vec<String> = failed.iter().map(|(a, e)| format!("{a}: {e}")).collect();
+            crate::net::connect_failed(&quic.host, &format!("voice: {}", why.join("; ")));
+        }
+    };
+    for addr in try_order(addrs) {
+        match connect_addr(quic, addr, each).await {
+            Ok(conn) => {
+                note(&failed);
+                return Ok((addr, conn));
+            }
+            Err(e) => failed.push((addr, e)),
+        }
+    }
+    note(&failed);
+    Err(QuicError::Addresses(failed))
+}
+
+/// Connects to the voice endpoint `quic` at `addr` only, with the pinned certificate.
+pub async fn connect_addr(
+    quic: &hermes_proto::api::QuicEndpoint,
+    addr: SocketAddr,
+    timeout: Duration,
+) -> std::result::Result<quinn::Connection, String> {
+    let fingerprint = Fingerprint::parse(&quic.cert_sha256).map_err(|e| e.to_string())?;
+    let crypto = crate::tls::voice_config(fingerprint).map_err(|e| e.to_string())?;
+    let crypto = QuicClientConfig::try_from(crypto).map_err(|e| e.to_string())?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.transport_config(Arc::new(transport_config()));
-    let host = join.quic.host.as_str();
-    let addr: SocketAddr = tokio::net::lookup_host((host, join.quic.port))
-        .await
-        .map_err(|e| failed(&e))?
-        .next()
-        .ok_or_else(|| failed(&"no address"))?;
     let bind: SocketAddr = if addr.is_ipv6() {
         "[::]:0".parse().expect("valid")
     } else {
         "0.0.0.0:0".parse().expect("valid")
     };
-    let mut endpoint = quinn::Endpoint::client(bind).map_err(|e| failed(&e))?;
+    let mut endpoint = quinn::Endpoint::client(bind).map_err(|e| e.to_string())?;
     endpoint.set_default_client_config(config);
+    let host = quic.host.as_str();
     let server_name = if host.parse::<std::net::IpAddr>().is_ok() || host.is_empty() {
         "hermes-voice"
     } else {
@@ -1274,11 +2149,11 @@ async fn connect(join: &VoiceJoinResponse) -> std::result::Result<quinn::Connect
     };
     let connecting = endpoint
         .connect(addr, server_name)
-        .map_err(|e| failed(&e))?;
-    match tokio::time::timeout(CONNECT_TIMEOUT, connecting).await {
+        .map_err(|e| e.to_string())?;
+    match tokio::time::timeout(timeout, connecting).await {
         Ok(Ok(conn)) => Ok(conn),
-        Ok(Err(err)) => Err(failed(&err)),
-        Err(_) => Err("Voice connection timed out (is UDP blocked?)".into()),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(TIMED_OUT.to_owned()),
     }
 }
 
@@ -1289,7 +2164,10 @@ fn transport_config() -> quinn::TransportConfig {
     }
     transport.keep_alive_interval(Some(Duration::from_millis(voice::KEEP_ALIVE_MS)));
     // One stream per screen share frame; the server writes them one at a time.
-    transport.max_concurrent_uni_streams(8u32.into());
+    transport.max_concurrent_uni_streams(32u32.into());
+    transport.stream_receive_window(voice::VIDEO_STREAM_WINDOW.into());
+    transport.receive_window(voice::VIDEO_CONNECTION_WINDOW.into());
+    transport.send_window(u64::from(voice::VIDEO_SEND_WINDOW));
     transport
 }
 
@@ -1327,6 +2205,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn addresses_are_tried_first_choice_then_the_other_family() {
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        let six = a("[2001:db8::1]:7700");
+        let six_b = a("[2001:db8::2]:7700");
+        let four = a("192.0.2.1:7700");
+        assert_eq!(try_order(&[six, six_b, four]), vec![six, four, six_b]);
+        assert_eq!(try_order(&[four, six]), vec![four, six]);
+        assert_eq!(try_order(&[four]), vec![four]);
+        assert!(try_order(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_share_that_lost_a_frame_waits_for_a_keyframe() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut holes = HashMap::new();
+        // Nothing lost: everything passes.
+        assert_eq!(past_hole(&mut holes, 1, false, at(0)), PastHole::Pass);
+
+        holes.insert(1, at(0));
+        assert_eq!(past_hole(&mut holes, 1, false, at(100)), PastHole::Skip);
+        // Other sharers are not affected.
+        assert_eq!(past_hole(&mut holes, 2, false, at(100)), PastHole::Pass);
+        // Asks again now and then, not for every frame.
+        assert_eq!(
+            past_hole(&mut holes, 1, false, at(500)),
+            PastHole::SkipAndAsk
+        );
+        assert_eq!(past_hole(&mut holes, 1, false, at(600)), PastHole::Skip);
+        // The keyframe ends the wait.
+        assert_eq!(past_hole(&mut holes, 1, true, at(700)), PastHole::Pass);
+        assert_eq!(past_hole(&mut holes, 1, false, at(720)), PastHole::Pass);
+    }
+
+    #[test]
     fn settings_map_both_ways() {
         let mut v = config::Voice::default();
         let s = audio_settings(&v);
@@ -1343,8 +2256,51 @@ mod tests {
         store_settings(&mut v, &changed);
         assert_eq!(v.input_device, "Yeti X");
         assert_eq!(v.output_device, "default");
-        assert_eq!(v.mode, "push_to_talk");
+        assert_eq!(v.mode, config::VoiceMode::PushToTalk);
         assert_eq!(v.sounds_volume, 0.25);
         assert_eq!(audio_settings(&v), changed);
+    }
+
+    struct Silence;
+
+    impl hermes_audio::VirtualIo for Silence {
+        fn read(&mut self, frame: &mut [f32; hermes_audio::FRAME]) {
+            frame.fill(0.0);
+        }
+        fn write(&mut self, _: &[f32; hermes_audio::FRAME]) {}
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn volume_saves_run_in_the_background_and_keep_the_newest() {
+        let dir = std::env::temp_dir().join(format!("hermes-voice-volumes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(crate::volumes::USER_VOLUMES_FILE);
+        let (events, _events) = mpsc::unbounded_channel();
+        let voice = Voice::new(
+            Io::Virtual(Box::new(Silence)),
+            AudioSettings::default(),
+            UserVolumes::load(&path),
+            events,
+        );
+        // A slider being dragged.
+        for step in 0..=20 {
+            lock(&voice.volumes).set_unsaved("a", Id(1), step as f32 / 10.0);
+            voice.save_volumes().unwrap();
+        }
+        lock(&voice.volumes).set_share_unsaved("a", Id(1), 0.5);
+        voice.save_volumes().unwrap();
+        let saved = async {
+            loop {
+                let loaded = UserVolumes::load(&path);
+                if loaded.get("a", Id(1)) == 2.0 && loaded.get_share("a", Id(1)) == 0.5 {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), saved)
+            .await
+            .expect("the newest volumes are saved");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

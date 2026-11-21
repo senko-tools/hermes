@@ -8,7 +8,7 @@ use hermes_proto::ErrorCode;
 use hermes_proto::api::CreateInviteRequest;
 use hermes_proto::gateway::{ServerEvent, SpaceSnapshot};
 use hermes_proto::id::Id;
-use hermes_proto::models::Invite;
+use hermes_proto::models::{AuditAction, Invite};
 use hermes_proto::permissions::Permissions;
 
 use super::validate::Fields;
@@ -56,23 +56,26 @@ pub async fn create(
     if !perms.contains(Permissions::CREATE_INVITES) {
         return Err(Error::missing_permission("CREATE_INVITES"));
     }
-    let expires_in = req
-        .expires_in_secs
-        .unwrap_or(CreateInviteRequest::DEFAULT_EXPIRES_IN_SECS);
+    let limits = state.config.instance_limits();
+    let expires_in = req.expires_in_secs.unwrap_or(limits.invite_default_secs);
     let mut fields = Fields::new();
-    if expires_in > CreateInviteRequest::MAX_EXPIRES_IN_SECS {
+    if expires_in > limits.invite_max_secs {
         fields.add(
             "expires_in_secs",
             format!(
-                "must be at most {} (30 days), or 0 for never",
-                CreateInviteRequest::MAX_EXPIRES_IN_SECS
+                "must be at most {} ({} days), or 0 for never",
+                limits.invite_max_secs, state.config.limits.invite_max_days
             ),
         );
     }
     fields.finish()?;
+    // A link that never runs out stays usable after whoever made it has left.
+    if expires_in == 0 && !perms.contains(Permissions::MANAGE_INVITES) {
+        return Err(Error::missing_permission("MANAGE_INVITES"));
+    }
 
     let now = now_ms();
-    // Bounded by MAX_EXPIRES_IN_SECS above, so the multiplication cannot overflow.
+    // Bounded by limits.invite_max_days above (at most ten years), so this cannot overflow.
     let expires_at = (expires_in > 0).then(|| now + expires_in as i64 * SECOND_MS);
     let max_uses = req.max_uses.filter(|&n| n > 0);
     let row = invites::create(
@@ -84,6 +87,18 @@ pub async fn create(
         now,
     )
     .await?;
+    let mut conn = state.db.write.acquire().await?;
+    super::audit::record(
+        &mut conn,
+        &state,
+        space_id,
+        auth.user_id,
+        AuditAction::InviteCreate,
+        None,
+        serde_json::json!({ "code": row.code, "expires_at": expires_at, "max_uses": max_uses }),
+    )
+    .await?;
+    drop(conn);
     Ok(Json(to_wire(row, &state.cache())))
 }
 
@@ -106,10 +121,21 @@ async fn usable_invite(state: &AppState, code: &str) -> ApiResult<InviteRow> {
     if !invites::is_valid_code(code) {
         return Err(invite_invalid());
     }
-    db::invites::get(&state.db.read, code)
+    let invite = db::invites::get(&state.db.read, code)
         .await?
-        .filter(|invite| invite.is_usable(now_ms()))
-        .ok_or_else(invite_invalid)
+        .ok_or_else(invite_invalid)?;
+    if invite.is_usable(now_ms()) {
+        return Ok(invite);
+    }
+    let used_up = invite.max_uses.is_some_and(|max| invite.uses >= max);
+    Err(Error::new(
+        ErrorCode::InviteInvalid,
+        if used_up {
+            "This invite has been used up"
+        } else {
+            "This invite has expired"
+        },
+    ))
 }
 
 /// Public preview (no auth): the space's name, icon and member count.
@@ -131,7 +157,13 @@ pub(super) async fn invite_preview(state: &AppState, code: &str) -> ApiResult<In
     {
         return Err(invite_invalid());
     }
-    Ok(to_wire(row, &cache))
+    // Anyone holding the link sees where it leads, not who made it or how much it was used.
+    Ok(Invite {
+        creator_id: None,
+        max_uses: None,
+        uses: 0,
+        ..to_wire(row, &cache)
+    })
 }
 
 /// Joins the invite's space and returns it as in `ready`. Already being a member is not an error
@@ -148,6 +180,9 @@ pub async fn join(
             "This invite is only for creating an account",
         )
     })?;
+    // Like kicks and bans, which hold it too: otherwise a ban between the check below and the
+    // insert would let the banned user in, and its cache update would hide the membership.
+    let _writes = state.writes.lock().await;
     if let Some(snapshot) = existing_member_snapshot(&state, space_id, auth.user_id) {
         return Ok(Json(snapshot));
     }
@@ -164,7 +199,7 @@ pub async fn join(
         return Err(invite_invalid());
     }
     match db::spaces::insert_member(&mut tx, space_id, auth.user_id, now).await {
-        // Joined concurrently through another request; that one counted the use.
+        // Already a member after all (the cache was behind); the use is not counted.
         Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
             drop(tx);
             return existing_member_snapshot(&state, space_id, auth.user_id)
@@ -240,6 +275,19 @@ pub async fn delete(
         }
     }
     if db::invites::delete(&state.db.write, &code).await? {
+        if let Some(space_id) = row.space_id {
+            let mut conn = state.db.write.acquire().await?;
+            super::audit::record(
+                &mut conn,
+                &state,
+                space_id,
+                auth.user_id,
+                AuditAction::InviteRevoke,
+                None,
+                serde_json::json!({ "code": code }),
+            )
+            .await?;
+        }
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(not_found())

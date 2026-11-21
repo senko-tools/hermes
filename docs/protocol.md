@@ -1,3 +1,10 @@
+Who shares is told only on the control stream, never on the gateway: only people in the call
+know about a share or receive it. Each frame is one H.264 access unit (Annex B), sent on its own
+**unidirectional stream**: a 12-byte header, the bitstream, then the end of the stream. Peers may
+have at most 32 such streams open at once, and both sides read them one at a time in the order
+they were opened, so frames stay in order. Both ends accept 4 MiB in flight per stream and 16 MiB
+per connection, and buffer at most 4 MiB to send.
+
 # Hermes protocol reference
 
 Human-readable reference for everything on the wire. The source of truth is the `hermes-proto`
@@ -20,6 +27,30 @@ crate; this file is kept in sync with it. Protocol version: **1**.
 - JSON field names are `snake_case`; enum values are `snake_case` strings.
 - Default port **7700**: TCP for HTTPS/WSS, UDP for QUIC voice.
 
+### Versions and compatibility
+
+A server update must not break the clients people already have, and a new client must still
+work on a server that hasn't been updated yet (`hermes_proto::compat`).
+
+- `protocol_version` (now 2) changes only for a change that breaks older peers. A server accepts
+  any client `>= MIN_CLIENT_PROTOCOL`, and a client accepts any server `>= MIN_SERVER_PROTOCOL`.
+  Close code 4010 means the client is older than that floor.
+- Everything else is additive: new fields (always optional, with a default), new ops (peers that
+  don't know them skip the frame), and new enum values. Enums only a server sends fall back to a
+  known value: an unknown status reads as `offline`, a message kind as `default` (its content is
+  shown), an error code as `BAD_REQUEST` (its `message` still explains), a voice kick reason as
+  `disconnected`. Channel kinds and audit actions get `unknown`, and clients hide unknown
+  channels. Enums a client sends too stay strict, so a server refuses what it doesn't know. Where
+  a client reads one, the field falls back instead: `ready.privacy` to the defaults and
+  `registration_mode` to `invite_only`.
+- Lists in `ready` and in REST answers are read item by item: an item a client can't read is
+  dropped, and the rest of the list is kept.
+- `GET /instance` and `ready.instance` carry `features: [string]`, what the server can do beyond
+  protocol 2. A client only offers what the server lists. A server from before the list sends
+  none, so a client treats it as having none of them.
+- `crates/hermes-proto/tests/compat/<version>/` holds what each release's server sent, and the
+  tests read every folder with the current types. Each release adds its own folder.
+
 ## REST
 
 Base path `/api/v1`, JSON bodies, `Authorization: Bearer hms_…`. The endpoint list is PLAN.md
@@ -32,7 +63,8 @@ Errors always look like:
 ```
 
 `VALIDATION_FAILED` adds `"fields": { "name": "what is wrong" }`; `RATE_LIMITED` (HTTP 429) sets
-`retry_after_ms`.
+`retry_after_ms`. It also answers when the server is too busy (`limits.max_inflight_requests`), with
+`retry_after_ms: 1000`.
 
 | Code | HTTP |
 |---|---|
@@ -63,6 +95,13 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 | `PATCH /users/@me/privacy` `{dm_from?, message_requests?}` | `{dm_from, message_requests}` | sends `privacy_update` to your sessions; existing DMs are unchanged |
 | `GET /admin/users` `?after&limit` | `[User + {disabled, instance_admin}]` | instance admins only |
 | `PATCH /admin/users/{id}` `{disabled?, instance_admin?}` | 204 | instance admins only; disabling signs the user out everywhere; admins cannot disable or demote themselves |
+
+### Message endpoints
+
+| Request | Response | Notes |
+|---|---|---|
+| `DELETE /channels/{id}/messages/{mid}/attachments/{aid}` | `{message}` | takes one file off a message: its author, or `MANAGE_MESSAGES` (audited as `attachment_remove`); the file is deleted. A message with text keeps it; one with no text and no files left is deleted (`message: null`, `message_delete`), else `message_update` and, unless encrypted, a new `edited_at`. An encrypted message's text is unknown to the server: its author's client deletes it when nothing would be left, and seals it again without the file (an addition to PLAN.md section 10) |
+| `PATCH /channels/{id}/messages/{mid}` `{content}` | `Message` | `content` may be empty only while the message has files |
 
 ### DM endpoints
 
@@ -97,7 +136,7 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 ### Lifecycle
 
 1. Server: `hello {heartbeat_interval_ms: 30000}`.
-2. Client: `identify {token, protocol_version: 1, client: {name, version, os}}` or
+2. Client: `identify {token, protocol_version: 2, client: {name, version, os}}` or
    `resume {token, session_id, last_seq}`.
 3. Server: `ready {…}` after identify; after resume, every missed event and then `resumed {}`, or
    `invalid_session {resumable: false}` (identify again and replace your state).
@@ -159,7 +198,7 @@ update for the old channel's viewers, then the new state.
 | 4004 | authentication failed | stop, show login |
 | 4005 | already authenticated | reconnect |
 | 4007 | invalid seq | identify fresh |
-| 4008 | rate limited | reconnect after 5 s |
+| 4008 | rate limited (too many ops, or identify/resume too often) | reconnect after 5 s |
 | 4009 | session timed out / queue overflow | resume |
 | 4010 | unsupported protocol version | stop, ask to update |
 | 4011 | session revoked | stop, show login |
@@ -214,6 +253,7 @@ Server → client:
 | `share_started` | `{participant_id}` |
 | `share_stopped` | `{participant_id}` (also implied by `participant_left`; watchers must `watch` again when it restarts) |
 | `keyframe_requested` | `{}`: send your next screen share frame as a keyframe |
+| `share_watchers` | `{count}`: how many members watch your share; sent after `share_start` and whenever it changes. While it is 0 frames go nowhere, and clients stop capturing (clients that never receive it, from an older server, keep sending) |
 
 An invalid or expired `auth` token, or any op before `auth`, answers `error {code: "UNAUTHORIZED"}`
 and the server closes the connection. After `kicked` or `leave` the connection stays open.
@@ -253,12 +293,14 @@ they were opened, so frames stay in order.
 | 6 | 2 | height, even, 2–3840 |
 | 8 | 4 | milliseconds since the share started |
 
-The server drops frames over 512 KiB (header included), arriving slower than 5 s, with a bad
-header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 30
-per second, and sends the rest to the members watching the sharer. A watcher whose queue (8
-frames) is full loses the frame, and the sharer gets `keyframe_requested` (at most every
-500 ms; also when someone starts watching). The GUI sends at most 1280×720 at 10 frames per
-second, a keyframe at least every 5 s.
+The server drops frames over 2 MiB (header included), arriving slower than 5 s, with a bad
+header, from someone who does not share or lacks `STREAM` (rechecked every second), or beyond 60
+per second on average (a token bucket that allows 10 frames of burst, so a sharer at exactly 60
+never loses a frame to timer jitter), and sends the rest to the members watching the sharer. A
+watcher whose queue (16 frames) is full loses the frame. After a lost frame (or a frame over the
+rate, or when someone starts watching) that watcher gets nothing from the sharer until their next
+keyframe, which the sharer is asked for with `keyframe_requested` (at most every 500 ms): frames
+before it could not be decoded anyway.
 
 ### DM calls
 
@@ -267,3 +309,38 @@ Every DM and group DM has a room keyed by its channel ID. "Start call" = `POST /
 they join, or for everyone when the caller leaves or the room empties. Clients stop ringing after
 30 s on their own. A system message `"<name> started a call"` is posted when the room fills, and
 `"Call ended · N min"` when it empties.
+
+## End-to-end encryption
+
+See [e2ee.md](e2ee.md). On the wire: `PUT /users/@me/devices` publishes this device's public keys,
+`POST /users/devices` (`user_ids`) returns users' devices, and the gateway sends `devices_update`
+(`user_id`, `devices`). `POST` and `PATCH` of DM messages take `e2ee` (an envelope) with empty `content`, and
+messages carry it back. The voice control stream relays `voice_key` (`to` from the client, `from` from the
+server, `key` opaque). Audio and video are packet version 2.
+
+## Friends and tags
+
+`POST /users/@me/username` (`username`, `current_password`), `GET` and `POST /users/@me/friends` (`handle`),
+`PUT` and `DELETE /users/@me/friends/{id}`; `ready.relationships`, `relationship_update`, `relationship_remove`.
+Users have `discriminator` next to `username`, absent for accounts without a tag. `PATCH /admin/users/{id}` takes
+`tagless`.
+
+## Channel keys
+
+Encrypted server channels, see `docs/e2ee.md`. The types are in `hermes_proto::e2ee`.
+
+| Call | What it does |
+| --- | --- |
+| `GET /channels/{id}/keys?device=` | current epoch, whether it must be replaced, the rules, this device's sealed keys |
+| `PUT /channels/{id}/keys` | hands keys of existing epochs to devices (`MANAGE_SPACE` if the channel is approved) |
+| `GET /channels/{id}/keys/members` | who can read the channel, who holds its current key |
+| `POST /channels/{id}/keys/epochs` | starts the next epoch; `409 CONFLICT` if someone else got there first |
+| `POST /channels/{id}/keys/requests` | this device lacks the channel's keys |
+| `GET /users/@me/key-requests` | devices waiting for keys of channels I can read |
+| `GET`/`PUT /spaces/{id}/key-policy` | a server's rules; only its owner can change them |
+| `GET`/`PUT /channels/{id}/key-policy` | what a channel changes of them; the owner or an administrator |
+
+Gateway events: `channel_key_request`, `channel_keys_delivered`, `channel_key_epoch`. A message in a channel carries
+`e2ee` with an `epoch`, which must be the current one (else `409 CONFLICT`), and `mentions`, since the server cannot
+read them from the text. A reaction on an encrypted message is sealed (`e2-` and hex). `GET /users/{id}` has
+`last_online_at`. `ready.instance.limits.channels_encrypted` says whether channels have to be encrypted.

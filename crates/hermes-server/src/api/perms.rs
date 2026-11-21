@@ -2,7 +2,6 @@
 //! same way). Spaces and channels a user cannot see answer `NOT_FOUND`, so nobody can probe which
 //! ones exist; missing permissions on visible ones answer `MISSING_PERMISSION`.
 
-use hermes_proto::ErrorCode;
 use hermes_proto::id::Id;
 use hermes_proto::models::{Channel, Member, Role};
 use hermes_proto::permissions::{self, Permissions};
@@ -13,10 +12,7 @@ use crate::state::{Cache, SpaceState};
 /// `MISSING_PERMISSION` naming the missing bits, e.g. "You need MANAGE_ROLES in this space".
 pub fn missing(perm: Permissions, scope: &str) -> Error {
     let names: Vec<&str> = perm.iter_names().map(|(name, _)| name).collect();
-    Error::new(
-        ErrorCode::MissingPermission,
-        format!("You need {} in this {scope}", names.join(" and ")),
-    )
+    Error::forbidden(format!("You need {} in this {scope}", names.join(" and ")))
 }
 
 /// The caller's view of a space they are a member of.
@@ -89,10 +85,9 @@ impl SpaceAccess<'_> {
 
     /// `MISSING_PERMISSION` for a hierarchy violation.
     pub fn hierarchy_error(&self, what: &str) -> Error {
-        Error::new(
-            ErrorCode::MissingPermission,
-            format!("You can only manage {what} below your highest role"),
-        )
+        Error::forbidden(format!(
+            "You can only manage {what} below your highest role"
+        ))
     }
 }
 
@@ -149,7 +144,7 @@ mod tests {
             Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES,
             "channel",
         );
-        assert_eq!(err.0.code, ErrorCode::MissingPermission);
+        assert_eq!(err.0.code, hermes_proto::ErrorCode::MissingPermission);
         assert_eq!(
             err.0.message,
             "You need MANAGE_ROLES and MANAGE_CHANNELS in this channel"

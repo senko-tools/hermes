@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM reactions WHERE message_id IN (SELECT value FROM json_each(?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "f98770e123f1527fe1d25573e18ef1a0328f9c8af2bdd6a95fac7c79f65c7dd9"
+}

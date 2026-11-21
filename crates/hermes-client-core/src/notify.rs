@@ -1,5 +1,6 @@
 //! When a message notifies (PLAN.md section 14.5). The UI decides how to show it.
 
+use hermes_proto::e2ee::MessageLock;
 use hermes_proto::id::Id;
 use hermes_proto::models::{Channel, Message, NotificationLevel, PresenceStatus};
 
@@ -46,16 +47,55 @@ pub fn check(
     my_status: PresenceStatus,
     now: i64,
 ) -> Option<Notification> {
+    check_with(store, message, focused, my_status, now, false)
+}
+
+/// Whether `local_minute` (of the day) falls in the quiet hours `from`..`to`, which may run past
+/// midnight. Unset or unreadable hours are never quiet.
+pub fn quiet(from: &str, to: &str, local_minute: u32) -> bool {
+    let minutes = |text: &str| {
+        let (hours, minutes) = text.trim().split_once(':')?;
+        Some(hours.parse::<u32>().ok()? * 60 + minutes.parse::<u32>().ok()?)
+    };
+    let (Some(from), Some(to)) = (minutes(from), minutes(to)) else {
+        return false;
+    };
+    if from <= to {
+        (from..to).contains(&local_minute)
+    } else {
+        local_minute >= from || local_minute < to
+    }
+}
+
+/// Whether the text holds one of the words, ignoring case.
+pub fn has_keyword(keywords: &str, text: &str) -> bool {
+    let text = text.to_lowercase();
+    keywords
+        .split_whitespace()
+        .any(|word| text.contains(&word.to_lowercase()))
+}
+
+/// [`check`], counting the message as mentioning me when `force` says so.
+pub fn check_with(
+    store: &InstanceStore,
+    message: &Message,
+    focused: bool,
+    my_status: PresenceStatus,
+    now: i64,
+    force: bool,
+) -> Option<Notification> {
     if focused
         || my_status == PresenceStatus::Dnd
         || Some(message.author.id) == store.me_id()
         || message.deleted
+        // Nobody can say who wrote it.
+        || message.lock == MessageLock::Unsealed
         // A message request notified once, when it arrived.
         || store.channel(message.channel_id).is_some_and(|c| c.request)
     {
         return None;
     }
-    let mention = store.mentions_me(message);
+    let mention = force || store.mentions_me(message);
     match level(store, message.channel_id, now)? {
         NotificationLevel::All => {}
         NotificationLevel::Mentions if mention => {}

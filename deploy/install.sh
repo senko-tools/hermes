@@ -367,10 +367,19 @@ set -e
 d=/var/backups/hermes
 install -d -o hermes -g hermes -m 750 "$d"
 runuser -u hermes -- /usr/local/bin/hermes-server backup --config /etc/hermes/hermes.toml "$d/hermes-$(date +%F).db"
+# Stored files never change, so each day's copy hard-links what the day before already has.
 if [ -d /var/lib/hermes/files ]; then
-    tar -C /var/lib/hermes -czf "$d/files-$(date +%F).tar.gz" files
+    today="$d/files-$(date +%F)"
+    last=$(ls -d "$d"/files-*/ 2>/dev/null | tail -n 1)
+    if [ -n "$last" ] && [ ! -d "$today" ]; then
+        cp -al "$last" "$today"
+    fi
+    install -d -o hermes -g hermes -m 750 "$today"
+    cp -anu /var/lib/hermes/files/. "$today"/
+    chown -R hermes:hermes "$today"
 fi
-find "$d" -type f -mtime +14 -delete
+find "$d" -maxdepth 1 -type f -mtime +14 -delete
+ls -d "$d"/files-*/ 2>/dev/null | head -n -14 | xargs -r rm -rf
 EOF
 chmod 755 "$BACKUP"
 

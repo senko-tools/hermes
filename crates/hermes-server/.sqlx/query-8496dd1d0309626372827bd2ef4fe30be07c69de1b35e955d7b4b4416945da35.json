@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT user_low, user_high, requester_id, created_at, accepted_at FROM relationships",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_low",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "relationships",
+            "name": "user_low"
+          }
+        }
+      },
+      {
+        "name": "user_high",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "relationships",
+            "name": "user_high"
+          }
+        }
+      },
+      {
+        "name": "requester_id",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "relationships",
+            "name": "requester_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "relationships",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "accepted_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "relationships",
+            "name": "accepted_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "8496dd1d0309626372827bd2ef4fe30be07c69de1b35e955d7b4b4416945da35"
+}

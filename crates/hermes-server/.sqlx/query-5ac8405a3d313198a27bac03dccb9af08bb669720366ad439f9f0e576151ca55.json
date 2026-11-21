@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT username FROM users WHERE username >= ? AND username < ? LIMIT 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "username",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "username"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5ac8405a3d313198a27bac03dccb9af08bb669720366ad439f9f0e576151ca55"
+}

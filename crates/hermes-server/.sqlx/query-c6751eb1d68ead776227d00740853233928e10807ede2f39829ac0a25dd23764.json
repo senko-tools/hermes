@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM relationships WHERE user_low = ? AND user_high = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "c6751eb1d68ead776227d00740853233928e10807ede2f39829ac0a25dd23764"
+}

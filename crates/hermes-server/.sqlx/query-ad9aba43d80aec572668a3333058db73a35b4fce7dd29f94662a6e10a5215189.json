@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (SELECT 1 FROM users WHERE avatar_id = ?1 OR banner_id = ?1)\n               OR EXISTS (SELECT 1 FROM spaces WHERE icon_id = ?1) AS \"used!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "used!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ad9aba43d80aec572668a3333058db73a35b4fce7dd29f94662a6e10a5215189"
+}

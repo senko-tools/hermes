@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO read_states (user_id, channel_id, last_read_id, mention_count)\n         SELECT value, ?, 0, 1 FROM json_each(?) WHERE true\n         ON CONFLICT (user_id, channel_id) DO UPDATE SET mention_count = mention_count + 1\n         WHERE last_read_id < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "435ab0a11491331c2ade97c02e7e4cc9d89c62510b6ad5215a5ebfda5b3dc0fe"
+}

@@ -1,7 +1,7 @@
 //! TLS for REST and the gateway (PLAN.md section 13): normal CA validation through the OS trust
 //! store, or pinning to a known certificate fingerprint for self-signed instances.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
@@ -163,7 +163,7 @@ impl Recorder {
     }
 
     pub fn seen(&self) -> Option<SeenCertificate> {
-        *self.seen.lock().expect("recorder lock")
+        *self.seen.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -180,7 +180,7 @@ impl ServerCertVerifier for Recorder {
             ca.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
                 .is_ok()
         });
-        *self.seen.lock().expect("recorder lock") = Some(SeenCertificate {
+        *self.seen.lock().unwrap_or_else(PoisonError::into_inner) = Some(SeenCertificate {
             fingerprint: Fingerprint::of(end_entity),
             ca_valid,
         });

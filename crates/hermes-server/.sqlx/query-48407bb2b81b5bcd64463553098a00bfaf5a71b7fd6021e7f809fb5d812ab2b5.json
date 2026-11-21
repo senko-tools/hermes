@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT device_id, sign_key, dh_key, signature, revoked_at FROM devices\n         WHERE user_id = ? ORDER BY created_at, device_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "device_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "device_id"
+          }
+        }
+      },
+      {
+        "name": "sign_key",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "sign_key"
+          }
+        }
+      },
+      {
+        "name": "dh_key",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "dh_key"
+          }
+        }
+      },
+      {
+        "name": "signature",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "signature"
+          }
+        }
+      },
+      {
+        "name": "revoked_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "devices",
+            "name": "revoked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "48407bb2b81b5bcd64463553098a00bfaf5a71b7fd6021e7f809fb5d812ab2b5"
+}

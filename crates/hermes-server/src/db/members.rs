@@ -72,6 +72,8 @@ pub struct BanRow {
     pub user_id: Id,
     pub reason: Option<String>,
     pub created_at: i64,
+    pub banned_by: Id,
+    pub expires_at: Option<i64>,
 }
 
 /// A space's bans, oldest first.
@@ -81,8 +83,8 @@ pub async fn list_bans(
 ) -> Result<Vec<BanRow>, sqlx::Error> {
     let space_id = space_id.to_i64();
     let rows = sqlx::query!(
-        "SELECT user_id, reason, created_at FROM bans WHERE space_id = ?
-         ORDER BY created_at, user_id",
+        "SELECT user_id, reason, created_at, banned_by, expires_at FROM bans WHERE space_id = ?
+         ORDER BY created_at, user_id LIMIT 2000",
         space_id
     )
     .fetch_all(e)
@@ -93,6 +95,8 @@ pub async fn list_bans(
             user_id: Id::from_i64(r.user_id),
             reason: r.reason,
             created_at: r.created_at,
+            banned_by: Id::from_i64(r.banned_by),
+            expires_at: r.expires_at,
         })
         .collect())
 }
@@ -105,17 +109,21 @@ pub async fn upsert_ban(
     reason: Option<&str>,
     banned_by: Id,
     now: i64,
+    expires_at: Option<i64>,
 ) -> Result<(), sqlx::Error> {
     let (space_id, user_id, banned_by) = (space_id.to_i64(), user_id.to_i64(), banned_by.to_i64());
     sqlx::query!(
-        "INSERT INTO bans (space_id, user_id, reason, banned_by, created_at) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO bans (space_id, user_id, reason, banned_by, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (space_id, user_id)
-         DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by",
+         DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by,
+           expires_at = excluded.expires_at",
         space_id,
         user_id,
         reason,
         banned_by,
-        now
+        now,
+        expires_at
     )
     .execute(conn)
     .await?;
@@ -139,9 +147,29 @@ pub async fn delete_ban(
     Ok(done.rows_affected() > 0)
 }
 
+/// Until when a member may only read; `None` ends it.
+pub async fn set_timeout(
+    conn: &mut SqliteConnection,
+    space_id: Id,
+    user_id: Id,
+    until: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let (space_id, user_id) = (space_id.to_i64(), user_id.to_i64());
+    sqlx::query!(
+        "UPDATE space_members SET timeout_until = ? WHERE space_id = ? AND user_id = ?",
+        until,
+        space_id,
+        user_id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Soft-deletes `author_id`'s messages in the space's channels with an ID of at least `min_id`
-/// (content cleared, unpinned, reactions and mentions removed, attachments unlinked). Returns
-/// `(message_id, channel_id)` of the messages deleted now.
+/// (content and any encrypted form cleared, unpinned, reactions and mentions removed, attachments
+/// unlinked), like [`super::messages::soft_delete`]. Returns `(message_id, channel_id)` of the
+/// messages deleted now.
 pub async fn soft_delete_messages_since(
     conn: &mut SqliteConnection,
     space_id: Id,
@@ -150,7 +178,7 @@ pub async fn soft_delete_messages_since(
 ) -> Result<Vec<(Id, Id)>, sqlx::Error> {
     let (space_id, author_id, min_id) = (space_id.to_i64(), author_id.to_i64(), min_id.to_i64());
     let rows = sqlx::query!(
-        "UPDATE messages SET content = '', deleted = 1, pinned = 0
+        "UPDATE messages SET content = '', e2ee = NULL, deleted = 1, pinned = 0
          WHERE author_id = ? AND id >= ? AND deleted = 0
            AND channel_id IN (SELECT id FROM channels WHERE space_id = ?)
          RETURNING id, channel_id",
@@ -160,9 +188,8 @@ pub async fn soft_delete_messages_since(
     )
     .fetch_all(&mut *conn)
     .await?;
-    for row in &rows {
-        super::messages::clear_deleted_extras(&mut *conn, Id::from_i64(row.id)).await?;
-    }
+    let ids: Vec<Id> = rows.iter().map(|r| Id::from_i64(r.id)).collect();
+    super::messages::clear_deleted_extras_of(&mut *conn, &ids).await?;
     Ok(rows
         .into_iter()
         .map(|r| (Id::from_i64(r.id), Id::from_i64(r.channel_id)))

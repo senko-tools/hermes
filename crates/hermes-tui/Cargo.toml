@@ -24,7 +24,7 @@ windows = { workspace = true, features = ["Win32_UI_Shell", "Win32_UI_WindowsAnd
 
 [dev-dependencies]
 # The end-to-end test runs a real server (PLAN.md section 19); never a normal dependency.
-hermes-server = { path = "../hermes-server" }
+hermes-server = { path = "../hermes-server", features = ["testing"] }
 
 [lints]
 workspace = true

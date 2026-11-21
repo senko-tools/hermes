@@ -1,6 +1,7 @@
-//! Crash logs (PLAN.md section 20, Phase 8): a panic writes `crash-<time>.log` with the message,
-//! where it happened and a backtrace into the logs folder, so users can attach it to a bug
-//! report. The previous panic hook still runs (it restores the terminal in the TUI).
+//! Crash logs (PLAN.md section 20, Phase 8): a panic writes `crash-YYYY-MM-DD-HHMMSS.log` (local
+//! time) with the message, where it happened and a backtrace into the logs folder, so users can
+//! attach it to a bug report. The previous panic hook still runs (it restores the terminal in
+//! the TUI). They are deleted after 30 days (see [`crate::logs`]).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 /// Installs the hook; `app` names the program in the log (`hermes`, `hermes-tui`).
 pub fn install(logs_dir: PathBuf, app: &'static str) {
     let previous = std::panic::take_hook();
+    let offset_secs = crate::time::local_offset_secs();
     std::panic::set_hook(Box::new(move |info| {
         let backtrace = std::backtrace::Backtrace::force_capture();
         let message = info
@@ -21,7 +23,7 @@ pub fn install(logs_dir: PathBuf, app: &'static str) {
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_default();
         let text = report(app, &message, &location, &backtrace.to_string());
-        let written = write(&logs_dir, &text);
+        let written = write(&logs_dir, &text, offset_secs);
         // First the previous hook: in the TUI it gives the terminal back.
         previous(info);
         match written {
@@ -43,12 +45,28 @@ pub fn report(app: &str, message: &str, location: &str, backtrace: &str) -> Stri
     )
 }
 
-fn write(dir: &Path, text: &str) -> std::io::Result<PathBuf> {
+fn write(dir: &Path, text: &str, offset_secs: i64) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let path = dir.join(format!("crash-{}.log", crate::core::now_ms()));
-    let mut file = std::fs::File::create(&path)?;
-    file.write_all(text.as_bytes())?;
-    Ok(path)
+    // Threads that panic in the same second find the same free name: only one may take it.
+    let mut tries = 0;
+    loop {
+        let path =
+            crate::logs::report_path(dir, "crash", "log", crate::core::now_ms(), offset_secs);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && tries < 10 => {
+                tries += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +80,13 @@ mod tests {
         assert!(text.contains("panic: boom\nat: src/x.rs:3"));
         assert!(text.contains("backtrace:\nframes"));
         let dir = std::env::temp_dir().join(format!("hermes-crash-test-{}", std::process::id()));
-        let path = write(&dir, &text).unwrap();
+        let path = write(&dir, &text, 0).unwrap();
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("crash-20")
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         let _ = std::fs::remove_dir_all(dir);
     }

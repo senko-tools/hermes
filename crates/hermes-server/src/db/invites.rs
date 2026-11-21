@@ -95,7 +95,7 @@ pub async fn list_for_space(
     sqlx::query_as!(
         Raw,
         "SELECT code, space_id, creator_id, max_uses, uses, expires_at, created_at
-         FROM invites WHERE space_id = ? ORDER BY created_at, code",
+         FROM invites WHERE space_id = ? ORDER BY created_at, code LIMIT 1000",
         space_id
     )
     .fetch_all(e)

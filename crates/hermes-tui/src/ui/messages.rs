@@ -116,19 +116,11 @@ fn render_span(ctx: &Ctx, span: &M, style: Style, lines: &mut Vec<Pieces>) {
             push(lines, &format!("@{name}"), style.fg(Color::Magenta));
         }
         M::RoleMention(id) => {
-            let name = ctx
-                .space
-                .and_then(|s| ctx.store.spaces.get(&s))
-                .and_then(|s| s.role(*id))
-                .map_or_else(|| "role".to_owned(), |r| r.name.clone());
+            let name = view::role_mention_name(ctx.store, ctx.space, *id);
             push(lines, &format!("@{name}"), style.fg(Color::Magenta));
         }
         M::ChannelMention(id) => {
-            let name = ctx
-                .store
-                .channel(*id)
-                .and_then(|c| c.name.clone())
-                .unwrap_or_else(|| "channel".into());
+            let name = view::channel_mention_name(ctx.store, *id);
             push(lines, &format!("#{name}"), style.fg(Color::Cyan));
         }
         M::Everyone => push(lines, "@everyone", style.fg(Color::Magenta)),
@@ -136,25 +128,15 @@ fn render_span(ctx: &Ctx, span: &M, style: Style, lines: &mut Vec<Pieces>) {
     }
 }
 
-fn size_text(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit = 0;
-    while size >= 1024.0 && unit < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{size:.1} {}", UNITS[unit])
-    }
-}
-
 fn attachment_line(i: usize, a: &Attachment) -> Pieces {
     let text = match (a.width, a.height) {
         (Some(w), Some(h)) => format!("[{}] [image: {} {w}×{h}]", i + 1, a.filename),
-        _ => format!("[{}] [file: {} {}]", i + 1, a.filename, size_text(a.size)),
+        _ => format!(
+            "[{}] [file: {} {}]",
+            i + 1,
+            a.filename,
+            view::human_size(a.size)
+        ),
     };
     vec![(text, Style::default().fg(Color::Blue))]
 }
@@ -185,11 +167,6 @@ fn wrap(pieces: &Pieces, width: usize) -> Vec<Pieces> {
         }
     }
     out
-}
-
-/// One rendered entry (message or pending message).
-struct Rendered {
-    lines: Vec<Line<'static>>,
 }
 
 struct Layout<'a> {
@@ -250,15 +227,7 @@ impl Layout<'_> {
         let color = self
             .ctx
             .space
-            .and_then(|s| self.ctx.store.spaces.get(&s))
-            .and_then(|state| {
-                let member = state.members.get(&author)?;
-                state
-                    .roles
-                    .iter()
-                    .find(|r| r.color.is_some() && member.role_ids.contains(&r.id))
-                    .and_then(|r| r.color)
-            })
+            .and_then(|space| view::role_color(self.ctx.store, space, author))
             .map(|c| Color::Rgb((c >> 16) as u8, (c >> 8) as u8, c as u8));
         bold().fg(color.unwrap_or(Color::Green))
     }
@@ -350,6 +319,59 @@ impl Layout<'_> {
     }
 }
 
+/// The `height` lines on screen: `before` (the line above the oldest entry), then entries
+/// `0..count` as laid out by `render`. With an `anchor` the view keeps that entry fully visible,
+/// as low as possible; without one it shows the newest lines.
+///
+/// Only what can be on screen is laid out (a window holds hundreds of messages, and this runs
+/// every frame): from the anchor, or the newest entry, upwards until the pane is full, then below
+/// the anchor while it is still not full.
+fn visible_lines<T>(
+    count: usize,
+    anchor: Option<usize>,
+    height: usize,
+    before: Vec<T>,
+    mut render: impl FnMut(usize) -> Vec<T>,
+) -> Vec<T> {
+    let end = anchor.map_or(count, |a| a + 1);
+    let mut chunks = Vec::new();
+    let mut above = 0;
+    let mut first = end;
+    while first > 0 && above < height {
+        first -= 1;
+        let lines = render(first);
+        above += lines.len();
+        chunks.push(lines);
+    }
+    // `all` is a contiguous part of the full list of lines; when it does not start at the top,
+    // it holds at least `height` lines up to the anchor's end, so the view comes out the same.
+    let mut all = Vec::with_capacity(above + height + 1);
+    if first == 0 {
+        all.extend(before);
+    }
+    let mut anchor_range = None;
+    for (k, lines) in chunks.into_iter().rev().enumerate() {
+        let start = all.len();
+        all.extend(lines);
+        if anchor == Some(first + k) {
+            anchor_range = Some((start, all.len()));
+        }
+    }
+    let mut next = end;
+    while next < count && all.len() < height {
+        all.extend(render(next));
+        next += 1;
+    }
+    let top = match anchor_range {
+        Some((start, end)) => {
+            let bottom = end.max(height.min(all.len()));
+            bottom.saturating_sub(height).min(start)
+        }
+        None => all.len().saturating_sub(height),
+    };
+    all.into_iter().skip(top).take(height).collect()
+}
+
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let has_focus = focused(app, Focus::Messages);
     let store = app.core.store();
@@ -391,7 +413,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(topic, dim()),
         ]))
         .border_style(border_style(has_focus));
-    if let Some(footer) = crate::voice::room_footer(app, &inst, channel) {
+    if let Some(footer) = crate::voice::room_footer(app, s, &inst, channel) {
         block = block.title_bottom(Line::from(Span::styled(
             footer,
             Style::default().fg(Color::Green),
@@ -427,7 +449,6 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let highlight = Style::default().bg(Color::Rgb(40, 44, 52));
     let selected = app.msg_sel;
 
-    let mut rendered: Vec<Rendered> = Vec::new();
     let mut lines_before: Vec<Line> = Vec::new();
     match window {
         Some(w) if w.reached_start => lines_before.push(Line::from(Span::styled(
@@ -440,12 +461,21 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         ))),
         _ => lines_before.push(Line::from(Span::styled("loading…", dim()))),
     }
-    let mut prev: Option<&Message> = None;
-    for (i, m) in messages.iter().enumerate() {
+    let offset = app.utc_offset;
+    // One entry (message or pending message) with its day separator. A message's look depends
+    // only on itself and the message before it, so entries can be laid out in any order.
+    let render = |i: usize| -> Vec<Line<'static>> {
+        let hl = (selected == Some(i) && has_focus).then_some(highlight);
+        let Some(m) = messages.get(i) else {
+            return pending
+                .get(i - messages.len())
+                .map_or_else(Vec::new, |p| layout.pending(p, hl));
+        };
+        let prev = i.checked_sub(1).and_then(|j| messages.get(j));
         let mut lines = Vec::new();
-        let day = time::day(m.created_at() as i64, app.utc_offset);
-        if prev.is_none_or(|p| time::day(p.created_at() as i64, app.utc_offset) != day) {
-            let label = time::format(m.created_at() as i64, "%Y-%m-%d", app.utc_offset);
+        let day = time::day(m.created_at() as i64, offset);
+        if prev.is_none_or(|p| time::day(p.created_at() as i64, offset) != day) {
+            let label = time::format(m.created_at() as i64, "%Y-%m-%d", offset);
             lines.push(Line::from(Span::styled(
                 format!("──── {label} ────"),
                 dim(),
@@ -454,54 +484,21 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         let grouped = prev.is_some_and(|p| {
             !m.deleted && !p.deleted && view::is_grouped(p, m, layout.group_minutes)
         }) && lines.is_empty();
-        let hl = (selected == Some(i) && has_focus).then_some(highlight);
         lines.extend(layout.message(m, grouped, hl));
-        rendered.push(Rendered { lines });
-        prev = Some(m);
-    }
-    for (j, p) in pending.iter().enumerate() {
-        let hl = (selected == Some(messages.len() + j) && has_focus).then_some(highlight);
-        rendered.push(Rendered {
-            lines: layout.pending(p, hl),
-        });
-    }
+        lines
+    };
 
     // Typing line at the bottom of the pane.
     let typing = s.typing(channel, now_ms());
-    let typing_text = match typing.as_slice() {
-        [] => String::new(),
-        [a] => format!("{} is typing…", s.display_name(space, *a)),
-        [a, b] => format!(
-            "{} and {} are typing…",
-            s.display_name(space, *a),
-            s.display_name(space, *b)
-        ),
-        _ => "several people are typing…".into(),
-    };
+    let names: Vec<String> = typing.iter().map(|u| s.display_name(space, *u)).collect();
+    let typing_text = view::typing_text(&names).unwrap_or_default();
     let show_typing = config.buffer.show_typing && !typing_text.is_empty();
     let height = inner.height as usize - usize::from(show_typing);
     app.page = (height / 2).max(1);
 
-    // All lines, and where the selected entry ends.
-    let mut all: Vec<Line> = lines_before;
-    let mut sel_range = None;
-    for (i, r) in rendered.into_iter().enumerate() {
-        let start = all.len();
-        all.extend(r.lines);
-        if selected == Some(i) {
-            sel_range = Some((start, all.len()));
-        }
-    }
-    let top = match sel_range {
-        // Keep the selected entry fully visible, as low as possible.
-        Some((start, end)) => {
-            let bottom = end.max(height.min(all.len()));
-            let top = bottom.saturating_sub(height);
-            top.min(start)
-        }
-        None => all.len().saturating_sub(height),
-    };
-    let visible: Vec<Line> = all.into_iter().skip(top).take(height).collect();
+    let count = messages.len() + pending.len();
+    let anchor = selected.filter(|&i| i < count);
+    let visible = visible_lines(count, anchor, height, lines_before, render);
     f.render_widget(
         Paragraph::new(visible),
         Rect {
@@ -542,9 +539,72 @@ mod tests {
         assert_eq!(texts, ["hello ", "wörld", "😀x"]);
     }
 
+    /// What `visible_lines` must match: lay out everything, then pick the view.
+    fn visible_naive(lens: &[usize], anchor: Option<usize>, height: usize) -> Vec<(usize, usize)> {
+        let mut all = vec![(usize::MAX, 0)];
+        let mut range = None;
+        for (i, &len) in lens.iter().enumerate() {
+            let start = all.len();
+            all.extend((0..len).map(|l| (i, l)));
+            if anchor == Some(i) {
+                range = Some((start, all.len()));
+            }
+        }
+        let top = match range {
+            Some((start, end)) => {
+                let bottom = end.max(height.min(all.len()));
+                bottom.saturating_sub(height).min(start)
+            }
+            None => all.len().saturating_sub(height),
+        };
+        all.into_iter().skip(top).take(height).collect()
+    }
+
     #[test]
-    fn sizes() {
-        assert_eq!(size_text(512), "512 B");
-        assert_eq!(size_text(2 * 1024 * 1024 + 100_000), "2.1 MB");
+    fn only_visible_entries_are_laid_out_and_the_view_is_unchanged() {
+        let patterns: [&[usize]; 7] = [
+            &[],
+            &[1],
+            &[3],
+            &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            &[2, 5, 1, 9, 1, 3],
+            &[12, 1, 1],
+            &[1, 1, 7, 1, 1, 2, 2, 4],
+        ];
+        for lens in patterns {
+            for height in 1..15 {
+                for anchor in std::iter::once(None).chain((0..lens.len()).map(Some)) {
+                    let mut rendered = Vec::new();
+                    let got =
+                        visible_lines(lens.len(), anchor, height, vec![(usize::MAX, 0)], |i| {
+                            rendered.push(i);
+                            (0..lens[i]).map(|l| (i, l)).collect()
+                        });
+                    assert_eq!(
+                        got,
+                        visible_naive(lens, anchor, height),
+                        "{lens:?} height {height} anchor {anchor:?}"
+                    );
+                    // Each entry at most once, and only entries that are (partly) on screen.
+                    let mut once = rendered.clone();
+                    once.sort_unstable();
+                    once.dedup();
+                    assert_eq!(once.len(), rendered.len());
+                    let shown: Vec<usize> = got.iter().map(|&(i, _)| i).collect();
+                    assert!(
+                        rendered.iter().all(|i| shown.contains(i)),
+                        "{lens:?} height {height} anchor {anchor:?}: rendered {rendered:?}"
+                    );
+                }
+            }
+        }
+        // A long history costs only what fits.
+        let mut calls = 0;
+        let got = visible_lines(500, None, 10, vec![0], |i| {
+            calls += 1;
+            vec![i]
+        });
+        assert_eq!(got, (490..500).collect::<Vec<_>>());
+        assert_eq!(calls, 10);
     }
 }

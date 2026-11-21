@@ -1,17 +1,14 @@
 //! Keybinds (PLAN.md section 15.6): every action has a default, and `[keys]` in `config.toml`
 //! overrides it (`command_bar = "Ctrl+K"`). Combos are written `Ctrl+Shift+M`, `Alt+Down`,
-//! `Ctrl+\`, `Ctrl+,`, `Escape`, `F5`.
-//!
-//! A punctuation key in a combo also matches the key in its place on a US keyboard, so
-//! `Ctrl+\` works on layouts where `\` needs AltGr (approved, see docs/DECISIONS.md).
+//! `Ctrl+\`, `Ctrl+,`, `Escape`, `F5`. A combo matches the key as gpui reports it: what the key
+//! types on the current layout without Shift.
 
 use std::collections::BTreeMap;
 
-use iced::keyboard::key::{Code, Named, Physical};
-use iced::keyboard::{self, Modifiers};
+use gpui_kit::Keystroke;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Action {
+pub enum KeyAction {
     CommandBar,
     NextUnread,
     PrevUnread,
@@ -36,105 +33,116 @@ pub enum Action {
 }
 
 /// Every action: config name, default combo and the name shown in the command bar.
-pub const ACTIONS: [(Action, &str, &str, &str); 21] = [
-    (Action::CommandBar, "command_bar", "Ctrl+K", "Command bar"),
+pub const ACTIONS: [(KeyAction, &str, &str, &str); 21] = [
     (
-        Action::NextUnread,
+        KeyAction::CommandBar,
+        "command_bar",
+        "Ctrl+K",
+        "Command bar",
+    ),
+    (
+        KeyAction::NextUnread,
         "next_unread",
         "Alt+Shift+Down",
         "Next unread channel",
     ),
     (
-        Action::PrevUnread,
+        KeyAction::PrevUnread,
         "prev_unread",
         "Alt+Shift+Up",
         "Previous unread channel",
     ),
     (
-        Action::NextChannel,
+        KeyAction::NextChannel,
         "next_channel",
         "Alt+Down",
         "Next channel",
     ),
     (
-        Action::PrevChannel,
+        KeyAction::PrevChannel,
         "prev_channel",
         "Alt+Up",
         "Previous channel",
     ),
     (
-        Action::FocusNextPane,
+        KeyAction::FocusNextPane,
         "focus_next_pane",
         "Ctrl+Tab",
         "Focus next pane",
     ),
     (
-        Action::FocusPrevPane,
+        KeyAction::FocusPrevPane,
         "focus_prev_pane",
         "Ctrl+Shift+Tab",
         "Focus previous pane",
     ),
     (
-        Action::SplitRight,
+        KeyAction::SplitRight,
         "split_right",
         "Ctrl+\\",
         "Split pane right",
     ),
     (
-        Action::SplitDown,
+        KeyAction::SplitDown,
         "split_down",
         "Ctrl+Shift+\\",
         "Split pane down",
     ),
-    (Action::ClosePane, "close_pane", "Ctrl+W", "Close pane"),
+    (KeyAction::ClosePane, "close_pane", "Ctrl+W", "Close pane"),
     (
-        Action::MaximizePane,
+        KeyAction::MaximizePane,
         "maximize_pane",
         "Ctrl+Shift+F",
         "Maximize or restore pane",
     ),
     (
-        Action::ToggleMemberList,
+        KeyAction::ToggleMemberList,
         "toggle_member_list",
         "Ctrl+U",
         "Toggle member list",
     ),
     (
-        Action::ToggleSidebar,
+        KeyAction::ToggleSidebar,
         "toggle_sidebar",
         "Ctrl+B",
         "Toggle sidebar",
     ),
-    (Action::Search, "search", "Ctrl+F", "Search"),
-    (Action::MarkRead, "mark_read", "Escape", "Mark channel read"),
+    (KeyAction::Search, "search", "Ctrl+F", "Search"),
     (
-        Action::ToggleMute,
+        KeyAction::MarkRead,
+        "mark_read",
+        "Escape",
+        "Mark channel read",
+    ),
+    (
+        KeyAction::ToggleMute,
         "toggle_mute",
         "Ctrl+Shift+M",
         "Toggle mute",
     ),
     (
-        Action::ToggleDeafen,
+        KeyAction::ToggleDeafen,
         "toggle_deafen",
         "Ctrl+Shift+D",
         "Toggle deafen",
     ),
-    (Action::Settings, "settings", "Ctrl+,", "Open settings"),
-    (Action::ZoomIn, "zoom_in", "Ctrl+=", "Zoom in"),
-    (Action::ZoomOut, "zoom_out", "Ctrl+-", "Zoom out"),
-    (Action::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
+    (KeyAction::Settings, "settings", "Ctrl+,", "Open settings"),
+    (KeyAction::ZoomIn, "zoom_in", "Ctrl+=", "Zoom in"),
+    (KeyAction::ZoomOut, "zoom_out", "Ctrl+-", "Zoom out"),
+    (KeyAction::ZoomReset, "zoom_reset", "Ctrl+0", "Reset zoom"),
+];
+
+/// Extra combos an action also answers to while `[keys]` leaves it at its default. On Nordic and
+/// German layouts `+` is a key of its own and `=` needs Shift, so `Ctrl+=` could not be pressed
+/// there; `Ctrl+Shift+=` is the same key press as `Ctrl++` on a US keyboard.
+const ALIASES: [(KeyAction, &str); 2] = [
+    (KeyAction::ZoomIn, "Ctrl++"),
+    (KeyAction::ZoomIn, "Ctrl+Shift+="),
 ];
 
 /// `[keys]` entry of the global mute key (unbound by default). It is registered system-wide with
 /// `global-hotkey` instead of being a window keybind (see `crate::ptt`).
 pub const GLOBAL_MUTE: &str = "toggle_mute_global";
-
-/// A key: a character (lowercase) or a named key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum KeyName {
-    Char(String),
-    Named(Named),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Combo {
@@ -142,7 +150,8 @@ pub struct Combo {
     pub shift: bool,
     pub alt: bool,
     pub logo: bool,
-    pub key: KeyName,
+    /// The key as gpui names it: a lowercase character, `up`, `escape`, `f5`…
+    pub key: String,
 }
 
 impl Combo {
@@ -176,92 +185,52 @@ impl Combo {
         Some(combo)
     }
 
-    /// Whether a key press matches. `key` is the key without modifiers applied; `physical` is
-    /// its place on the keyboard.
-    pub fn matches(&self, key: &keyboard::Key, physical: Physical, modifiers: Modifiers) -> bool {
-        if modifiers.control() != self.ctrl
-            || modifiers.shift() != self.shift
-            || modifiers.alt() != self.alt
-            || modifiers.logo() != self.logo
-        {
-            return false;
-        }
-        match (&self.key, key) {
-            (KeyName::Char(c), keyboard::Key::Character(k)) if k.to_lowercase() == *c => true,
-            (KeyName::Char(c), _) => {
-                us_position(c).is_some_and(|code| physical == Physical::Code(code))
-            }
-            (KeyName::Named(n), keyboard::Key::Named(k)) => n == k,
-            _ => false,
-        }
+    /// Whether a key press matches.
+    pub fn matches(&self, keystroke: &Keystroke) -> bool {
+        let m = keystroke.modifiers;
+        m.control == self.ctrl
+            && m.shift == self.shift
+            && m.alt == self.alt
+            && m.platform == self.logo
+            && keystroke.key == self.key
     }
 }
 
-/// Where a punctuation character is on a US keyboard.
-fn us_position(c: &str) -> Option<Code> {
-    Some(match c {
-        "\\" => Code::Backslash,
-        "," => Code::Comma,
-        "." => Code::Period,
-        "/" => Code::Slash,
-        ";" => Code::Semicolon,
-        "'" => Code::Quote,
-        "[" => Code::BracketLeft,
-        "]" => Code::BracketRight,
-        "-" => Code::Minus,
-        "=" => Code::Equal,
-        "`" => Code::Backquote,
-        _ => return None,
-    })
-}
-
-fn key_name(text: &str) -> Option<KeyName> {
+fn key_name(text: &str) -> Option<String> {
     let text = text.trim();
-    let named = match text.to_ascii_lowercase().as_str() {
-        "tab" => Named::Tab,
-        "enter" | "return" => Named::Enter,
-        "escape" | "esc" => Named::Escape,
-        "space" => Named::Space,
-        "up" => Named::ArrowUp,
-        "down" => Named::ArrowDown,
-        "left" => Named::ArrowLeft,
-        "right" => Named::ArrowRight,
-        "pageup" => Named::PageUp,
-        "pagedown" => Named::PageDown,
-        "home" => Named::Home,
-        "end" => Named::End,
-        "delete" => Named::Delete,
-        "backspace" => Named::Backspace,
-        "f1" => Named::F1,
-        "f2" => Named::F2,
-        "f3" => Named::F3,
-        "f4" => Named::F4,
-        "f5" => Named::F5,
-        "f6" => Named::F6,
-        "f7" => Named::F7,
-        "f8" => Named::F8,
-        "f9" => Named::F9,
-        "f10" => Named::F10,
-        "f11" => Named::F11,
-        "f12" => Named::F12,
+    let lower = text.to_ascii_lowercase();
+    let named = match lower.as_str() {
+        "tab" => "tab",
+        "enter" | "return" => "enter",
+        "escape" | "esc" => "escape",
+        "space" => "space",
+        "up" => "up",
+        "down" => "down",
+        "left" => "left",
+        "right" => "right",
+        "pageup" => "pageup",
+        "pagedown" => "pagedown",
+        "home" => "home",
+        "end" => "end",
+        "delete" => "delete",
+        "backspace" => "backspace",
+        f if f.len() >= 2 && f.starts_with('f') && f[1..].parse::<u8>().is_ok_and(|n| n <= 12) => {
+            return Some(lower);
+        }
         _ => {
             let mut chars = text.chars();
             return match (chars.next(), chars.next()) {
-                (Some(c), None) if !c.is_whitespace() => {
-                    Some(KeyName::Char(c.to_lowercase().collect()))
-                }
+                (Some(c), None) if !c.is_whitespace() => Some(c.to_lowercase().collect()),
                 _ => None,
             };
         }
     };
-    Some(KeyName::Named(named))
+    Some(named.to_owned())
 }
-
-const NO_CODE: keyboard::key::NativeCode = keyboard::key::NativeCode::Unidentified;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keybinds {
-    binds: Vec<(Combo, Action)>,
+    binds: Vec<(Combo, KeyAction)>,
 }
 
 impl Keybinds {
@@ -289,29 +258,30 @@ impl Keybinds {
                 }
             }
         }
+        // Last, and only where no bind of the config or the defaults has the combo already.
+        for (action, alias) in ALIASES {
+            let (_, name, ..) = ACTIONS.iter().find(|(a, ..)| *a == action).expect("listed");
+            if keys.contains_key(*name) {
+                continue;
+            }
+            if let Some(combo) = Combo::parse(alias)
+                && !binds.iter().any(|(c, _)| *c == combo)
+            {
+                binds.push((combo, action));
+            }
+        }
         (Keybinds { binds }, warnings)
     }
 
-    pub fn action(
-        &self,
-        key: &keyboard::Key,
-        physical: Physical,
-        modifiers: Modifiers,
-    ) -> Option<Action> {
-        // A key that types the character wins over one in its US place.
+    pub fn action(&self, keystroke: &Keystroke) -> Option<KeyAction> {
         self.binds
             .iter()
-            .find(|(combo, _)| combo.matches(key, Physical::Unidentified(NO_CODE), modifiers))
-            .or_else(|| {
-                self.binds
-                    .iter()
-                    .find(|(combo, _)| combo.matches(key, physical, modifiers))
-            })
+            .find(|(combo, _)| combo.matches(keystroke))
             .map(|(_, action)| *action)
     }
 
     /// The combo bound to `action`, for display.
-    pub fn combo_text(keys: &BTreeMap<String, String>, action: Action) -> Option<String> {
+    pub fn combo_text(keys: &BTreeMap<String, String>, action: KeyAction) -> Option<String> {
         let (_, name, default, _) = ACTIONS.iter().find(|(a, ..)| *a == action)?;
         let text = keys.get(*name).map_or(*default, String::as_str);
         (!text.trim().is_empty()).then(|| text.to_owned())
@@ -322,115 +292,70 @@ impl Keybinds {
 mod tests {
     use super::*;
 
-    fn ch(c: &str) -> keyboard::Key {
-        keyboard::Key::Character(c.into())
+    fn key(text: &'static str) -> Keystroke {
+        Keystroke::parse(text).expect("a keystroke")
     }
-
-    const ANY: Physical = Physical::Unidentified(NO_CODE);
 
     #[test]
     fn combos_parse() {
         let c = Combo::parse("Ctrl+Shift+M").unwrap();
         assert!(c.ctrl && c.shift && !c.alt);
-        assert_eq!(c.key, KeyName::Char("m".into()));
-        assert_eq!(
-            Combo::parse("Ctrl+\\").unwrap().key,
-            KeyName::Char("\\".into())
-        );
-        assert_eq!(
-            Combo::parse("ctrl+,").unwrap().key,
-            KeyName::Char(",".into())
-        );
-        assert_eq!(
-            Combo::parse("Ctrl++").unwrap().key,
-            KeyName::Char("+".into())
-        );
-        assert_eq!(
-            Combo::parse("Alt+Shift+Down").unwrap().key,
-            KeyName::Named(Named::ArrowDown)
-        );
-        assert_eq!(Combo::parse("F5").unwrap().key, KeyName::Named(Named::F5));
-        for bad in ["", "Ctrl+", "Hyper+K", "Ctrl+Foo"] {
-            assert_eq!(Combo::parse(bad), None, "{bad}");
-        }
+        assert_eq!(c.key, "m");
+        assert_eq!(Combo::parse("Ctrl+\\").unwrap().key, "\\");
+        assert_eq!(Combo::parse("ctrl+,").unwrap().key, ",");
+        assert_eq!(Combo::parse("Ctrl++").unwrap().key, "+");
+        assert_eq!(Combo::parse("Alt+Shift+Down").unwrap().key, "down");
+        assert_eq!(Combo::parse("F5").unwrap().key, "f5");
+        assert_eq!(Combo::parse("Ctrl+Nonsense"), None);
     }
 
     #[test]
-    fn defaults_and_overrides() {
-        let (keys, warnings) = Keybinds::from_config(&BTreeMap::new());
+    fn actions_come_from_defaults_and_config() {
+        let (binds, warnings) = Keybinds::from_config(&BTreeMap::new());
         assert!(warnings.is_empty());
-        assert_eq!(
-            keys.action(&ch("k"), ANY, Modifiers::CTRL),
-            Some(Action::CommandBar)
-        );
-        assert_eq!(
-            keys.action(&ch("K"), ANY, Modifiers::CTRL),
-            Some(Action::CommandBar)
-        );
-        assert_eq!(
-            keys.action(&ch("k"), ANY, Modifiers::CTRL | Modifiers::SHIFT),
-            None
-        );
-        // Shift+\ is reported as `\` without modifiers applied.
-        assert_eq!(
-            keys.action(&ch("\\"), ANY, Modifiers::CTRL | Modifiers::SHIFT),
-            Some(Action::SplitDown)
-        );
-        assert_eq!(
-            keys.action(&keyboard::Key::Named(Named::Tab), ANY, Modifiers::CTRL),
-            Some(Action::FocusNextPane)
-        );
+        assert_eq!(binds.action(&key("ctrl-k")), Some(KeyAction::CommandBar));
+        assert_eq!(binds.action(&key("alt-down")), Some(KeyAction::NextChannel));
+        assert_eq!(binds.action(&key("k")), None);
 
-        let config: BTreeMap<String, String> = [
-            ("command_bar", "Ctrl+P"),
-            ("toggle_sidebar", ""),
-            ("close_pane", "Ctrl+Nope"),
-            ("fly", "F1"),
-            (GLOBAL_MUTE, "Ctrl+Shift+F9"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_owned(), b.to_owned()))
-        .collect();
-        let (keys, warnings) = Keybinds::from_config(&config);
-        assert_eq!(
-            keys.action(&ch("p"), ANY, Modifiers::CTRL),
-            Some(Action::CommandBar)
-        );
-        assert_eq!(keys.action(&ch("k"), ANY, Modifiers::CTRL), None);
-        assert_eq!(keys.action(&ch("b"), ANY, Modifiers::CTRL), None, "unbound");
-        assert_eq!(
-            keys.action(&ch("w"), ANY, Modifiers::CTRL),
-            Some(Action::ClosePane)
-        );
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert_eq!(
-            Keybinds::combo_text(&config, Action::CommandBar).as_deref(),
-            Some("Ctrl+P")
-        );
+        let mut keys = BTreeMap::new();
+        keys.insert("command_bar".to_owned(), "Ctrl+P".to_owned());
+        keys.insert("search".to_owned(), String::new());
+        keys.insert("nope".to_owned(), "Ctrl+Q".to_owned());
+        let (binds, warnings) = Keybinds::from_config(&keys);
+        assert_eq!(warnings.len(), 1, "the unknown action");
+        assert_eq!(binds.action(&key("ctrl-p")), Some(KeyAction::CommandBar));
+        assert_eq!(binds.action(&key("ctrl-k")), None);
+        assert_eq!(binds.action(&key("ctrl-f")), None, "an empty value unbinds");
     }
 
     #[test]
-    fn punctuation_also_matches_its_us_position() {
-        let (keys, _) = Keybinds::from_config(&BTreeMap::new());
-        // Finnish layout: the key left of Enter types `'` but sits where US has `\`.
+    fn zoom_in_also_answers_to_the_plus_key() {
+        let (binds, _) = Keybinds::from_config(&BTreeMap::new());
+        assert_eq!(binds.action(&key("ctrl-=")), Some(KeyAction::ZoomIn));
+        // Nordic and German layouts: `+` has a key of its own.
+        assert_eq!(binds.action(&key("ctrl-+")), Some(KeyAction::ZoomIn));
+        // US: Ctrl+Shift+= is "Ctrl++".
+        assert_eq!(binds.action(&key("ctrl-shift-=")), Some(KeyAction::ZoomIn));
+        assert_eq!(binds.action(&key("ctrl--")), Some(KeyAction::ZoomOut));
+
+        let mut keys = BTreeMap::new();
+        keys.insert("zoom_in".to_owned(), "Ctrl+I".to_owned());
+        let (binds, _) = Keybinds::from_config(&keys);
+        assert_eq!(binds.action(&key("ctrl-i")), Some(KeyAction::ZoomIn));
         assert_eq!(
-            keys.action(&ch("'"), Physical::Code(Code::Backslash), Modifiers::CTRL),
-            Some(Action::SplitRight)
+            binds.action(&key("ctrl-+")),
+            None,
+            "a rebound action drops its extra combos"
         );
-        // Letters only match what they type (AZERTY's `a` is not Ctrl+Q).
+
+        let mut keys = BTreeMap::new();
+        keys.insert("zoom_reset".to_owned(), "Ctrl++".to_owned());
+        let (binds, _) = Keybinds::from_config(&keys);
         assert_eq!(
-            keys.action(&ch("a"), Physical::Code(Code::KeyQ), Modifiers::CTRL),
-            None
+            binds.action(&key("ctrl-+")),
+            Some(KeyAction::ZoomReset),
+            "a combo of the config wins over an extra one"
         );
-        // A key that types the character wins over a US position.
-        let config: BTreeMap<String, String> = [("settings", "Ctrl+'")]
-            .into_iter()
-            .map(|(a, b)| (a.to_owned(), b.to_owned()))
-            .collect();
-        let (keys, _) = Keybinds::from_config(&config);
-        assert_eq!(
-            keys.action(&ch("'"), Physical::Code(Code::Backslash), Modifiers::CTRL),
-            Some(Action::Settings)
-        );
+        assert_eq!(binds.action(&key("ctrl-=")), Some(KeyAction::ZoomIn));
     }
 }

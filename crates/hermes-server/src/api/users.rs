@@ -6,14 +6,18 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::ErrorCode;
 use hermes_proto::api::{
-    ChangePasswordRequest, NotificationSettingRequest, Pagination, UpdateMeRequest,
-    UpdatePrivacyRequest, UserProfile,
+    ChangePasswordRequest, ChangeUsernameRequest, NotificationSettingRequest, Pagination,
+    UpdateMeRequest, UpdatePrivacyRequest, UserProfile,
 };
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
-use hermes_proto::models::{CurrentUser, Message, NotificationSetting, PrivacySettings};
+use hermes_proto::models::{
+    CurrentUser, Message, NotificationSetting, PrivacySettings, RelationshipKind, User,
+};
 use hermes_proto::permissions::Permissions;
+use sqlx::SqliteConnection;
 
+use super::attachments::own_picture;
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query};
 use crate::auth::{self, Auth};
@@ -31,12 +35,27 @@ pub async fn me(State(state): State<Arc<AppState>>, auth: Auth) -> ApiResult<Jso
         .ok_or_else(|| Error::internal("authenticated user missing from the cache"))
 }
 
+fn publish_user_update(state: &AppState, user: &User) {
+    let audience = {
+        let mut cache = state.cache_mut();
+        if let Some(cached) = cache.users.get_mut(&user.id) {
+            cached.user = user.clone();
+        }
+        cache.profile_audience(user.id)
+    };
+    state.publish(
+        ServerEvent::UserUpdate(user.clone()),
+        Audience::Users(audience.into_iter().collect()),
+    );
+}
+
 /// Changes the password and revokes every other session of the user.
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     auth: Auth,
     Json(req): Json<ChangePasswordRequest>,
 ) -> ApiResult<StatusCode> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
     let mut fields = Fields::new();
     fields.check(
         "new_password",
@@ -62,9 +81,81 @@ pub async fn change_password(
     db::auth::set_password_hash(&mut tx, auth.user_id, &new_hash).await?;
     let revoked = db::auth::delete_other_sessions(&mut tx, auth.user_id, auth.session_id).await?;
     tx.commit().await?;
-    state.gateway.revoke(&revoked);
+    state.revoke_sessions(&revoked);
+    super::devices::revoke_sessions(&state, &revoked).await?;
     tracing::debug!(user_id = %auth.user_id, revoked = revoked.len(), "password changed");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Changes my username (not the display name). The tag stays unless someone of the new name has
+/// it, and an account without a tag stays without one, which needs the name to be free.
+pub async fn change_username(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Json(req): Json<ChangeUsernameRequest>,
+) -> ApiResult<Json<CurrentUser>> {
+    state.throttle(auth.user_id, crate::ratelimit::Action::Password)?;
+    let name = validate::username(&req.username)
+        .map_err(|problem| validate::field_error("username", problem))?;
+    if req.current_password.chars().count() > validate::MAX_PASSWORD_CHARS {
+        return Err(validate::field_error("current_password", "is too long"));
+    }
+    let hash = db::auth::password_hash(&state.db.read, auth.user_id).await?;
+    if !auth::verify_password(req.current_password, hash).await? {
+        return Err(Error::new(
+            ErrorCode::InvalidCredentials,
+            "The current password is wrong",
+        ));
+    }
+    let _writes = state.writes.lock().await;
+    let (mut user, instance_admin, tag) = {
+        let cache = state.cache();
+        let old = cache
+            .users
+            .get(&auth.user_id)
+            .ok_or_else(|| Error::internal("authenticated user missing from the cache"))?;
+        let tag = match old.user.discriminator.as_deref() {
+            None if cache.handle_taken(&name, None, auth.user_id) => {
+                return Err(Error::new(ErrorCode::Conflict, "This username is taken"));
+            }
+            None => None,
+            Some(tag) if !cache.handle_taken(&name, Some(tag), auth.user_id) => {
+                Some(tag.to_owned())
+            }
+            Some(_) => Some(
+                cache
+                    .free_tag(&name)
+                    .ok_or_else(|| Error::new(ErrorCode::Conflict, "This username is taken"))?,
+            ),
+        };
+        (old.user.clone(), old.instance_admin, tag)
+    };
+    user.username = name;
+    user.discriminator = tag;
+    let mut tx = state.db.write.begin().await?;
+    set_handle(&mut tx, auth.user_id, &user.handle()).await?;
+    tx.commit().await?;
+    publish_user_update(&state, &user);
+    Ok(Json(CurrentUser {
+        user,
+        instance_admin,
+    }))
+}
+
+/// Stores a new handle. The cache was checked first, but registering does not hold the writes
+/// lock and the user commands write the database directly, so the database can still have it:
+/// that is a `CONFLICT`, not an internal error.
+pub(super) async fn set_handle(
+    conn: &mut SqliteConnection,
+    user_id: Id,
+    handle: &str,
+) -> ApiResult<()> {
+    match db::users::set_handle(conn, user_id, handle).await {
+        Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+            Err(Error::new(ErrorCode::Conflict, "This username is taken"))
+        }
+        result => Ok(result?),
+    }
 }
 
 /// Updates my display name, avatar or status text; everyone who can see me gets `user_update`.
@@ -104,35 +195,45 @@ pub async fn update_me(
             user.status_text = status;
         }
     }
+    let bio = req.bio.as_ref().and_then(|bio| {
+        let checked = match bio {
+            Some(b) if b.lines().count() > UpdateMeRequest::BIO_LINES => Err(format!(
+                "must be at most {} lines",
+                UpdateMeRequest::BIO_LINES
+            )),
+            Some(b) => validate::optional_text(b, UpdateMeRequest::BIO_CHARS),
+            None => Ok(None),
+        };
+        fields.check("bio", checked)
+    });
     fields.finish()?;
     match req.avatar_id {
         None => {}
         Some(None) => user.avatar = None,
         Some(Some(id)) if old.user.avatar.as_ref().is_some_and(|a| a.id == id) => {}
         Some(Some(id)) => {
-            let avatar = db::spaces::own_image(&state.db.read, id, auth.user_id)
-                .await?
-                .ok_or_else(|| {
-                    validate::field_error("avatar_id", "must be an image you uploaded")
-                })?;
-            user.avatar = Some(avatar);
+            user.avatar = Some(own_picture(&state, id, auth.user_id, "avatar_id").await?);
         }
+    }
+    match req.banner_id {
+        None => {}
+        Some(None) => user.banner = None,
+        Some(Some(id)) if old.user.banner.as_ref().is_some_and(|a| a.id == id) => {}
+        Some(Some(id)) => {
+            user.banner = Some(own_picture(&state, id, auth.user_id, "banner_id").await?);
+        }
+    }
+    // Only shown on the profile, which is asked for when opened: nobody needs telling.
+    if let Some(bio) = bio {
+        let mut tx = state.db.write.begin().await?;
+        db::users::set_bio(&mut tx, auth.user_id, bio.as_deref()).await?;
+        tx.commit().await?;
     }
     if user != old.user {
         let mut tx = state.db.write.begin().await?;
         db::users::update_profile(&mut tx, &user).await?;
         tx.commit().await?;
-        let audience = {
-            let mut cache = state.cache_mut();
-            if let Some(cached) = cache.users.get_mut(&auth.user_id) {
-                cached.user = user.clone();
-            }
-            cache.presence_audience(auth.user_id)
-        };
-        state.publish(
-            ServerEvent::UserUpdate(user.clone()),
-            Audience::Users(audience.into_iter().collect()),
-        );
+        publish_user_update(&state, &user);
     }
     Ok(Json(CurrentUser {
         user,
@@ -146,24 +247,36 @@ pub async fn get(
     auth: Auth,
     Path(user_id): Path<Id>,
 ) -> ApiResult<Json<UserProfile>> {
-    let cache = state.cache();
-    let visible =
-        user_id == auth.user_id || cache.presence_audience(auth.user_id).contains(&user_id);
-    let user = cache
-        .users
-        .get(&user_id)
-        .filter(|_| visible)
-        .ok_or_else(|| Error::not_found("user"))?;
-    let mut mutual_space_ids: Vec<Id> = cache
-        .spaces
-        .values()
-        .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
-        .map(|s| s.space.id)
-        .collect();
-    mutual_space_ids.sort();
+    state.throttle(auth.user_id, crate::ratelimit::Action::Profile)?;
+    let (user, mutual_space_ids, may_see_last_online) = {
+        let cache = state.cache();
+        let visible = cache.can_see_profile(auth.user_id, user_id);
+        let user = cache
+            .users
+            .get(&user_id)
+            .filter(|_| visible)
+            .ok_or_else(|| Error::not_found("user"))?;
+        let mut mutual_space_ids: Vec<Id> = cache
+            .spaces
+            .values()
+            .filter(|s| s.members.contains_key(&user_id) && s.members.contains_key(&auth.user_id))
+            .map(|s| s.space.id)
+            .collect();
+        mutual_space_ids.sort();
+        // A friend request sent by a stranger is enough to see a profile, but not this.
+        let known = !mutual_space_ids.is_empty()
+            || cache
+                .relationship(auth.user_id, user_id)
+                .is_some_and(|r| r.kind == RelationshipKind::Friend);
+        let may_see = user_id == auth.user_id || (known && user.privacy.show_last_online);
+        (user.user.clone(), mutual_space_ids, may_see)
+    };
+    let (bio, last_online_at) = db::users::bio_and_last_online(&state.db.read, user_id).await?;
     Ok(Json(UserProfile {
-        user: user.user.clone(),
+        user,
         mutual_space_ids,
+        last_online_at: last_online_at.filter(|_| may_see_last_online),
+        bio,
     }))
 }
 
@@ -207,6 +320,9 @@ pub async fn update_privacy(
     }
     if let Some(on) = req.message_requests {
         privacy.message_requests = on;
+    }
+    if let Some(on) = req.show_last_online {
+        privacy.show_last_online = on;
     }
     let mut conn = state.db.write.acquire().await?;
     db::users::set_privacy(&mut conn, auth.user_id, &privacy).await?;

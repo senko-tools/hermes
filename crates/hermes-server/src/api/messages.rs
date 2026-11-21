@@ -4,13 +4,18 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::api::{AckRequest, EditMessageRequest, HistoryQuery, SendMessageRequest};
+use hermes_proto::api::{
+    AckRequest, BulkDeleteRequest, EditMessageRequest, HistoryQuery, RemoveAttachmentResponse,
+    SendMessageRequest,
+};
+use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
 use hermes_proto::id::Id;
-use hermes_proto::models::{AuditAction, ChannelKind, Message, MessageKind, ReadState};
+use hermes_proto::models::{AuditAction, ChannelKind, Mentions, Message, MessageKind, ReadState};
 use hermes_proto::permissions::Permissions;
 use hermes_proto::{ApiError, ErrorCode};
 use serde_json::json;
+use sqlx::{Sqlite, SqliteExecutor, Transaction};
 
 use super::validate::{self, Fields};
 use super::{ApiResult, Error, Json, Path, Query, audit, perms};
@@ -18,8 +23,8 @@ use crate::auth::Auth;
 use crate::db;
 use crate::db::messages::MessageRow;
 use crate::gateway::bus::Audience;
-use crate::messages::{self, MAX_REACTION_EMOJI, broadcast_copy};
-use crate::ratelimit;
+use crate::messages::{self, broadcast_copy};
+use crate::ratelimit::{self, Action};
 use crate::state::{AppState, Cache};
 use crate::time::now_ms;
 
@@ -47,10 +52,7 @@ fn target(cache: &Cache, channel_id: Id, user_id: Id, perm: Permissions) -> ApiR
     let access = perms::require_channel(cache, channel_id, user_id, perm)?;
     let channel = access.channel;
     if !channel.kind.has_messages() {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
-            "Categories have no messages",
-        ));
+        return Err(Error::bad_request("Categories have no messages"));
     }
     Ok(Target {
         perms: access.perms,
@@ -60,12 +62,27 @@ fn target(cache: &Cache, channel_id: Id, user_id: Id, perm: Permissions) -> ApiR
     })
 }
 
-/// A message of the channel that is not deleted; `NOT_FOUND` otherwise.
-async fn live_message(state: &AppState, channel_id: Id, message_id: Id) -> ApiResult<MessageRow> {
-    db::messages::get(&state.db.read, channel_id, message_id)
+/// A message of the channel that is not deleted; `NOT_FOUND` otherwise. Handlers that change the
+/// message check it with their write transaction, so a concurrent delete cannot slip in between
+/// (the write pool has a single connection): otherwise an edit could restore a deleted message's
+/// content, or a pin or reaction land on its tombstone.
+async fn live_message(
+    e: impl SqliteExecutor<'_>,
+    channel_id: Id,
+    message_id: Id,
+) -> ApiResult<MessageRow> {
+    db::messages::get(e, channel_id, message_id)
         .await?
         .filter(|m| !m.deleted)
         .ok_or_else(|| Error::not_found("message"))
+}
+
+/// A write transaction for a handler that reads the message before it writes. It takes the
+/// database's write lock at once (`BEGIN IMMEDIATE`): a deferred one would fail with
+/// `SQLITE_BUSY_SNAPSHOT`, which the busy timeout does not retry, if another process (the
+/// `hermes-server user` commands) wrote between the read and the write.
+async fn checking_tx(state: &AppState) -> ApiResult<Transaction<'static, Sqlite>> {
+    Ok(state.db.write.begin_with("BEGIN IMMEDIATE").await?)
 }
 
 async fn one_to_wire(state: &AppState, row: MessageRow, viewer: Id) -> ApiResult<Message> {
@@ -90,8 +107,7 @@ pub async fn history(
     )?;
     let anchors = [q.before, q.after, q.around];
     if anchors.iter().flatten().count() > 1 {
-        return Err(Error::new(
-            ErrorCode::BadRequest,
+        return Err(Error::bad_request(
             "Use only one of before, after and around",
         ));
     }
@@ -129,8 +145,123 @@ pub async fn get(
     Ok(Json(one_to_wire(&state, row, auth.user_id).await?))
 }
 
+/// An encrypted message as it is stored: JSON, and the `content` next to it must be empty, since a
+/// client that also sent the words would defeat the point.
+fn sealed_form(e2ee: Option<&Envelope>, content: &str) -> ApiResult<Option<String>> {
+    let Some(e2ee) = e2ee else {
+        return Ok(None);
+    };
+    if !content.is_empty() {
+        return Err(validate::field_error(
+            "content",
+            "must be empty in an encrypted message",
+        ));
+    }
+    let json =
+        serde_json::to_string(e2ee).map_err(|_| Error::internal("envelope not serializable"))?;
+    if json.len() > MAX_ENVELOPE_BYTES {
+        return Err(validate::field_error("e2ee", "is too large"));
+    }
+    Ok(Some(json))
+}
+
+/// A sealed reaction: `e2-` and hex, long enough to hold one and short enough to store.
+fn is_sealed_reaction(emoji: &str) -> bool {
+    emoji
+        .strip_prefix(hermes_proto::e2ee::SEALED_REACTION_PREFIX)
+        .is_some_and(|hex| {
+            (48..=256).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+        })
+}
+
+/// A reaction has to be an emoji, or one sealed by a client.
+fn check_emoji(emoji: &str) -> ApiResult<()> {
+    if emojis::get(emoji).is_none() && !is_sealed_reaction(emoji) {
+        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
+    }
+    Ok(())
+}
+
+/// Mentions of people, and of roles, one encrypted message may claim.
+const MAX_TOLD_MENTIONS: usize = 100;
+
+/// What a message mentions: read from its text, or as told for an encrypted one.
+fn mentions_of(content: &str, encrypted: bool, told: Option<&Mentions>) -> Mentions {
+    if encrypted {
+        let mut told = told.cloned().unwrap_or_default();
+        for list in [&mut told.users, &mut told.roles] {
+            list.sort();
+            list.dedup();
+            list.truncate(MAX_TOLD_MENTIONS);
+        }
+        told
+    } else {
+        hermes_proto::markup::extract_mentions(content)
+    }
+}
+
+/// An encrypted message in a server channel has to use the channel's current key, and one in a
+/// DM none of them.
+async fn check_epoch(
+    state: &AppState,
+    channel_id: Id,
+    kind: ChannelKind,
+    e2ee: Option<&Envelope>,
+) -> ApiResult<()> {
+    let Some(envelope) = e2ee else {
+        return Ok(());
+    };
+    if kind.is_private() {
+        return match envelope.epoch {
+            None => Ok(()),
+            Some(_) => Err(validate::field_error("e2ee", "must not name a channel key")),
+        };
+    }
+    let current = db::channel_keys::current_epoch(&state.db.read, channel_id).await?;
+    if envelope.epoch != Some(current) || current == 0 {
+        return Err(Error::new(
+            ErrorCode::Conflict,
+            "This channel has a newer key",
+        ));
+    }
+    Ok(())
+}
+
+/// DMs must be encrypted (`privacy.require_dm_encryption`), and so must server channels
+/// (`privacy.require_channel_encryption`).
+fn check_encryption(state: &AppState, kind: ChannelKind, e2ee: Option<&String>) -> ApiResult<()> {
+    if kind.is_private() {
+        if e2ee.is_none() && state.config.privacy.require_dm_encryption {
+            return Err(Error::bad_request(
+                "Direct messages are end-to-end encrypted here: update Hermes to send them",
+            ));
+        }
+    } else if e2ee.is_none() && state.config.privacy.require_channel_encryption {
+        return Err(Error::bad_request(
+            "Channels are end-to-end encrypted here: update Hermes to write in them",
+        ));
+    }
+    Ok(())
+}
+
 /// `SEND_MESSAGES` (+ `ATTACH_FILES` with attachments); slowmode unless `BYPASS_SLOWMODE`.
 /// Mentions are stored and raise the mentioned users' mention counts.
+/// The reply to a send whose nonce already made message `id`.
+async fn send_again(
+    state: &Arc<AppState>,
+    channel_id: Id,
+    id: Id,
+    nonce: String,
+    viewer: Id,
+) -> ApiResult<Json<Message>> {
+    let row = db::messages::get(&state.db.read, channel_id, id)
+        .await?
+        .ok_or_else(|| Error::not_found("message"))?;
+    let mut message = one_to_wire(state, row, viewer).await?;
+    message.nonce = Some(nonce);
+    Ok(Json(message))
+}
+
 pub async fn send(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -155,32 +286,56 @@ pub async fn send(
     let mut attachment_ids = req.attachment_ids.clone();
     attachment_ids.sort();
     attachment_ids.dedup();
-    if attachment_ids.len() > SendMessageRequest::MAX_ATTACHMENTS {
+    // Each file may also link its encrypted preview.
+    let max_attachments = 2 * state.config.limits.max_files_per_message as usize;
+    if attachment_ids.len() > max_attachments {
         fields.add(
             "attachment_ids",
             format!(
-                "at most {} attachments",
-                SendMessageRequest::MAX_ATTACHMENTS
+                "at most {} files",
+                state.config.limits.max_files_per_message
             ),
         );
     }
-    if req.content.trim().is_empty() && attachment_ids.is_empty() {
+    if req.content.trim().is_empty() && attachment_ids.is_empty() && req.e2ee.is_none() {
         fields.add("content", "must not be empty");
     }
     fields.finish()?;
+    let e2ee = sealed_form(req.e2ee.as_ref(), &req.content)?;
 
     let (resolved, slowmode, kind) = {
         let cache = state.cache();
         let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        check_encryption(&state, t.kind, e2ee.as_ref())?;
         if !attachment_ids.is_empty() {
             t.require(Permissions::ATTACH_FILES)?;
         }
-        let resolved =
-            messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, &req.content);
+        let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+        let max_mentions = state.config.limits.max_mentions_per_message as usize;
+        if max_mentions > 0 && raw.users.len() + raw.roles.len() > max_mentions {
+            return Err(validate::field_error("content", "mentions too many people"));
+        }
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                c.recipient_ids
+                    .iter()
+                    .any(|id| *id != auth.user_id && cache.blocked(*id, auth.user_id))
+            })
+        {
+            return Err(Error::dms_not_accepted());
+        }
+        let resolved = messages::resolve_mentions(&cache, channel_id, auth.user_id, t.perms, raw);
         let slowmode = Some(t.slowmode_secs)
             .filter(|&secs| secs > 0 && !t.perms.contains(Permissions::BYPASS_SLOWMODE));
         (resolved, slowmode, t.kind)
     };
+    // A retry after a lost reply gets the message it already made, whatever has changed since.
+    if let Some(id) =
+        db::messages::by_nonce(&state.db.read, channel_id, auth.user_id, &req.nonce).await?
+    {
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
+    check_epoch(&state, channel_id, kind, req.e2ee.as_ref()).await?;
     if let Some(reply_id) = req.reply_to_id
         && db::messages::get(&state.db.read, channel_id, reply_id)
             .await?
@@ -217,9 +372,17 @@ pub async fn send(
         deleted: false,
         pinned: false,
         kind: MessageKind::Default,
+        e2ee,
     };
     let mut tx = state.db.write.begin().await?;
+    // Checked again here: the single writer settles two copies arriving together.
+    if let Some(id) = db::messages::by_nonce(&mut *tx, channel_id, auth.user_id, &req.nonce).await?
+    {
+        drop(tx);
+        return send_again(&state, channel_id, id, req.nonce, auth.user_id).await;
+    }
     db::messages::insert(&mut tx, &row).await?;
+    db::messages::remember_nonce(&mut *tx, &row, &req.nonce, now).await?;
     for &attachment_id in &attachment_ids {
         if !db::messages::link_attachment(&mut tx, row.id, attachment_id, auth.user_id).await? {
             return Err(validate::field_error(
@@ -231,10 +394,15 @@ pub async fn send(
     db::messages::set_mentions(&mut tx, row.id, &resolved.mentions).await?;
     db::messages::set_last_message_id(&mut tx, channel_id, row.id).await?;
     db::messages::add_mention_counts(&mut tx, channel_id, &resolved.notify, row.id).await?;
+    // Writing in a channel reads it, so a restart does not show my own message as new.
+    db::messages::set_read(&mut *tx, auth.user_id, channel_id, row.id).await?;
     tx.commit().await?;
     if let Some(cached) = state.cache_mut().channels.get_mut(&channel_id) {
         let last = &mut cached.channel.last_message_id;
         *last = (*last).max(Some(row.id));
+    }
+    if !kind.is_private() {
+        crate::gateway::last_online::active(&state, auth.user_id);
     }
     if kind.is_private() {
         // Answering a message request accepts it.
@@ -256,6 +424,7 @@ pub async fn send(
         ServerEvent::MessageCreate(message.clone()),
         Audience::User(auth.user_id),
     );
+    // No read state event: my sessions mark the channel read when they see my own message.
     Ok(Json(message))
 }
 
@@ -266,41 +435,40 @@ pub async fn edit(
     Path((channel_id, message_id)): Path<(Id, Id)>,
     Json(req): Json<EditMessageRequest>,
 ) -> ApiResult<Json<Message>> {
+    state.throttle(auth.user_id, Action::Edit)?;
     let max = state.config.limits.max_message_length as usize;
     validate::message_content(&req.content, max)
         .map_err(|problem| validate::field_error("content", problem))?;
+    let e2ee = sealed_form(req.e2ee.as_ref(), &req.content)?;
     let t = target(
         &state.cache(),
         channel_id,
         auth.user_id,
-        Permissions::VIEW_CHANNEL,
+        Permissions::SEND_MESSAGES,
     )?;
-    let mut row = live_message(&state, channel_id, message_id).await?;
+    check_encryption(&state, t.kind, e2ee.as_ref())?;
+    check_epoch(&state, channel_id, t.kind, req.e2ee.as_ref()).await?;
+    let mut tx = checking_tx(&state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.author_id != auth.user_id || row.kind != MessageKind::Default {
-        return Err(Error::new(
-            ErrorCode::MissingPermission,
-            "You can only edit your own messages",
-        ));
+        return Err(Error::forbidden("You can only edit your own messages"));
     }
     if req.content.trim().is_empty()
-        && db::messages::count_attachments(&state.db.read, message_id).await? == 0
+        && e2ee.is_none()
+        && db::messages::count_attachments(&mut *tx, message_id).await? == 0
     {
         return Err(validate::field_error("content", "must not be empty"));
     }
-    let resolved = messages::resolve_mentions(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        t.perms,
-        &req.content,
-    );
+    let raw = mentions_of(&req.content, e2ee.is_some(), req.mentions.as_ref());
+    let resolved =
+        messages::resolve_mentions(&state.cache(), channel_id, auth.user_id, t.perms, raw);
 
     let now = now_ms();
-    let mut tx = state.db.write.begin().await?;
-    db::messages::edit_content(&mut tx, message_id, &req.content, now).await?;
+    db::messages::edit_content(&mut tx, message_id, &req.content, e2ee.as_deref(), now).await?;
     db::messages::set_mentions(&mut tx, message_id, &resolved.mentions).await?;
     tx.commit().await?;
     row.content = req.content;
+    row.e2ee = e2ee;
     row.edited_at = Some(now);
     let message = one_to_wire(&state, row, auth.user_id).await?;
     state.publish(
@@ -322,12 +490,13 @@ pub async fn delete(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    let row = live_message(&state, channel_id, message_id).await?;
+    let mut tx = checking_tx(&state).await?;
+    let row = live_message(&mut *tx, channel_id, message_id).await?;
     let own = row.author_id == auth.user_id;
     if !own {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
-    let mut tx = state.db.write.begin().await?;
+    let stored = db::attachments::stored_of_message(&mut *tx, message_id).await?;
     db::messages::soft_delete(&mut tx, message_id).await?;
     if let Some(space_id) = t.space_id.filter(|_| !own) {
         audit::record(
@@ -342,6 +511,7 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
+    crate::files::purge(&state, stored).await;
     state.publish(
         ServerEvent::MessageDelete {
             id: message_id,
@@ -350,6 +520,80 @@ pub async fn delete(
         Audience::Channel(channel_id),
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Takes one file off a message: the author, or `MANAGE_MESSAGES` (audited). The text is what a
+/// message is about, so it stays; only a message with no text and no files left is deleted. An
+/// encrypted message's text is not known here, so its author's client deletes it instead.
+pub async fn remove_attachment(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path((channel_id, message_id, attachment_id)): Path<(Id, Id, Id)>,
+) -> ApiResult<Json<RemoveAttachmentResponse>> {
+    state.throttle(auth.user_id, Action::Edit)?;
+    let t = target(
+        &state.cache(),
+        channel_id,
+        auth.user_id,
+        Permissions::VIEW_CHANNEL,
+    )?;
+    let mut tx = checking_tx(&state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
+    let own = row.author_id == auth.user_id;
+    if !own {
+        t.require(Permissions::MANAGE_MESSAGES)?;
+    }
+    let stored = db::attachments::detach(&mut tx, message_id, attachment_id)
+        .await?
+        .ok_or_else(|| Error::not_found("attachment"))?;
+    let empty = row.e2ee.is_none()
+        && row.content.trim().is_empty()
+        && db::messages::count_attachments(&mut *tx, message_id).await? == 0;
+    // An encrypted message is marked edited only by a new envelope from its author: one marked
+    // edited here would read as an old envelope replayed.
+    let now = now_ms();
+    if empty {
+        db::messages::soft_delete(&mut tx, message_id).await?;
+    } else if row.e2ee.is_none() {
+        db::messages::touch_edited(&mut tx, message_id, now).await?;
+        row.edited_at = Some(now);
+    }
+    if let Some(space_id) = t.space_id.filter(|_| !own) {
+        audit::record(
+            &mut tx,
+            &state,
+            space_id,
+            auth.user_id,
+            AuditAction::AttachmentRemove,
+            Some(message_id),
+            json!({
+                "channel_id": channel_id,
+                "author_id": row.author_id,
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    crate::files::purge(&state, vec![stored]).await;
+    if empty {
+        state.publish(
+            ServerEvent::MessageDelete {
+                id: message_id,
+                channel_id,
+            },
+            Audience::Channel(channel_id),
+        );
+        return Ok(Json(RemoveAttachmentResponse { message: None }));
+    }
+    let message = one_to_wire(&state, row, auth.user_id).await?;
+    state.publish(
+        ServerEvent::MessageUpdate(broadcast_copy(&message)),
+        Audience::Channel(channel_id),
+    );
+    Ok(Json(RemoveAttachmentResponse {
+        message: Some(message),
+    }))
 }
 
 pub async fn pin(
@@ -366,6 +610,54 @@ pub async fn unpin(
     Path((channel_id, message_id)): Path<(Id, Id)>,
 ) -> ApiResult<StatusCode> {
     set_pinned(&state, auth, channel_id, message_id, false).await
+}
+
+/// Deletes several messages at once: one's own, or anyone's with `MANAGE_MESSAGES`.
+pub async fn bulk_delete(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path(channel_id): Path<Id>,
+    Json(req): Json<BulkDeleteRequest>,
+) -> ApiResult<StatusCode> {
+    if req.ids.len() > BulkDeleteRequest::MAX_IDS {
+        return Err(validate::field_error("ids", "are too many"));
+    }
+    let t = target(
+        &state.cache(),
+        channel_id,
+        auth.user_id,
+        Permissions::VIEW_CHANNEL,
+    )?;
+    let moderator = t.perms.contains(Permissions::MANAGE_MESSAGES);
+    let mut stored = Vec::new();
+    for id in &req.ids {
+        stored.extend(db::attachments::stored_of_message(&state.db.read, *id).await?);
+    }
+    let author = (!moderator).then_some(auth.user_id);
+    let mut tx = state.db.write.begin().await?;
+    let mut ids = db::messages::soft_delete_many(&mut tx, channel_id, &req.ids, author).await?;
+    if let (Some(space_id), true) = (t.space_id, moderator && !ids.is_empty()) {
+        audit::record(
+            &mut tx,
+            &state,
+            space_id,
+            auth.user_id,
+            AuditAction::MessageDeleteBulk,
+            None,
+            json!({ "channel_id": channel_id, "count": ids.len() }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    crate::files::purge(&state, stored).await;
+    if !ids.is_empty() {
+        ids.sort();
+        state.publish(
+            ServerEvent::MessageDeleteBulk { ids, channel_id },
+            Audience::Channel(channel_id),
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `MANAGE_MESSAGES`; in DMs any recipient. Pinning twice is not an error.
@@ -385,11 +677,35 @@ async fn set_pinned(
     if !t.kind.is_private() {
         t.require(Permissions::MANAGE_MESSAGES)?;
     }
-    let mut row = live_message(state, channel_id, message_id).await?;
+    let mut tx = checking_tx(state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
     if row.pinned == pinned {
         return Ok(StatusCode::NO_CONTENT);
     }
-    db::messages::set_pinned(&state.db.write, message_id, pinned).await?;
+    let max_pins = state.config.limits.max_pins_per_channel;
+    if pinned && db::messages::pinned_count(&mut *tx, channel_id).await? >= max_pins {
+        return Err(Error::bad_request(format!(
+            "A channel can have at most {max_pins} pinned messages"
+        )));
+    }
+    db::messages::set_pinned(&mut *tx, message_id, pinned).await?;
+    if let Some(space_id) = t.space_id {
+        audit::record(
+            &mut tx,
+            state,
+            space_id,
+            auth.user_id,
+            if pinned {
+                AuditAction::MessagePin
+            } else {
+                AuditAction::MessageUnpin
+            },
+            Some(message_id),
+            json!({ "channel_id": channel_id }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
     row.pinned = pinned;
     let message = one_to_wire(state, row, auth.user_id).await?;
     state.publish(
@@ -411,43 +727,47 @@ pub async fn pins(
         auth.user_id,
         Permissions::VIEW_CHANNEL | Permissions::READ_HISTORY,
     )?;
-    let rows = db::messages::pinned(&state.db.read, channel_id).await?;
+    let rows = db::messages::pinned(
+        &state.db.read,
+        channel_id,
+        state.config.limits.max_pins_per_channel,
+    )
+    .await?;
     Ok(Json(messages::to_wire(&state, rows, auth.user_id).await?))
 }
 
 /// Joining an existing reaction needs `VIEW_CHANNEL`; a new emoji also needs `ADD_REACTIONS`,
-/// and a message can have at most [`MAX_REACTION_EMOJI`] different ones.
+/// and a message can have at most `limits.max_reactions_per_message` different ones.
 pub async fn add_reaction(
     State(state): State<Arc<AppState>>,
     auth: Auth,
     Path((channel_id, message_id, emoji)): Path<(Id, Id, String)>,
 ) -> ApiResult<StatusCode> {
-    if emojis::get(&emoji).is_none() {
-        return Err(validate::field_error("emoji", "must be a Unicode emoji"));
-    }
+    state.throttle(auth.user_id, Action::React)?;
+    check_emoji(&emoji)?;
     let t = target(
         &state.cache(),
         channel_id,
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    live_message(&state, channel_id, message_id).await?;
-    // Serializes the "at most 20 emoji" check with the insert.
-    let _writes = state.writes.lock().await;
-    let existing = db::messages::reaction_emoji(&state.db.read, message_id).await?;
+    // The write transaction serializes the checks (message not deleted, not too many emoji) with
+    // the insert.
+    let mut tx = checking_tx(&state).await?;
+    live_message(&mut *tx, channel_id, message_id).await?;
+    let existing = db::messages::reaction_emoji(&mut *tx, message_id).await?;
     if !existing.contains(&emoji) {
         t.require(Permissions::ADD_REACTIONS)?;
-        if existing.len() >= MAX_REACTION_EMOJI {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                format!("A message can have at most {MAX_REACTION_EMOJI} different reactions"),
-            ));
+        let max = state.config.limits.max_reactions_per_message;
+        if existing.len() >= max as usize {
+            return Err(Error::bad_request(format!(
+                "A message can have at most {max} different reactions"
+            )));
         }
     }
     let added =
-        db::messages::add_reaction(&state.db.write, message_id, &emoji, auth.user_id, now_ms())
-            .await?;
-    drop(_writes);
+        db::messages::add_reaction(&mut *tx, message_id, &emoji, auth.user_id, now_ms()).await?;
+    tx.commit().await?;
     if added {
         publish_reaction(&state, true, channel_id, message_id, emoji, auth.user_id);
     }
@@ -466,7 +786,7 @@ pub async fn remove_own_reaction(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
-    live_message(&state, channel_id, message_id).await?;
+    live_message(&state.db.read, channel_id, message_id).await?;
     if db::messages::remove_reaction(&state.db.write, message_id, &emoji, auth.user_id).await? {
         publish_reaction(&state, false, channel_id, message_id, emoji, auth.user_id);
     }
@@ -485,7 +805,7 @@ pub async fn remove_reaction(
         auth.user_id,
         Permissions::MANAGE_MESSAGES,
     )?;
-    live_message(&state, channel_id, message_id).await?;
+    live_message(&state.db.read, channel_id, message_id).await?;
     if db::messages::remove_reaction(&state.db.write, message_id, &emoji, user_id).await? {
         publish_reaction(&state, false, channel_id, message_id, emoji, user_id);
     }
@@ -520,12 +840,20 @@ pub async fn typing(
     auth: Auth,
     Path(channel_id): Path<Id>,
 ) -> ApiResult<StatusCode> {
-    target(
-        &state.cache(),
-        channel_id,
-        auth.user_id,
-        Permissions::SEND_MESSAGES,
-    )?;
+    state.throttle(auth.user_id, Action::Typing)?;
+    {
+        let cache = state.cache();
+        let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        // Whoever has not accepted a message request does not see presence, or typing either.
+        if t.kind.is_private()
+            && cache.channels.get(&channel_id).is_some_and(|c| {
+                let audience = cache.presence_audience(auth.user_id);
+                c.recipient_ids.iter().any(|id| !audience.contains(id))
+            })
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+    }
     state.publish_except(
         ServerEvent::TypingStart {
             channel_id,
@@ -552,9 +880,14 @@ pub async fn ack(
         auth.user_id,
         Permissions::VIEW_CHANNEL,
     )?;
+    // Marking unread from a message acks the id right before it, which is no message.
+    let after = Id(req.message_id.0.saturating_add(1));
     if db::messages::get(&state.db.read, channel_id, req.message_id)
         .await?
         .is_none()
+        && db::messages::get(&state.db.read, channel_id, after)
+            .await?
+            .is_none()
     {
         return Err(Error::not_found("message"));
     }

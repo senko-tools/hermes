@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM notification_settings WHERE\n           target_id NOT IN (SELECT id FROM channels)\n           AND target_id NOT IN (SELECT id FROM spaces)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "5e6d5fc74feafaafbea582989e4d6a5b15feddeafff938a6049b1d04dc912585"
+}

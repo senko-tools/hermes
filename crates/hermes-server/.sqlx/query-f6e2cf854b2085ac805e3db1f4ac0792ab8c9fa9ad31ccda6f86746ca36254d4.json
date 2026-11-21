@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT last_online_at FROM users WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_online_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "last_online_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f6e2cf854b2085ac805e3db1f4ac0792ab8c9fa9ad31ccda6f86746ca36254d4"
+}

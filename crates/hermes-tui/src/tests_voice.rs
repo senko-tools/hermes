@@ -3,7 +3,6 @@
 //! mute and deafen, the status line, `q` asks while in voice, `L` leaves, and an incoming DM call
 //! is answered with `:voice`.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -13,77 +12,32 @@ use hermes_client_core::config::ClientConfig;
 use hermes_client_core::proto::api::CreateInviteRequest;
 use hermes_client_core::proto::models::ChannelKind;
 use hermes_client_core::{Core, CoreEvents, CoreOptions, InstanceId};
-use hermes_server::config::{Config, RegistrationMode, TlsMode};
-use hermes_server::state::AppState;
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 
-use crate::app::{App, Focus, Popup, SidebarItem, TaskMsg};
+use crate::app::{App, Focus, Popup, SidebarItem};
 use crate::commands::Command;
-use crate::ui;
+use crate::test_support::{pump, screen};
+
+const SCREEN_WIDTH: u16 = 120;
 
 const WAIT: Duration = Duration::from_secs(15);
 
+/// A server with voice from `hermes_server::testing`.
 struct Server {
     host: HostPort,
     link: InviteLink,
-    shutdown: Arc<Notify>,
-    dir: std::path::PathBuf,
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.shutdown.notify_one();
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
+    _server: hermes_server::testing::TestServer,
 }
 
 async fn start(name: &str) -> Server {
-    let dir = std::env::temp_dir().join(format!("hermes-tui-voice-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let mut config = Config::default();
-    config.instance.name = "Friends".into();
-    config.storage.data_dir = dir.join("data");
-    config.tls.mode = TlsMode::SelfSigned;
-    config.registration.mode = RegistrationMode::Open;
-    config.limits.requests_per_second = 100_000;
-    config.limits.login_attempts_per_minute = 100_000;
-    let tls = hermes_server::tls::load(&config).unwrap();
-    let fp = *tls.fingerprint().unwrap();
-    let (quic, cert_sha256) =
-        hermes_server::voice::endpoint::bind(&config, "127.0.0.1:0".parse().unwrap()).unwrap();
-    let mut state = AppState::load(config).await.unwrap();
-    state.fingerprint = Some(fp);
-    state
-        .voice
-        .set_endpoint(hermes_server::voice::EndpointInfo {
-            cert_sha256,
-            port: quic.local_addr().unwrap().port(),
-        });
-    let links = hermes_server::setup::first_start(&state, Some(&fp))
-        .await
-        .unwrap()
-        .unwrap();
-    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = tcp.local_addr().unwrap().port();
-    let shutdown = Arc::new(Notify::new());
-    let signal = {
-        let shutdown = shutdown.clone();
-        async move { shutdown.notified().await }
-    };
-    tokio::spawn(hermes_server::server::run(
-        Arc::new(state),
-        tcp,
-        tls,
-        Some(quic),
-        signal,
-    ));
+    let server = hermes_server::testing::spawn(&format!("tui-voice-{name}"), true, |c| {
+        c.instance.name = "Friends".into();
+    })
+    .await;
     Server {
-        host: HostPort::parse(&format!("127.0.0.1:{port}")).unwrap(),
-        link: InviteLink::parse(&links.web).unwrap(),
-        shutdown,
-        dir,
+        host: HostPort::parse(&server.host()).unwrap(),
+        link: InviteLink::parse(&server.link).unwrap(),
+        _server: server,
     }
 }
 
@@ -128,42 +82,6 @@ fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-async fn pump(
-    app: &mut App,
-    events: &mut CoreEvents,
-    tasks: &mut mpsc::UnboundedReceiver<TaskMsg>,
-    what: &str,
-    done: impl Fn(&App) -> bool,
-) {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while !done(app) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out: {what} (status: {:?})",
-            app.status
-        );
-        tokio::select! {
-            Some(e) = events.recv() => app.on_core_event(e),
-            Some(m) = tasks.recv() => app.on_task(m),
-            () = tokio::time::sleep(Duration::from_millis(20)) => {}
-        }
-    }
-}
-
-fn screen(app: &mut App) -> String {
-    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
-    terminal.draw(|f| ui::draw(f, app)).unwrap();
-    let buffer = terminal.backend().buffer();
-    let mut out = String::new();
-    for y in 0..buffer.area.height {
-        for x in 0..buffer.area.width {
-            out.push_str(buffer[(x, y)].symbol());
-        }
-        out.push('\n');
-    }
-    out
-}
-
 fn voice_users(app: &App) -> Vec<(String, bool, bool)> {
     app.sidebar
         .iter()
@@ -204,7 +122,7 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         .expect("a voice channel");
     assert_eq!(app.focus, Focus::Sidebar);
     assert!(crate::voice::room_here(&app));
-    assert!(screen(&mut app).contains("J:join voice"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains("J:join voice"));
     app.on_key(key('J'));
     assert!(
         crate::voice::status_line(&app)
@@ -221,7 +139,7 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         crate::voice::status_text(&a.core).is_some_and(|t| t.ends_with("ms"))
     })
     .await;
-    let text = screen(&mut app);
+    let text = screen(&mut app, SCREEN_WIDTH);
     assert!(text.contains("voice: "), "{text}");
     assert!(text.contains("     alice"), "{text}");
 
@@ -298,7 +216,7 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
             .any(|(t, error, _)| *error && t.contains("disabled"))
     );
     app.run(Command::Messages);
-    assert!(screen(&mut app).contains("voice is disabled"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains("voice is disabled"));
     app.on_key(key(' '));
 
     // Bob calls alice; `:voice` answers.
@@ -333,7 +251,7 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
     .await;
     assert!(app.status.as_ref().unwrap().0.contains("bob is calling"));
     assert!(matches!(&app.popup, Some(Popup::Call { name, .. }) if name == "bob"));
-    assert!(screen(&mut app).contains("bob is calling you"));
+    assert!(screen(&mut app, SCREEN_WIDTH).contains("bob is calling you"));
     app.on_key(key('y'));
     assert!(app.popup.is_none());
     pump(&mut app, &mut events, &mut tasks, "in the call", |a| {
@@ -350,7 +268,10 @@ async fn join_mute_deafen_leave_and_answer_a_call() {
         |a| voice_users(a).len() == 2,
     )
     .await;
-    let footer = crate::voice::room_footer(&app, &inst, dm).unwrap();
+    let footer = {
+        let store = app.core.store();
+        crate::voice::room_footer(&app, store.instance(&inst).unwrap(), &inst, dm).unwrap()
+    };
     assert!(
         footer.contains("in voice: ") && footer.contains("L: leave"),
         "{footer}"

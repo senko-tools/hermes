@@ -1,6 +1,7 @@
 //! Local time for message timestamps without a date/time crate (shared by the GUI and TUI): the
 //! UTC offset is read once at startup (`date +%z` on unix, `GetTimeZoneInformation` on Windows),
-//! and `[buffer] timestamp_format` supports `%H %M %S %d %m %Y %y %%`.
+//! and `[buffer] timestamp_format` / `date_format` support `%H %I %M %S %p %d %e %m %B %b %A %a
+//! %Y %y %%`.
 
 /// The local UTC offset in seconds (0 if it cannot be determined).
 pub fn local_offset_secs() -> i64 {
@@ -71,8 +72,36 @@ fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 /// Local calendar day of a Unix-ms timestamp, for day separators.
+/// Days since 1970-01-01 of a calendar date (the inverse of `civil`).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let m = i64::from(m);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The local start of a `YYYY-MM-DD` day, and of the day after it, in Unix ms.
+pub fn parse_day(text: &str, offset_secs: i64) -> Option<(i64, i64)> {
+    let mut parts = text.trim().split('-');
+    let y: i64 = parts.next()?.parse().ok()?;
+    let m: u32 = parts.next()?.parse().ok()?;
+    let d: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    if civil(days) != (y, m, d) {
+        return None;
+    }
+    let start = (days * 86_400 - offset_secs) * 1000;
+    Some((start, start + 86_400_000))
+}
+
 pub fn day(unix_ms: i64, offset_secs: i64) -> i64 {
-    (unix_ms / 1000 + offset_secs).div_euclid(86_400)
+    (unix_ms.div_euclid(1000) + offset_secs).div_euclid(86_400)
 }
 
 pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
@@ -80,35 +109,119 @@ pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
     let (y, mo, d) = civil(secs.div_euclid(86_400));
     let in_day = secs.rem_euclid(86_400);
     let (h, mi, s) = (in_day / 3600, in_day % 3600 / 60, in_day % 60);
-    let mut out = String::new();
+    let days = secs.div_euclid(86_400);
+    // Called for every timestamp drawn: write into one buffer instead of a string per field.
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(pattern.len() + 8);
     let mut chars = pattern.chars();
     while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
             continue;
         }
-        match chars.next() {
-            Some('H') => out.push_str(&format!("{h:02}")),
-            Some('M') => out.push_str(&format!("{mi:02}")),
-            Some('S') => out.push_str(&format!("{s:02}")),
-            Some('d') => out.push_str(&format!("{d:02}")),
-            Some('m') => out.push_str(&format!("{mo:02}")),
-            Some('Y') => out.push_str(&y.to_string()),
-            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
-            Some('%') => out.push('%'),
-            Some(other) => {
-                out.push('%');
-                out.push(other);
-            }
-            None => out.push('%'),
-        }
+        // Writing into a `String` cannot fail.
+        let _ = match chars.next() {
+            Some('H') => write!(out, "{h:02}"),
+            Some('I') => write!(out, "{:02}", (h + 11) % 12 + 1),
+            Some('p') => out.write_str(if h < 12 { "AM" } else { "PM" }),
+            Some('e') => write!(out, "{d}"),
+            Some('B') => out.write_str(MONTHS[(mo as usize).clamp(1, 12) - 1]),
+            Some('b') => out.write_str(&MONTHS[(mo as usize).clamp(1, 12) - 1][..3]),
+            // 1970-01-01 was a Thursday.
+            Some('A') => out.write_str(WEEKDAYS[(days + 4).rem_euclid(7) as usize]),
+            Some('a') => out.write_str(&WEEKDAYS[(days + 4).rem_euclid(7) as usize][..3]),
+            Some('M') => write!(out, "{mi:02}"),
+            Some('S') => write!(out, "{s:02}"),
+            Some('d') => write!(out, "{d:02}"),
+            Some('m') => write!(out, "{mo:02}"),
+            Some('Y') => write!(out, "{y}"),
+            Some('y') => write!(out, "{:02}", y.rem_euclid(100)),
+            Some('%') => out.write_char('%'),
+            Some(other) => write!(out, "%{other}"),
+            None => out.write_char('%'),
+        };
     }
     out
+}
+
+const WEEKDAYS: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+
+const MONTHS: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+
+/// The whole date and time, spelled out: `Saturday, 31 October 2026 at 13:57:05`.
+pub fn long(unix_ms: i64, offset_secs: i64) -> String {
+    let secs = unix_ms.div_euclid(1000) + offset_secs;
+    let days = secs.div_euclid(86_400);
+    let (y, mo, d) = civil(days);
+    // 1970-01-01 was a Thursday.
+    let weekday = WEEKDAYS[(days + 4).rem_euclid(7) as usize];
+    let month = MONTHS[(mo as usize).clamp(1, 12) - 1];
+    format!(
+        "{weekday}, {d} {month} {y} at {}",
+        format(unix_ms, "%H:%M:%S", offset_secs)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn days_parse() {
+        let (start, end) = parse_day("2026-10-31", 0).unwrap();
+        assert_eq!(format(start, "%Y-%m-%d %H:%M", 0), "2026-10-31 00:00");
+        assert_eq!(end - start, 86_400_000);
+        let (start, _) = parse_day("2026-10-31", 2 * 3600).unwrap();
+        assert_eq!(
+            format(start, "%Y-%m-%d %H:%M", 2 * 3600),
+            "2026-10-31 00:00"
+        );
+        assert_eq!(parse_day("2026-02-30", 0), None);
+        assert_eq!(parse_day("yesterday", 0), None);
+    }
+
+    #[test]
+    fn date_and_twelve_hour_tokens() {
+        // 2026-10-31 13:57:05 UTC, a Saturday.
+        let ms = 1_793_455_025_000;
+        assert_eq!(format(ms, "%I:%M %p", 0), "01:57 PM");
+        assert_eq!(format(ms - 13 * 3_600_000, "%I:%M %p", 0), "12:57 AM");
+        assert_eq!(format(ms - 1_800_000, "%I %p", 0), "01 PM");
+        assert_eq!(format(ms, "%A, %e %B %Y", 0), "Saturday, 31 October 2026");
+        assert_eq!(format(ms, "%a %e %b", 3600 * 11), "Sun 1 Nov");
+        assert_eq!(format(ms, "%B %e, %Y", 0), "October 31, 2026");
+        assert_eq!(format(ms, "%d.%m.%Y", 0), "31.10.2026");
+    }
+
+    #[test]
+    fn long_dates() {
+        // 2026-10-31 13:57:05 UTC, a Saturday.
+        let ms = 1_793_455_025_000;
+        assert_eq!(long(ms, 0), "Saturday, 31 October 2026 at 13:57:05");
+        assert_eq!(long(ms, 11 * 3600), "Sunday, 1 November 2026 at 00:57:05");
+        assert_eq!(long(0, 0), "Thursday, 1 January 1970 at 00:00:00");
+    }
 
     #[test]
     fn formats() {
@@ -119,6 +232,14 @@ mod tests {
         assert_eq!(format(ms, "%d.%m.%y %%", -14 * 3600), "30.10.26 %");
         assert_eq!(format(0, "%Y-%m-%d", 0), "1970-01-01");
         assert_eq!(day(ms, 0) + 1, day(ms + 11 * 3600 * 1000, 0));
+        assert_eq!(
+            format(0, "%q 100%", 0),
+            "%q 100%",
+            "unknown and trailing % stay"
+        );
+        // The same day as `format` shows, also just before 1970.
+        assert_eq!(format(-1, "%Y-%m-%d", 0), "1969-12-31");
+        assert_eq!(day(-1, 0), -1);
     }
 
     #[test]

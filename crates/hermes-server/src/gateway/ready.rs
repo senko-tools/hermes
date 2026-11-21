@@ -1,6 +1,6 @@
 //! The `ready` snapshot sent after `identify` (PLAN.md section 11.3).
 
-use hermes_proto::gateway::{InstanceInfo, InstanceLimits, Ready, VoiceInfo};
+use hermes_proto::gateway::{InstanceInfo, Ready, VoiceInfo};
 use hermes_proto::id::Id;
 use hermes_proto::models::{Channel, NotificationSetting, ReadState, Status};
 use hermes_proto::permissions::Permissions;
@@ -92,6 +92,7 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
             .get(&user_id)
             .map(|u| u.privacy)
             .unwrap_or_default(),
+        relationships: cache.relationships_of(user_id),
         voice: VoiceInfo {
             enabled: endpoint.is_some(),
             quic_port: endpoint.map(|e| e.port),
@@ -99,10 +100,8 @@ pub fn build(state: &AppState, user_id: Id, session_id: String, rows: Rows) -> O
         },
         instance: InstanceInfo {
             name: config.instance.name.clone(),
-            limits: InstanceLimits {
-                max_upload_mb: config.storage.max_upload_mb,
-                max_message_length: config.limits.max_message_length,
-            },
+            limits: config.instance_limits(),
+            features: crate::api::instance::features(),
         },
     })
 }

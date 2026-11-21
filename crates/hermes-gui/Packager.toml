@@ -6,7 +6,7 @@
 name = "hermes"
 product-name = "Hermes"
 # Must equal the workspace version (a test checks it).
-version = "1.1.0"
+version = "1.4.0"
 identifier = "tools.senko.hermes"
 publisher = "senko-tools"
 description = "Chat with spaces, text and voice channels, DMs and calls"
@@ -17,12 +17,18 @@ icons = ["assets/icons/hermes.ico", "assets/icons/icon-256.png"]
 formats = ["nsis"]
 out-dir = "../../dist"
 binaries-dir = "../../target/release"
-before-packaging-command = "cargo build --release -p hermes-gui -p hermes-tui"
+# The same packages as the release workflow's Build step (make-update is in hermes-client-core):
+# a different set unifies dependency features differently and rebuilds ~120 crates.
+before-packaging-command = "cargo build --release -p hermes-gui -p hermes-tui -p hermes-client-core"
 binaries = [
   { path = "hermes", main = true },
   { path = "hermes-tui", main = false },
 ]
 deep-link-protocols = [{ schemes = ["hermes"] }]
+# FFmpeg (an LGPL build) plays sound and video files: `ffmpeg.exe`, `ffprobe.exe`, their DLLs
+# and FFMPEG-LICENSE.txt next to hermes.exe, where the app looks first. The release workflow
+# puts them in target/ffmpeg.
+resources = [{ src = "../../target/ffmpeg/*", target = "." }]
 
 [nsis]
 installer-mode = "currentUser"

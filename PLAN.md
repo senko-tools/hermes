@@ -28,7 +28,7 @@ This document is the full specification and build guide. Someone who has never s
 12. [Voice system](#12-voice-system)
 13. [Security model](#13-security-model)
 14. [Client architecture (shared core)](#14-client-architecture-shared-core)
-15. [iced GUI client specification](#15-iced-gui-client-specification)
+15. [Desktop client specification](#15-desktop-client-specification)
 16. [TUI client specification](#16-tui-client-specification)
 17. [Client configuration](#17-client-configuration)
 18. [Self-hosting and deployment](#18-self-hosting-and-deployment)
@@ -138,7 +138,7 @@ Video and screen share, echo cancellation (v1 assumes headphones or relies on no
 ```
                        ┌──────────────────────────── hermes-server (one process) ───────────────────────────┐
                        │                                                                                   │
-  hermes-gui (iced)    │   TCP :7700  ── HTTPS ──►  REST API (axum)  ──┐                                    │
+  hermes-gui (gpui)    │   TCP :7700  ── HTTPS ──►  REST API (axum)  ──┐                                    │
   hermes-tui (ratatui) │                                               ├─► Domain services ─► State cache    │
          │             │   TCP :7700  ── WSS  ──►  Gateway (events) ──┘       (auth, spaces,   (RwLock, in   │
          │             │                               ▲                       messages, ...)   memory)      │
@@ -191,7 +191,7 @@ hermes/
 │   │   └── src/{main.rs, config.rs, db/, state/, auth/, api/, gateway/, voice/, files/, cli/}
 │   ├── hermes-audio/           # Capture, playback, resampling, noise suppression, Opus, jitter buffer, mixer (GPL-3.0)
 │   ├── hermes-client-core/     # Connection management, REST+WS client, state store, voice transport, config (GPL-3.0)
-│   ├── hermes-gui/             # iced desktop client (GPL-3.0)
+│   ├── hermes-gui/             # desktop client on gpui (GPL-3.0)
 │   ├── hermes-tui/             # ratatui terminal client (GPL-3.0)
 │   └── hermes-voicebot/        # Dev tool: headless client that joins voice and plays/records WAV files (GPL-3.0)
 ├── deploy/
@@ -1065,144 +1065,14 @@ A message triggers a notification if: not authored by me, channel not currently 
 
 ---
 
-## 15. iced GUI client specification
+## 15. Desktop client specification
 
-Binary: `hermes` (crate `hermes-gui`). Target look and feel: **Halloy's clean, dense, keyboard-friendly layout**, plus the minimum Discord-like elements needed for spaces and voice.
+The desktop client is `crates/hermes-gui` (binary `hermes`). It was first written with iced and replaced by a gpui
+client in 1.2.0 (docs/DECISIONS.md, 2026-11-07), so what this section used to say about panes and iced no longer applies.
 
-### 15.1 Window layout
-```
-┌──────────────────────┬────────────────────────────────────────────────────────────────┐
-│ SIDEBAR (resizable,  │ PANE GRID (iced pane_grid, any number of splits, drag to move)  │
-│ left or right)       │ ┌───────────────────────────────┬─────────────────────────────┐ │
-│                      │ │ #general · topic text   [⋮]   │ #memes                [⋮]   │ │
-│ ▾ hermes.senko.tools │ │───────────────────────────────│─────────────────────────────│ │
-│   ▾ Friends          │ │ 18:02 Alice                    │ ...                         │ │
-│     ▾ TEXT           │ │       hello!                   │                             │ │
-│       # general  3   │ │       second line (grouped)    │                             │ │
-│       # memes   @1   │ │ 18:05 Bob  ↪ replying to Alice │                             │ │
-│     ▾ VOICE          │ │       hi  [😀 2] [👍 1]          │                             │ │
-│       🔊 Lounge      │ │ ...                            │                             │ │
-│          ● Alice     │ │ Bob is typing…                 │                             │ │
-│          ○ Bob 🔇    │ │ ┌─────────────────────────────┐│                             │ │
-│       🔊 Gaming      │ │ │ Message #general            ││                             │ │
-│   ▸ Study Group      │ │ └─────────────────────────────┘│                             │ │
-│ ▾ Direct messages    │ └───────────────────────────────┴─────────────────────────────┘ │
-│     Carol        1   │                                                                  │
-│     Alice, Bob       │                                                                  │
-│ ▸ other.host:7700    │                                                                  │
-│──────────────────────│                                                                  │
-│ VOICE PANEL          │                                                                  │
-│ 🟢 Lounge · Friends  │                                                                  │
-│ 38 ms  [🎤][🎧][⏏]   │                                                                  │
-│──────────────────────│                                                                  │
-│ USER PANEL           │                                                                  │
-│ (avatar) you  ● [⚙]  │                                                                  │
-└──────────────────────┴────────────────────────────────────────────────────────────────┘
-```
-(Icons above are only illustrative; the client uses an icon font or SVG icons, not emoji, for UI chrome.)
-
-**Sidebar** (one scrollable tree, like Halloy's server list):
-- Level 1: instances (with connection status dot; right-click: reconnect, log out, instance settings, copy invite).
-- Level 2: spaces (collapsible; unread dot / mention count when collapsed; right-click: space settings, invite people, notification level, mute, leave).
-- Level 3: categories (collapsible), channels sorted by position. Text channels: `#` + name, bold if unread, mention badge. Voice channels: speaker icon + name; **connected users listed underneath at all times** (visible without joining), with speaking ring, mute/deaf icons. Clicking a text channel opens it in the focused pane. **Single-clicking a voice channel only selects it and opens its text chat; joining requires double-click, or the "Join voice" button in its pane header** (configurable: `voice.join_on = "double_click" | "single_click"`, default `double_click`). This directly avoids accidental voice joins.
-- "Direct messages" section per instance: DMs sorted by last activity, with unread badges and a "+" to start a DM/group DM.
-- Collapsed state persisted per node.
-
-**Voice panel** (bottom of sidebar, only while in voice): channel and space name (click = open that channel), connection quality (ping, loss %), buttons: mute, deafen, disconnect, and audio settings. Push-to-talk indicator when PTT is active.
-
-**User panel**: avatar, display name, status selector (online/idle/dnd/invisible), settings button.
-
-**Pane grid**: each pane shows one **buffer**. Buffer types:
-- `Channel` (text channel, voice channel's text chat, DM, group DM): header (name, topic, member-list toggle, pins, search, Join-voice button for voice/DM), message list, typing line, input box. Optional member list docked on the right side of the pane (toggle per pane, remembered).
-- `VoiceRoom`: grid/list of participants with avatars, speaking rings, per-user volume sliders on right-click.
-- `Mentions`: recent mentions across all instances.
-- `Search`: results with jump-to.
-- `Settings`: tabs (Account, Appearance, Voice & Audio, Notifications, Keybinds, Instances, About).
-- `SpaceSettings`: tabs (Overview, Roles, Channels & permissions, Members, Invites, Bans, Audit log).
-- `Logs`: client log output (for debugging, like Halloy's logs buffer).
-
-Pane actions (header `⋮` menu and keybinds): split horizontal, split vertical, close, maximize/restore, swap. Layout (pane tree + which buffer in each) is saved on exit and restored on start.
-
-**Command bar** (Ctrl+K): fuzzy search over channels, DMs, spaces, users and actions ("Toggle mute", "Join voice: Lounge", "Open settings", "Split pane right", "Theme: …"). Same concept as Halloy's command bar.
-
-### 15.2 Message list
-- Virtualized list (only visible rows built) to stay fast in long histories.
-- Grouping: consecutive messages of the same author within 7 minutes show author + timestamp once; hovered grouped lines show their time on the left.
-- Per message: author name in their highest colored role's color, optional avatar (setting `buffer.show_avatars`, default true), timestamp (format configurable, default `%H:%M`), "(edited)" marker, reply preview line above (click = jump), attachments (images inline scaled to max 400×300 using the server thumbnail, click = full-size viewer overlay; other files as a card with name/size/download), reaction chips (click toggles your reaction; hover shows who), system messages styled dim/italic.
-- Mentions of you: highlighted row background. Spoilers: blurred block until clicked. Code blocks: monospace with background (syntax highlighting post-v1).
-- Hover toolbar on a message: react, reply, edit (own), more (copy text, copy link, pin, delete, copy ID).
-- "New messages" divider at the first unread message; "Jump to present" button when scrolled up; mark-as-read when the bottom is visible and the window is focused.
-- Infinite scroll up triggers `load_history`.
-- Failed/pending messages styled as described in [14.3](#143-optimistic-messages).
-
-### 15.3 Input box
-- iced `text_editor` (multi-line). Enter sends, Shift+Enter newline (configurable).
-- Autocomplete popup: `@` users/roles, `#` channels, `:` emoji shortcodes, `/` slash commands. Tab/Enter accepts, arrow keys navigate.
-- Up arrow in an empty box edits your last message.
-- Reply mode bar ("Replying to Alice ✕"), edit mode bar.
-- Attachments: "+" button (file dialog via `rfd`), drag-and-drop files onto the pane, paste images from the clipboard (`arboard`). Shows upload progress chips before sending.
-- Slash commands (client-side, also usable from the TUI): `/me`, `/shrug`, `/join <voice channel>`, `/leave`, `/mute`, `/deafen`, `/nick <name>`, `/dm <user>`, `/invite`, `/status <online|idle|dnd|invisible>`.
-- Draft text per channel is kept when switching channels.
-
-### 15.4 Dialogs and flows
-- **First run / Add instance**: "Paste an invite link or address" (accepts `hermes.senko.tools`, `host:port`, `https://…/invite/…` and `hermes://…` forms, see [9.6](#96-addresses-invite-links-and-the-invite-web-page)) → probe → (fingerprint prompt if needed) → instance preview (name, space from invite) → Login / Create account tabs → connected. Invite links can also be opened from the OS: the installer registers the `hermes://` URL scheme on Windows, so clicking an invite link in a browser opens the client.
-- **Create space**, **Create channel** (kind, name, category, private toggle that creates an `@everyone` deny-VIEW override and lets you pick roles), **Invite people** (create link, copy).
-- **Space settings → Roles**: list ordered by position (drag to reorder), editor with name, color picker, hoist, mentionable, permission checkboxes grouped by category with descriptions. **Channel permissions**: per-role tri-state toggles (allow / inherit / deny).
-- **Members**: list with search, role assignment, kick, ban (with message deletion window), server mute/deafen/move for voice.
-- **Incoming call** banner at top of the window with Join / Dismiss.
-- **Confirmations** for destructive actions (delete channel/space/role, ban).
-- **Fingerprint changed** warning dialog.
-
-### 15.5 Theming and fonts (Halloy-style)
-- Themes are TOML files in `<config_dir>/themes/`, hot-reloaded. Built-in: `dark` (default), `light`, `high-contrast`.
-- Theme keys: `general.{background, border, horizontal_rule, unread_indicator, scrollbar}`, `text.{primary, secondary, tertiary, success, error, warning, info, link, mention_bg, code_bg}`, `buttons.{primary, secondary, danger}.{background, background_hover, text}`, `sidebar.{background, selected, hover}`, `pane.{header_bg, focused_border}`, `voice.{speaking_ring, muted}`, `roles.default_color`.
-- Fonts: `font.family` (default: bundled Inter for UI; bundled JetBrains Mono for code), `font.size` (default 13), `font.mono_family`. Color emoji: rely on the system emoji font (Segoe UI Emoji on Windows); verify rendering in the Phase 0 spike.
-- UI scale factor setting (0.75–2.0) on top of OS DPI.
-
-### 15.6 Default keybinds (all rebindable in config)
-| Action | Default |
-|---|---|
-| Command bar | `Ctrl+K` |
-| Next / previous channel with unread | `Alt+Shift+Down` / `Alt+Shift+Up` |
-| Next / previous channel in sidebar | `Alt+Down` / `Alt+Up` |
-| Focus next / previous pane | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| Split pane right / down | `Ctrl+\` / `Ctrl+Shift+\` |
-| Close pane | `Ctrl+W` |
-| Maximize pane | `Ctrl+Shift+F` |
-| Toggle member list | `Ctrl+U` |
-| Toggle sidebar | `Ctrl+B` |
-| Search | `Ctrl+F` |
-| Mark channel read | `Escape` (in message list) |
-| Toggle mute | `Ctrl+Shift+M` |
-| Toggle deafen | `Ctrl+Shift+D` |
-| Push-to-talk | unbound by default (global hotkey; user picks e.g. `Mouse4` or `CapsLock`) |
-| Toggle mute (global) | unbound by default |
-| Settings | `Ctrl+,` |
-
-### 15.7 Desktop integration
-- Notifications via `notify-rust` (toast with author and message preview; click focuses the window and opens the channel).
-- Tray icon (`tray-icon`): show/hide, mute, deafen, quit. Closing the window minimizes to tray (setting, default on). Tray icon shows a badge dot on unread mentions.
-- Taskbar flash on DM/mention when unfocused (winit `request_user_attention`).
-- Single instance: a second launch (e.g., from a `hermes://` link) forwards its argument to the running instance via a local named pipe and exits.
-- Start with Windows (setting, off by default).
-- Update check: on start, query the GitHub releases API for the client repo; if newer, show a subtle indicator in the user panel with a link (no auto-install in v1). Can be disabled.
-
-### 15.8 iced structure
-```
-hermes-gui/src/
-├── main.rs              # iced::application(...) with title, update, view, subscription, theme
-├── app.rs               # App state: Core handle, layout (pane_grid::State<Pane>), sidebar state, modals, settings
-├── message.rs           # enum Message { Core(CoreEvent), Sidebar(..), Pane(PaneId, buffer::Message), Modal(..), Key(..), Tick, ... }
-├── subscription.rs      # CoreEvents → Message::Core; keyboard; window events (file drop, focus); global hotkeys; timers
-├── sidebar/             # tree view, voice panel, user panel
-├── buffer/              # channel.rs, voice_room.rs, settings/, space_settings/, search.rs, mentions.rs, logs.rs
-├── widget/              # message_row, reaction_chip, avatar, badge, input (text_editor wrapper + autocomplete), context_menu, color_picker, tooltip
-├── modal/               # add_instance, create_space, create_channel, invite, confirm, image_viewer, incoming_call, fingerprint
-├── theme/               # Theme struct, TOML loading, iced style functions for each widget
-├── keybinds.rs
-└── assets/              # fonts, icon font/SVGs, sounds (join.ogg, leave.ogg, mute.ogg, unmute.ogg, message.ogg, ring.ogg)
-```
-Follow the Elm architecture strictly: all side effects go through `Task`s calling `Core` methods; `view` is pure and reads from the store snapshot.
+**`docs/desktop-client.md` is the specification now**: how the crate is built, the decisions on look and behaviour,
+and how it is tested. Themes are TOML files as before (`crates/hermes-gui/assets/themes/`), keybinds are in `[keys]` in
+the config (`crates/hermes-gui/src/keybinds.rs`), and encryption is in `docs/e2ee.md`. Split panes are not built yet.
 
 ---
 
@@ -1679,7 +1549,7 @@ Roughly in priority order:
 9. Postgres storage backend (behind the same `db` module interface).
 10. Web client (would need WebTransport for voice, which maps well onto QUIC datagrams).
 11. Android client.
-12. End-to-end encrypted DMs (MLS).
+12. ~~End-to-end encrypted DMs (MLS).~~ Done in 1.2.0, without MLS: see docs/e2ee.md.
 13. Federation between instances.
 
 ---

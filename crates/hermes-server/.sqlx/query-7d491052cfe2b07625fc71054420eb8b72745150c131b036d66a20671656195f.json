@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id FROM message_nonces\n         WHERE channel_id = ? AND author_id = ? AND nonce = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "message_nonces",
+            "name": "message_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7d491052cfe2b07625fc71054420eb8b72745150c131b036d66a20671656195f"
+}

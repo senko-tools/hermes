@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM bans WHERE expires_at IS NOT NULL AND expires_at < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "53bfa7366a43ad54ed8c2cd61cdea2b067f9fc59e01ed14b8228d82adab2353d"
+}

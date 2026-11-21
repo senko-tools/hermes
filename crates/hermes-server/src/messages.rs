@@ -5,19 +5,19 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use hermes_proto::id::Id;
-use hermes_proto::markup;
-use hermes_proto::models::{Mentions, Message, MessageRef, ReactionSummary, Status, User};
+use hermes_proto::models::{
+    Attachment, Mentions, Message, MessageRef, ReactionSummary, Status, User,
+};
 use hermes_proto::permissions::Permissions;
 
 use crate::db;
 use crate::db::messages::MessageRow;
 use crate::state::{AppState, Cache};
 use crate::time::SECOND_MS;
+use hermes_proto::e2ee::{Envelope, MessageLock};
 
 /// Length of [`MessageRef::excerpt`].
 pub const EXCERPT_CHARS: usize = 100;
-/// Distinct reaction emoji per message.
-pub const MAX_REACTION_EMOJI: usize = 20;
 
 /// Builds wire messages as `viewer` sees them (`ReactionSummary::me`). `nonce` is left empty.
 pub async fn to_wire(
@@ -36,9 +36,30 @@ pub async fn to_wire(
     } else {
         db::messages::reply_refs(db, &reply_ids).await?
     };
-    let attachments = db::messages::attachments(db, &ids).await?;
-    let reactions = db::messages::reaction_counts(db, &ids, viewer).await?;
-    let mentions = db::messages::mentions(db, &ids).await?;
+    // Grouped by message ID, so each row takes its own parts without scanning or cloning.
+    let replies: HashMap<Id, (Id, String, bool)> = replies
+        .into_iter()
+        .map(|(id, author_id, content, deleted)| (id, (author_id, content, deleted)))
+        .collect();
+    let mut attachments: HashMap<Id, Vec<Attachment>> = HashMap::new();
+    for (message_id, attachment) in db::messages::attachments(db, &ids).await? {
+        attachments.entry(message_id).or_default().push(attachment);
+    }
+    let mut reactions: HashMap<Id, Vec<ReactionSummary>> = HashMap::new();
+    for c in db::messages::reaction_counts(db, &ids, viewer).await? {
+        reactions
+            .entry(c.message_id)
+            .or_default()
+            .push(ReactionSummary {
+                emoji: c.emoji,
+                count: c.count,
+                me: c.me,
+            });
+    }
+    let mut mentions: HashMap<Id, Mentions> = db::messages::mentions(db, &ids)
+        .await?
+        .into_iter()
+        .collect();
 
     let cache = state.cache();
     Ok(rows
@@ -49,10 +70,9 @@ pub async fn to_wire(
             author: author(&cache, r.author_id),
             content: r.content,
             reply_to: r.reply_to_id.and_then(|reply_id| {
-                let (id, author_id, content, deleted) =
-                    replies.iter().find(|(id, ..)| *id == reply_id)?;
+                let (author_id, content, deleted) = replies.get(&reply_id)?;
                 Some(MessageRef {
-                    id: *id,
+                    id: reply_id,
                     author_id: *author_id,
                     excerpt: if *deleted {
                         String::new()
@@ -65,28 +85,20 @@ pub async fn to_wire(
             deleted: r.deleted,
             pinned: r.pinned,
             kind: r.kind,
-            attachments: attachments
-                .iter()
-                .filter(|(message_id, _)| *message_id == r.id)
-                .map(|(_, a)| a.clone())
-                .collect(),
-            reactions: reactions
-                .iter()
-                .filter(|c| c.message_id == r.id)
-                .map(|c| ReactionSummary {
-                    emoji: c.emoji.clone(),
-                    count: c.count,
-                    me: c.me,
-                })
-                .collect(),
-            mentions: mentions
-                .iter()
-                .find(|(message_id, _)| *message_id == r.id)
-                .map(|(_, m)| m.clone())
-                .unwrap_or_default(),
+            attachments: attachments.remove(&r.id).unwrap_or_default(),
+            reactions: reactions.remove(&r.id).unwrap_or_default(),
+            mentions: mentions.remove(&r.id).unwrap_or_default(),
             nonce: None,
+            e2ee: e2ee_of(r.e2ee.as_deref()),
+            lock: MessageLock::Plain,
+            message_key: None,
         })
         .collect())
+}
+
+/// What is stored in `messages.e2ee`. It was checked when it was stored.
+fn e2ee_of(stored: Option<&str>) -> Option<Envelope> {
+    serde_json::from_str(stored?).ok()
 }
 
 /// The form of a message broadcast to everyone who can see it: without the nonce, and with
@@ -107,9 +119,11 @@ fn author(cache: &Cache, user_id: Id) -> User {
         || User {
             id: user_id,
             username: "unknown".into(),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         },
         |u| u.user.clone(),
     )
@@ -132,12 +146,11 @@ pub fn resolve_mentions(
     channel_id: Id,
     author_id: Id,
     perms: Permissions,
-    content: &str,
+    raw: Mentions,
 ) -> ResolvedMentions {
     let Some(channel) = cache.channels.get(&channel_id) else {
         return ResolvedMentions::default();
     };
-    let raw = markup::extract_mentions(content);
     let can_everyone = perms.contains(Permissions::MENTION_EVERYONE);
     let space = channel
         .channel
@@ -209,8 +222,8 @@ pub struct Slowmode(Mutex<HashMap<(Id, Id), i64>>);
 
 /// Entries older than the longest slowmode are dropped once the map grows this large.
 const SLOWMODE_PRUNE_AT: usize = 10_000;
-const MAX_SLOWMODE_MS: i64 =
-    hermes_proto::api::UpdateChannelRequest::MAX_SLOWMODE_SECS as i64 * SECOND_MS;
+/// The longest slow mode any config allows, so no entry still in use is dropped.
+const MAX_SLOWMODE_MS: i64 = crate::config::MAX_SLOWMODE_MINUTES_CEILING as i64 * 60 * SECOND_MS;
 
 impl Slowmode {
     /// Records a send at `now` if the user may send in the channel; otherwise returns how many

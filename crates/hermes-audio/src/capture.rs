@@ -1,11 +1,14 @@
 //! The capture pipeline after the input ring buffer (PLAN.md 12.5 "Capture" steps 1–7): mono,
 //! 48 kHz, noise suppression, AGC, the gate, Opus, and the datagram.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
+
 use hermes_proto::voice::{self, AudioHeader};
 
 use crate::codec::Encoder;
-use crate::dsp::{self, Agc, Denoiser, Gate, MonoResampler};
-use crate::{AudioSettings, FRAME, SAMPLE_RATE};
+use crate::dsp::{self, Agc, Denoiser, Downmix, Gate, MonoResampler};
+use crate::{AudioSettings, FRAME, SAMPLE_RATE, volume_gain};
 
 pub struct Capture {
     channels: usize,
@@ -15,11 +18,13 @@ pub struct Capture {
     frame: [f32; FRAME],
     denoiser: Option<Denoiser>,
     agc: Option<Agc>,
+    echo: Option<crate::echo::EchoCanceller>,
     pub gate: Gate,
     encoder: Encoder,
     input_volume: f32,
+    downmix: Downmix,
     timestamp: u32,
-    sequence: u16,
+    sequence: Arc<AtomicU16>,
     was_open: bool,
     level_db: f32,
 }
@@ -34,12 +39,14 @@ impl Capture {
             frame: [0.0; FRAME],
             denoiser: None,
             agc: None,
+            echo: None,
             gate: Gate::default(),
             encoder: Encoder::new(bitrate),
             input_volume: 1.0,
+            downmix: Downmix::default(),
             // Random start (RFC 3550); the sequence starts at 0.
             timestamp: rand_u32(),
-            sequence: 0,
+            sequence: Arc::default(),
             was_open: false,
             level_db: -100.0,
         };
@@ -47,17 +54,38 @@ impl Capture {
         capture
     }
 
+    /// Goes on numbering packets from `sequence`, shared with the capture before this one. After
+    /// a change of microphone, listeners would take a number that starts over for late packets.
+    pub fn continuing(mut self, sequence: Arc<AtomicU16>) -> Self {
+        self.sequence = sequence;
+        self
+    }
+
     /// Takes over changed settings without losing the stream position.
     pub fn apply(&mut self, settings: &AudioSettings) {
-        self.input_volume = settings.input_volume.clamp(0.0, 2.0);
+        self.encoder
+            .set_options(settings.opus_fec, settings.opus_dtx);
+        self.input_volume = volume_gain(settings.input_volume);
         self.gate.mode = settings.mode;
         self.gate.sensitivity_db = settings.vad_sensitivity_db;
         self.gate.ptt_release_delay = settings.ptt_release_delay;
+        self.gate.hold = settings.vad_hold;
+        self.gate.level_only = settings.vad_level_only;
+        if settings.echo_cancellation != self.echo.is_some() {
+            self.echo = if settings.echo_cancellation {
+                crate::echo::EchoCanceller::new()
+            } else {
+                None
+            };
+        }
         if settings.noise_suppression != self.denoiser.is_some() {
             self.denoiser = settings.noise_suppression.then(Denoiser::default);
         }
         if settings.auto_gain != self.agc.is_some() {
             self.agc = settings.auto_gain.then(Agc::default);
+        }
+        if let Some(agc) = &mut self.agc {
+            agc.target_db = settings.agc_target_db;
         }
     }
 
@@ -77,8 +105,8 @@ impl Capture {
 
     /// Processes interleaved device samples; `send` gets each datagram to send (sender ID 0,
     /// the server sets it).
-    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(&[u8])) {
-        dsp::downmix(
+    pub fn push(&mut self, interleaved: &[f32], mut send: impl FnMut(Vec<u8>)) {
+        self.downmix.process(
             interleaved,
             self.channels,
             self.input_volume,
@@ -90,7 +118,7 @@ impl Capture {
             self.frame.copy_from_slice(&self.at48[used..used + FRAME]);
             used += FRAME;
             if let Some(datagram) = self.process_frame() {
-                send(&datagram);
+                send(datagram);
             }
         }
         self.at48.drain(..used);
@@ -98,6 +126,9 @@ impl Capture {
 
     /// One 20 ms frame: denoise, AGC, gate, encode. Returns the datagram to send, if any.
     fn process_frame(&mut self) -> Option<Vec<u8>> {
+        if let Some(echo) = &mut self.echo {
+            echo.process(&mut self.frame);
+        }
         let probability = self.denoiser.as_mut().map(|d| d.process(&mut self.frame));
         if let Some(agc) = &mut self.agc {
             agc.process(&mut self.frame);
@@ -106,7 +137,7 @@ impl Capture {
         self.level_db = dsp::to_db(level);
         let open = self.gate.update(self.level_db, probability);
         // Encode every frame so the encoder state stays continuous.
-        let opus = self.encoder.encode(&self.frame).map(<[u8]>::to_vec);
+        let opus = self.encoder.encode(&self.frame);
         let timestamp = self.timestamp;
         self.timestamp = self.timestamp.wrapping_add(voice::FRAME_SAMPLES);
         let was_open = std::mem::replace(&mut self.was_open, open);
@@ -119,11 +150,10 @@ impl Capture {
             voice_active: open,
             sender_id: 0,
             timestamp,
-            sequence: self.sequence,
+            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
             audio_level: voice::audio_level(level),
         };
-        self.sequence = self.sequence.wrapping_add(1);
-        Some(header.encode(&opus))
+        Some(header.encode(opus))
     }
 }
 
@@ -167,9 +197,21 @@ mod tests {
         let mut out = Vec::new();
         // 10 ms chunks, like a device callback.
         for chunk in samples.chunks(882) {
-            capture.push(chunk, |d| out.push(d.to_vec()));
+            capture.push(chunk, |d| out.push(d));
         }
         out
+    }
+
+    #[test]
+    fn a_new_microphone_goes_on_counting() {
+        let sequence = Arc::new(AtomicU16::new(5000));
+        let mut first = Capture::new(44_100, 2, &settings(), 64_000).continuing(sequence.clone());
+        let before = run(&mut first, &tone(44_100, 0.5, 0.3));
+        let last = AudioHeader::decode(before.last().unwrap()).unwrap().0;
+        let mut second = Capture::new(44_100, 2, &settings(), 64_000).continuing(sequence);
+        let after = run(&mut second, &tone(44_100, 0.5, 0.3));
+        let next = AudioHeader::decode(&after[0]).unwrap().0;
+        assert_eq!(next.sequence, last.sequence.wrapping_add(1));
     }
 
     #[test]

@@ -1,18 +1,24 @@
 //! REST API under `/api/v1` (PLAN.md section 10): routers per resource, validation and the
 //! mapping of errors to HTTP responses.
 
+mod account;
 mod admin;
 mod attachments;
 mod audit;
 mod auth;
+mod channel_keys;
 mod channels;
+pub mod conn_limit;
+pub mod devices;
 mod dms;
-mod instance;
+mod friends;
+pub(crate) mod instance;
 mod invites;
 mod members;
 mod messages;
 pub mod pages;
 mod perms;
+mod reports;
 mod roles;
 mod search;
 mod spaces;
@@ -25,12 +31,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::DefaultBodyLimit;
 use axum::extract::connect_info::Connected;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
+use axum::extract::{ConnectInfo, DefaultBodyLimit};
 use axum::extract::{FromRequest, FromRequestParts, Request};
-use axum::http::StatusCode;
+use axum::http::header::CONTENT_TYPE;
 use axum::http::request::Parts;
+use axum::http::{Extensions, HeaderMap, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::serve::IncomingStream;
@@ -39,10 +46,16 @@ use hermes_proto::{ApiError, ErrorBody, ErrorCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
+use tower_http::timeout::TimeoutBody;
 
+use self::conn_limit::{Capped, Caps};
 use crate::ratelimit;
 use crate::state::AppState;
 use crate::tls::{Tls, TlsListener};
+
+/// How long a request body may pause between pieces.
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Largest JSON request body; uploads (`POST /attachments`) stream and have their own limit.
 pub const JSON_BODY_LIMIT: usize = 256 * 1024;
@@ -55,7 +68,14 @@ pub fn router(state: Arc<AppState>) -> Router {
     let api = Router::new()
         .route("/gateway", get(crate::gateway::handler))
         .route("/instance", get(instance::get))
-        .route("/auth/register", post(auth::register))
+        .route(
+            "/auth/register",
+            ratelimit::limit_login(
+                post(auth::register),
+                trusted,
+                limits.login_attempts_per_minute,
+            ),
+        )
         .route(
             "/auth/login",
             ratelimit::limit_login(post(auth::login), trusted, limits.login_attempts_per_minute),
@@ -65,6 +85,33 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/sessions/{id}", delete(auth::delete_session))
         .route("/users/@me", get(users::me).patch(users::update_me))
         .route("/users/@me/password", post(users::change_password))
+        .route("/users/@me/username", post(users::change_username))
+        .route("/users/@me/devices", put(devices::register))
+        .route("/users/devices", post(devices::query))
+        .route("/users/@me/key-requests", get(channel_keys::requests))
+        .route(
+            "/channels/{id}/keys",
+            get(channel_keys::get).put(channel_keys::deliver),
+        )
+        .route("/channels/{id}/keys/members", get(channel_keys::members))
+        .route(
+            "/channels/{id}/keys/epochs",
+            post(channel_keys::start_epoch),
+        )
+        .route("/channels/{id}/keys/requests", post(channel_keys::request))
+        .route(
+            "/channels/{id}/key-policy",
+            get(channel_keys::channel_policy).put(channel_keys::set_channel_policy),
+        )
+        .route(
+            "/spaces/{id}/key-policy",
+            get(channel_keys::space_policy).put(channel_keys::set_space_policy),
+        )
+        .route("/users/@me/friends", get(friends::list).post(friends::add))
+        .route(
+            "/users/@me/friends/{id}",
+            put(friends::accept).delete(friends::remove),
+        )
         .route("/users/@me/mentions", get(users::mentions))
         .route(
             "/users/@me/privacy",
@@ -74,6 +121,35 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/users/@me/notification-settings/{target_id}",
             put(users::put_notification_setting).delete(users::delete_notification_setting),
         )
+        .route("/users/@me/2fa", get(account::two_factor))
+        .route("/users/@me/2fa/begin", post(account::two_factor_begin))
+        .route("/users/@me/2fa/confirm", post(account::two_factor_confirm))
+        .route("/users/@me/2fa/disable", post(account::two_factor_disable))
+        .route("/users/@me/blocks", get(account::blocks))
+        .route(
+            "/users/@me/blocks/{id}",
+            put(account::block).delete(account::unblock),
+        )
+        .route("/users/@me/export", get(account::export))
+        .route("/users/@me/delete", post(account::delete))
+        .route(
+            "/channels/{id}/messages/bulk-delete",
+            post(messages::bulk_delete),
+        )
+        .route(
+            "/channels/{id}/messages/{mid}/report",
+            post(reports::create),
+        )
+        .route("/spaces/{id}/reports", get(reports::list))
+        .route("/spaces/{id}/reports/{rid}", delete(reports::resolve))
+        .route("/admin/users/{id}/detail", get(admin::user_detail))
+        .route("/admin/log", get(admin::log))
+        .route(
+            "/admin/settings",
+            get(admin::settings).patch(admin::update_settings),
+        )
+        .route("/admin/reports", get(admin::reports))
+        .route("/admin/reports/{id}", delete(admin::resolve_report))
         .route("/users/{id}", get(users::get))
         .route("/search", get(search::search))
         .route("/admin/users", get(admin::list_users))
@@ -86,6 +162,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/spaces/{id}/members/{uid}",
             patch(members::update).delete(members::remove),
         )
+        .route("/spaces/{id}/members/{uid}/timeout", put(members::timeout))
         .route("/spaces/{id}/bans", get(members::list_bans))
         .route(
             "/spaces/{id}/bans/{uid}",
@@ -119,6 +196,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .delete(messages::delete),
         )
         .route(
+            "/channels/{id}/messages/{mid}/attachments/{aid}",
+            delete(messages::remove_attachment),
+        )
+        .route(
             "/channels/{id}/messages/{mid}/pin",
             put(messages::pin).delete(messages::unpin),
         )
@@ -134,7 +215,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/channels/{id}/typing", post(messages::typing))
         .route("/channels/{id}/ack", post(messages::ack))
         .route("/attachments", post(attachments::upload))
-        .route("/attachments/{id}/thumb", get(attachments::thumb))
+        .route(
+            "/attachments/{id}/thumb",
+            get(attachments::thumb).put(attachments::set_poster),
+        )
         .route("/attachments/{id}/{filename}", get(attachments::download))
         .route("/dms", get(dms::list).post(dms::create))
         .route("/dms/{id}", delete(dms::close))
@@ -162,19 +246,105 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/channels/{id}/call/ring", post(voice::ring))
         .fallback(not_found)
-        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT));
+        .layer(DefaultBodyLimit::max(JSON_BODY_LIMIT))
+        .layer(CompressionLayer::new().gzip(true).compress_when(
+            |_: StatusCode, _: Version, headers: &HeaderMap, _: &Extensions| {
+                headers
+                    .get(CONTENT_TYPE)
+                    .is_some_and(|t| t.as_bytes().starts_with(b"application/json"))
+            },
+        ))
+        .layer(axum::middleware::map_request(limit_body_idle))
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::new(tokio::sync::Semaphore::new(
+                limits.max_inflight_requests.max(1) as usize,
+            )),
+            limit_inflight,
+        ));
     let api = ratelimit::limit_rest(api, trusted, limits.requests_per_second);
-    Router::new()
-        .nest("/api/v1", api)
+    let public = Router::new()
         .route("/healthz", get(healthz))
         .route("/", get(pages::landing))
-        .route("/invite/{code}", get(pages::invite))
+        .route("/invite/{code}", get(pages::invite));
+    let public = ratelimit::limit_public(public, trusted);
+    Router::new()
+        .nest("/api/v1", api)
+        .merge(public)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            log_request,
+        ))
         .with_state(state)
 }
 
+/// The `requests` log topic: one line per request, once its answer starts (a download's time
+/// is until its first bytes). The query string is left out: it can hold search text.
+async fn log_request(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !tracing::enabled!(target: crate::logging::REQUESTS, tracing::Level::INFO) {
+        return next.run(request).await;
+    }
+    let started = std::time::Instant::now();
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let from = match request.extensions().get::<ConnectInfo<PeerAddr>>() {
+        Some(ConnectInfo(PeerAddr(peer))) => state.client_ip(*peer, request.headers()).to_string(),
+        None => "-".to_owned(),
+    };
+    let response = next.run(request).await;
+    tracing::info!(
+        target: crate::logging::REQUESTS,
+        "{from} {method} {path} {} {} ms",
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
+}
+
+/// How long a request turned away by [`limit_inflight`] is asked to wait.
+const BUSY_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `limits.max_inflight_requests`: past it a request is turned away at once (`RATE_LIMITED`,
+/// which clients already wait out) instead of queueing behind the others. Uploads are left out:
+/// a slow one would hold its turn for as long as its body takes.
+async fn limit_inflight(
+    axum::extract::State(turns): axum::extract::State<Arc<tokio::sync::Semaphore>>,
+    request: Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.method() == axum::http::Method::POST
+        && request.uri().path().ends_with("/attachments")
+    {
+        return next.run(request).await;
+    }
+    match turns.try_acquire_owned() {
+        Ok(_turn) => next.run(request).await,
+        Err(_) => {
+            ratelimit::note_busy();
+            ratelimit::rate_limited(BUSY_RETRY)
+        }
+    }
+}
+
+/// A request body that stops arriving ends the request, instead of holding it open.
+async fn limit_body_idle(request: axum::extract::Request) -> axum::extract::Request {
+    request.map(|body| axum::body::Body::new(TimeoutBody::new(BODY_IDLE_TIMEOUT, body)))
+}
+
 /// `GET /healthz`, for Docker and uptime checks.
-async fn healthz() -> &'static str {
-    "ok"
+async fn healthz(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+) -> Result<&'static str, StatusCode> {
+    match sqlx::query("SELECT 1").execute(&state.db.read).await {
+        Ok(_) => Ok("ok"),
+        Err(err) => {
+            tracing::error!("health check: {err}");
+            Err(StatusCode::SERVICE_UNAVAILABLE)
+        }
+    }
 }
 
 async fn not_found() -> Error {
@@ -187,20 +357,45 @@ pub async fn serve(
     tcp: TcpListener,
     tls: &Tls,
     app: Router,
+    caps: Caps,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     let service = app.into_make_service_with_connect_info::<PeerAddr>();
     match tls {
         Tls::Off => {
-            axum::serve(tcp, service)
+            axum::serve(Capped::new(tcp, caps), service)
                 .with_graceful_shutdown(shutdown)
                 .await
         }
         Tls::Rustls { config, .. } => {
-            axum::serve(TlsListener::new(tcp, config.clone())?, service)
-                .with_graceful_shutdown(shutdown)
-                .await
+            axum::serve(
+                Capped::new(TlsListener::new(tcp, config.clone())?, caps),
+                service,
+            )
+            .with_graceful_shutdown(shutdown)
+            .await
         }
+    }
+}
+
+/// The client's address (see [`AppState::client_ip`]), for handlers that log it. Unspecified
+/// when serving without connect info (tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientAddr(pub std::net::IpAddr);
+
+impl FromRequestParts<Arc<AppState>> for ClientAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(ClientAddr(
+            match parts.extensions.get::<ConnectInfo<PeerAddr>>() {
+                Some(ConnectInfo(PeerAddr(peer))) => state.client_ip(*peer, &parts.headers),
+                None => std::net::Ipv4Addr::UNSPECIFIED.into(),
+            },
+        ))
     }
 }
 
@@ -208,14 +403,14 @@ pub async fn serve(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerAddr(pub SocketAddr);
 
-impl Connected<IncomingStream<'_, TcpListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TcpListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TcpListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TcpListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }
 
-impl Connected<IncomingStream<'_, TlsListener>> for PeerAddr {
-    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+impl Connected<IncomingStream<'_, Capped<TlsListener>>> for PeerAddr {
+    fn connect_info(stream: IncomingStream<'_, Capped<TlsListener>>) -> Self {
         PeerAddr(*stream.remote_addr())
     }
 }
@@ -235,6 +430,21 @@ impl Error {
     pub fn internal(detail: impl std::fmt::Display) -> Self {
         tracing::error!("internal error: {detail}");
         Error::new(ErrorCode::Internal, "Internal server error")
+    }
+
+    /// A request that cannot be done as asked (`BAD_REQUEST`).
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::BadRequest, message)
+    }
+
+    /// Not allowed, for a reason other than one missing permission (`MISSING_PERMISSION`).
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Error::new(ErrorCode::MissingPermission, message)
+    }
+
+    /// The person does not accept direct messages from the caller.
+    pub fn dms_not_accepted() -> Self {
+        Error::forbidden("This user does not accept direct messages from you")
     }
 
     pub fn not_found(what: &str) -> Self {
@@ -343,4 +553,55 @@ pub fn user_ref(segment: &str, me: Id) -> ApiResult<Id> {
     segment
         .parse()
         .map_err(|_| Error::new(ErrorCode::BadRequest, "Invalid user ID"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn requests_past_the_inflight_cap_are_turned_away() {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let turns = Arc::new(tokio::sync::Semaphore::new(1));
+        let app = Router::new()
+            .route(
+                "/slow",
+                get({
+                    let release = release.clone();
+                    move || async move { release.notified().await }
+                }),
+            )
+            .route("/attachments", post(|| async {}))
+            .layer(axum::middleware::from_fn_with_state(
+                turns.clone(),
+                limit_inflight,
+            ));
+        let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", tcp.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(tcp, app).await });
+        // reqwest is built without a default crypto provider; building a client still needs one.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = reqwest::Client::new();
+
+        let slow = tokio::spawn({
+            let (client, url) = (client.clone(), format!("{root}/slow"));
+            async move { client.get(url).send().await.unwrap().status() }
+        });
+        while turns.available_permits() > 0 {
+            tokio::task::yield_now().await;
+        }
+        let busy = client.get(format!("{root}/slow")).send().await.unwrap();
+        assert_eq!(busy.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(busy.headers().contains_key("retry-after"));
+        // Uploads do not wait for a turn.
+        let upload = client
+            .post(format!("{root}/attachments"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(upload.status(), StatusCode::OK);
+
+        release.notify_one();
+        assert_eq!(slow.await.unwrap(), StatusCode::OK);
+    }
 }

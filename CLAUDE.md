@@ -1,23 +1,17 @@
 # Hermes
 
 Hermes is a self-hostable chat platform (spaces with text + voice channels, DMs, voice calls) written in Rust:
-a single-binary server, an iced desktop client (primary) and a ratatui terminal client (secondary).
+a single-binary server, a gpui desktop client (primary, see `docs/desktop-client.md`) and a ratatui terminal client (secondary).
 
-**The full specification is `PLAN.md` in the repo root.** It is long, so do not read it all at once:
-read its table of contents, then only the sections relevant to the current task. Section 20 contains the
-phase checklists and is the source of truth for what to build next.
+`PLAN.md` and `docs/DECISIONS.md` are historical: they need not be read, followed or updated.
+The developer's requests are what to build.
 
 ## How to work in this repo
-- Work on one checklist item from PLAN.md section 20 per session unless told otherwise.
 - Before writing code for anything that touches more than two or three files, post a short plan
   (files to create/change and why) and wait for approval.
 - Order inside a feature: `hermes-proto` types -> server endpoint + tests -> `hermes-client-core` -> UI.
-- Follow PLAN.md exactly. If something in the plan is impossible, ambiguous or clearly wrong, stop and ask.
-  If the user approves a deviation, record it in `docs/DECISIONS.md` (date, what changed, why) in the same change.
-- When an item is finished, tick its checkbox in PLAN.md section 20. Do not edit other parts of PLAN.md
-  unless asked.
-- Keep changes small and reviewable. Do not add dependencies that are not listed in PLAN.md section 6
-  without asking.
+- If a request is impossible, ambiguous or clearly wrong, stop and ask.
+- Keep changes small and reviewable. Do not add new dependencies without asking.
 
 ## Commands (must all pass before a task is considered done)
 - `cargo fmt --all`
@@ -30,9 +24,9 @@ phase checklists and is the source of truth for what to build next.
 - Things that need real hardware or the real server (microphone/speaker tests, GUI look and feel on Windows,
   QUIC tests over the internet, deployment) cannot be verified here. Write the code, make it compile and pass
   the tests that can run here, then give the developer exact step-by-step instructions to test it on Windows
-  or on the server (PLAN.md section 18.8 describes the server).
+  or on the server.
 - Windows-specific code must still compile on Linux (use `cfg(windows)` where needed); CI on GitHub Actions
-  builds on both Windows and Linux.
+  builds on both Windows and Linux, and Forgejo Actions (`.forgejo/workflows/ci.yml`) also runs the Linux CI.
 - Do not connect to remote servers, with one exception: when the session runs on the developer's own PC,
   Claude may connect to the production server with `ssh senko.tools` or `hetzner` (from that PC only,
   never from a cloud VM).
@@ -41,3 +35,7 @@ phase checklists and is the source of truth for what to build next.
 ## Git
 - Commit messages: `area: what changed` (e.g. `server: add login endpoint`, `proto: add Message model`).
 - Push to the `dev` branch only; the developer reviews and merges the pull request from `dev` into `main`.
+- Push `dev` to GitHub and to the mirror on git.8w.fi over HTTPS:
+  `git push origin dev && git push https://git.8w.fi/fides/hermes.git dev` (signed in through Git
+  Credential Manager). The `forgejo` SSH remote is not expected to work; if the HTTPS push fails,
+  ask the developer to push to the mirror.

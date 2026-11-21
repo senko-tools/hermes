@@ -17,9 +17,16 @@ pub struct AttachmentRef {
 pub struct User {
     pub id: Id,
     pub username: String,
+    /// The four digits after the name, as in `name#1234`. `None`: an account the instance's owner
+    /// lets go without one (and everyone on a server older than tags).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discriminator: Option<String>,
     pub display_name: Option<String>,
     pub avatar: Option<AttachmentRef>,
     pub status_text: Option<String>,
+    /// The wide picture at the top of the profile (5:2). Older servers send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banner: Option<AttachmentRef>,
 }
 
 impl User {
@@ -27,6 +34,42 @@ impl User {
     pub fn name(&self) -> &str {
         self.display_name.as_deref().unwrap_or(&self.username)
     }
+
+    /// What others find this account by: `name#1234`, or `name` without a tag.
+    pub fn handle(&self) -> String {
+        match &self.discriminator {
+            Some(tag) => format!("{}#{tag}", self.username),
+            None => self.username.clone(),
+        }
+    }
+}
+
+/// Splits a handle into its name and tag: `name#1234` or `name`.
+pub fn split_handle(handle: &str) -> (&str, Option<&str>) {
+    match handle.split_once('#') {
+        Some((name, tag)) => (name, Some(tag)),
+        None => (handle, None),
+    }
+}
+
+/// How someone stands to me in the friend system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationshipKind {
+    Friend,
+    /// They asked to be my friend.
+    Incoming,
+    /// I asked to be their friend.
+    Outgoing,
+}
+
+/// One person in my friend list or requests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Relationship {
+    pub user: User,
+    pub kind: RelationshipKind,
+    /// When the request was accepted, or sent while it is pending.
+    pub since: i64,
 }
 
 /// The logged-in user: `User` plus `instance_admin` (used in `ready` and `GET /users/@me`).
@@ -94,12 +137,16 @@ pub enum ChannelKind {
     Category,
     Dm,
     GroupDm,
+    /// A kind from a newer server. Clients show it as a channel they can't open; servers never
+    /// make one and refuse it in requests.
+    #[serde(other)]
+    Unknown,
 }
 
 impl ChannelKind {
     /// Whether the channel holds messages (voice channels have a text chat too).
     pub const fn has_messages(self) -> bool {
-        !matches!(self, ChannelKind::Category)
+        !matches!(self, ChannelKind::Category | ChannelKind::Unknown)
     }
 
     /// Whether the channel has a voice room.
@@ -155,9 +202,11 @@ pub struct Channel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
-    Default,
     /// Join, call started, pin, …
     System,
+    /// Also any kind from a newer server: its content is shown as written.
+    #[serde(other)]
+    Default,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +226,23 @@ pub struct Attachment {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub has_thumb: bool,
+    /// A sound's loudness from start to end, one byte (0 to 255) per bar, measured by the
+    /// client that uploaded it. Older servers and clients send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waveform: Option<Vec<u8>>,
+    /// How long a sound or video lasts, measured the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// The key of an encrypted file, from inside its message. Never on the wire.
+    #[serde(skip)]
+    pub sealed: Option<crate::e2ee::SealedFile>,
+}
+
+impl Attachment {
+    /// The most bytes a waveform may have.
+    pub const WAVEFORM_MAX: usize = 256;
+    /// The longest duration a file may claim: a week.
+    pub const DURATION_MAX_MS: u64 = 7 * 24 * 3600 * 1000;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +287,16 @@ pub struct Message {
     /// Only echoed to the author's sessions; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// The encrypted form: `content` is empty on the wire and the client opens this into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2ee: Option<crate::e2ee::Envelope>,
+    /// How the client found this message. Never on the wire.
+    #[serde(skip)]
+    pub lock: crate::e2ee::MessageLock,
+    /// The key this message was sealed with, once opened: reactions are sealed with it too.
+    /// Never on the wire.
+    #[serde(skip)]
+    pub message_key: Option<String>,
 }
 
 impl Message {
@@ -255,6 +331,8 @@ pub enum Status {
     Online,
     Idle,
     Dnd,
+    /// Also any status from a newer server.
+    #[serde(other)]
     Offline,
 }
 
@@ -305,6 +383,25 @@ pub struct Ban {
     pub user: User,
     pub reason: Option<String>,
     pub created_at: i64,
+    /// The moderator who banned them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banned_by: Option<Id>,
+    /// When it ends by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// A message someone reported to the moderators.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    pub id: Id,
+    pub channel_id: Id,
+    pub message_id: Id,
+    pub reporter_id: Id,
+    pub author_id: Id,
+    pub reason: String,
+    pub excerpt: String,
+    pub created_at: i64,
 }
 
 /// What an audit log entry records.
@@ -335,10 +432,25 @@ pub enum AuditAction {
     MemberMove,
     /// Disconnected from voice.
     MemberDisconnect,
+    /// Made to only read for a while (`details.seconds`; 0 ends it).
+    MemberTimeout,
+    MessagePin,
+    MessageUnpin,
+    InviteCreate,
+    InviteRevoke,
+    /// The rules for handing over a channel's keys changed.
+    KeyPolicyUpdate,
+    /// Several messages deleted at once (`details.count`).
+    MessageDeleteBulk,
+    /// A moderator took one file off someone else's message (`details.attachment_id`).
+    AttachmentRemove,
+    /// An action from a newer server. Never written by a server; not in [`AuditAction::ALL`].
+    #[serde(other)]
+    Unknown,
 }
 
 impl AuditAction {
-    pub const ALL: [AuditAction; 20] = [
+    pub const ALL: [AuditAction; 28] = [
         AuditAction::SpaceUpdate,
         AuditAction::SpaceTransfer,
         AuditAction::MemberUpdate,
@@ -359,11 +471,27 @@ impl AuditAction {
         AuditAction::MemberVoiceUpdate,
         AuditAction::MemberMove,
         AuditAction::MemberDisconnect,
+        AuditAction::MemberTimeout,
+        AuditAction::MessagePin,
+        AuditAction::MessageUnpin,
+        AuditAction::InviteCreate,
+        AuditAction::InviteRevoke,
+        AuditAction::KeyPolicyUpdate,
+        AuditAction::MessageDeleteBulk,
+        AuditAction::AttachmentRemove,
     ];
 
     /// The snake_case name, as on the wire and in `audit_log.action`.
     pub const fn as_str(self) -> &'static str {
         match self {
+            AuditAction::MemberTimeout => "member_timeout",
+            AuditAction::MessagePin => "message_pin",
+            AuditAction::MessageUnpin => "message_unpin",
+            AuditAction::InviteCreate => "invite_create",
+            AuditAction::InviteRevoke => "invite_revoke",
+            AuditAction::KeyPolicyUpdate => "key_policy_update",
+            AuditAction::MessageDeleteBulk => "message_delete_bulk",
+            AuditAction::AttachmentRemove => "attachment_remove",
             AuditAction::SpaceUpdate => "space_update",
             AuditAction::SpaceTransfer => "space_transfer",
             AuditAction::MemberUpdate => "member_update",
@@ -384,6 +512,7 @@ impl AuditAction {
             AuditAction::MemberVoiceUpdate => "member_voice_update",
             AuditAction::MemberMove => "member_move",
             AuditAction::MemberDisconnect => "member_disconnect",
+            AuditAction::Unknown => "unknown",
         }
     }
 
@@ -432,6 +561,15 @@ pub struct PrivacySettings {
     /// DMs from people `dm_from` leaves out become message requests (one notification, then
     /// quiet until accepted) instead of being refused.
     pub message_requests: bool,
+    /// Others may see when you were last online.
+    #[serde(default = "PrivacySettings::shown")]
+    pub show_last_online: bool,
+}
+
+impl PrivacySettings {
+    const fn shown() -> bool {
+        true
+    }
 }
 
 impl Default for PrivacySettings {
@@ -439,6 +577,7 @@ impl Default for PrivacySettings {
         PrivacySettings {
             dm_from: DmFrom::Everyone,
             message_requests: true,
+            show_last_online: true,
         }
     }
 }
@@ -474,9 +613,11 @@ pub(crate) mod tests {
         User {
             id: Id(id),
             username: format!("user{id}"),
+            discriminator: None,
             display_name: None,
             avatar: None,
             status_text: None,
+            banner: None,
         }
     }
 
@@ -556,6 +697,9 @@ pub(crate) mod tests {
             reactions: vec![],
             mentions: Mentions::default(),
             nonce: None,
+            e2ee: None,
+            lock: Default::default(),
+            message_key: None,
         };
         let value = serde_json::to_value(&msg).unwrap();
         assert!(value.get("nonce").is_none());

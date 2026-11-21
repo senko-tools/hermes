@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE relationships SET accepted_at = ? WHERE user_low = ? AND user_high = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c6c2bd22fc511e62053618bbe47fb3ed55c881dac69edb7deb40e264bd85930e"
+}

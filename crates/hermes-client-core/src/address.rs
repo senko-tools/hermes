@@ -196,7 +196,8 @@ impl Fingerprint {
         let s = input.trim();
         let s = strip_scheme(s, "sha256:").unwrap_or(s);
         let hex: String = s.chars().filter(|&c| c != ':').collect();
-        if hex.len() != 64 {
+        // Digits only: `from_str_radix` would also take a sign (`+f`).
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(err());
         }
         let mut bytes = [0u8; 32];
@@ -387,6 +388,7 @@ mod tests {
         assert_eq!(Fingerprint::parse(&hex.to_uppercase()).unwrap(), fp);
         assert!(Fingerprint::parse("sha256:abc").is_err());
         assert!(Fingerprint::parse(&"zz".repeat(32)).is_err());
+        assert!(Fingerprint::parse(&"+f".repeat(32)).is_err(), "signs");
     }
 
     #[test]

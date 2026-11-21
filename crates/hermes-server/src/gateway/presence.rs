@@ -20,11 +20,15 @@ pub fn connected(state: &AppState, user_id: Id) {
 
 /// A connection of `user_id` ended; offline once no session is connected anymore.
 pub fn disconnected(state: &AppState, user_id: Id) {
-    if state.gateway.is_connected(user_id) {
-        return;
-    }
+    // Checked under the cache lock: a connection attached before the check keeps the user
+    // online, and one attached after it calls `connected`, which waits for this lock and then
+    // puts the presence back. Checked before, a reconnect in between could be undone and the
+    // user would look offline while connected. (Cache, then gateway: the gateway never takes
+    // the cache lock.)
     update(state, user_id, |cache| {
-        cache.presences.remove(&user_id);
+        if !state.gateway.is_connected(user_id) {
+            cache.presences.remove(&user_id);
+        }
     });
 }
 
@@ -37,16 +41,18 @@ pub fn set(state: &AppState, user_id: Id, status: PresenceStatus) {
 
 /// Applies `change` and broadcasts the presence if what others see changed.
 fn update(state: &AppState, user_id: Id, change: impl FnOnce(&mut Cache)) {
-    let changed = {
+    let (before, after, audience) = {
         let mut cache = state.cache_mut();
         let before = cache.presence(user_id);
         change(&mut cache);
         let after = cache.presence(user_id);
-        (before != after).then(|| (after, cache.presence_audience(user_id)))
+        let audience = (before != after).then(|| cache.presence_audience(user_id));
+        (before, after, audience)
     };
-    if let Some((presence, users)) = changed {
+    super::last_online::presence_changed(state, user_id, before.status, after.status);
+    if let Some(users) = audience {
         state.publish(
-            ServerEvent::PresenceUpdate(presence),
+            ServerEvent::PresenceUpdate(after),
             Audience::Users(users.into_iter().collect()),
         );
     }

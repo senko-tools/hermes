@@ -8,9 +8,21 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# `hermes_client_core::testing`: fixtures for the clients' tests.
+testing = []
+
 [dependencies]
 hermes-proto.workspace = true
 hermes-audio.workspace = true
+base64.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+hkdf.workspace = true
+image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff", "ico"] }
+zstd.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
 directories.workspace = true
 emojis.workspace = true
 futures-util.workspace = true
@@ -18,7 +30,7 @@ keyring.workspace = true
 notify.workspace = true
 quinn.workspace = true
 rand.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["stream", "gzip"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
@@ -32,11 +44,16 @@ tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # The local UTC offset for timestamps (time.rs).
-windows = { workspace = true, features = ["Win32_System_Time"] }
+windows = { workspace = true, features = [
+    "Win32_System_Com",
+    "Win32_System_Time",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 # Integration tests run a real server (PLAN.md section 19); never a normal dependency.
-hermes-server = { path = "../hermes-server" }
+hermes-server = { path = "../hermes-server", features = ["testing"] }
 
 [lints]
 workspace = true

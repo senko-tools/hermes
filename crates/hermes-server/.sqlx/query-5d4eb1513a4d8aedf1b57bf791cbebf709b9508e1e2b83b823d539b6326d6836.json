@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM channel_key_requests\n             WHERE channel_id = ? AND user_id = ? AND device_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5d4eb1513a4d8aedf1b57bf791cbebf709b9508e1e2b83b823d539b6326d6836"
+}

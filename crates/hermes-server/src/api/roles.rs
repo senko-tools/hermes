@@ -6,7 +6,6 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
-use hermes_proto::ErrorCode;
 use hermes_proto::api::{CreateRoleRequest, RolePosition, UpdateRoleRequest};
 use hermes_proto::gateway::ServerEvent;
 use hermes_proto::id::Id;
@@ -33,6 +32,9 @@ fn check_color(fields: &mut Fields, color: Option<u32>) {
 
 /// The new role goes in at position 1, right above `@everyone`; the other roles move up by one.
 /// It can only get permission bits the caller has.
+/// Roles one server may have: every message and permission check walks them.
+const MAX_ROLES: usize = 250;
+
 pub async fn create(
     State(state): State<Arc<AppState>>,
     auth: Auth,
@@ -52,6 +54,15 @@ pub async fn create(
         let cache = state.cache();
         let access =
             perms::require_space(&cache, space_id, auth.user_id, Permissions::MANAGE_ROLES)?;
+        if cache
+            .spaces
+            .get(&space_id)
+            .is_some_and(|space| space.roles.len() >= MAX_ROLES)
+        {
+            return Err(Error::bad_request(format!(
+                "A server can have at most {MAX_ROLES} roles"
+            )));
+        }
         let permissions = req.permissions.unwrap_or_default();
         if !access.may_grant(permissions) {
             return Err(perms::missing(
@@ -142,8 +153,7 @@ pub async fn update(
                 || req.hoist.is_some()
                 || req.mentionable.is_some())
         {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
+            return Err(Error::bad_request(
                 "Only the permissions of @everyone can be changed",
             ));
         }
@@ -238,10 +248,7 @@ pub async fn delete(
             .role(role_id)
             .ok_or_else(|| Error::not_found("role"))?;
         if role.is_everyone() {
-            return Err(Error::new(
-                ErrorCode::BadRequest,
-                "The @everyone role cannot be deleted",
-            ));
+            return Err(Error::bad_request("The @everyone role cannot be deleted"));
         }
         if !access.outranks_role(role) {
             return Err(access.hierarchy_error("roles"));

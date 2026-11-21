@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT key_handover, new_members_read_history FROM channels WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_handover",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "channels",
+            "name": "key_handover"
+          }
+        }
+      },
+      {
+        "name": "new_members_read_history",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "channels",
+            "name": "new_members_read_history"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "e2fb920935f8de964a54a83127361590d81e2abb393f94695190ebb9d42fa74b"
+}
