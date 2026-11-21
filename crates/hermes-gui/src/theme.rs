@@ -897,7 +897,6 @@ colors! {
     on_accent = |t| t.buttons.primary.text.0;
     speaking = |t| t.voice.speaking_ring.0;
     muted_voice = |t| t.voice.muted.0;
-    success_soft = |t| alpha(t.text.success.0, 0.25);
     danger = |t| t.text.error.0;
     warning = |t| t.text.warning.0;
     link = |t| t.text.link.0;

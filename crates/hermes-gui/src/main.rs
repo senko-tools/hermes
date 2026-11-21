@@ -35,6 +35,7 @@ mod menu;
 use hermes_client_core::menus as menu_entries;
 mod modal;
 mod new_dm;
+mod notice;
 mod open;
 mod overlay;
 mod ptt;

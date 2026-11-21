@@ -135,6 +135,8 @@ impl Shell {
             )
             .size_full();
             let jump_key = key.clone();
+            // The notices over the chat's top keep the "new messages" button below them.
+            let below_notices = self.notices_bottom();
             div()
                 .relative()
                 .flex_1()
@@ -145,7 +147,7 @@ impl Shell {
                     let (jump_inst, jump_channel) = key.clone();
                     div()
                         .absolute()
-                        .top(px(8.))
+                        .top(px(8. + below_notices))
                         .right(px(16.))
                         .child(
                             Button::new("jump-unread")
@@ -174,7 +176,7 @@ impl Shell {
                             "jump-unread-in",
                             gpui_kit::Animation::new(theme::fade() * 2)
                                 .with_easing(gpui_kit::ease_out_quint()),
-                            |d, t| d.opacity(t).top(px(8. * t)),
+                            move |d, t| d.opacity(t).top(px(8. * t + below_notices)),
                         )
                 }))
                 .when(!at_end || !live, |d| {
@@ -282,7 +284,6 @@ impl Shell {
                 }
             }))
             .child(content)
-            .children(self.render_connection_banner(&key.0, cx))
             .children(self.render_new_devices(&key.0, key.1, cx))
             .children(self.render_unencrypted_bar(&key.0, key.1))
             .child(bottom)

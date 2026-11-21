@@ -699,7 +699,7 @@ impl Shell {
                         page.overview_dirty = false;
                         page.overview_loaded = (name, description);
                     }
-                    this.info("Server saved", cx);
+                    this.success("Server saved", cx);
                 }
                 Err(err) => this.error(format!("could not save: {err}"), cx),
             },
@@ -842,7 +842,7 @@ impl Shell {
                 Ok::<_, CoreError>(role.name)
             },
             |this, result, _, cx| match result {
-                Ok(name) => this.info(format!("Role {name} saved"), cx),
+                Ok(name) => this.success(format!("Role {name} saved"), cx),
                 Err(err) => this.error(format!("could not save the role: {err}"), cx),
             },
         );

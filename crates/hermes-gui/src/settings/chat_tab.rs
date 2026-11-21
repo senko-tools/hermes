@@ -300,7 +300,7 @@ impl Shell {
                                 .label("Clear pictures")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.clear_pictures();
-                                    this.info("Pictures cleared", cx);
+                                    this.success("Pictures cleared", cx);
                                 })),
                         )
                         .child(
@@ -311,7 +311,7 @@ impl Shell {
                                     for inst in this.core.instance_ids() {
                                         this.core.clear_search_index(&inst);
                                     }
-                                    this.info("Search index cleared", cx);
+                                    this.success("Search index cleared", cx);
                                 })),
                         ),
                 ),

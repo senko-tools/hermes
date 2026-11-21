@@ -355,7 +355,7 @@ impl Shell {
                         if current || this.add_instance.as_ref().is_some_and(|d| !d.busy) {
                             this.close_later("add-instance", |s| s.add_instance = None, cx);
                         }
-                        this.info(format!("Signed in to {inst}"), cx);
+                        this.success(format!("Signed in to {inst}"), cx);
                     }
                     // Only for the dialog that asked: one left with Back dropped this sign-in.
                     Err(err) if err == NEEDS_CODE => {

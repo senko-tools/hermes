@@ -314,7 +314,7 @@ impl Shell {
             attachments: Vec::new(),
         };
         match self.core.send_message(&inst, to, draft) {
-            Ok(_) => self.info("Forwarded", cx),
+            Ok(_) => self.success("Forwarded", cx),
             Err(err) => self.error(format!("could not forward: {err}"), cx),
         }
         if self.chats.contains_key(&(inst.clone(), to)) {

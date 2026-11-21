@@ -343,7 +343,8 @@ impl Shell {
 
     // ---- the banner ---------------------------------------------------------------------------
 
-    pub fn render_call_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// Someone is calling: a notice until it is answered, dismissed or stops ringing.
+    pub fn call_notice(&self, cx: &mut Context<Self>) -> Option<crate::notice::Notice> {
         let call = self.call.as_ref()?;
         let (caller, place) = {
             let store = self.core.store();
@@ -362,60 +363,44 @@ impl Shell {
             (caller, place)
         };
         Some(
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(8.))
-                .bg(theme::success_soft())
-                .border_b_1()
-                .border_color(theme::speaking())
-                // The phone rings: a little shake, then a rest, over and over.
-                .child(icon(assets::PHONE, 18., theme::speaking()).with_animation(
-                    "call-ring",
-                    gpui_kit::Animation::new(Duration::from_millis(1600)).repeat(),
-                    |d, t| {
-                        let shake = if t < 0.4 {
-                            (t / 0.4 * std::f32::consts::TAU * 3.).sin() * (1. - t / 0.4)
-                        } else {
-                            0.
-                        };
-                        d.with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
-                            0.35 * shake,
-                        )))
-                    },
-                ))
-                .child(
-                    div()
-                        .flex_1()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(format!("{caller} is calling{place}")),
-                )
-                .child(
-                    Button::new("call-join")
-                        .cursor_pointer()
-                        .primary()
-                        .label("Join")
-                        .on_click(cx.listener(|this, _, window, cx| this.answer_call(window, cx))),
-                )
-                .child(
-                    Button::new("call-dismiss")
-                        .cursor_pointer()
-                        .label("Dismiss")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.stop_ringing();
-                            cx.notify();
-                        })),
-                )
-                .with_animation(
-                    "call-banner-in",
-                    gpui_kit::Animation::new(theme::fade() * 2)
-                        .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.relative().top(px(-8. * (1. - t))).opacity(t),
-                )
-                .into_any_element(),
+            crate::notice::Notice::new(
+                format!("call-{}-{}", call.inst, call.channel.0),
+                crate::notice::Severity::Success,
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(format!("{caller} is calling{place}")),
+            )
+            // The phone rings: a little shake, then a rest, over and over.
+            .icon(icon(assets::PHONE, 18., theme::success()).with_animation(
+                "call-ring",
+                gpui_kit::Animation::new(Duration::from_millis(1600)).repeat(),
+                |d, t| {
+                    let shake = if t < 0.4 {
+                        (t / 0.4 * std::f32::consts::TAU * 3.).sin() * (1. - t / 0.4)
+                    } else {
+                        0.
+                    };
+                    d.with_transformation(gpui_kit::Transformation::rotate(gpui_kit::radians(
+                        0.35 * shake,
+                    )))
+                },
+            ))
+            .button(
+                Button::new("call-join")
+                    .cursor_pointer()
+                    .primary()
+                    .label("Join")
+                    .on_click(cx.listener(|this, _, window, cx| this.answer_call(window, cx))),
+            )
+            .button(
+                Button::new("call-dismiss")
+                    .cursor_pointer()
+                    .label("Dismiss")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.stop_ringing();
+                        cx.notify();
+                    })),
+            ),
         )
     }
 

@@ -113,7 +113,7 @@ impl Shell {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
                     this.set_pattern(Pattern::Date, value, true, window, cx);
-                    this.info("Date format saved", cx);
+                    this.success("Date format saved", cx);
                 }
             }),
             font_events,
@@ -122,7 +122,7 @@ impl Shell {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
                     this.set_pattern(Pattern::Time, value, true, window, cx);
-                    this.info("Time format saved", cx);
+                    this.success("Time format saved", cx);
                 }
             }),
             cx.subscribe_in(&ptt_key, window, |this, input, event, _, cx| {
@@ -132,7 +132,7 @@ impl Shell {
                         this.error(format!("{text:?} is not a key Hermes knows"), cx);
                     } else {
                         this.set_config(|c| c.voice.ptt_key = text, cx);
-                        this.info("Push-to-talk key saved", cx);
+                        this.success("Push-to-talk key saved", cx);
                     }
                 }
             }),
