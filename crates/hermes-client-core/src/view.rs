@@ -350,7 +350,7 @@ pub fn member_groups(store: &InstanceStore, space: Id, channel: Option<Id>) -> V
     let Some(state) = store.spaces.get(&space) else {
         return Vec::new();
     };
-    // In a channel, only the people who can see it (improvements.md #3).
+    // In a channel, only the people who can see it.
     let channel = channel.and_then(|c| state.channels.get(&c));
     let sees = |member: &hermes_proto::models::Member| {
         channel.is_none_or(|c| {

@@ -1532,7 +1532,7 @@ impl Shell {
             // open one and the voice channel I am in stay as they are (their tint may deepen).
             // The hover is always attached (lit rows "hover" to their own colour): gpui keeps a
             // stale hover for a row whose hover style comes and goes, and the row that was open
-            // stayed accent after another one opened (improvements.md #19).
+            // stayed accent after another one opened.
             .hover(move |d| {
                 d.text_color(if lit_still {
                     rest_text

@@ -3,7 +3,7 @@
 //! Rule: a control that changes colour under the pointer notes its hover with
 //! [`Shell::track_hover`] and springs to it. gpui's own text-colour `.hover` keeps a stale
 //! "hovered" when the control's hover style comes and goes (a chip while it is chosen), so the
-//! text stayed the hover colour once it was unchosen (improvements.md #19). A plain `.hover`
+//! text stayed the hover colour once it was unchosen. A plain `.hover`
 //! that is always attached is fine; one inside `.when(..)` is not, and a test keeps it out.
 
 use gpui_kit::prelude::*;
@@ -187,7 +187,7 @@ pub fn list_row(
 }
 
 /// An error's text, selectable like any text, with a copy button that shows a check mark for
-/// a moment once used (improvements.md #18). The caller sets the colour and size around it.
+/// a moment once used. The caller sets the colour and size around it.
 pub fn error_text(
     shell: &Shell,
     id: impl Into<SharedString>,
