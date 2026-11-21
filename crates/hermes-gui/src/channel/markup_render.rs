@@ -43,23 +43,12 @@ impl Shell {
                     .syntax_cache
                     .borrow_mut()
                     .highlights(&code, language.as_deref());
-                let (text, record) = self.selectable(inst, channel, part, code, colors);
+                let (text, record) = self.selectable(inst, channel, part, code.clone(), colors);
                 div()
                     .flex()
                     .flex_col()
                     .child(
-                        div()
-                            .relative()
-                            .p(px(8.))
-                            .rounded(theme::radius_small())
-                            .bg(theme::code_background())
-                            .border_1()
-                            .border_color(theme::border())
-                            .font_family(theme::mono_font())
-                            .text_size(theme::secondary_size())
-                            .whitespace_normal()
-                            .child(text)
-                            .child(record),
+                        self.render_code_block(&code, language, text, record, message, index, cx),
                     )
                     .when(edited, |d| d.child(edited_mark()))
                     .into_any_element()

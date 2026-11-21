@@ -335,6 +335,21 @@ pub fn icon_button(
     glyph: &'static str,
     cx: &Context<Shell>,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    icon_button_with(
+        shell,
+        id,
+        move |color| icon(glyph, 18., color).into_any_element(),
+        cx,
+    )
+}
+
+/// [`icon_button`] whose icon the caller draws (turned, say), in the colour it is given.
+pub fn icon_button_with(
+    shell: &Shell,
+    id: impl Into<gpui_kit::ElementId>,
+    glyph: impl Fn(gpui_kit::Rgba) -> gpui_kit::AnyElement + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let id = id.into();
     let hover = SharedString::from(format!("{id:?}-hover"));
     let to = if shell.is_hovered(&hover) { 1. } else { 0. };
@@ -351,11 +366,12 @@ pub fn icon_button(
             spring(to),
             move |d, t| {
                 let t = t.clamp(0., 1.);
-                d.bg(theme::alpha(theme::hover(), t)).child(icon(
-                    glyph,
-                    18.,
-                    theme::mix(theme::text_secondary(), theme::accent(), t),
-                ))
+                d.bg(theme::alpha(theme::hover(), t))
+                    .child(glyph(theme::mix(
+                        theme::text_secondary(),
+                        theme::accent(),
+                        t,
+                    )))
             },
         );
     div()

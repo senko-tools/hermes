@@ -185,6 +185,8 @@ pub struct Shell {
     pub pointer_over_text: bool,
     /// The profile card that is open.
     pub profile: Option<crate::user_menu::ProfileCard>,
+    /// Code blocks' own scrolling and "Show all" (#65).
+    pub code_blocks: crate::channel::CodeBlocks,
     /// Profiles fetched for the card lately, so opening it again soon does not ask again.
     pub profile_cache: HashMap<(InstanceId, Id), crate::user_menu::FetchedProfile>,
     /// A destructive menu action waiting for confirmation.
@@ -448,6 +450,7 @@ impl Shell {
             keybinds,
             friends_tab: crate::friends::FriendsTab::default(),
             show_members: true,
+            code_blocks: Default::default(),
             sidebar_visible: true,
             resizing: None,
             resizing_members: false,
@@ -1792,6 +1795,7 @@ impl Render for Shell {
                 if room - theme::RAIL_WIDTH - sidebar_room - member_room >= 480. =>
             {
                 self.render_members(inst, *channel, cx)
+        self.code_blocks.advance();
             }
             _ => None,
         };
@@ -1968,6 +1972,7 @@ impl Shell {
                     "first frame painted"
                 );
             },
+            .children(self.code_scroll_catcher(cx))
         )
         .absolute()
         .size_0()

@@ -35,6 +35,7 @@ use crate::theme::{self, px};
 
 mod attachment_render;
 mod chat_render;
+mod code_block;
 mod composer;
 mod composer_render;
 mod files;
@@ -44,6 +45,8 @@ mod message_actions;
 mod message_render;
 mod open;
 mod viewer;
+
+pub use code_block::CodeBlocks;
 
 const MAX_IMAGE_WIDTH: f32 = 400.0;
 const MAX_IMAGE_HEIGHT: f32 = 300.0;
