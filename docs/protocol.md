@@ -96,6 +96,13 @@ Spaces and channels you cannot see answer `NOT_FOUND`; missing permissions on vi
 | `GET /admin/users` `?after&limit` | `[User + {disabled, instance_admin}]` | instance admins only |
 | `PATCH /admin/users/{id}` `{disabled?, instance_admin?}` | 204 | instance admins only; disabling signs the user out everywhere; admins cannot disable or demote themselves |
 
+### Message endpoints
+
+| Request | Response | Notes |
+|---|---|---|
+| `DELETE /channels/{id}/messages/{mid}/attachments/{aid}` | `{message}` | takes one file off a message: its author, or `MANAGE_MESSAGES` (audited as `attachment_remove`); the file is deleted. A message with text keeps it; one with no text and no files left is deleted (`message: null`, `message_delete`), else `message_update` and, unless encrypted, a new `edited_at`. An encrypted message's text is unknown to the server: its author's client deletes it when nothing would be left, and seals it again without the file (an addition to PLAN.md section 10) |
+| `PATCH /channels/{id}/messages/{mid}` `{content}` | `Message` | `content` may be empty only while the message has files |
+
 ### DM endpoints
 
 | Request | Response | Notes |

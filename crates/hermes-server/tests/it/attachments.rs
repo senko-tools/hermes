@@ -670,3 +670,109 @@ async fn a_video_keeps_its_measured_size_and_takes_a_poster_from_its_uploader() 
         "only videos"
     );
 }
+
+#[tokio::test]
+async fn one_file_comes_off_a_message_and_the_text_stays() {
+    let server = start("attachments-remove", RegistrationMode::Open).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, _) = server.member(&owner, &space_id, "alice").await;
+    let (bob, _) = server.member(&owner, &space_id, "bob").await;
+    let general = server.channel_id(&space_id, "general");
+    let messages = format!("/channels/{general}/messages");
+    let upload = |name: &'static str| {
+        let (server, alice) = (&server, alice.clone());
+        async move {
+            id(&server
+                .upload(&alice, name, "text/plain", b"hi".to_vec())
+                .await
+                .ok())
+        }
+    };
+    let send = |content: &'static str, ids: Vec<String>| {
+        let (server, alice, messages) = (&server, alice.clone(), messages.clone());
+        async move {
+            id(&server
+                .post(
+                    &messages,
+                    Some(&alice),
+                    json!({ "content": content, "nonce": common::nonce(), "attachment_ids": ids }),
+                )
+                .await
+                .ok())
+        }
+    };
+    let remove = |message: &str, file: &str| format!("{messages}/{message}/attachments/{file}");
+
+    // Text and two files: one goes, the other and the text stay, and it counts as an edit.
+    let (a, b) = (upload("a.txt").await, upload("b.txt").await);
+    let m = send("look", vec![a.clone(), b.clone()]).await;
+    let res = server.delete(&remove(&m, &a), Some(&alice)).await.ok();
+    let message = &res["message"];
+    assert_eq!(message["content"], "look");
+    assert_eq!(message["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(message["attachments"][0]["id"], json!(b));
+    assert!(message["edited_at"].is_number());
+    let path = format!("/attachments/{a}/a.txt");
+    assert_eq!(status(&server, &path, Some(&alice)).await, 404);
+    // The same file again, or one of another message: not found.
+    server
+        .delete(&remove(&m, &a), Some(&alice))
+        .await
+        .err(404, "NOT_FOUND");
+    // Someone without MANAGE_MESSAGES cannot.
+    server
+        .delete(&remove(&m, &b), Some(&bob))
+        .await
+        .err(403, "MISSING_PERMISSION");
+
+    // The last file goes: the text is what the message is about, so it stays.
+    let res = server.delete(&remove(&m, &b), Some(&alice)).await.ok();
+    assert_eq!(res["message"]["content"], "look");
+    assert_eq!(res["message"]["attachments"], json!([]));
+
+    // Files only: when the last one goes, nothing is left and the message is deleted.
+    let c = upload("c.txt").await;
+    let only = send("", vec![c.clone()]).await;
+    let res = server.delete(&remove(&only, &c), Some(&alice)).await.ok();
+    assert_eq!(res["message"], Value::Null);
+    let tombstone = server
+        .get(&format!("{messages}/{only}"), Some(&alice))
+        .await
+        .ok();
+    assert_eq!(tombstone["deleted"], true);
+
+    // A moderator may, and it is audited.
+    let (d, e) = (upload("d.txt").await, upload("e.txt").await);
+    let both = send("", vec![d.clone(), e]).await;
+    let res = server.delete(&remove(&both, &d), Some(&owner)).await.ok();
+    assert_eq!(res["message"]["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        server
+            .audit_actions(&owner, &space_id)
+            .await
+            .first()
+            .map(String::as_str),
+        Some("attachment_remove")
+    );
+
+    // The text may be edited away while files are left, not otherwise.
+    let f = upload("f.txt").await;
+    let with_file = send("words", vec![f]).await;
+    let edited = server
+        .patch(
+            &format!("{messages}/{with_file}"),
+            Some(&alice),
+            json!({ "content": "" }),
+        )
+        .await
+        .ok();
+    assert_eq!(edited["content"], "");
+    server
+        .patch(
+            &format!("{messages}/{m}"),
+            Some(&alice),
+            json!({ "content": " " }),
+        )
+        .await
+        .err(400, "VALIDATION_FAILED");
+}

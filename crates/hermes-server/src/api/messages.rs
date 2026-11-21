@@ -5,7 +5,8 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use hermes_proto::api::{
-    AckRequest, BulkDeleteRequest, EditMessageRequest, HistoryQuery, SendMessageRequest,
+    AckRequest, BulkDeleteRequest, EditMessageRequest, HistoryQuery, RemoveAttachmentResponse,
+    SendMessageRequest,
 };
 use hermes_proto::e2ee::{Envelope, MAX_ENVELOPE_BYTES};
 use hermes_proto::gateway::{ReactionEvent, ServerEvent};
@@ -517,6 +518,80 @@ pub async fn delete(
         Audience::Channel(channel_id),
     );
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Takes one file off a message: the author, or `MANAGE_MESSAGES` (audited). The text is what a
+/// message is about, so it stays; only a message with no text and no files left is deleted. An
+/// encrypted message's text is not known here, so its author's client deletes it instead.
+pub async fn remove_attachment(
+    State(state): State<Arc<AppState>>,
+    auth: Auth,
+    Path((channel_id, message_id, attachment_id)): Path<(Id, Id, Id)>,
+) -> ApiResult<Json<RemoveAttachmentResponse>> {
+    state.throttle(auth.user_id, Action::Edit)?;
+    let t = target(
+        &state.cache(),
+        channel_id,
+        auth.user_id,
+        Permissions::VIEW_CHANNEL,
+    )?;
+    let mut tx = checking_tx(&state).await?;
+    let mut row = live_message(&mut *tx, channel_id, message_id).await?;
+    let own = row.author_id == auth.user_id;
+    if !own {
+        t.require(Permissions::MANAGE_MESSAGES)?;
+    }
+    let stored = db::attachments::detach(&mut tx, message_id, attachment_id)
+        .await?
+        .ok_or_else(|| Error::not_found("attachment"))?;
+    let empty = row.e2ee.is_none()
+        && row.content.trim().is_empty()
+        && db::messages::count_attachments(&mut *tx, message_id).await? == 0;
+    // An encrypted message is marked edited only by a new envelope from its author: one marked
+    // edited here would read as an old envelope replayed.
+    let now = now_ms();
+    if empty {
+        db::messages::soft_delete(&mut tx, message_id).await?;
+    } else if row.e2ee.is_none() {
+        db::messages::touch_edited(&mut tx, message_id, now).await?;
+        row.edited_at = Some(now);
+    }
+    if let Some(space_id) = t.space_id.filter(|_| !own) {
+        audit::record(
+            &mut tx,
+            &state,
+            space_id,
+            auth.user_id,
+            AuditAction::AttachmentRemove,
+            Some(message_id),
+            json!({
+                "channel_id": channel_id,
+                "author_id": row.author_id,
+                "attachment_id": attachment_id,
+            }),
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    crate::files::purge(&state, vec![stored]).await;
+    if empty {
+        state.publish(
+            ServerEvent::MessageDelete {
+                id: message_id,
+                channel_id,
+            },
+            Audience::Channel(channel_id),
+        );
+        return Ok(Json(RemoveAttachmentResponse { message: None }));
+    }
+    let message = one_to_wire(&state, row, auth.user_id).await?;
+    state.publish(
+        ServerEvent::MessageUpdate(broadcast_copy(&message)),
+        Audience::Channel(channel_id),
+    );
+    Ok(Json(RemoveAttachmentResponse {
+        message: Some(message),
+    }))
 }
 
 pub async fn pin(

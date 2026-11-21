@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE attachments SET message_id = NULL WHERE id = ? AND message_id = ?\n         RETURNING sha256, size",
+  "describe": {
+    "columns": [
+      {
+        "name": "sha256",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "name": "size",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "attachments",
+            "name": "size"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9ec44a3d77189a5811bc891e2a027041f2c0b0e5e36a22f23b9d057b72021042"
+}

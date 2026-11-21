@@ -196,6 +196,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .delete(messages::delete),
         )
         .route(
+            "/channels/{id}/messages/{mid}/attachments/{aid}",
+            delete(messages::remove_attachment),
+        )
+        .route(
             "/channels/{id}/messages/{mid}/pin",
             put(messages::pin).delete(messages::unpin),
         )

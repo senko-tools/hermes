@@ -481,6 +481,23 @@ pub async fn edit_content(
     Ok(())
 }
 
+/// The message changed without new content (a file was taken off it).
+pub async fn touch_edited(
+    conn: &mut SqliteConnection,
+    message_id: Id,
+    edited_at: i64,
+) -> Result<(), sqlx::Error> {
+    let id = message_id.to_i64();
+    sqlx::query!(
+        "UPDATE messages SET edited_at = ? WHERE id = ?",
+        edited_at,
+        id
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 /// Soft delete: content cleared, unpinned, then [`clear_deleted_extras`].
 pub async fn soft_delete(conn: &mut SqliteConnection, message_id: Id) -> Result<(), sqlx::Error> {
     let id = message_id.to_i64();

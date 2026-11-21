@@ -175,6 +175,31 @@ pub async fn total_size_of(e: impl SqliteExecutor<'_>, user: Id) -> Result<u64, 
     int(total, "SUM(attachments.size)")
 }
 
+/// Takes one file off a message (it becomes unattached, for [`crate::files::purge`]). Returns
+/// what it stored, `None` if the file is not on that message.
+pub async fn detach(
+    e: &mut sqlx::SqliteConnection,
+    message_id: Id,
+    attachment_id: Id,
+) -> Result<Option<Expired>, sqlx::Error> {
+    let (message, id) = (message_id.to_i64(), attachment_id.to_i64());
+    let Some(r) = sqlx::query!(
+        "UPDATE attachments SET message_id = NULL WHERE id = ? AND message_id = ?
+         RETURNING sha256, size",
+        id,
+        message
+    )
+    .fetch_optional(e)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let sha: [u8; 32] = r.sha256.as_slice().try_into().map_err(|_| {
+        sqlx::Error::Decode(format!("attachments.sha256 of {id} is not 32 bytes").into())
+    })?;
+    Ok(Some((attachment_id, sha, int(r.size, "attachments.size")?)))
+}
+
 /// An upload to delete: `(id, sha256, size)`.
 pub type Expired = (Id, [u8; 32], u64);
 
