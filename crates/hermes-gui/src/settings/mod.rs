@@ -479,43 +479,51 @@ pub(crate) struct Found {
     pub index: usize,
     pub name: String,
     pub hint: String,
-    /// The group folds under this key.
-    pub fold: Option<&'static str>,
+    /// The row sits in a group's "More" part, which opens under this key.
+    pub more: Option<&'static str>,
+    /// The row to light when it is a part of another row (a cell of a table of switches).
+    pub lit: Option<String>,
 }
 
 /// What [`setting`] and [`group_with`] noted while a tab was built for the search.
 #[derive(Default)]
 struct Recording {
     /// Rows of the group being built (its rows come before its title).
-    rows: Vec<(String, String)>,
+    rows: Vec<Noted>,
     groups: usize,
     found: Vec<Found>,
 }
 
+/// A row noted for the search, before its group's title is known.
+struct Noted {
+    name: String,
+    hint: String,
+    more: Option<&'static str>,
+    lit: Option<String>,
+}
+
 impl Recording {
-    fn row(&mut self, name: &str, hint: &str) {
-        self.rows.push((name.to_owned(), hint.to_owned()));
+    fn row(&mut self, name: &str, hint: &str, lit: Option<&str>) {
+        self.rows.push(Noted {
+            name: name.to_owned(),
+            hint: hint.to_owned(),
+            more: IN_MORE.with(Cell::get),
+            lit: lit.map(str::to_owned),
+        });
     }
 
     fn group(&mut self, title: &str) {
         let index = self.groups;
         self.groups += 1;
-        for (name, hint) in self.rows.drain(..) {
+        for row in self.rows.drain(..) {
             self.found.push(Found {
                 group: title.to_owned(),
                 index,
-                name,
-                hint,
-                fold: None,
+                name: row.name,
+                hint: row.hint,
+                more: row.more,
+                lit: row.lit,
             });
-        }
-    }
-
-    /// The group just noted folds under `key`.
-    fn fold_last(&mut self, key: &'static str) {
-        let last = self.groups.saturating_sub(1);
-        for f in self.found.iter_mut().filter(|f| f.index == last) {
-            f.fold = Some(key);
         }
     }
 }
@@ -529,6 +537,8 @@ thread_local! {
     static PAGE_SCROLL: gpui_kit::ScrollHandle = gpui_kit::ScrollHandle::new();
     /// The group a page scrolls to when it is next drawn.
     static SCROLL_TO: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The "More" part whose rows are being built, for the search.
+    static IN_MORE: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 fn recording() -> bool {
@@ -639,7 +649,8 @@ pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> An
         .track_scroll(&scroll)
         .flex()
         .flex_col()
-        .gap(px(20.))
+        // Groups stand further apart than the rows inside them.
+        .gap(px(28.))
         .size_full()
         .p(px(24.))
         .overflow_y_scroll()
@@ -736,12 +747,60 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
 /// start and the rest in the (i) next to the name.
 const HINT_CHARS: usize = 72;
 
+/// Where a row's control goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// On the right, in a column at least 240 px wide (text fields and sliders without a width
+    /// of their own).
+    Column,
+    /// On the right, as wide as the control is: switches, short choices, sized dropdowns.
+    Fit,
+    /// Under the name and hint, across the whole card: wide sliders, tables of switches.
+    Below,
+}
+
 /// A row: the name and a one-line hint on the left, the control on the right. A hint too long
 /// for one line puts all of it in the (i) beside the name.
 pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at(Place::Column, name, hint, control)
+}
+
+/// [`setting`] with the control on the right at its own width (#64): a switch, a few choices,
+/// or a dropdown or slider given a width that fits what it holds ([`sized`]).
+pub fn setting_fit(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at(Place::Fit, name, hint, control)
+}
+
+/// [`setting`] with the control under the name and hint, as wide as the card (#64): a volume
+/// slider, a table of switches.
+pub fn setting_below(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at(Place::Below, name, hint, control)
+}
+
+/// Notes for the search a setting that is a part of the row named `row` (a cell of a table of
+/// switches): finding it lights that row. Draws nothing.
+pub fn note_part(name: &str, hint: &str, row: &str) {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
-            r.row(name, hint);
+            r.row(name, hint, Some(row));
+        }
+    });
+}
+
+/// A control `width` px wide, for [`setting_fit`]: sliders and dropdowns take their parent's
+/// width.
+pub fn sized(width: f32, control: impl IntoElement) -> AnyElement {
+    div()
+        .w(px(width))
+        .max_w_full()
+        .child(control)
+        .into_any_element()
+}
+
+fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.row(name, hint, None);
         }
     });
     // Just found by the search: it glows and fades back.
@@ -762,49 +821,55 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
             })
     });
-    let row = div()
+    let text = div()
         .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(12.))
-        .py(px(10.))
+        .flex_col()
+        .gap(px(2.))
         .child(
             div()
                 .flex()
-                .flex_col()
-                .flex_1()
-                .min_w(px(220.))
-                .gap(px(2.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(theme::body_size())
-                        .child(SharedString::from(name.to_owned()))
-                        .children(info),
-                )
-                .when(!hint.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .text_size(theme::secondary_size())
-                            .text_color(theme::text_tertiary())
-                            .truncate()
-                            .child(full_hint),
-                    )
-                }),
+                .items_center()
+                .gap(px(6.))
+                .text_size(theme::body_size())
+                .child(SharedString::from(name.to_owned()))
+                .children(info),
         )
-        .child(
-            // At least wide enough for a slider, which has no width of its own.
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .flex_shrink_0()
-                .min_w(px(240.))
-                .max_w_full()
-                .child(control),
-        );
+        .when(!hint.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(theme::secondary_size())
+                    .text_color(theme::text_tertiary())
+                    .truncate()
+                    .child(full_hint),
+            )
+        });
+    let row = match place {
+        Place::Below => div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(10.))
+            .child(text)
+            .child(div().w_full().child(control)),
+        Place::Column | Place::Fit => div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .py(px(10.))
+            .child(text.flex_1().min_w(px(220.)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .flex_shrink_0()
+                    // At least wide enough for a slider, which has no width of its own.
+                    .when(place == Place::Column, |d| d.min_w(px(240.)))
+                    .max_w_full()
+                    .child(control),
+            ),
+    };
     if !lit {
         return row.into_any_element();
     }

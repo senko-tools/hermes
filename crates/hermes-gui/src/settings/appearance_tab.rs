@@ -73,50 +73,61 @@ impl Shell {
             ],
         );
         let shown_px = i32::from(config.font.size) + 3;
-        let text_group = group(
-            "Text",
-            vec![
-                setting(
-                    "Font",
-                    "Any font installed on this computer.",
-                    Select::new(&page.font).cursor_pointer(),
-                ),
-                setting(
-                    "Code font",
-                    "For code blocks.",
-                    Select::new(&page.mono_font).cursor_pointer(),
-                ),
-                setting(
-                    "Size of titles",
-                    "",
-                    crate::ui::segments().children(
-                        [(2, "Small", 11.), (4, "Normal", 13.), (8, "Large", 16.)]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(n, (extra, name, size))| {
-                                crate::ui::segment_with(
-                                    self,
-                                    ("heading-extra", n),
-                                    Some(title_preview(size)),
-                                    name,
-                                    config.font.heading_extra == extra,
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_config(|c| c.font.heading_extra = extra, cx);
-                                    },
-                                ))
-                            }),
+        let text_group =
+            group(
+                "Text",
+                vec![
+                    setting_fit(
+                        "Font",
+                        "Any font installed on this computer.",
+                        sized(FONT_W, Select::new(&page.font).cursor_pointer()),
                     ),
-                ),
-                setting(
-                    "Font size",
-                    &format!("{shown_px} px"),
-                    self.slider(page, SliderKind::FontSize),
-                ),
-            ],
-        );
+                    setting_fit(
+                        "Font size",
+                        &format!("{shown_px} px"),
+                        sized(SLIDER_W, self.slider(page, SliderKind::FontSize)),
+                    ),
+                    self.more(
+                        "appearance-text",
+                        "More text options",
+                        |cx| {
+                            vec![
+                                setting_fit(
+                                    "Code font",
+                                    "For code blocks.",
+                                    sized(FONT_W, Select::new(&page.mono_font).cursor_pointer()),
+                                ),
+                                setting_fit(
+                                    "Size of titles",
+                                    "",
+                                    crate::ui::segments().children(
+                                        [(2, "Small", 11.), (4, "Normal", 13.), (8, "Large", 16.)]
+                                            .into_iter()
+                                            .enumerate()
+                                            .map(|(n, (extra, name, size))| {
+                                                crate::ui::segment_with(
+                                                    self,
+                                                    ("heading-extra", n),
+                                                    Some(title_preview(size)),
+                                                    name,
+                                                    config.font.heading_extra == extra,
+                                                    cx,
+                                                )
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.set_config(
+                                                        |c| c.font.heading_extra = extra,
+                                                        cx,
+                                                    );
+                                                }))
+                                            }),
+                                    ),
+                                ),
+                            ]
+                        },
+                        cx,
+                    ),
+                ],
+            );
         let scale = self.ui_scale_draft.unwrap_or(config.font.ui_scale);
         let presets = SCALE_PRESETS.iter().enumerate().map(|(n, value)| {
             let value = *value;
@@ -172,7 +183,7 @@ impl Shell {
         let layout_group = group(
             "Layout",
             vec![
-                setting(
+                setting_below(
                     "UI scale",
                     &if self.ui_scale_draft.is_some() {
                         format!("{:.0} %, applied when you let go", scale * 100.)
@@ -184,38 +195,45 @@ impl Shell {
                         .flex_col()
                         .w_full()
                         .gap(px(8.))
-                        .items_end()
+                        .items_start()
                         .child(crate::ui::segments().children(presets))
                         .child(self.slider(page, SliderKind::UiScale)),
                 ),
-                setting(
+                setting_fit(
                     "Sidebar position",
                     "",
                     crate::ui::segments().children(position_chips),
                 ),
-                setting(
+                setting_fit(
                     "Avatar shape",
                     "How people's pictures are cut, everywhere.",
                     crate::ui::segments().children(shape_chips),
                 ),
-                setting(
-                    "Panel widths",
-                    &format!(
-                        "Sidebar {} px, member list {} px",
-                        config.sidebar.width, config.sidebar.member_list_width
-                    ),
-                    Button::new("reset-widths")
-                        .cursor_pointer()
-                        .label("Reset")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_config(
-                                |c| {
-                                    c.sidebar.width = 240;
-                                    c.sidebar.member_list_width = 232;
-                                },
-                                cx,
-                            );
-                        })),
+                self.more(
+                    "appearance-layout",
+                    "More layout options",
+                    |cx| {
+                        vec![setting_fit(
+                            "Panel widths",
+                            &format!(
+                                "Sidebar {} px, member list {} px",
+                                config.sidebar.width, config.sidebar.member_list_width
+                            ),
+                            Button::new("reset-widths")
+                                .cursor_pointer()
+                                .label("Reset")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.set_config(
+                                        |c| {
+                                            c.sidebar.width = 240;
+                                            c.sidebar.member_list_width = 232;
+                                        },
+                                        cx,
+                                    );
+                                })),
+                        )]
+                    },
+                    cx,
                 ),
             ],
         );
@@ -231,6 +249,11 @@ impl Shell {
         )
     }
 }
+
+/// How wide a font dropdown is: font names are of middling length.
+const FONT_W: f32 = 260.;
+/// A slider on the right of its row.
+const SLIDER_W: f32 = 220.;
 
 /// "Aa" at `size`, for the size of titles.
 fn title_preview(size: f32) -> crate::ui::Preview {

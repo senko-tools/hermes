@@ -288,7 +288,8 @@ pub struct General {
     pub download_dir: String,
     /// Ask for a place each time something is downloaded.
     pub ask_where_to_save: bool,
-    /// Settings groups shown folded (by key), e.g. the voice processing details.
+    /// The settings' "More" parts that are open, as `more:<key>`; they start closed. (Until
+    /// #64 it held whole groups shown folded, by key; such keys are ignored now.)
     pub folded_settings: Vec<String>,
     /// Shows what only developers and admins need, such as copying IDs from menus.
     pub developer_mode: bool,
@@ -315,7 +316,7 @@ impl Default for General {
             animate_unfocused: false,
             download_dir: String::new(),
             ask_where_to_save: false,
-            folded_settings: vec!["processing".into()],
+            folded_settings: Vec::new(),
             developer_mode: false,
         }
     }

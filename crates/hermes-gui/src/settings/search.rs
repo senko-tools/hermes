@@ -1,4 +1,4 @@
-//! Searching the settings, and folding groups.
+//! Searching the settings, and the folded "More" part of a group.
 
 use super::*;
 
@@ -106,7 +106,8 @@ impl Shell {
         page_body("Search", Some(&count), vec![list])
     }
 
-    /// Goes to a setting found by the search: its tab opens on its group (unfolded), and the row
+    /// Goes to a setting found by the search: its tab opens on its group (its "More"
+    /// part opened), and the row
     /// lights up for a moment.
     pub(super) fn open_found(
         &mut self,
@@ -119,79 +120,105 @@ impl Shell {
             page.search
                 .update(cx, |input, cx| input.set_value("", window, cx));
         }
-        if let Some(key) = found.fold
-            && self.config.general.folded_settings.iter().any(|k| k == key)
+        if let Some(key) = found.more
+            && !self.more_open(key)
         {
-            self.set_folded(key, false, cx);
+            self.set_more_open(key, true, cx);
         }
         self.settings_open_tab(tab, cx);
-        LIT.with(|l| *l.borrow_mut() = Some((found.name, std::time::Instant::now())));
+        let lit = found.lit.unwrap_or(found.name);
+        LIT.with(|l| *l.borrow_mut() = Some((lit, std::time::Instant::now())));
         SCROLL_TO.with(|s| s.set(Some(found.index)));
         cx.notify();
     }
 
-    pub(super) fn set_folded(&mut self, key: &str, folded: bool, cx: &mut Context<Self>) {
+    /// Whether a group's "More" part is open. It holds what is rarely changed, so it is closed
+    /// unless opened. Opened ones are kept in `general.folded_settings` (which held folded
+    /// groups before #64) as `more:<key>`.
+    pub(super) fn more_open(&self, key: &str) -> bool {
+        let open = format!("more:{key}");
+        self.config.general.folded_settings.contains(&open)
+    }
+
+    pub(super) fn set_more_open(&mut self, key: &str, open: bool, cx: &mut Context<Self>) {
+        let entry = format!("more:{key}");
         let mut keys = self.config.general.folded_settings.clone();
-        keys.retain(|k| k != key);
-        if folded {
-            keys.push(key.to_owned());
+        keys.retain(|k| *k != entry);
+        if open {
+            keys.push(entry);
         }
         self.set_config(|c| c.general.folded_settings = keys, cx);
     }
 
-    /// A group of settings that folds into its title (remembered under `key`): for long groups
-    /// most people never change.
-    pub(super) fn fold_group(
+    /// A group's rarely changed rows, folded under a line saying `label` (#64). It goes last
+    /// among the group's rows. `rows` builds them; the search finds them and opens the fold.
+    pub(super) fn more(
         &self,
         key: &'static str,
-        title: &str,
-        rows: Vec<AnyElement>,
+        label: &str,
+        rows: impl FnOnce(&mut Context<Self>) -> Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let folded = self.config.general.folded_settings.iter().any(|k| k == key);
-        let count = rows.len();
+        let open = self.more_open(key);
+        IN_MORE.with(|m| m.set(Some(key)));
+        let rows = rows(cx);
+        IN_MORE.with(|m| m.set(None));
+        let hover = SharedString::from(format!("more-{key}-hover"));
+        let color = if self.is_hovered(&hover) {
+            theme::accent()
+        } else {
+            theme::text_secondary()
+        };
         let toggle = div()
-            .id(SharedString::from(format!("fold-{key}")))
+            .id(SharedString::from(format!("more-{key}")))
             .flex()
             .items_center()
-            .gap(px(4.))
+            .gap(px(6.))
+            .py(px(10.))
             .cursor_pointer()
-            .text_size(theme::caption_size())
-            .text_color(theme::text_tertiary())
-            .hover(|d| d.text_color(theme::accent()))
-            .child(if folded {
-                format!("Show {count}")
-            } else {
-                "Hide".to_owned()
-            })
+            .text_size(theme::secondary_size())
+            .text_color(color)
+            .on_hover(self.track_hover(hover, cx))
             .child(crate::ui::chevron(
-                icon(assets::CHEVRON_DOWN, 14., theme::text_tertiary()),
-                format!("fold-chevron-{key}"),
-                !folded,
+                icon(assets::CHEVRON_DOWN, 14., color),
+                format!("more-chevron-{key}"),
+                open,
             ))
+            .child(SharedString::from(label.to_owned()))
+            .when(!open, |d| {
+                d.child(
+                    div()
+                        .text_color(theme::text_tertiary())
+                        .child(format!("({})", rows.len())),
+                )
+            })
             .on_click(cx.listener(move |this, _, _, cx| {
-                this.set_folded(key, !folded, cx);
-            }))
-            .into_any_element();
-        let note_fold = || {
-            RECORDING.with(|r| {
-                if let Some(r) = r.borrow_mut().as_mut() {
-                    r.fold_last(key);
-                }
-            });
-        };
-        if folded && !recording() {
-            return group_with(title, toggle, Vec::new());
+                this.set_more_open(key, !open, cx);
+            }));
+        let mut part = div().flex().flex_col().child(toggle);
+        if open {
+            let mut children: Vec<AnyElement> = Vec::with_capacity(rows.len() * 2);
+            for row in rows {
+                children.push(
+                    div()
+                        .h(px(1.))
+                        .flex_shrink_0()
+                        .bg(theme::border())
+                        .into_any_element(),
+                );
+                children.push(row);
+            }
+            // Opening grows the rows from nothing, so what is below glides down.
+            part = part.child(crate::channel::grow_in(
+                &self.grow_heights,
+                SharedString::from(format!("more-open-{key}")),
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(children)
+                    .into_any_element(),
+            ));
         }
-        let header = group_header(title, toggle);
-        // Opening grows the card from nothing, so the groups below glide down.
-        let card = crate::channel::grow_in(
-            &self.grow_heights,
-            SharedString::from(format!("fold-open-{key}")),
-            group_card(rows).into_any_element(),
-        );
-        let shown = group_column(header, Some(card));
-        note_fold();
-        shown
+        part.into_any_element()
     }
 }

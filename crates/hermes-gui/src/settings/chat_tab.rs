@@ -13,7 +13,7 @@ impl Shell {
         set: fn(&mut ClientConfig, bool),
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        setting(
+        setting_fit(
             name,
             hint,
             Switch::new(SharedString::from(id))
@@ -146,6 +146,7 @@ impl Shell {
 
     pub(super) fn motion_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let g = &self.config.general;
+        let scroll_speed = g.scroll_speed;
         group(
             "Motion",
             vec![
@@ -156,7 +157,7 @@ impl Shell {
                     "No sliding or fading.",
                     general.reduce_motion
                 ),
-                setting(
+                setting_fit(
                     "Motion speed",
                     "How long things take to slide and fade.",
                     crate::ui::segments().children(
@@ -185,11 +186,6 @@ impl Shell {
                     "The mouse wheel glides instead of jumping.",
                     general.smooth_scroll
                 ),
-                setting(
-                    "Scroll speed",
-                    &format!("{:.2} x", g.scroll_speed),
-                    self.slider(page, SliderKind::ScrollSpeed),
-                ),
                 flag!(
                     self,
                     cx,
@@ -197,12 +193,26 @@ impl Shell {
                     "GIFs move while the window has the focus.",
                     general.animate_pictures
                 ),
-                flag!(
-                    self,
+                self.more(
+                    "motion",
+                    "More motion options",
+                    |cx| {
+                        vec![
+                            setting_fit(
+                                "Scroll speed",
+                                &format!("{scroll_speed:.2} x"),
+                                sized(220., self.slider(page, SliderKind::ScrollSpeed)),
+                            ),
+                            flag!(
+                                self,
+                                cx,
+                                "Animate in the background",
+                                "GIFs keep moving while another window has the focus.",
+                                general.animate_unfocused
+                            ),
+                        ]
+                    },
                     cx,
-                    "Animate in the background",
-                    "GIFs keep moving while another window has the focus.",
-                    general.animate_unfocused
                 ),
             ],
         )

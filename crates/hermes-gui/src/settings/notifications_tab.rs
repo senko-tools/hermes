@@ -5,111 +5,183 @@ use super::*;
 impl Shell {
     pub(super) fn tab_notifications(&self, cx: &mut Context<Self>) -> AnyElement {
         let n = &self.config.notifications;
+        let desktop = group(
+            "Desktop notifications",
+            vec![
+                flag!(self, cx, "Show notifications", "", notifications.enabled),
+                flag!(
+                    self,
+                    cx,
+                    "Show the message text",
+                    "Off: only who wrote, and where.",
+                    notifications.show_preview
+                ),
+                flag!(
+                    self,
+                    cx,
+                    "Flash the taskbar button",
+                    "",
+                    notifications.flash_taskbar
+                ),
+            ],
+        );
+        let test_sounds = |cx: &mut Context<Self>| {
+            vec![setting_fit(
+                "Test sounds",
+                "Messages and DMs play the softer one, mentions the ping.",
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(
+                        Button::new("test-sound-message")
+                            .cursor_pointer()
+                            .label("Message")
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.core.play_sound(Sound::Message);
+                            })),
+                    )
+                    .child(
+                        Button::new("test-sound-mention")
+                            .cursor_pointer()
+                            .label("Mention")
+                            .on_click(cx.listener(|this, _, _, _| {
+                                this.core.play_sound(Sound::Ping);
+                            })),
+                    ),
+            )]
+        };
+        let messages = group(
+            "Messages",
+            vec![
+                flag!(
+                    self,
+                    cx,
+                    "Play a sound",
+                    "Off: no message makes a sound.",
+                    notifications.sound
+                ),
+                self.pop_ups_and_sounds(cx),
+                self.more("notification-sounds", "Try the sounds", test_sounds, cx),
+            ],
+        );
+        let when = group(
+            "When and what",
+            vec![
+                setting_fit(
+                    "Quiet hours",
+                    &if n.quiet_from.is_empty() {
+                        "None".to_owned()
+                    } else {
+                        format!("{} to {}", n.quiet_from, n.quiet_to)
+                    },
+                    Button::new("quiet-hours")
+                        .cursor_pointer()
+                        .label("Change")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_form_quiet_hours(window, cx);
+                        })),
+                ),
+                setting_fit(
+                    "Words that notify me",
+                    &if n.keywords.is_empty() {
+                        "None".to_owned()
+                    } else {
+                        n.keywords.clone()
+                    },
+                    Button::new("keywords")
+                        .cursor_pointer()
+                        .label("Change")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_form_keywords(window, cx);
+                        })),
+                ),
+            ],
+        );
         page_body(
             "Notifications",
             Some("Per server and channel: right-click it, Notifications."),
-            vec![group(
-                "Desktop notifications",
-                vec![
-                    flag!(self, cx, "Show notifications", "", notifications.enabled),
-                    flag!(
-                        self,
-                        cx,
-                        "Show the message text",
-                        "Off: only who wrote, and where.",
-                        notifications.show_preview
-                    ),
-                    flag!(self, cx, "Play a sound", "", notifications.sound),
-                    setting(
-                        "Test sounds",
-                        "Messages and DMs play the softer one, mentions the ping.",
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(
-                                Button::new("test-sound-message")
-                                    .cursor_pointer()
-                                    .label("Message")
-                                    .on_click(cx.listener(|this, _, _, _| {
-                                        this.core.play_sound(Sound::Message);
-                                    })),
-                            )
-                            .child(
-                                Button::new("test-sound-mention")
-                                    .cursor_pointer()
-                                    .label("Mention")
-                                    .on_click(cx.listener(|this, _, _, _| {
-                                        this.core.play_sound(Sound::Ping);
-                                    })),
-                            ),
-                    ),
-                    setting(
-                        "Quiet hours",
-                        &if n.quiet_from.is_empty() {
-                            "None".to_owned()
-                        } else {
-                            format!("{} to {}", n.quiet_from, n.quiet_to)
-                        },
-                        Button::new("quiet-hours")
-                            .cursor_pointer()
-                            .label("Change")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_form_quiet_hours(window, cx);
-                            })),
-                    ),
-                    setting(
-                        "Words that notify me",
-                        &if n.keywords.is_empty() {
-                            "None".to_owned()
-                        } else {
-                            n.keywords.clone()
-                        },
-                        Button::new("keywords")
-                            .cursor_pointer()
-                            .label("Change")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_form_keywords(window, cx);
-                            })),
-                    ),
-                    flag!(self, cx, "Pop up for DMs", "", notifications.toast_dms),
-                    flag!(
-                        self,
-                        cx,
-                        "Pop up for mentions",
-                        "",
-                        notifications.toast_mentions
-                    ),
-                    flag!(
-                        self,
-                        cx,
-                        "Pop up for other messages",
-                        "",
-                        notifications.toast_other
-                    ),
-                    flag!(self, cx, "Sound for DMs", "", notifications.sound_dms),
-                    flag!(
-                        self,
-                        cx,
-                        "Sound for mentions",
-                        "",
-                        notifications.sound_mentions
-                    ),
-                    flag!(
-                        self,
-                        cx,
-                        "Sound for other messages",
-                        "",
-                        notifications.sound_other
-                    ),
-                    flag!(
-                        self,
-                        cx,
-                        "Flash the taskbar button",
-                        "",
-                        notifications.flash_taskbar
-                    ),
+            vec![desktop, messages, when],
+        )
+    }
+
+    /// Which messages pop up and which play a sound: one table, a column for each kind of
+    /// message (#64), instead of six rows.
+    fn pop_ups_and_sounds(&self, cx: &mut Context<Self>) -> AnyElement {
+        const ROW: &str = "Pop-ups and sounds";
+        type Field = fn(&mut config::Notifications) -> &mut bool;
+        type Line = (&'static str, &'static str, [(&'static str, Field); 3]);
+        let kinds = ["DMs", "Mentions", "Other messages"];
+        let lines: [Line; 2] = [
+            (
+                "Pop up",
+                "Pop up for",
+                [
+                    ("toast-dms", |n| &mut n.toast_dms),
+                    ("toast-mentions", |n| &mut n.toast_mentions),
+                    ("toast-other", |n| &mut n.toast_other),
                 ],
-            )],
+            ),
+            (
+                "Sound",
+                "Sound for",
+                [
+                    ("sound-dms", |n| &mut n.sound_dms),
+                    ("sound-mentions", |n| &mut n.sound_mentions),
+                    ("sound-other", |n| &mut n.sound_other),
+                ],
+            ),
+        ];
+        let label_width = 90.;
+        let cell_width = 120.;
+        let caption = |text: &'static str| {
+            div()
+                .w(px(cell_width))
+                .flex_shrink_0()
+                .flex()
+                .justify_center()
+                .text_size(theme::secondary_size())
+                .text_color(theme::text_secondary())
+                .child(text)
+        };
+        let header = div()
+            .flex()
+            .items_center()
+            .child(div().w(px(label_width)).flex_shrink_0())
+            .children(kinds.map(caption));
+        let mut table = div().flex().flex_col().gap(px(8.)).child(header);
+        let mut current = self.config.notifications.clone();
+        for (label, search_name, cells) in lines {
+            let mut line = div().flex().items_center().child(
+                div()
+                    .w(px(label_width))
+                    .flex_shrink_0()
+                    .text_size(theme::body_size())
+                    .child(label),
+            );
+            for ((id, field), kind) in cells.into_iter().zip(kinds) {
+                note_part(&format!("{search_name} {}", kind.to_lowercase()), "", ROW);
+                let on = *field(&mut current);
+                line =
+                    line.child(
+                        div()
+                            .w(px(cell_width))
+                            .flex_shrink_0()
+                            .flex()
+                            .justify_center()
+                            .child(Switch::new(id).cursor_pointer().checked(on).on_click(
+                                cx.listener(move |this, on: &bool, _, cx| {
+                                    let on = *on;
+                                    this.set_config(|c| *field(&mut c.notifications) = on, cx);
+                                }),
+                            )),
+                    );
+            }
+            table = table.child(line);
+        }
+        setting_below(
+            ROW,
+            "Which messages pop up, and which play a sound.",
+            div().overflow_x_hidden().child(table),
         )
     }
 

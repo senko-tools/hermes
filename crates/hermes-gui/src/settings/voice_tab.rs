@@ -12,30 +12,41 @@ impl Shell {
             )
         };
         let selects = page.device_selects.as_ref();
-        let devices = group(
+        // Device names are long: their dropdowns are wide.
+        const DEVICE_W: f32 = 340.;
+        // Sliders on the right; volumes run the card's width under their name.
+        const SLIDER_W: f32 = 240.;
+        note_part("Refresh devices", "Device list", "Microphone");
+        let devices = group_with(
             "Devices",
+            Button::new("devices-refresh")
+                .cursor_pointer()
+                .small()
+                .label("Refresh devices")
+                .on_click(cx.listener(|this, _, _, cx| this.load_devices(cx)))
+                .into_any_element(),
             vec![
-                setting("Microphone", "", device_select(selects.map(|s| &s.input))),
-                setting("Speakers", "", device_select(selects.map(|s| &s.output))),
-                setting(
-                    "Device list",
+                setting_fit(
+                    "Microphone",
                     "",
-                    Button::new("devices-refresh")
-                        .cursor_pointer()
-                        .label("Refresh devices")
-                        .on_click(cx.listener(|this, _, _, cx| this.load_devices(cx))),
+                    sized(DEVICE_W, device_select(selects.map(|s| &s.input))),
+                ),
+                setting_fit(
+                    "Speakers",
+                    "",
+                    sized(DEVICE_W, device_select(selects.map(|s| &s.output))),
                 ),
             ],
         );
         let volumes = group(
             "Volume",
             vec![
-                setting(
+                setting_below(
                     "Microphone volume",
                     &hermes_client_core::audio::volume_label(v.input_volume as f32),
                     self.slider(page, SliderKind::InputVolume),
                 ),
-                setting(
+                setting_below(
                     "Output volume",
                     &hermes_client_core::audio::volume_label(v.output_volume as f32),
                     self.slider(page, SliderKind::OutputVolume),
@@ -101,36 +112,36 @@ impl Shell {
                         },
                     ),
             );
-        let mut input_rows = vec![setting(
+        let mut input_rows = vec![setting_fit(
             "Input mode",
             "",
             crate::ui::segments().children(mode_chips),
         )];
         if ptt_mode {
-            input_rows.push(setting(
+            input_rows.push(setting_fit(
                 "Push-to-talk key",
                 if cfg!(windows) {
                     "e.g. Mouse4, F13, Ctrl+Space. Enter saves."
                 } else {
                     "Only while Hermes is focused. Enter saves."
                 },
-                Input::new(&page.ptt_key),
+                sized(SLIDER_W, Input::new(&page.ptt_key)),
             ));
-            input_rows.push(setting(
+            input_rows.push(setting_fit(
                 "Release delay",
                 &format!("{} ms", v.ptt_release_delay_ms),
-                self.slider(page, SliderKind::ReleaseDelay),
+                sized(SLIDER_W, self.slider(page, SliderKind::ReleaseDelay)),
             ));
         }
         if ptt_mode {
             // Sensitivity does nothing here: the key decides.
-            input_rows.push(setting(
+            input_rows.push(setting_below(
                 "Microphone level",
                 &format!("Green while your push-to-talk key is held · now {level:.0} dBFS"),
                 meter,
             ));
         } else {
-            input_rows.push(setting(
+            input_rows.push(setting_below(
                 "Voice activity sensitivity",
                 &format!("Opens above {} dBFS · now {level:.0}", v.vad_sensitivity),
                 div()
@@ -143,25 +154,14 @@ impl Shell {
             ));
         }
         if !ptt_mode {
-            input_rows.push(setting(
+            input_rows.push(setting_fit(
                 "Stay open after speaking",
                 &format!("{} ms, so the ends of words are not cut off", v.vad_hold_ms),
-                self.slider(page, SliderKind::VadHold),
-            ));
-            input_rows.push(setting(
-                "Only loudness opens the microphone",
-                "Noise suppression's voice detection can't open it below the line.",
-                Switch::new("vad-level-only")
-                    .cursor_pointer()
-                    .checked(v.vad_level_only)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        let on = *on;
-                        this.change_voice(cx, move |voice| voice.vad_level_only = on);
-                    })),
+                sized(SLIDER_W, self.slider(page, SliderKind::VadHold)),
             ));
         }
         let mic_test = page.mic_test;
-        input_rows.push(setting(
+        input_rows.push(setting_fit(
             "Mic test",
             "Hear yourself (use headphones).",
             Button::new("mic-test")
@@ -188,33 +188,62 @@ impl Shell {
                     this.change_voice(cx, move |voice| set(voice, on));
                 }))
         };
-        let processing = self.fold_group(
-            "processing",
+        if !ptt_mode {
+            let level_only = v.vad_level_only;
+            input_rows.push(self.more(
+                "voice-input",
+                "More input settings",
+                |cx| {
+                    vec![setting_fit(
+                        "Only loudness opens the microphone",
+                        "Noise suppression's voice detection can't open it below the line.",
+                        voice_switch(
+                            "vad-level-only",
+                            level_only,
+                            |v, on| v.vad_level_only = on,
+                            cx,
+                        ),
+                    )]
+                },
+                cx,
+            ));
+        }
+        // What most people turn on or off; the fine-tuning folds away.
+        let (fec, dtx, ducking_db, agc_target) =
+            (v.opus_fec, v.opus_dtx, v.ducking_db, v.agc_target_db);
+        let advanced = self.more(
+            "voice-processing",
+            "Advanced",
+            |cx| {
+                vec![
+                    setting_fit(
+                        "Lowered by",
+                        &format!("{ducking_db} dB, while someone speaks"),
+                        sized(SLIDER_W, self.slider(page, SliderKind::Ducking)),
+                    ),
+                    setting_fit(
+                        "Automatic gain level",
+                        &format!("Aims for {agc_target} dBFS. Higher is louder."),
+                        sized(SLIDER_W, self.slider(page, SliderKind::AgcTarget)),
+                    ),
+                    setting_fit(
+                        "Rebuild lost sound",
+                        "Sends a little extra, so a dropped packet can be recovered.",
+                        voice_switch("opus-fec", fec, |v, on| v.opus_fec = on, cx),
+                    ),
+                    setting_fit(
+                        "Send nothing during silence",
+                        "Saves bandwidth.",
+                        voice_switch("opus-dtx", dtx, |v, on| v.opus_dtx = on, cx),
+                    ),
+                ]
+            },
+            cx,
+        );
+        let processing = group(
             "Processing",
             vec![
-                setting(
-                    "Rebuild lost sound",
-                    "Sends a little extra, so a dropped packet can be recovered.",
-                    Switch::new("opus-fec")
-                        .cursor_pointer()
-                        .checked(v.opus_fec)
-                        .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            let on = *on;
-                            this.change_voice(cx, |voice| voice.opus_fec = on);
-                        })),
-                ),
-                setting(
-                    "Send nothing during silence",
-                    "Saves bandwidth.",
-                    Switch::new("opus-dtx")
-                        .cursor_pointer()
-                        .checked(v.opus_dtx)
-                        .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            let on = *on;
-                            this.change_voice(cx, |voice| voice.opus_dtx = on);
-                        })),
-                ),
-                setting(
+                setting_fit(
                     "Noise suppression",
                     if v.noise_suppression {
                         "Removes fans, keyboards and the like."
@@ -228,7 +257,7 @@ impl Shell {
                         cx,
                     ),
                 ),
-                setting(
+                setting_fit(
                     "Echo cancellation",
                     "For speakers or a laptop's own microphone: others don't hear \
                     themselves back. Not needed with headphones.",
@@ -239,28 +268,18 @@ impl Shell {
                         cx,
                     ),
                 ),
-                setting(
+                setting_fit(
                     "Automatic gain",
                     "Evens out how loud you are.",
                     voice_switch("gain", v.auto_gain, |v, on| v.auto_gain = on, cx),
                 ),
-                setting(
+                setting_fit(
                     "Lower other sound while someone speaks",
                     "Screen share sound, videos and audio files step back for voices.",
                     voice_switch("ducking", v.ducking, |v, on| v.ducking = on, cx),
                 ),
-                setting(
-                    "Lowered by",
-                    &format!("{} dB", v.ducking_db),
-                    self.slider(page, SliderKind::Ducking),
-                ),
-                setting(
-                    "Automatic gain level",
-                    &format!("Aims for {} dBFS. Higher is louder.", v.agc_target_db),
-                    self.slider(page, SliderKind::AgcTarget),
-                ),
+                advanced,
             ],
-            cx,
         );
         let join_chips = [
             (config::JoinOn::DoubleClick, "Double-click"),
@@ -276,27 +295,25 @@ impl Shell {
             )
         })
         .collect::<Vec<_>>();
-        let sounds = self.fold_group(
-            "sounds",
+        let sounds = group(
             "Sounds and joining",
             vec![
-                setting(
+                setting_fit(
                     "Play sounds",
                     "When people join or leave, and when you mute.",
                     voice_switch("sounds", v.sounds, |v, on| v.sounds = on, cx),
                 ),
-                setting(
+                setting_below(
                     "Sound volume",
                     &format!("{:.0} %", v.sounds_volume * 100.),
                     self.slider(page, SliderKind::SoundsVolume),
                 ),
-                setting(
+                setting_fit(
                     "Join a voice channel with",
                     "",
                     crate::ui::segments().children(join_chips),
                 ),
             ],
-            cx,
         );
         page_body(
             "Voice & Audio",
