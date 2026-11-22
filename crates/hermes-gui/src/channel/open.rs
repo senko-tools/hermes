@@ -21,20 +21,24 @@ impl Shell {
         let list = ListState::new(0, ListAlignment::Bottom, px(600.));
         list.set_follow_mode(gpui_kit::FollowMode::Tail);
         let scroll_key = key.clone();
-        list.set_scroll_handler(cx.listener(move |_, event: &ListScrollEvent, window, cx| {
-            // gpui keeps the list's state mutably borrowed while it calls this handler, so reading
-            // the list here panics. Deferred work runs once the event has been dispatched.
-            let near_top = event.visible_range.start < LOAD_OLDER_WITHIN;
-            let at_end = event.visible_range.end >= event.count;
-            let shown_end = event.visible_range.end;
-            let key = scroll_key.clone();
-            cx.defer_in(window, move |this, _, cx| {
-                if let Some(view) = this.chats.get_mut(&key) {
-                    view.shown_end = shown_end;
-                }
-                this.chat_scrolled(&key, near_top, at_end, cx);
-            });
-        }));
+        list.set_scroll_handler(
+            cx.listener(move |this, event: &ListScrollEvent, window, cx| {
+                // A turn of the wheel going on over the chat passes code blocks by.
+                this.code_blocks.chat_scrolled();
+                // gpui keeps the list's state mutably borrowed while it calls this handler, so reading
+                // the list here panics. Deferred work runs once the event has been dispatched.
+                let near_top = event.visible_range.start < LOAD_OLDER_WITHIN;
+                let at_end = event.visible_range.end >= event.count;
+                let shown_end = event.visible_range.end;
+                let key = scroll_key.clone();
+                cx.defer_in(window, move |this, _, cx| {
+                    if let Some(view) = this.chats.get_mut(&key) {
+                        view.shown_end = shown_end;
+                    }
+                    this.chat_scrolled(&key, near_top, at_end, cx);
+                });
+            }),
+        );
         let placeholder = {
             let store = self.core.store();
             let s = store.instance(&key.0);

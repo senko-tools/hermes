@@ -1,15 +1,20 @@
-//! Fenced code blocks in messages. Each has a copy button in its top-right corner (#63). A long
-//! one stops growing at about 20 lines and a wide one keeps its lines unwrapped; both then
-//! scroll inside themselves (#65). The plain wheel over a block keeps scrolling the chat: the
-//! block's own content moves only by its scrollbars (dragging, clicking the track, the wheel
-//! over a bar) and by sideways scrolling, which the chat never uses.
+//! Fenced code blocks in messages. Each has a copy button in its top-right corner (#63) that
+//! stays in sight while a tall block scrolls by. A long block stops growing at about 20 lines and
+//! a wide one keeps its lines unwrapped; both then scroll inside themselves (#65).
+//!
+//! The wheel never gets caught by a block on its way through the chat: up and down, a block cut
+//! short scrolls only when a new turn of the wheel starts over it while the chat is still and the
+//! block can move that way ([`wheel_taker`]). Sideways needs Shift or Ctrl. The scrollbars can
+//! always be dragged or clicked.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    Bounds, DispatchPhase, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollEvent, Size, StyledText,
+    AvailableSpace, Bounds, DispatchPhase, Element, GlobalElementId, InspectorElementId, LayoutId,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Position, ScrollDelta,
+    ScrollEvent, Size, Style, StyledText,
 };
 
 use super::*;
@@ -21,21 +26,26 @@ const MAX_LINES: f32 = 20.;
 const MAX_SHARE: f32 = 0.4;
 /// A capped block still shows at least this many lines.
 const MIN_LINES: f32 = 3.;
-/// The space around the code.
+/// The space around the code. The horizontal scrollbar lies in the bottom one.
 const PAD: f32 = 8.;
-/// A scrollbar's width, which takes the mouse; the thumb drawn in it is thinner.
+/// The vertical scrollbar's width, which takes the mouse; the thumb drawn in it is thinner.
 const BAR: f32 = 10.;
 const THUMB: f32 = 4.;
 /// The shortest a thumb gets.
 const MIN_THUMB: f32 = 24.;
-/// The pixels of one wheel line over a scrollbar, as the chat counts it.
+/// The pixels of one wheel line, as the chat counts it.
 const LINE: f32 = 20.;
-/// How tall the buttons in the corner are, with their inset from the edges.
+/// How far the corner buttons keep from the block's edges (and the chat's top).
+const INSET: f32 = 2.;
+/// How tall the corner buttons are, with their inset: a block's header row when it needs one.
 const HEADER: f32 = 32.;
 /// The fade over the bottom edge of a block cut short.
 const FADE: f32 = 24.;
 /// How visible the corner buttons are while the block is not under the pointer.
 const FAINT: f32 = 0.35;
+/// Wheel events this close together are one turn of the wheel; the chat scrolled this recently
+/// is still scrolling.
+const GESTURE: Duration = Duration::from_millis(400);
 
 /// A block: its message and its place among the message's blocks.
 pub type CodeKey = (Id, usize);
@@ -56,6 +66,8 @@ struct Laid {
     line_height: f32,
     /// The first line reaches under the corner buttons, so they get a row of their own.
     header_row: bool,
+    /// The corner buttons' size.
+    corner: Size<Pixels>,
 }
 
 /// What a block's scrollbars work from, noted while drawing it.
@@ -76,6 +88,13 @@ struct Press {
     grab: Option<f32>,
 }
 
+/// What a turn of the wheel scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Taker {
+    Chat,
+    Block(CodeKey),
+}
+
 #[derive(Default)]
 pub struct CodeBlocks {
     /// How far each block is scrolled, sideways and down.
@@ -88,7 +107,55 @@ pub struct CodeBlocks {
     drawn: RefCell<HashSet<CodeKey>>,
     press: Option<Press>,
     /// The line height of the last block painted: a new block's height before it is painted.
-    line_height: Rc<std::cell::Cell<f32>>,
+    line_height: Rc<Cell<f32>>,
+    /// The last wheel event over a block, and what it scrolled.
+    wheel: Option<(Instant, Taker)>,
+    /// When a chat last scrolled.
+    chat_scrolled: Option<Instant>,
+}
+
+/// What a wheel event over the block `key` scrolls (up and down). A turn of the wheel keeps
+/// scrolling what it started on, so a chat scrolled past a block never gets caught by it, and a
+/// block scrolled to its end doesn't hand the rest to the chat. A new turn scrolls the block
+/// only while the chat is still, and only if the block can move that way (`can_scroll`).
+fn wheel_taker(
+    last: Option<(Instant, Taker)>,
+    chat_scrolled: Option<Instant>,
+    now: Instant,
+    key: CodeKey,
+    can_scroll: bool,
+) -> Taker {
+    let recent = |at: Instant| now.saturating_duration_since(at) < GESTURE;
+    if let Some((at, taker)) = last
+        && recent(at)
+    {
+        return if taker == Taker::Block(key) {
+            taker
+        } else {
+            Taker::Chat
+        };
+    }
+    if chat_scrolled.is_some_and(recent) || !can_scroll {
+        Taker::Chat
+    } else {
+        Taker::Block(key)
+    }
+}
+
+/// Where the corner buttons' top goes: `inset` below the block's top, or below the top of the
+/// chat's visible part (`area_top`) while the block's top is scrolled out of it, but never
+/// past the block's bottom.
+fn corner_top(
+    block_top: f32,
+    block_bottom: f32,
+    area_top: Option<f32>,
+    height: f32,
+    inset: f32,
+) -> f32 {
+    let visible = area_top.map_or(block_top, |a| a.max(block_top));
+    (visible + inset)
+        .min(block_bottom - inset - height)
+        .max(block_top + inset)
 }
 
 /// A scrollbar's thumb on a `track` long track, for a `view` long window into `content`
@@ -134,22 +201,36 @@ impl CodeBlocks {
             .retain(|key, _| drawn.contains(key));
     }
 
+    /// A chat scrolled: a turn of the wheel going on over it passes blocks by.
+    pub fn chat_scrolled(&mut self) {
+        self.chat_scrolled = Some(Instant::now());
+    }
+
+    /// Where a block was laid out, for tests.
+    #[cfg(test)]
+    pub fn viewport_of(&self, message: Id, index: usize) -> Option<Bounds<Pixels>> {
+        self.laid
+            .borrow()
+            .get(&(message, index))
+            .map(|l| l.viewport)
+    }
+
     /// A scrollbar's track: where it starts in the window and how long it is, the visible
     /// length and the content's length along it.
     fn track(&self, key: CodeKey, axis: Axis) -> Option<(f32, f32, f32, f32)> {
         let viewport = self.laid.borrow().get(&key)?.viewport;
         let g = *self.geometry.borrow().get(&key)?;
-        let bar = BAR * theme::scale();
+        let scale = theme::scale();
         Some(match axis {
             Axis::Vertical => (
                 viewport.top().as_f32(),
-                g.view.height - if g.wide { bar } else { 0. },
+                g.view.height - if g.wide { PAD * scale } else { 0. },
                 g.view.height,
                 g.content.height,
             ),
             Axis::Horizontal => (
                 viewport.left().as_f32(),
-                g.view.width - if g.capped { bar } else { 0. },
+                g.view.width - if g.capped { BAR * scale } else { 0. },
                 g.view.width,
                 g.content.width,
             ),
@@ -191,6 +272,157 @@ impl CodeBlocks {
         };
         Some(offset_for(track, view, content, along, grab))
     }
+
+    /// A wheel event over a block. Whether the block took it (the chat then doesn't get it).
+    fn wheel(&mut self, key: CodeKey, event: &ScrollEvent) -> (bool, bool) {
+        let Some(g) = self.geometry.borrow().get(&key).copied() else {
+            return (false, false);
+        };
+        let (dx, dy) = wheel_pixels(event);
+        let m = event.modifiers;
+        // Sideways only on purpose: Shift (which Windows turns sideways itself) or Ctrl.
+        if m.shift || m.control {
+            let delta = if dx != 0. { dx } else { dy };
+            if !g.wide || delta == 0. {
+                return (false, false);
+            }
+            let offset = self.offset(key, Axis::Horizontal) - delta;
+            return (true, self.set(key, Axis::Horizontal, offset));
+        }
+        if !g.capped || dy == 0. {
+            return (false, false);
+        }
+        let now = Instant::now();
+        let at = self.offset(key, Axis::Vertical);
+        let can_scroll = if dy < 0. {
+            at < g.content.height - g.view.height - 0.5
+        } else {
+            at > 0.5
+        };
+        let taker = wheel_taker(self.wheel, self.chat_scrolled, now, key, can_scroll);
+        self.wheel = Some((now, taker));
+        if taker == Taker::Chat {
+            return (false, false);
+        }
+        (true, self.set(key, Axis::Vertical, at - dy))
+    }
+}
+
+/// The corner buttons, placed while the frame is laid out: at the block's top right, or lower
+/// while the block's top is scrolled out of the chat, so they stay in sight. Placed from this
+/// frame's positions, they don't trail behind a scroll.
+struct Corner {
+    child: AnyElement,
+    key: CodeKey,
+    laid: Rc<RefCell<HashMap<CodeKey, Laid>>>,
+    /// Where the chat's message list is this frame.
+    area: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// How far down the list the notices over it reach.
+    below_notices: f32,
+    /// The space kept on the right (the vertical scrollbar's).
+    right: f32,
+}
+
+impl IntoElement for Corner {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Corner {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<gpui_kit::ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        // Covers the block; the buttons are placed in it.
+        let zero = || gpui_kit::px(0.).into();
+        let style = Style {
+            position: Position::Absolute,
+            inset: gpui_kit::Edges {
+                top: zero(),
+                right: zero(),
+                bottom: zero(),
+                left: zero(),
+            },
+            ..Style::default()
+        };
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let size = self.child.layout_as_root(
+            Size {
+                width: AvailableSpace::MinContent,
+                height: AvailableSpace::MinContent,
+            },
+            window,
+            cx,
+        );
+        let inset = INSET * theme::scale();
+        // Only the chat's own list keeps them in sight (not a block in search results).
+        let middle = bounds.center().x;
+        let area_top = self
+            .area
+            .get()
+            .filter(|a| a.left() <= middle && middle <= a.right())
+            .map(|a| a.top().as_f32() + self.below_notices);
+        let top = corner_top(
+            bounds.top().as_f32(),
+            bounds.bottom().as_f32(),
+            area_top,
+            size.height.as_f32(),
+            inset,
+        );
+        let left = bounds.right().as_f32() - self.right - inset - size.width.as_f32();
+        self.child.prepaint_at(
+            gpui_kit::point(gpui_kit::px(left), gpui_kit::px(top)),
+            window,
+            cx,
+        );
+        let mut laid = self.laid.borrow_mut();
+        let entry = laid.entry(self.key).or_default();
+        if entry.corner != size {
+            entry.corner = size;
+            window.request_animation_frame();
+        }
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
 }
 
 impl Shell {
@@ -214,7 +446,10 @@ impl Shell {
         let scale = theme::scale();
         let pad = PAD * scale;
         let bar = BAR * scale;
-        let lines = code.split('\n').count().max(1) as f32;
+        let inset = INSET * scale;
+        let lines = code.split('\n').count().max(1);
+        let single = lines == 1;
+        let lines = lines as f32;
         // Until the block has been painted once, the line height of the last block painted, or
         // gpui's usual one.
         let line_height = laid
@@ -224,7 +459,9 @@ impl Shell {
             .unwrap_or(theme::secondary_size().as_f32() * 1.618);
         let text_size = laid.map(|l| l.text).filter(|s| s.height.as_f32() > 0.);
         let text_height = text_size.map_or(lines * line_height, |s| s.height.as_f32());
-        let header_row = laid.is_some_and(|l| l.header_row);
+        // A single line stays level with the text beside the block; it ends before the
+        // buttons instead.
+        let header_row = !single && laid.is_some_and(|l| l.header_row);
         let top = if header_row { HEADER * scale } else { pad };
         let content = Size {
             width: text_size.map_or(0., |s| s.width.as_f32()) + 2. * pad,
@@ -238,6 +475,26 @@ impl Shell {
         let long = content.height > cap + 0.5;
         let expanded = blocks.expanded.contains(&key);
         let capped = long && !expanded;
+        // The buttons sit left of the vertical scrollbar, never on it.
+        let right = if capped { bar } else { 0. };
+        let caption = language.filter(|l| !l.is_empty());
+        // Until they are laid out once, a guess at how wide the buttons are.
+        let corner_width = laid
+            .map(|l| l.corner.width.as_f32())
+            .filter(|w| *w > 0.)
+            .unwrap_or(
+                (28. + if long { 30. } else { 0. }
+                    + caption
+                        .as_ref()
+                        .map_or(0., |c| c.chars().count() as f32 * 7. + 8.))
+                    * scale,
+            );
+        // What a single line keeps free on its right for the buttons.
+        let reserve = if single {
+            corner_width + 2. * inset
+        } else {
+            0.
+        };
         let view_width = laid.map_or(0., |l| l.viewport.size.width.as_f32());
         let view = Size {
             width: view_width,
@@ -275,21 +532,11 @@ impl Shell {
             || copied
             || blocks.press.is_some_and(|p| p.key == key);
 
-        // The corner: the language, "Show all" for a long block, and the copy button.
-        let caption = language.filter(|l| !l.is_empty());
-        let header_width = (4.
-            + 28.
-            + if long { 30. } else { 0. }
-            + caption
-                .as_ref()
-                .map_or(0., |c| c.chars().count() as f32 * 7. + 8.))
-            * scale;
+        // The corner: the language, "Show all" for a long block, and the copy button. The
+        // buttons take clicks but let the wheel through to what is under them.
         let copy_text = code.to_owned();
         let copy_button = copy_id.to_string();
-        let corner = div()
-            .absolute()
-            .top(px(2.))
-            .right(px(2.))
+        let buttons = div()
             .flex()
             .items_center()
             .gap(px(2.))
@@ -323,7 +570,7 @@ impl Shell {
                         },
                         cx,
                     )
-                    .occlude()
+                    .block_mouse_except_scroll()
                     .tooltip(move |window, cx| {
                         gpui_kit::component::tooltip::Tooltip::new(if expanded {
                             "Show less"
@@ -351,13 +598,21 @@ impl Shell {
                     if copied { "Copied" } else { "Copy" },
                     cx,
                 )
-                .occlude()
+                .block_mouse_except_scroll()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.copy_quietly(copy_button.clone(), copy_text.clone(), cx);
                 })),
             );
+        let corner = Corner {
+            child: buttons.into_any_element(),
+            key,
+            laid: blocks.laid.clone(),
+            area: self.selection.list.clone(),
+            below_notices: self.notices_bottom() * scale,
+            right,
+        };
 
         // Paints note the block's size, and ask for one more frame when it changed, so the cap
         // and the scrollbars follow at once.
@@ -402,7 +657,8 @@ impl Shell {
                 };
                 let mut laid = laid_text.borrow_mut();
                 let entry = laid.entry(key).or_default();
-                let row = first + 2. * pad + header_width > entry.viewport.size.width.as_f32();
+                let room = entry.viewport.size.width.as_f32() - right - 2. * inset;
+                let row = first + 2. * pad + entry.corner.width.as_f32() > room;
                 last_line_height.set(height);
                 let changed =
                     entry.text != size || entry.line_height != height || entry.header_row != row;
@@ -421,10 +677,11 @@ impl Shell {
 
         let viewport = div()
             .relative()
-            .w_full()
             .min_w_0()
             .overflow_hidden()
             .h(gpui_kit::px(view.height))
+            // A single line ends before the buttons, so none of it shows under them.
+            .mr(gpui_kit::px(reserve))
             .child(viewport_recorder)
             .child(
                 // Out of the flow, so its unwrapped lines never widen the chat: the block's
@@ -445,7 +702,7 @@ impl Shell {
         let scrollbar = |axis: Axis| {
             let (track, view_len, content_len, offset) = match axis {
                 Axis::Vertical => (
-                    view.height - if wide { bar } else { 0. },
+                    view.height - if wide { pad } else { 0. },
                     view.height,
                     content.height,
                     y,
@@ -471,7 +728,7 @@ impl Shell {
                     Axis::Horizontal => d
                         .left(gpui_kit::px(at))
                         .w(gpui_kit::px(len))
-                        .bottom(px((BAR - THUMB) / 2.))
+                        .bottom(px((PAD - THUMB) / 2.))
                         .h(px(THUMB)),
                 });
             let name = match axis {
@@ -483,9 +740,11 @@ impl Shell {
                 .absolute()
                 .map(|d| match axis {
                     Axis::Vertical => d.top_0().right_0().w(px(BAR)).h(gpui_kit::px(track)),
-                    Axis::Horizontal => d.bottom_0().left_0().h(px(BAR)).w(gpui_kit::px(track)),
+                    // In the bottom padding, so it doesn't make the block taller.
+                    Axis::Horizontal => d.bottom_0().left_0().h(px(PAD)).w(gpui_kit::px(track)),
                 })
-                .occlude()
+                // Takes presses, but the wheel goes on to the block (and maybe the chat).
+                .block_mouse_except_scroll()
                 .cursor_default()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -511,20 +770,6 @@ impl Shell {
                         cx.notify();
                     }),
                 )
-                .on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
-                    cx.stop_propagation();
-                    let (dx, dy) = wheel_pixels(event);
-                    let delta = match axis {
-                        Axis::Vertical => dy,
-                        Axis::Horizontal if dx != 0. => dx,
-                        Axis::Horizontal => dy,
-                    };
-                    let blocks = &mut this.code_blocks;
-                    let offset = blocks.offset(key, axis) - delta;
-                    if blocks.set(key, axis, offset) {
-                        cx.notify();
-                    }
-                }))
                 .child(thumb_el)
         };
 
@@ -543,17 +788,13 @@ impl Shell {
             .font_family(theme::mono_font())
             .text_size(theme::secondary_size())
             .on_hover(self.track_hover(hover, cx))
-            // Sideways scrolling (Shift+wheel, a touchpad swipe) moves a wide block; the chat
-            // only scrolls up and down, so it loses nothing. The event goes on to the chat.
-            .when(wide, |d| {
+            .when(capped || wide, |d| {
                 d.on_scroll(cx.listener(move |this, event: &ScrollEvent, _, cx| {
-                    let (dx, _) = wheel_pixels(event);
-                    if dx == 0. {
-                        return;
+                    let (took, moved) = this.code_blocks.wheel(key, event);
+                    if took {
+                        cx.stop_propagation();
                     }
-                    let blocks = &mut this.code_blocks;
-                    let offset = blocks.offset(key, Axis::Horizontal) - dx;
-                    if blocks.set(key, Axis::Horizontal, offset) {
+                    if moved {
                         cx.notify();
                     }
                 }))
@@ -645,6 +886,63 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(n: u64) -> CodeKey {
+        (Id(n), 0)
+    }
+
+    #[test]
+    fn a_turn_of_the_wheel_over_the_chat_passes_blocks_by() {
+        let now = Instant::now();
+        let ms = |n| Duration::from_millis(n);
+        // The chat scrolled a moment ago: the wheel goes on scrolling it.
+        let chat = Some(now - ms(100));
+        assert_eq!(wheel_taker(None, chat, now, key(1), true), Taker::Chat);
+        // The chat has been still for a while: a new turn scrolls the block.
+        let still = Some(now - ms(2000));
+        assert_eq!(
+            wheel_taker(None, still, now, key(1), true),
+            Taker::Block(key(1))
+        );
+        // ...unless the block is at its end that way.
+        assert_eq!(wheel_taker(None, still, now, key(1), false), Taker::Chat);
+    }
+
+    #[test]
+    fn a_turn_of_the_wheel_keeps_scrolling_what_it_started_on() {
+        let now = Instant::now();
+        let ms = |n| Duration::from_millis(n);
+        let still = Some(now - ms(2000));
+        let on_block = Some((now - ms(50), Taker::Block(key(1))));
+        // At the block's end, the rest of the turn doesn't spill into the chat.
+        assert_eq!(
+            wheel_taker(on_block, still, now, key(1), false),
+            Taker::Block(key(1))
+        );
+        // Over another block, the chat's turn goes on.
+        assert_eq!(wheel_taker(on_block, still, now, key(2), true), Taker::Chat);
+        let on_chat = Some((now - ms(50), Taker::Chat));
+        assert_eq!(wheel_taker(on_chat, still, now, key(1), true), Taker::Chat);
+        // A pause ends the turn.
+        let paused = Some((now - ms(1000), Taker::Chat));
+        assert_eq!(
+            wheel_taker(paused, still, now, key(1), true),
+            Taker::Block(key(1))
+        );
+    }
+
+    #[test]
+    fn the_buttons_stay_in_sight_within_their_block() {
+        // The whole block shows: its top corner.
+        assert_eq!(corner_top(100., 500., Some(50.), 28., 2.), 102.);
+        assert_eq!(corner_top(100., 500., None, 28., 2.), 102.);
+        // Its top is scrolled out of sight: just under the chat's top.
+        assert_eq!(corner_top(100., 500., Some(300.), 28., 2.), 302.);
+        // Never past its bottom.
+        assert_eq!(corner_top(100., 500., Some(490.), 28., 2.), 470.);
+        // A block lower than the buttons keeps them at its top.
+        assert_eq!(corner_top(100., 120., Some(300.), 28., 2.), 102.);
+    }
 
     #[test]
     fn a_thumb_shows_how_much_is_visible_and_where() {
