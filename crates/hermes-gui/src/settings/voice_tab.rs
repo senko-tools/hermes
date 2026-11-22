@@ -32,29 +32,33 @@ impl Shell {
         let selects = page.device_selects.as_ref();
         // Sliders on the right; volumes run the card's width under their name.
         const SLIDER_W: f32 = 240.;
-        note_part("Refresh devices", "Device list", "Microphone");
-        let devices = group_with(
+        note_part("Refresh devices", "Device list", "Input");
+        let devices = section_with(
             "Devices",
-            crate::ui::button(
-                self,
-                "devices-refresh",
-                "Refresh devices",
-                ButtonKind::Secondary,
-                true,
-                |this, _, cx| this.load_devices(cx),
-                cx,
-            )
-            .into_any_element(),
+            "Which microphone and speakers Hermes uses.",
+            Some(
+                crate::ui::button(
+                    self,
+                    "devices-refresh",
+                    "Refresh devices",
+                    ButtonKind::Secondary,
+                    true,
+                    |this, _, cx| this.load_devices(cx),
+                    cx,
+                )
+                .into_any_element(),
+            ),
             vec![
-                setting_fit("Microphone", "", device_select(selects.map(|s| &s.input))),
-                setting_fit("Speakers", "", device_select(selects.map(|s| &s.output))),
+                setting_fit("Input", "", device_select(selects.map(|s| &s.input))),
+                setting_fit("Output", "", device_select(selects.map(|s| &s.output))),
             ],
         );
-        let volumes = group(
+        let volumes = section(
             "Volume",
-            vec![
+            "",
+            vec![setting_pair(
                 setting_below(
-                    "Microphone volume",
+                    "Input volume",
                     &hermes_client_core::audio::volume_label(v.input_volume as f32),
                     self.slider(page, SliderKind::InputVolume),
                 ),
@@ -63,7 +67,7 @@ impl Shell {
                     &hermes_client_core::audio::volume_label(v.output_volume as f32),
                     self.slider(page, SliderKind::OutputVolume),
                 ),
-            ],
+            )],
         );
         let ptt_mode = v.mode == config::VoiceMode::PushToTalk;
         let mode = crate::ui::segmented(
@@ -245,8 +249,9 @@ impl Shell {
             },
             cx,
         );
-        let processing = group(
+        let processing = section(
             "Processing",
+            "Cleaning up your voice before it is sent.",
             vec![
                 setting_fit(
                     "Noise suppression",
@@ -286,8 +291,9 @@ impl Shell {
                 advanced,
             ],
         );
-        let sounds = group(
+        let sounds = section(
             "Sounds and joining",
+            "",
             vec![
                 setting_fit(
                     "Play sounds",
@@ -326,7 +332,7 @@ impl Shell {
             vec![
                 devices,
                 volumes,
-                group("Input", input_rows),
+                section("Input", "How your voice gets through.", input_rows),
                 processing,
                 sounds,
             ],

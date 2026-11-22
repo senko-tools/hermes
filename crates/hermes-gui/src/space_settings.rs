@@ -1849,7 +1849,11 @@ impl Shell {
             .collect();
         let actions = manage.then(|| {
             let (channel_inst, category_inst) = (inst.clone(), inst.clone());
-            crate::settings::wrap()
+            // Not `settings::wrap()`: that is as wide as its parent, and it squeezed the title
+            // to a letter per line.
+            div()
+                .flex()
+                .gap(px(8.))
                 .child(crate::ui::button(
                     self,
                     "channel-create",
@@ -3038,19 +3042,10 @@ fn item_page(
         .flex_col()
         .gap(px(20.))
         .size_full()
-        .p(px(24.))
+        .p(px(32.))
         .overflow_y_scroll()
         .child(page_part(back))
-        .child(page_part(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap(px(12.))
-                .child(div().flex_1().min_w(px(200.)).child(title))
-                .child(actions)
-                .into_any_element(),
-        ))
+        .child(page_part(crate::settings::title_bar(title, Some(actions))))
         .children(parts.into_iter().map(page_part))
         .into_any_element()
 }

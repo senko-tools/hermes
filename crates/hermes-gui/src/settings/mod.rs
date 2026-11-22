@@ -704,35 +704,50 @@ pub fn page_body_with(
         .track_scroll(&scroll)
         .flex()
         .flex_col()
-        // Groups stand further apart than the rows inside them.
-        .gap(px(28.))
+        // Sections stand further apart than the rows inside them.
+        .gap(px(SECTION_GAP))
         .size_full()
-        .p(px(24.))
+        .p(px(32.))
         .overflow_y_scroll()
-        .child(page_part(
+        .child(page_part(title_bar(
             div()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .min_h(crate::ui::control_h())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(theme::heading_size())
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(SharedString::from(title.to_owned())),
-                )
-                .children(actions)
+                .text_size(theme::heading_size())
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(title.to_owned()))
                 .into_any_element(),
-        ))
+            actions,
+        )))
         .children(text.map(|t| page_part(muted(SharedString::from(t.to_owned())))))
         .children(groups.into_iter().map(page_part))
         .into_any_element()
 }
 
-/// How wide a page's column may grow (#62): wider, a row's name and its control drift apart.
-pub const PAGE_W: f32 = 760.;
+/// How far apart a page's sections stand.
+pub const SECTION_GAP: f32 = 32.;
+
+/// A page's (or an item's) title with its buttons on the right. The title keeps its own width
+/// and only truncates once the buttons need the room: a wide box of buttons must never squeeze
+/// it to a letter per line.
+pub fn title_bar(title: AnyElement, actions: Option<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .min_h(crate::ui::control_h())
+        .child(div().flex_1().min_w(px(120.)).truncate().child(title))
+        .children(actions.map(|a| {
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .child(a)
+        }))
+        .into_any_element()
+}
+
+/// How wide a page's column may grow: the section rail and its card side by side.
+pub const PAGE_W: f32 = 1100.;
 
 /// One part of a page in the centered column.
 pub fn page_part(part: AnyElement) -> AnyElement {
@@ -753,20 +768,42 @@ pub fn centered(part: impl IntoElement) -> AnyElement {
 }
 
 pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
-    group_with(title, div().into_any_element(), rows)
+    section(title, "", rows)
 }
 
-/// A titled group of settings, with something on the title's right.
+/// A titled group of settings, with something (a button) under the title in the rail.
 pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> AnyElement {
-    let header = group_header(title, actions);
+    section_with(title, "", Some(actions), rows)
+}
+
+/// A section: its name and a short description in the rail on the left, its rows on a card on
+/// the right. Too narrow for both, the rail goes above the card.
+pub fn section(title: &str, description: &str, rows: Vec<AnyElement>) -> AnyElement {
+    section_with(title, description, None, rows)
+}
+
+/// [`section`] with something (a button) in the rail under the description.
+pub fn section_with(
+    title: &str,
+    description: &str,
+    actions: Option<AnyElement>,
+    rows: Vec<AnyElement>,
+) -> AnyElement {
+    let rail = section_rail(title, description, actions);
     group_column(
-        header,
+        rail,
         (!rows.is_empty()).then(|| group_card(rows).into_any_element()),
     )
 }
 
-/// A group's title line, with something on its right.
-fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
+/// How wide the rail is at least; it takes [`RAIL_SHARE`] of the page beyond that.
+const RAIL_MIN_W: f32 = 200.;
+const RAIL_SHARE: f32 = 0.28;
+/// How narrow a card may get before the rail moves above it.
+const CARD_MIN_W: f32 = 440.;
+
+/// A section's name, description and buttons, on the left of its card.
+fn section_rail(title: &str, description: &str, actions: Option<AnyElement>) -> gpui_kit::Div {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
             r.group(title);
@@ -774,16 +811,25 @@ fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
     });
     div()
         .flex()
-        .items_center()
-        .gap(px(8.))
+        .flex_col()
+        .items_start()
+        .gap(px(4.))
+        .pt(px(10.))
         .child(
             div()
-                .flex_1()
-                .text_size(theme::caption_size())
-                .text_color(theme::text_tertiary())
-                .child(title.to_uppercase()),
+                .text_size(theme::body_size())
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(title.to_owned())),
         )
-        .child(actions)
+        .when(!description.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(theme::secondary_size())
+                    .text_color(theme::text_tertiary())
+                    .child(SharedString::from(description.to_owned())),
+            )
+        })
+        .children(actions.map(|a| div().pt(px(8.)).child(a)))
 }
 
 /// A group's rows on their card, a thin line between each two.
@@ -805,23 +851,39 @@ pub(crate) fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
-        .px(px(14.))
-        .py(px(4.))
+        .px(px(16.))
+        .py(px(6.))
         .rounded(theme::radius_large())
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::sidebar())
         .children(children)
 }
 
-/// The title line over the card (none while folded).
-fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
+/// The rail and the card side by side, wrapping the rail above the card when both do not fit.
+fn group_column(rail: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
     div()
         .flex()
-        .flex_col()
+        .flex_wrap()
         .flex_shrink_0()
-        .gap(px(10.))
+        .gap_x(px(32.))
+        .gap_y(px(10.))
         .w_full()
-        .child(header)
-        .children(card)
+        // The rail keeps its share; the card takes the rest, and when it would get narrower
+        // than it may, it goes to a line of its own under the rail.
+        .child(
+            rail.flex_grow_0()
+                .flex_shrink_0()
+                .flex_basis(gpui_kit::relative(RAIL_SHARE))
+                .min_w(px(RAIL_MIN_W)),
+        )
+        .children(card.map(|card| {
+            div()
+                .flex_grow_1()
+                .flex_basis(px(0.))
+                .min_w(px(CARD_MIN_W))
+                .child(card)
+        }))
         .into_any_element()
 }
 
@@ -858,6 +920,31 @@ pub fn setting_fit(name: &str, hint: &str, control: impl IntoElement) -> AnyElem
 pub fn setting_below(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
     setting_at(Place::Below, name, hint, control)
 }
+
+/// Two [`setting_below`] side by side on one row ("Input volume" and "Output volume"); a card
+/// too narrow for both puts the second under the first.
+pub fn setting_pair(first: AnyElement, second: AnyElement) -> AnyElement {
+    let cell = |row: AnyElement| {
+        div()
+            .flex_grow_1()
+            .flex_basis(px(0.))
+            .min_w(px(PAIR_CELL_MIN_W))
+            .child(row)
+    };
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(24.))
+        .child(cell(first))
+        .child(cell(second))
+        .into_any_element()
+}
+
+/// How narrow one half of a [`setting_pair`] may get before they stack.
+const PAIR_CELL_MIN_W: f32 = 240.;
+
+/// The space above and under a row's content.
+const ROW_PAD_Y: f32 = 12.;
 
 /// Notes for the search a setting that is a part of the row named `row` (a cell of a table of
 /// switches): finding it lights that row. Draws nothing.
@@ -930,7 +1017,7 @@ fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -
             .flex()
             .flex_col()
             .gap(px(10.))
-            .py(px(10.))
+            .py(px(ROW_PAD_Y))
             .child(text)
             .child(div().w_full().child(control)),
         Place::Column | Place::Fit => div()
@@ -938,7 +1025,7 @@ fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -
             .flex_wrap()
             .items_center()
             .gap(px(12.))
-            .py(px(10.))
+            .py(px(ROW_PAD_Y))
             .child(text.flex_1().min_w(px(220.)))
             .child(
                 div()

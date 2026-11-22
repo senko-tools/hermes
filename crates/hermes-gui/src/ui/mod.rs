@@ -648,13 +648,20 @@ pub fn button(
         .px(px(12.))
         .rounded(theme::radius_small())
         .whitespace_nowrap()
+        // A light line along the top edge, inside.
+        .shadow(vec![shadow(0.07, true, 1., 0., true)])
         .with_spring(
             SharedString::from(format!("{id}-face")),
             spring(if hover { 1. } else { 0. }),
             move |d, t| {
                 let t = t.clamp(0., 1.);
                 let (bg, text) = button_colors(kind, t);
-                d.bg(bg).text_color(text).child(label.clone())
+                // An edge a shade lighter than the face, so it reads as a raised plate.
+                d.bg(bg)
+                    .border_1()
+                    .border_color(theme::mix(bg, text, 0.14))
+                    .text_color(text)
+                    .child(label.clone())
             },
         );
     let el = div()
@@ -663,8 +670,25 @@ pub fn button(
         .h(control_h())
         .rounded(theme::radius_small())
         .text_size(theme::secondary_size())
+        .when(enabled, |d| {
+            d.shadow(vec![shadow(0.28, false, 1., 2., false)])
+                // Pressed, it sinks: the shadow under it goes and the face moves down a pixel.
+                .active(|s| s.shadow_none().pt(px(1.)))
+        })
         .child(face);
     pressable(el, shell, &id, enabled, Some(act(cx, action)), cx)
+}
+
+/// A black or white shadow `y` px down: outside a raised control, or inside it (`inset`) for
+/// the light line along its top edge.
+fn shadow(alpha: f32, white: bool, y: f32, blur: f32, inset: bool) -> gpui_kit::BoxShadow {
+    gpui_kit::BoxShadow {
+        color: gpui_kit::hsla(0., 0., if white { 1. } else { 0. }, alpha),
+        offset: gpui_kit::point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(0.),
+        inset,
+    }
 }
 
 /// A button's fill and text at hover `t` (0 at rest, 1 under the pointer).
