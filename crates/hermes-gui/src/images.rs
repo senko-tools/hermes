@@ -429,6 +429,21 @@ impl Images {
         }
     }
 
+    /// Puts a picture made here in place of a thumbnail (a video's sharper poster, #76); it
+    /// fades in as one that just arrived.
+    pub fn put_thumbnail(&mut self, key: ImageKey, picture: Picture) {
+        match self.thumbs.remove(&key) {
+            Some(old) => self.retire(old),
+            None => {
+                self.evict_thumbnails();
+                self.thumb_order.push_back(key.clone());
+            }
+        }
+        self.thumb_arrived
+            .insert(key.clone(), std::time::Instant::now());
+        self.thumbs.insert(key, Img::Ready(picture));
+    }
+
     /// Makes room for one more thumbnail.
     fn evict_thumbnails(&mut self) {
         while self.thumb_order.len() >= MAX_THUMBNAILS {
@@ -809,6 +824,7 @@ impl Shell {
                 self.load_thumbnail(host, attachment, cx);
             }
         }
+        self.start_video_fills(cx);
         // Originals that are themselves needed to draw a preview go first; the rest are fetched
         // ahead of a click once each, within the memory budget.
         for need_preview in [true, false] {

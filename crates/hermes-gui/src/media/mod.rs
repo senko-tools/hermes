@@ -3,6 +3,7 @@
 
 pub mod cards;
 pub mod ffmpeg;
+pub mod fill;
 pub mod player;
 pub mod serve;
 pub mod waveform;
@@ -76,7 +77,13 @@ pub fn measure_file(path: &std::path::Path) -> Measured {
             waveform: None,
             duration_ms,
             size: Some((width, height)),
-            poster: poster(&served.url, probe.duration_ms, (width, height)),
+            poster: still_picture(
+                &served.url,
+                probe.duration_ms,
+                (width, height),
+                (POSTER_SIDE, POSTER_SIDE),
+            )
+            .and_then(|image| encode(&image, image::ImageFormat::Png)),
         };
     }
     if !probe.audio {
@@ -100,17 +107,72 @@ pub fn measure_file(path: &std::path::Path) -> Measured {
     }
 }
 
-/// One picture of the video at `url` as a PNG at most [`POSTER_SIDE`] long: a second in (the
-/// first frames are often black), or half way through a shorter one.
-fn poster(url: &str, duration_ms: u64, (width, height): (u32, u32)) -> Option<Vec<u8>> {
+/// What a receiver learnt of a video that came without its size or a sharp enough poster.
+#[derive(Debug, Clone)]
+pub struct Inspected {
+    /// Its size as shown.
+    pub size: (u32, u32),
+    pub duration_ms: Option<u64>,
+    /// A picture from it as a JPEG, sized for the card it is shown on.
+    pub poster: Option<Vec<u8>>,
+}
+
+/// Looks at a video someone sent (#76): its size as shown, its length, and a picture fitting
+/// within `bound` device pixels (never larger than the video). A file read in parts is only
+/// read where FFmpeg looks: its start, its index and around the picture. Blocks.
+pub fn inspect(source: serve::Source, bound: (u32, u32)) -> Result<Inspected, String> {
+    let served = serve::serve(source).map_err(|e| e.to_string())?;
+    let probe = ffmpeg::probe(&served.url)?;
+    let Some((width, height, _)) = probe.video else {
+        return Err("no picture in it".into());
+    };
+    let poster = still_picture(&served.url, probe.duration_ms, (width, height), bound)
+        .and_then(|image| encode(&image, image::ImageFormat::Jpeg));
+    Ok(Inspected {
+        size: (width, height),
+        duration_ms: (probe.duration_ms > 0).then_some(probe.duration_ms),
+        poster,
+    })
+}
+
+/// The size of a picture of a `width` by `height` video fitting within `bound`, never larger
+/// than the video, in even numbers (some encoders' frames refuse odd ones).
+fn poster_size((width, height): (u32, u32), (max_w, max_h): (u32, u32)) -> (u32, u32) {
+    let scale = (max_w as f32 / width.max(1) as f32)
+        .min(max_h as f32 / height.max(1) as f32)
+        .min(1.);
+    let even = |v: f32| ((v.round() as u32).max(2) / 2) * 2;
+    (even(width as f32 * scale), even(height as f32 * scale))
+}
+
+/// `image` as a PNG or JPEG file.
+fn encode(image: &image::RgbaImage, format: image::ImageFormat) -> Option<Vec<u8>> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    if format == image::ImageFormat::Jpeg {
+        // JPEG has no transparency; a video frame has none to lose.
+        let rgb = image::DynamicImage::ImageRgba8(image.clone()).into_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88)
+            .encode_image(&rgb)
+            .ok()?;
+    } else {
+        image.write_to(&mut out, format).ok()?;
+    }
+    Some(out.into_inner())
+}
+
+/// One picture of the video at `url`, fitting within `bound` and never larger than the video:
+/// a second in (the first frames are often black), or half way through a shorter one.
+fn still_picture(
+    url: &str,
+    duration_ms: u64,
+    (width, height): (u32, u32),
+    (max_w, max_h): (u32, u32),
+) -> Option<image::RgbaImage> {
     use std::io::Read as _;
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || max_w == 0 || max_h == 0 {
         return None;
     }
-    let scale = (POSTER_SIDE as f32 / width.max(height) as f32).min(1.);
-    // Even sizes: some encoders' frames refuse odd ones.
-    let even = |v: f32| ((v.round() as u32).max(2) / 2) * 2;
-    let (w, h) = (even(width as f32 * scale), even(height as f32 * scale));
+    let (w, h) = poster_size((width, height), (max_w, max_h));
     let at = if duration_ms > 2_000 {
         1_000
     } else {
@@ -126,10 +188,7 @@ fn poster(url: &str, duration_ms: u64, (width, height): (u32, u32)) -> Option<Ve
     for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    let image = image::RgbaImage::from_raw(w, h, bgra)?;
-    let mut png = std::io::Cursor::new(Vec::new());
-    image.write_to(&mut png, image::ImageFormat::Png).ok()?;
-    Some(png.into_inner())
+    image::RgbaImage::from_raw(w, h, bgra)
 }
 
 #[cfg(test)]
@@ -228,5 +287,39 @@ mod tests {
             (160, 90),
             "small videos keep their size"
         );
+    }
+
+    #[test]
+    fn a_turned_video_is_inspected_upright() {
+        let Some(bytes) = clip() else {
+            eprintln!("FFmpeg is not installed: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir();
+        let (plain, turned) = (
+            dir.join(format!("hermes-turn-in-{}.mkv", std::process::id())),
+            dir.join(format!("hermes-turn-out-{}.mp4", std::process::id())),
+        );
+        std::fs::write(&plain, bytes).unwrap();
+        // `-display_rotation` needs FFmpeg 6.1 or later.
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+            .arg(&plain)
+            .args(["-c", "copy"])
+            .arg(&turned)
+            .status()
+            .is_ok_and(|s| s.success());
+        let bytes = std::fs::read(&turned).ok().filter(|_| made);
+        let _ = (std::fs::remove_file(&plain), std::fs::remove_file(&turned));
+        let Some(bytes) = bytes else {
+            eprintln!("this FFmpeg cannot turn a video: skipped");
+            return;
+        };
+        let seen = inspect(serve::Source::Memory(Arc::new(bytes)), (1000, 1000)).unwrap();
+        assert_eq!(seen.size, (90, 160));
+        let poster = image::load_from_memory(seen.poster.as_ref().expect("a poster")).unwrap();
+        assert_eq!((poster.width(), poster.height()), (90, 160));
+        // Made smaller to fit the card, keeping its shape.
+        assert_eq!(poster_size(seen.size, (45, 1000)), (44, 80));
     }
 }

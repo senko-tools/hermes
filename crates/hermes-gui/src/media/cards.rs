@@ -137,6 +137,8 @@ impl MediaItem {
 #[derive(Default)]
 pub struct Media {
     items: HashMap<MediaKey, MediaItem>,
+    /// Videos looked at here because they came without a size or a sharp poster (#76).
+    pub fill: super::fill::Fill,
     /// Where files that were let go had got to, and how long they last.
     resume: HashMap<MediaKey, (u64, u64)>,
     /// Waveforms measured here, kept when their file is let go.
@@ -1602,11 +1604,16 @@ impl Shell {
         let key: MediaKey = (inst.clone(), a.id);
         self.media_drawn(&key);
         let item = self.media.items.get(&key);
-        let shape = match (item.map(|i| &i.load), a.width, a.height) {
+        let filled = self.media.fill.get(&key);
+        // The player's own probe, else what this client learnt (turned upright), else what the
+        // sender said.
+        let shape = match (item.map(|i| &i.load), filled, a.width, a.height) {
             (Some(Load::Ready(player)), ..) => player.probe.video,
-            (_, Some(w), Some(h)) => Some((w, h, 0.)),
+            (_, Some(f), ..) => Some((f.size.0, f.size.1, 0.)),
+            (_, _, Some(w), Some(h)) => Some((w, h, 0.)),
             _ => None,
         };
+        let duration_ms = a.duration_ms.or(filled.and_then(|f| f.duration_ms));
         // The box follows the "Size of pictures and videos" setting, as the player does.
         let scale = crate::channel::media_scale();
         let (box_w, box_h) = (VIDEO_W * scale, VIDEO_H * scale);
@@ -1658,18 +1665,62 @@ impl Shell {
             other => {
                 let loading = matches!(other, Some((Load::Loading, _)));
                 let (toggle_inst, toggle_a) = (inst.clone(), a.clone());
-                // Its poster, under the play button, until it plays (#8).
+                // Its size or poster missing: looked at once it is on screen (#76). The box
+                // as large as it can get, in device pixels.
+                let device = theme::scale() * self.scale;
+                self.note_video_card(
+                    &key,
+                    a,
+                    (
+                        (box_w * device).round() as u32,
+                        (box_h * device).round() as u32,
+                    ),
+                );
+                // Its poster, under the play button, until it plays (#8); one that just
+                // arrived fades in.
                 let poster = match self.images.thumbs.get(&key) {
-                    Some(crate::images::Img::Ready(picture)) => Some(
-                        img(picture.still.clone())
+                    Some(crate::images::Img::Ready(picture)) => {
+                        let picture = img(picture.still.clone())
                             .absolute()
                             .inset_0()
                             .size_full()
-                            .object_fit(ObjectFit::Cover),
-                    ),
+                            // As the playing video is drawn, so pressing play does not crop
+                            // or uncrop it (a tall video in a card at its smallest width).
+                            .object_fit(ObjectFit::Contain);
+                        let just_arrived =
+                            self.images.thumb_arrived.get(&key).is_some_and(|at| {
+                                at.elapsed() < std::time::Duration::from_millis(400)
+                            });
+                        Some(if just_arrived {
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .child(picture)
+                                .with_animation(
+                                    SharedString::from(format!("video-poster-in-{}", a.id)),
+                                    gpui_kit::Animation::new(theme::fade() * 2)
+                                        .with_easing(gpui_kit::ease_out_quint()),
+                                    |d, t| d.opacity(t),
+                                )
+                                .into_any_element()
+                        } else {
+                            picture.into_any_element()
+                        })
+                    }
                     _ => None,
                 };
-                let length = a.duration_ms.map(|ms| {
+                // While its shape is being learnt, the box breathes softly instead of
+                // sitting black.
+                let shimmer = (shape.is_none() && self.media.fill.running(&key)).then(|| {
+                    div().absolute().inset_0().with_animation(
+                        SharedString::from(format!("video-wait-{}", a.id)),
+                        gpui_kit::Animation::new(std::time::Duration::from_millis(1400))
+                            .repeat()
+                            .with_easing(gpui_kit::pulsating_between(0., 1.)),
+                        |d, t| d.bg(theme::alpha(theme::hover(), 0.6 * t)),
+                    )
+                });
+                let length = duration_ms.map(|ms| {
                     div()
                         .absolute()
                         .right(px(8.))
@@ -1682,7 +1733,8 @@ impl Shell {
                         .text_color(gpui_kit::rgb(0xffffff))
                         .child(clock(ms))
                 });
-                card.children(poster)
+                card.children(shimmer)
+                    .children(poster)
                     .children(length)
                     .child(
                         play_button(
