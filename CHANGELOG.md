@@ -11,6 +11,20 @@ How to write it:
 - Before a release, rename `## Unreleased` to `## <version>` (e.g. `## 1.4.2`). The release
   workflow stops if that section is missing.
 
+## Unreleased
+
+### New
+- A "Codes" link under the time and date patterns (Settings > Chat) lists every code with what it gives right now
+- Settings > Appearance > Layout: choose how long the pointer rests on a long description before it scrolls, from 0 to 2 seconds
+
+### Changed
+- Settings descriptions too long for their line no longer hide behind an (i): resting the pointer on one scrolls it to its end, and it goes round again while the pointer stays
+- Updates moved to Settings > About: "Check for updates" sits by the version number and says how the check went, with "Check for updates on start" and "Auto-update" under it
+
+### Fixed
+- Videos show their real shape and a sharp first picture before they are played, also ones sent without a picture
+- Videos recorded with the phone held upright show and play upright, no longer squeezed into a wide box
+
 ## 1.4.2
 
 ### New
