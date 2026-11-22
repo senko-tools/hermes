@@ -4,7 +4,7 @@
 //!
 //! The wheel never gets caught by a block on its way through the chat: up and down, a block cut
 //! short scrolls only when a new turn of the wheel starts over it while the chat is still and the
-//! block can move that way ([`wheel_taker`]). Sideways needs Shift or Ctrl. The scrollbars can
+//! block can move that way ([`wheel_taker`]). Sideways needs Shift. The scrollbars can
 //! always be dragged or clicked.
 
 use std::cell::{Cell, RefCell};
@@ -280,8 +280,8 @@ impl CodeBlocks {
         };
         let (dx, dy) = wheel_pixels(event);
         let m = event.modifiers;
-        // Sideways only on purpose: Shift (which Windows turns sideways itself) or Ctrl.
-        if m.shift || m.control {
+        // Sideways only on purpose: Shift, which Windows turns sideways itself.
+        if m.shift {
             let delta = if dx != 0. { dx } else { dy };
             if !g.wide || delta == 0. {
                 return (false, false);
