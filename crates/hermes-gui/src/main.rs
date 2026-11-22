@@ -54,6 +54,7 @@ mod syntax;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod time_codes;
 mod tree;
 mod ui;
 mod unencrypted;

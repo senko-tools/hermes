@@ -149,6 +149,19 @@ type MemberGroupsCache = std::cell::RefCell<
     HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
 >;
 
+/// Where a "Check for updates" asked by hand is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCheck {
+    Idle,
+    Checking,
+    /// Nothing newer: said for [`UP_TO_DATE_FOR`], then back to `Idle`.
+    UpToDate,
+    Failed,
+}
+
+/// How long "Up to date" shows on the About page.
+const UP_TO_DATE_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct Shell {
     pub core: Core,
     pub runtime: Handle,
@@ -273,6 +286,10 @@ pub struct Shell {
     pub update: Option<hermes_client_core::update::Update>,
     /// The "what's new" popup of [`Shell::update`] is open.
     pub update_notes_open: bool,
+    /// Where "Check for updates" on the About page is.
+    pub update_check: UpdateCheck,
+    /// The time and date codes popup is open (`time_codes`).
+    pub time_codes_open: bool,
     /// The updater's window, while it is open.
     pub updater: Option<crate::updater_window::Updater>,
     /// "Not now" on the newer-server banner, for this run.
@@ -506,6 +523,8 @@ impl Shell {
             system_reduce_motion: false,
             update: None,
             update_notes_open: false,
+            update_check: UpdateCheck::Idle,
+            time_codes_open: false,
             newer_server_dismissed: false,
             updater: None,
             new_dm: None,
@@ -1514,18 +1533,53 @@ impl Shell {
     /// Asks GitHub for a newer release (`general.check_for_updates`).
     /// Asks now, and says what came of it.
     pub fn check_for_update_now(&mut self, cx: &mut Context<Self>) {
+        if self.update_check == UpdateCheck::Checking {
+            return;
+        }
+        self.update_check = UpdateCheck::Checking;
+        cx.notify();
         self.run(
             cx,
             hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
-            |this, result, _, cx| match result {
-                Ok(Some(update)) => {
-                    this.update = Some(update);
-                    cx.notify();
+            |this, result, _, cx| {
+                match result {
+                    Ok(Some(update)) => {
+                        this.update_check = UpdateCheck::Idle;
+                        this.update = Some(update);
+                    }
+                    Ok(None) => {
+                        this.update_check = UpdateCheck::UpToDate;
+                        // The About page says it by the version; elsewhere (the newer-server
+                        // notice) the status line does.
+                        if !this.about_open() {
+                            this.success("Hermes is up to date", cx);
+                        }
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(UP_TO_DATE_FOR).await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.update_check == UpdateCheck::UpToDate {
+                                    this.update_check = UpdateCheck::Idle;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                    Err(err) => {
+                        this.update_check = UpdateCheck::Failed;
+                        this.error(format!("could not check for updates: {err}"), cx);
+                    }
                 }
-                Ok(None) => this.success("Hermes is up to date", cx),
-                Err(err) => this.error(format!("could not check for updates: {err}"), cx),
+                cx.notify();
             },
         );
+    }
+
+    /// Whether the settings show the About page.
+    fn about_open(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(|page| page.tab == crate::settings::Tab::About)
     }
 
     fn check_for_update(&mut self, cx: &mut Context<Self>) {

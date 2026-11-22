@@ -144,10 +144,34 @@ pub enum PopupKey {
 /// The dimmed backdrop with `card` in the middle. `id` names the dialog. The backdrop darkens
 /// while the card fades in and rises a little into place.
 pub fn dialog(id: &'static str, width: f32, card: impl IntoElement) -> AnyElement {
+    dialog_with(id, width, card, None)
+}
+
+/// What a click beside a dialog's card does.
+pub type Outside = Box<dyn Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App)>;
+
+/// [`dialog`] that a click beside its card closes: for one that only shows something (the
+/// time codes), where nothing typed would be lost.
+pub fn dialog_closed_outside(
+    id: &'static str,
+    width: f32,
+    card: impl IntoElement,
+    outside: Outside,
+) -> AnyElement {
+    dialog_with(id, width, card, Some(outside))
+}
+
+fn dialog_with(
+    id: &'static str,
+    width: f32,
+    card: impl IntoElement,
+    outside: Option<Outside>,
+) -> AnyElement {
     let scrim = theme::scrim();
     deferred(
         div()
             .id(id)
+            .when_some(outside, |d, outside| d.on_click(outside))
             .absolute()
             .top_0()
             .left_0()
@@ -364,6 +388,7 @@ impl Shell {
         out.extend(self.render_crop(cx));
         out.extend(self.render_video_full(cx));
         out.extend(self.render_update_notes(cx));
+        out.extend(self.render_time_codes(cx));
         out.extend(self.render_confirm(cx));
         out
     }

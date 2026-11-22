@@ -6,6 +6,7 @@ impl Shell {
     /// The page: navigation on the left, the tab on the right.
     pub fn render_settings(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let page = self.settings.as_ref()?;
+        hint::set_delay(self.config.general.hint_scroll_delay_ms);
         let admin = self.is_instance_admin();
         let item = |(tab, glyph, name): &NavTab, cx: &mut Context<Self>| {
             let tab = *tab;

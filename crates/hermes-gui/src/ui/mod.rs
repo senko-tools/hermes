@@ -951,6 +951,22 @@ pub fn icon_button_with(
         .child(face)
 }
 
+/// Text that is clicked like a link: the accent colour, underlined under the pointer. For a
+/// quiet action next to other text ("Check for updates" by the version, "Codes" under a field)
+/// where a button would be too loud. The caller adds `on_click`.
+pub fn text_link(
+    id: impl Into<gpui_kit::ElementId>,
+    label: impl Into<SharedString>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(id)
+        .flex_shrink_0()
+        .cursor_pointer()
+        .text_color(theme::accent())
+        .hover(|d| d.underline())
+        .child(label.into())
+}
+
 /// [`icon_button`] that says what it does when hovered.
 pub fn tip_button(
     shell: &Shell,

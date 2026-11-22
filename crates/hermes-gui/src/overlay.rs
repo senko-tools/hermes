@@ -25,6 +25,7 @@ pub enum Overlay {
     CommandBar,
     Confirm,
     UpdateNotes,
+    TimeCodes,
     Form,
     NewDm,
     AddInstance,
@@ -32,7 +33,7 @@ pub enum Overlay {
 
 impl Overlay {
     /// Every overlay, in the order Escape closes them: what sits on top first.
-    pub const ESCAPE_ORDER: [Overlay; 17] = [
+    pub const ESCAPE_ORDER: [Overlay; 18] = [
         Overlay::KeysDialog,
         Overlay::Crop,
         Overlay::MediaFull,
@@ -47,6 +48,7 @@ impl Overlay {
         Overlay::CommandBar,
         Overlay::Confirm,
         Overlay::UpdateNotes,
+        Overlay::TimeCodes,
         Overlay::Form,
         Overlay::NewDm,
         Overlay::AddInstance,
@@ -80,6 +82,7 @@ impl Shell {
             Overlay::UpdateNotes => {
                 self.update_notes_open && self.update.is_some() && !gone("update-notes")
             }
+            Overlay::TimeCodes => self.time_codes_open && !gone(crate::time_codes::POPUP),
             Overlay::Form => self.form.is_some() && !gone("form"),
             Overlay::NewDm => self.new_dm.is_some() && !gone("new-dm"),
             Overlay::AddInstance => self.add_instance.is_some() && !gone("add-instance"),
@@ -119,6 +122,9 @@ impl Shell {
             Overlay::UpdateNotes => {
                 self.close_later("update-notes", |s| s.update_notes_open = false, cx);
             }
+            Overlay::TimeCodes => {
+                self.close_later(crate::time_codes::POPUP, |s| s.time_codes_open = false, cx);
+            }
             Overlay::Form => self.close_later("form", |s| s.form = None, cx),
             Overlay::NewDm => self.close_later("new-dm", |s| s.new_dm = None, cx),
             Overlay::AddInstance => {
@@ -155,6 +161,6 @@ mod tests {
         }
         // Adding a variant without placing it here fails to compile in `overlay_open`'s
         // match, and this length keeps the two together.
-        assert_eq!(order.len(), 17);
+        assert_eq!(order.len(), 18);
     }
 }

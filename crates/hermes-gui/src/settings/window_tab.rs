@@ -1,7 +1,7 @@
 //! Window and startup, and screen sharing.
 
 use super::*;
-use crate::ui::{ButtonKind, DropWidth, Segment};
+use crate::ui::{DropWidth, Segment};
 
 const IDLE_AFTER: [(u32, &str); 4] = [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")];
 
@@ -77,38 +77,7 @@ impl Shell {
                 ),
             ],
         );
-        note_part("Check for updates now", "", "Check for updates on start");
-        let updates = group_with(
-            "Updates",
-            crate::ui::button(
-                self,
-                "update-now",
-                "Check now",
-                ButtonKind::Secondary,
-                true,
-                |this, _, cx| this.check_for_update_now(cx),
-                cx,
-            )
-            .into_any_element(),
-            vec![
-                flag!(
-                    self,
-                    cx,
-                    "Check for updates on start",
-                    "",
-                    general.check_for_updates
-                ),
-                flag!(
-                    self,
-                    cx,
-                    "Install updates by themselves",
-                    "A newer version found on start is downloaded (only what changed) \
-                     and Hermes restarts into it.",
-                    general.auto_update
-                ),
-            ],
-        );
-        let mut groups = vec![startup, window, updates];
+        let mut groups = vec![startup, window];
         if portable {
             groups.push(group(
                 "Portable",
