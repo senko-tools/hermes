@@ -57,6 +57,7 @@ mod theme;
 mod tree;
 mod ui;
 mod unencrypted;
+mod update_notes;
 mod updater_window;
 mod user_menu;
 mod voice;
