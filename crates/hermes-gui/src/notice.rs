@@ -8,7 +8,12 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnimationExt as _, AnyElement, Rgba, SharedString, canvas, div};
+use gpui_kit::{
+    AnimationExt as _, AnyElement, App, ClickEvent, Rgba, SharedString, Window, canvas, div,
+};
+
+/// What clicking a whole notice does.
+type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 use crate::assets::{self, icon};
 use crate::theme::{self, px};
@@ -61,6 +66,9 @@ pub struct Notice {
     countdown: Option<Duration>,
     /// On its way out: it plays its coming in backwards.
     leaving: bool,
+    /// The whole card is a button. Its own buttons need `.occlude()`, so a click on them stays
+    /// theirs.
+    on_click: Option<OnClick>,
 }
 
 impl Notice {
@@ -74,7 +82,17 @@ impl Notice {
             dismiss: None,
             countdown: None,
             leaving: false,
+            on_click: None,
         }
+    }
+
+    /// Clicking anywhere on the card (but its buttons) does `handler`; it lights up on hover.
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Box::new(handler));
+        self
     }
 
     /// In place of the severity's own icon.
@@ -114,6 +132,7 @@ impl Notice {
             dismiss,
             countdown,
             leaving,
+            on_click,
         } = self;
         let color = severity.color();
         let critical = severity == Severity::Critical;
@@ -130,6 +149,11 @@ impl Notice {
                     |d, t| d.w(gpui_kit::relative(1. - t)),
                 )
         });
+        let background = if critical {
+            theme::mix(theme::sidebar(), theme::danger(), 0.12)
+        } else {
+            theme::sidebar()
+        };
         div()
             .id(key.clone())
             .occlude()
@@ -143,11 +167,7 @@ impl Notice {
             .py(px(5.))
             .rounded(theme::radius_large())
             .overflow_hidden()
-            .bg(if critical {
-                theme::mix(theme::sidebar(), theme::danger(), 0.12)
-            } else {
-                theme::sidebar()
-            })
+            .bg(background)
             .border_1()
             .border_color(if critical {
                 theme::alpha(theme::danger(), 0.6)
@@ -156,6 +176,11 @@ impl Notice {
             })
             .shadow_lg()
             .cursor_default()
+            .when_some(on_click, |d, handler| {
+                d.cursor_pointer()
+                    .hover(move |d| d.bg(theme::mix(background, theme::hover(), 0.6)))
+                    .on_click(move |event, window, cx| handler(event, window, cx))
+            })
             .text_size(theme::secondary_size())
             .text_color(theme::text())
             // The severity's accent along the left edge.

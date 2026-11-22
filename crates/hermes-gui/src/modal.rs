@@ -363,6 +363,7 @@ impl Shell {
         out.extend(self.render_emoji_picker(cx));
         out.extend(self.render_crop(cx));
         out.extend(self.render_video_full(cx));
+        out.extend(self.render_update_notes(cx));
         out.extend(self.render_confirm(cx));
         out
     }

@@ -263,8 +263,14 @@ pub enum Stage {
     Failed(String),
 }
 
-/// Where downloads of `version` wait until installed.
+/// Where downloads of `version` wait until installed: in a portable folder (`config.toml` next
+/// to the program) inside it, so nothing is left on the computer; otherwise the user's cache.
 pub fn staging_dir(version: &str) -> Option<PathBuf> {
+    if let Some(dir) = install_dir()
+        && dir.join(crate::config::CONFIG_FILE).is_file()
+    {
+        return Some(dir.join("update").join(version));
+    }
     let base = directories::ProjectDirs::from("tools", "senko", "Hermes")?;
     Some(base.cache_dir().join("update").join(version))
 }
@@ -337,6 +343,8 @@ pub async fn test_check(current: &str) -> Option<Result<Option<crate::update::Up
             Ok(newer.then(|| crate::update::Update {
                 version: manifest.version,
                 url: base.clone(),
+                // The test server has none.
+                notes: Vec::new(),
             }))
         }
         .await,
@@ -513,6 +521,10 @@ pub fn install(plan: &Plan, staging: &Path) -> Result<(), String> {
     }
     let _ = std::fs::write(dir.join(STARTED_MARKER), &plan.version);
     let _ = std::fs::remove_dir_all(staging);
+    // The `update` folder too once empty (in a portable folder it sits beside the program).
+    if let Some(parent) = staging.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
     Ok(())
 }
 

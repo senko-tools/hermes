@@ -323,6 +323,15 @@ impl CoreOptions {
         })
     }
 
+    /// Sign-ins and keys in the config folder's `tokens.toml` instead of the credential store, for
+    /// a portable folder with `sign_ins_in_folder` on. Without paths it changes nothing.
+    pub fn sign_ins_in_folder(mut self) -> Self {
+        if let Some(paths) = &self.paths {
+            self.tokens = TokenStore::Folder(paths.tokens());
+        }
+        self
+    }
+
     /// Everything in memory.
     pub fn in_memory(client_name: &str) -> Self {
         CoreOptions {

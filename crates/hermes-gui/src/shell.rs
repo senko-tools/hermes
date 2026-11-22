@@ -20,7 +20,7 @@ use hermes_client_core::{Core, CoreEvent, CoreEvents, InstanceId};
 use tokio::runtime::Handle;
 
 use crate::notice::{Notice, Severity};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::Button;
 
 use crate::add_instance::AddInstance;
 use crate::assets::{self, icon};
@@ -271,6 +271,8 @@ pub struct Shell {
     pub system_reduce_motion: bool,
     /// A newer release, if the update check found one.
     pub update: Option<hermes_client_core::update::Update>,
+    /// The "what's new" popup of [`Shell::update`] is open.
+    pub update_notes_open: bool,
     /// The updater's window, while it is open.
     pub updater: Option<crate::updater_window::Updater>,
     /// "Not now" on the newer-server banner, for this run.
@@ -503,6 +505,7 @@ impl Shell {
             last_message_sound: None,
             system_reduce_motion: false,
             update: None,
+            update_notes_open: false,
             newer_server_dismissed: false,
             updater: None,
             new_dm: None,
@@ -1532,14 +1535,15 @@ impl Shell {
         self.run(
             cx,
             hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
-            |this, result, _, cx| match result {
+            |this, result, window, cx| match result {
                 Ok(update) => {
-                    // Installed right away when that is wanted and this build can.
+                    // Installed right away when that is wanted and this build can: like Steam,
+                    // Hermes opens into the updater.
                     if let Some(found) = &update
                         && this.config.general.auto_update
                         && hermes_client_core::updater::available()
                     {
-                        this.start_update(found.version.clone(), found.url.clone(), cx);
+                        this.start_update(found.version.clone(), found.url.clone(), window, cx);
                     }
                     this.update = update;
                 }
@@ -1548,41 +1552,51 @@ impl Shell {
         );
     }
 
+    /// "Hermes X is available": clicking it shows what changed (`update_notes`), which has the
+    /// Update button.
     fn update_notice(&self, cx: &mut Context<Self>) -> Option<Notice> {
         let update = self.update.as_ref()?;
-        let url = update.url.clone();
-        let version = update.version.clone();
-        // This build updates itself: the button starts it, else it opens the release page.
-        let self_update = hermes_client_core::updater::available();
+        let text = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(format!("Hermes {} is available", update.version)),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .text_color(theme::text_secondary())
+                    .child("See what's new")
+                    .child(
+                        icon(assets::CHEVRON_DOWN, 16., theme::text_tertiary())
+                            .with_transformation(gpui_kit::Transformation::rotate(
+                                gpui_kit::radians(-std::f32::consts::FRAC_PI_2),
+                            )),
+                    ),
+            );
         Some(
-            Notice::new(
-                format!("update-{}", update.version),
-                Severity::Info,
-                format!("Hermes {} is available", update.version),
-            )
-            .icon(icon(assets::DOWNLOAD, 16., theme::accent()))
-            .button(
-                Button::new("update-start")
-                    .cursor_pointer()
-                    .primary()
-                    .label(if self_update { "Update" } else { "Open" })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if self_update {
-                            this.start_update(version.clone(), url.clone(), cx);
-                            return;
-                        }
-                        if let Err(err) = crate::open::url(&url) {
-                            this.error(format!("could not open the browser: {err}"), cx);
-                        }
-                    })),
-            )
-            .dismiss(
-                crate::ui::tip_button(self, "update-dismiss", assets::CLOSE, "Not now", cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.close_later("update-notice", |s| s.update = None, cx);
-                    })),
-            )
-            .leaving(crate::modal::closing("update-notice")),
+            Notice::new(format!("update-{}", update.version), Severity::Info, text)
+                .icon(icon(assets::DOWNLOAD, 16., theme::accent()))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.cancel_closing("update-notes");
+                    this.update_notes_open = true;
+                    cx.notify();
+                }))
+                .dismiss(
+                    crate::ui::tip_button(self, "update-dismiss", assets::CLOSE, "Not now", cx)
+                        .occlude()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.close_later("update-notice", |s| s.update = None, cx);
+                        })),
+                )
+                .leaving(crate::modal::closing("update-notice")),
         )
     }
 

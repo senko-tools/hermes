@@ -8,12 +8,18 @@ const IDLE_AFTER: [(u32, &str); 4] = [(0, "Never"), (5, "5 min"), (10, "10 min")
 impl Shell {
     pub(super) fn tab_window(&self, cx: &mut Context<Self>) -> AnyElement {
         let g = &self.config.general;
+        let portable = self.core.paths().is_some_and(|p| p.portable);
         let startup = group(
             "Startup",
             vec![
                 setting_fit(
                     "Start when I sign in",
-                    "Hermes opens by itself when you sign in to this computer.",
+                    if portable {
+                        "Hermes opens by itself when you sign in to this computer. This \
+                         computer then remembers where this portable copy is."
+                    } else {
+                        "Hermes opens by itself when you sign in to this computer."
+                    },
                     {
                         let on = !g.start_on_login;
                         crate::ui::switch(
@@ -102,7 +108,23 @@ impl Shell {
                 ),
             ],
         );
-        page_body("Window & startup", None, vec![startup, window, updates])
+        let mut groups = vec![startup, window, updates];
+        if portable {
+            groups.push(group(
+                "Portable",
+                vec![flag!(
+                    self,
+                    cx,
+                    "Keep sign-ins in this folder",
+                    "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
+                     Windows Credential Manager, so this folder works on another computer. Anyone \
+                     who copies the folder is signed in as you, and on a USB stick the file has no \
+                     protection at all. From the next start.",
+                    general.sign_ins_in_folder
+                )],
+            ));
+        }
+        page_body("Window & startup", None, groups)
     }
 
     pub(super) fn tab_screen_share(

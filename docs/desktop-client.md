@@ -195,6 +195,15 @@ is checked against the signed hashes before use. Installing renames files in use
 A watcher (the old program, `--update-watch`) starts the new version (`--after-update`) and moves
 the old files back if it does not come up within a minute.
 
+What people see: the update notice ("Hermes X is available") opens "what's new"
+(`hermes-gui/src/update_notes.rs`) when clicked. It lists the notes of every release between this
+version and X, newest first, and has the Update button. The update check reads those notes from the
+GitHub releases. Their text comes from `CHANGELOG.md` (`## <version>` sections; headings and `-`
+lists, nested by two-space indent), which `.github/release-notes.sh` pulls out at release time.
+Update hides the main window and opens a small borderless updater window, styled after Steam's
+updater. Its × cancels until it installs, and the main window comes back when it is cancelled or
+fails. With `general.auto_update`, Hermes opens straight into the updater.
+
 One-time setup:
 1. `cargo run -p hermes-client-core --bin make-update -- keygen` prints a key pair.
 2. On GitHub, set the repository secret `UPDATE_SIGNING_KEY` to the first value and the repository
@@ -214,8 +223,9 @@ its version is newer. Steps:
    --out served --previous old`, and serve it: `python -m http.server 8765 --bind 127.0.0.1
    --directory served`.
 4. Copy `old\hermes.exe` to its own folder and start it there with `--config-dir <scratch>` and the
-   two variables set. "Hermes 1.2.1-test is available" appears; clicking it patches, installs and
-   restarts into the new version (Settings > About shows it). The log says `update installed`.
+   two variables set. "Hermes 1.2.1-test is available" appears. Clicking it shows "what's new"
+   (the test server has no notes), and Update there patches, installs and restarts into the new
+   version (Settings > About shows it). The log says `update installed`.
 
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.

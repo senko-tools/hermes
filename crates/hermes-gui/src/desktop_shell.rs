@@ -162,7 +162,7 @@ impl Shell {
         }
     }
 
-    fn hide_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn hide_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window_visible = false;
         native::set_visible(window, false);
         self.sync_screens(window);

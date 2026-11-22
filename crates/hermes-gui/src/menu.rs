@@ -118,7 +118,8 @@ impl Shell {
     }
 
     /// Where a menu for what is under `position` goes: beside or over/under what was clicked,
-    /// never on it; on a wide thing (a message), beside the pointer. `None`: at the pointer.
+    /// never on it; on a wide thing (a message), beside the pointer; on a tall area, at the
+    /// pointer. `None`: at the pointer.
     fn menu_place(&self, position: Point<Pixels>) -> Option<(gpui_kit::Anchor, Point<Pixels>)> {
         let from = self.popup_from(position);
         if from == crate::modal::PopupFrom::point(position) {
@@ -129,6 +130,11 @@ impl Shell {
             // A message row: beside the pointer, so the line clicked stays readable.
             let at = gpui_kit::point(position.x + gpui_kit::px(8. * scale), position.y);
             return Some((gpui_kit::Anchor::TopLeft, at));
+        }
+        if from.trigger.size.height.as_f32() > 160. * scale {
+            // An area (the rail's or the channel list's empty space): placed beside it, the menu
+            // would land at the window's top or bottom, far from the click.
+            return None;
         }
         let bar = self.bar_around(from.trigger);
         Some(crate::modal::menu_beside(
