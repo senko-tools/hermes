@@ -16,6 +16,9 @@ pub enum TokenStore {
     Keyring { fallback: PathBuf },
     /// Only the file (`tokens.toml`, user-only permissions).
     File(PathBuf),
+    /// A portable folder that keeps its own sign-ins (`sign_ins_in_folder`): the file, which
+    /// takes over what the credential store still has (kept there before the setting was on).
+    Folder(PathBuf),
     /// In memory, for tests.
     Memory(Mutex<BTreeMap<String, String>>),
     /// A credential store that cannot be read, for tests.
@@ -61,6 +64,19 @@ impl TokenStore {
                 }
             }
             TokenStore::File(path) => Ok(read_file(path).remove(&account)),
+            TokenStore::Folder(path) => {
+                if let Some(secret) = read_file(path).remove(&account) {
+                    return Ok(Some(secret));
+                }
+                // Copied, not moved: another Hermes on this computer may use it too.
+                match keyring::Entry::new(SERVICE, &account).and_then(|e| e.get_password()) {
+                    Ok(secret) => {
+                        write_to_file(path, &account, &secret).map_err(|e| e.to_string())?;
+                        Ok(Some(secret))
+                    }
+                    Err(_) => Ok(None),
+                }
+            }
             TokenStore::Memory(map) => Ok(map
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -89,7 +105,9 @@ impl TokenStore {
                     }
                 }
             }
-            TokenStore::File(path) => write_to_file(path, &account, token),
+            TokenStore::File(path) | TokenStore::Folder(path) => {
+                write_to_file(path, &account, token)
+            }
             TokenStore::Memory(map) => {
                 map.lock()
                     .expect("token lock")
@@ -111,6 +129,13 @@ impl TokenStore {
                 remove_from_file(fallback, &account)
             }
             TokenStore::File(path) => remove_from_file(path, &account),
+            TokenStore::Folder(path) => {
+                // A copy left in the credential store would be taken over again on the next read.
+                if let Ok(entry) = keyring::Entry::new(SERVICE, &account) {
+                    let _ = entry.delete_credential();
+                }
+                remove_from_file(path, &account)
+            }
             TokenStore::Memory(map) => {
                 map.lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -121,6 +146,69 @@ impl TokenStore {
             TokenStore::Failing => Err(std::io::Error::other("locked")),
         }
     }
+}
+
+/// Deletes every secret Hermes keeps in the system's credential store, of every account and of
+/// every copy of Hermes on this computer: sign-ins and encryption keys. The uninstaller runs this
+/// (`hermes --forget-secrets`) when the user deletes their data. Returns how many were deleted.
+#[cfg(windows)]
+pub fn forget_all() -> std::io::Result<usize> {
+    use windows::Win32::Foundation::ERROR_NOT_FOUND;
+    use windows::Win32::Security::Credentials::{
+        CRED_TYPE_GENERIC, CREDENTIALW, CredEnumerateW, CredFree,
+    };
+    use windows::core::HSTRING;
+
+    // keyring names its credentials `<account>.<service>`, with the account as the user name.
+    let filter = HSTRING::from(format!("*.{SERVICE}"));
+    let mut count = 0u32;
+    let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
+    // SAFETY: valid out pointers; the list is freed with CredFree below.
+    #[allow(unsafe_code)]
+    let found = unsafe { CredEnumerateW(&filter, None, &mut count, &mut list) };
+    if let Err(err) = found {
+        return if err.code() == ERROR_NOT_FOUND.to_hresult() {
+            Ok(0)
+        } else {
+            Err(std::io::Error::other(err))
+        };
+    }
+    let mut accounts = Vec::new();
+    // SAFETY: CredEnumerateW returned `count` valid credentials in `list`; their strings are
+    // copied out before the list is freed.
+    #[allow(unsafe_code)]
+    unsafe {
+        for &cred in std::slice::from_raw_parts(list, count as usize) {
+            let cred = &*cred;
+            if cred.Type != CRED_TYPE_GENERIC {
+                continue;
+            }
+            let (Ok(target), Ok(user)) = (cred.TargetName.to_string(), cred.UserName.to_string())
+            else {
+                continue;
+            };
+            if target == format!("{user}.{SERVICE}") {
+                accounts.push(user);
+            }
+        }
+        CredFree(list as *const std::ffi::c_void);
+    }
+    let mut deleted = 0;
+    for account in accounts {
+        if keyring::Entry::new(SERVICE, &account)
+            .and_then(|e| e.delete_credential())
+            .is_ok()
+        {
+            deleted += 1;
+        }
+    }
+    Ok(deleted)
+}
+
+/// Elsewhere the store cannot be listed; nothing is deleted.
+#[cfg(not(windows))]
+pub fn forget_all() -> std::io::Result<usize> {
+    Ok(0)
 }
 
 fn read_file(path: &Path) -> BTreeMap<String, String> {
@@ -272,6 +360,24 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["tokens.toml"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_store_keeps_its_secrets_in_the_file() {
+        let dir = std::env::temp_dir().join(format!("hermes-cc-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("tokens.toml");
+        let store = TokenStore::Folder(path.clone());
+        // No such credential anywhere: the store says so instead of failing.
+        let host = format!("no-such-host-{}.invalid", std::process::id());
+        assert_eq!(store.read(&host, "nobody"), Ok(None));
+        store.set(&host, "alice", "hms_folder").unwrap();
+        assert!(read_file(&path).contains_key(&account(&host, "alice")));
+        assert_eq!(store.get(&host, "alice").as_deref(), Some("hms_folder"));
+        store.delete(&host, "alice").unwrap();
+        assert_eq!(store.get(&host, "alice"), None);
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

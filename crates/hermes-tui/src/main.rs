@@ -70,9 +70,13 @@ fn main() -> ExitCode {
         }
     };
     let utc_offset = time::local_offset_secs();
+    let in_folder = paths.portable && loaded.config.general.sign_ins_in_folder;
     let result = runtime.block_on(async move {
-        let options = CoreOptions::with_paths("hermes-tui", paths)
+        let mut options = CoreOptions::with_paths("hermes-tui", paths)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
+        if in_folder {
+            options = options.sign_ins_in_folder();
+        }
         let (core, events) = Core::new(loaded.config, options);
         if let Err(err) = core.watch_config() {
             tracing::warn!("config hot reload unavailable: {err}");

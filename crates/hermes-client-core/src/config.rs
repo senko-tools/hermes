@@ -293,6 +293,10 @@ pub struct General {
     pub folded_settings: Vec<String>,
     /// Shows what only developers and admins need, such as copying IDs from menus.
     pub developer_mode: bool,
+    /// Portable mode only: sign-ins and encryption keys are kept in `tokens.toml` in this folder
+    /// instead of the system's credential store, so the folder works on another computer. Read
+    /// on start.
+    pub sign_ins_in_folder: bool,
 }
 
 impl Default for General {
@@ -318,6 +322,7 @@ impl Default for General {
             ask_where_to_save: false,
             folded_settings: Vec::new(),
             developer_mode: false,
+            sign_ins_in_folder: false,
         }
     }
 }

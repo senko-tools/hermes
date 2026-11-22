@@ -43,8 +43,9 @@ toml_edit.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# The local UTC offset for timestamps (time.rs).
+# The local UTC offset for timestamps (time.rs); finding Hermes' credentials (tokens.rs).
 windows = { workspace = true, features = [
+    "Win32_Security_Credentials",
     "Win32_System_Com",
     "Win32_System_Time",
     "Win32_UI_Shell",

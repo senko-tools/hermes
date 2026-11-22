@@ -116,6 +116,10 @@ impl Cli {
     }
 }
 
+/// Hidden: deletes every secret Hermes keeps in the credential store, then exits (the uninstaller's
+/// "delete my data").
+const FORGET_SECRETS_FLAG: &str = "--forget-secrets";
+
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
     // The old version, renamed, watching the new one come up after an update.
@@ -126,6 +130,17 @@ fn main() -> ExitCode {
     {
         hermes_client_core::updater::watch(&args[1..]);
         return ExitCode::SUCCESS;
+    }
+    // Run by the uninstaller when the user deletes their data: Hermes' sign-ins and keys in the
+    // system's credential store go too.
+    if args.first().is_some_and(|a| a == FORGET_SECRETS_FLAG) {
+        return match hermes_client_core::tokens::forget_all() {
+            Ok(n) => {
+                println!("deleted {n} secrets");
+                ExitCode::SUCCESS
+            }
+            Err(err) => fail(&format!("could not delete the secrets: {err}")),
+        };
     }
     let cli = Cli::from_args();
     let paths = match cli.config_dir {
@@ -177,7 +192,11 @@ fn main() -> ExitCode {
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }
+    let portable = paths.portable;
     let options = match CoreOptions::with_paths("hermes-gui", paths) {
+        Ok(options) if portable && loaded.config.general.sign_ins_in_folder => {
+            options.sign_ins_in_folder()
+        }
         Ok(options) => options,
         Err(err) => return fail(&format!("Could not load known hosts: {err}")),
     };
@@ -264,6 +283,10 @@ fn main() -> ExitCode {
             .detach();
             cx.activate(true);
         });
+    // A portable folder leaves nothing in the computer's temp folder (also cleared on start).
+    if portable {
+        open::clear_pasted();
+    }
     ExitCode::SUCCESS
 }
 
