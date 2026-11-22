@@ -232,6 +232,8 @@ jobs:
         # Inno Setup, pinned and checked, installed for this run only. The installer carries the
         # files of stage/portable, the same as the portable zip and the update files.
         shell: pwsh
+        # It takes about 2 minutes; anything longer is a hang, not a slow build.
+        timeout-minutes: 15
         env:
           INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
           INNO_SHA256: 9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732
@@ -241,8 +243,14 @@ jobs:
           if ((Get-FileHash innosetup.exe -Algorithm SHA256).Hash -ne $env:INNO_SHA256) {
             throw "Inno Setup download does not match its checksum"
           }
-          Start-Process innosetup.exe -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES',
-            '/NORESTART', '/CURRENTUSER', "/DIR=$inno"
+          # Inno Setup's own setup opens its IDE (Compil32) when it is done, even when silent.
+          # `Start-Process -Wait` would wait for that too, forever on a runner: wait for the setup
+          # alone, then close the IDE.
+          $setup = Start-Process innosetup.exe -PassThru -ArgumentList '/VERYSILENT',
+            '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=$inno"
+          $setup.WaitForExit()
+          Get-Process Compil32 -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (-not (Test-Path "$inno\ISCC.exe")) { throw "Inno Setup did not install" }
           # Windows wants numbers only in the file version (a dry run's version is dev-<commit>).
           $fileVersion = if ($env:VERSION -match '^\d+\.\d+\.\d+') { $Matches[0] } else { '0.0.0' }
           & "$inno\ISCC.exe" /Q "/DVersion=$env:VERSION" "/DFileVersion=$fileVersion" crates\hermes-gui\installer.iss
