@@ -144,6 +144,8 @@ enum SliderKind {
 /// How often the level meter can redraw the window at most. Every frame redraws the whole window,
 /// so this is not the display's rate: drawing at 144 Hz all the time cost about 10 % CPU and GPU.
 const METER_FPS: f32 = 60.0;
+/// How often the Voice tab lists the audio devices again while it shows.
+const DEVICE_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 /// The bar has to move this far for a redraw (under a pixel on a setting row), so a settled
 /// meter costs nothing.
 const METER_STEP_DB: f32 = 0.1;
@@ -278,6 +280,10 @@ pub struct SettingsPage {
     admin_settings: Option<hermes_client_core::proto::api::AdminSettings>,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
+    /// The audio devices are being listed (a click or the timer then does not list them again).
+    devices_listing: bool,
+    /// Counts the times the Voice tab opened; a refresh timer of an older opening stops.
+    device_poll: u64,
     /// The screen dropdown, once the screens have been listed.
     screen_select: Option<(Entity<SelectState<Vec<DeviceChoice>>>, Subscription)>,
     pub mic_test: bool,
@@ -302,6 +308,8 @@ pub struct SettingsPage {
 struct DeviceSelects {
     input: Entity<SelectState<Vec<DeviceChoice>>>,
     output: Entity<SelectState<Vec<DeviceChoice>>>,
+    /// What they were made from: a listing that finds the same changes nothing.
+    listed: AudioDevices,
     _events: [Subscription; 2],
 }
 
@@ -746,8 +754,9 @@ pub fn title_bar(title: AnyElement, actions: Option<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-/// How wide a page's column may grow: the section rail and its card side by side.
-pub const PAGE_W: f32 = 1100.;
+/// How wide a page's column may grow: wide enough to use the window, narrow enough that a
+/// row's name and its control do not drift apart.
+pub const PAGE_W: f32 = 960.;
 
 /// One part of a page in the centered column.
 pub fn page_part(part: AnyElement) -> AnyElement {
@@ -771,39 +780,32 @@ pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
     section(title, "", rows)
 }
 
-/// A titled group of settings, with something (a button) under the title in the rail.
+/// A titled group of settings, with something (a button) on the right of its title.
 pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> AnyElement {
     section_with(title, "", Some(actions), rows)
 }
 
-/// A section: its name and a short description in the rail on the left, its rows on a card on
-/// the right. Too narrow for both, the rail goes above the card.
+/// A section: its name, and a short description under it, above its card of rows.
 pub fn section(title: &str, description: &str, rows: Vec<AnyElement>) -> AnyElement {
     section_with(title, description, None, rows)
 }
 
-/// [`section`] with something (a button) in the rail under the description.
+/// [`section`] with something (a button) on the right of its name.
 pub fn section_with(
     title: &str,
     description: &str,
     actions: Option<AnyElement>,
     rows: Vec<AnyElement>,
 ) -> AnyElement {
-    let rail = section_rail(title, description, actions);
+    let header = section_header(title, description, actions);
     group_column(
-        rail,
+        header,
         (!rows.is_empty()).then(|| group_card(rows).into_any_element()),
     )
 }
 
-/// How wide the rail is at least; it takes [`RAIL_SHARE`] of the page beyond that.
-const RAIL_MIN_W: f32 = 200.;
-const RAIL_SHARE: f32 = 0.28;
-/// How narrow a card may get before the rail moves above it.
-const CARD_MIN_W: f32 = 440.;
-
-/// A section's name, description and buttons, on the left of its card.
-fn section_rail(title: &str, description: &str, actions: Option<AnyElement>) -> gpui_kit::Div {
+/// A section's name and description, with its buttons on the right.
+fn section_header(title: &str, description: &str, actions: Option<AnyElement>) -> gpui_kit::Div {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
             r.group(title);
@@ -811,25 +813,31 @@ fn section_rail(title: &str, description: &str, actions: Option<AnyElement>) -> 
     });
     div()
         .flex()
-        .flex_col()
-        .items_start()
-        .gap(px(4.))
-        .pt(px(10.))
+        .items_end()
+        .gap(px(12.))
         .child(
             div()
-                .text_size(theme::body_size())
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(title.to_owned())),
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(title.to_owned())),
+                )
+                .when(!description.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_tertiary())
+                            .child(SharedString::from(description.to_owned())),
+                    )
+                }),
         )
-        .when(!description.is_empty(), |d| {
-            d.child(
-                div()
-                    .text_size(theme::secondary_size())
-                    .text_color(theme::text_tertiary())
-                    .child(SharedString::from(description.to_owned())),
-            )
-        })
-        .children(actions.map(|a| div().pt(px(8.)).child(a)))
+        .children(actions.map(|a| div().flex_shrink_0().child(a)))
 }
 
 /// A group's rows on their card, a thin line between each two.
@@ -860,30 +868,16 @@ pub(crate) fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
         .children(children)
 }
 
-/// The rail and the card side by side, wrapping the rail above the card when both do not fit.
-fn group_column(rail: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
+/// The header over the card (no card while it has no rows).
+fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
     div()
         .flex()
-        .flex_wrap()
+        .flex_col()
         .flex_shrink_0()
-        .gap_x(px(32.))
-        .gap_y(px(10.))
+        .gap(px(10.))
         .w_full()
-        // The rail keeps its share; the card takes the rest, and when it would get narrower
-        // than it may, it goes to a line of its own under the rail.
-        .child(
-            rail.flex_grow_0()
-                .flex_shrink_0()
-                .flex_basis(gpui_kit::relative(RAIL_SHARE))
-                .min_w(px(RAIL_MIN_W)),
-        )
-        .children(card.map(|card| {
-            div()
-                .flex_grow_1()
-                .flex_basis(px(0.))
-                .min_w(px(CARD_MIN_W))
-                .child(card)
-        }))
+        .child(header)
+        .children(card)
         .into_any_element()
 }
 
@@ -966,7 +960,34 @@ pub fn sized(width: f32, control: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
+/// A row with its name and hint, a control on the right of them, and more across the card under
+/// them: "Voice activity sensitivity" with Automatic gain beside it and the level bar under it.
+pub fn setting_split(
+    name: &str,
+    hint: &str,
+    control: impl IntoElement,
+    below: impl IntoElement,
+) -> AnyElement {
+    setting_at_with(
+        Place::Fit,
+        name,
+        hint,
+        control,
+        Some(below.into_any_element()),
+    )
+}
+
 fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at_with(place, name, hint, control, None)
+}
+
+fn setting_at_with(
+    place: Place,
+    name: &str,
+    hint: &str,
+    control: impl IntoElement,
+    below: Option<AnyElement>,
+) -> AnyElement {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
             r.row(name, hint, None);
@@ -1025,7 +1046,7 @@ fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -
             .flex_wrap()
             .items_center()
             .gap(px(12.))
-            .py(px(ROW_PAD_Y))
+            .when(below.is_none(), |d| d.py(px(ROW_PAD_Y)))
             .child(text.flex_1().min_w(px(220.)))
             .child(
                 div()
@@ -1038,6 +1059,16 @@ fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -
                     .max_w_full()
                     .child(control),
             ),
+    };
+    let row = match below {
+        Some(below) => div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(ROW_PAD_Y))
+            .child(row)
+            .child(div().w_full().child(below)),
+        None => row,
     };
     if !lit {
         return row.into_any_element();

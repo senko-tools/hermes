@@ -81,11 +81,6 @@ pub fn chip(
 /// turns `on_accent` as the thumb covers it).
 pub type Preview = std::rc::Rc<dyn Fn(gpui_kit::Rgba) -> gpui_kit::AnyElement>;
 
-/// An icon as a [`Segment`]'s picture.
-pub fn icon_preview(glyph: &'static str) -> Preview {
-    std::rc::Rc::new(move |color| icon(glyph, 14., color).into_any_element())
-}
-
 // ---------------------------------------------------------------------------------------------
 // The control family (#62): switch, segmented choice, radio list, dropdown, chip and buttons.
 // They share a height, corners, text size, the hover spring, a focus ring (keyboard only) and
