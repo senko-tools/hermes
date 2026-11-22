@@ -4,13 +4,13 @@ name: release
 # (a pre-release for versions with a `-`, e.g. 0.1.0-alpha.6):
 #   - hermes-server for x86_64 and aarch64 Linux (static musl) and x86_64 Windows
 #   - the Docker image ghcr.io/senko-tools/hermes-server (amd64 + arm64)
-#   - Hermes-Setup-<version>.exe (NSIS installer with hermes:// links, built by cargo-packager from
-#     crates/hermes-gui/Packager.toml), Hermes-<version>-portable.zip (GUI + TUI for Windows), both
+#   - Hermes-Setup-<version>.exe (Inno Setup installer with hermes:// links, from
+#     crates/hermes-gui/installer.iss), Hermes-<version>-portable.zip (GUI + TUI for Windows), both
 #     with an LGPL FFmpeg for sound and video files, and hermes-tui for Windows and Linux
 #   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
 # macOS builds are left out for now.
 #
-# To release: bump the version (Cargo.toml and crates/hermes-gui/Packager.toml), push `dev`, then
+# To release: bump the version in Cargo.toml, push `dev`, then
 # Actions > release > Run workflow on `dev` with that version (`gh workflow run release.yml --ref
 # dev -f version=1.3.0`). The workflow tags the commit `v<version>` itself. Running on `dev` lets
 # the builds use the Rust caches of earlier `dev` runs; a tag push still releases too, but GitHub
@@ -176,9 +176,8 @@ jobs:
           echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
       - name: Build
         # Everything this job needs in one cargo run: hermes.exe, hermes-tui.exe and make-update.
-        # The packages must stay the same as the `before-packaging-command` in Packager.toml:
-        # another set of packages unifies dependency features differently and rebuilds ~120
-        # crates (12 min) in the Installer step.
+        # A second cargo run with another set of packages would unify dependency features
+        # differently and rebuild ~120 crates (12 min).
         run: cargo build --release --locked -p hermes-gui -p hermes-tui -p hermes-client-core
       - name: Check that OpenH264 has its assembly
         run: |
@@ -207,14 +206,6 @@ jobs:
             exit 1
           fi
           ls -l target/ffmpeg
-      - name: cargo-packager
-        run: cargo install cargo-packager --version 0.11.8 --locked
-      - name: Installer
-        # Its `before-packaging-command` finds nothing left to build.
-        run: |
-          # The version in Cargo.toml is the workspace's; the installer file is named after the release.
-          (cd crates/hermes-gui && cargo packager --release -c Packager.toml -f nsis)
-          mv dist/*-setup.exe "dist/Hermes-Setup-$VERSION.exe"
       - name: Package
         run: |
           mkdir -p dist stage/portable stage/tui
@@ -224,6 +215,26 @@ jobs:
           (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)
           (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
           ls -l dist
+      - name: Installer
+        # Inno Setup, pinned and checked, installed for this run only. The installer carries the
+        # files of stage/portable, the same as the portable zip and the update files.
+        shell: pwsh
+        env:
+          INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          INNO_SHA256: 9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732
+        run: |
+          $inno = Join-Path $env:RUNNER_TEMP innosetup
+          Invoke-WebRequest $env:INNO_URL -OutFile innosetup.exe
+          if ((Get-FileHash innosetup.exe -Algorithm SHA256).Hash -ne $env:INNO_SHA256) {
+            throw "Inno Setup download does not match its checksum"
+          }
+          Start-Process innosetup.exe -Wait -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES',
+            '/NORESTART', '/CURRENTUSER', "/DIR=$inno"
+          # Windows wants numbers only in the file version (a dry run's version is dev-<commit>).
+          $fileVersion = if ($env:VERSION -match '^\d+\.\d+\.\d+') { $Matches[0] } else { '0.0.0' }
+          & "$inno\ISCC.exe" /Q "/DVersion=$env:VERSION" "/DFileVersion=$fileVersion" crates\hermes-gui\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item "dist\Hermes-Setup-$env:VERSION.exe"
       - name: Update files
         # What the app's updater downloads (crates/hermes-client-core/src/updater.rs): every file
         # of the portable folder compressed, patches from the last three releases' files, and

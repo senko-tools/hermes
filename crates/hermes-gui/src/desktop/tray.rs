@@ -230,16 +230,6 @@ mod tests {
         assert_eq!(&badged[dot..dot + 3], &BADGE);
     }
 
-    #[test]
-    fn the_installer_version_is_the_crate_version() {
-        let config = include_str!("../../Packager.toml");
-        let line = format!("version = \"{}\"", env!("CARGO_PKG_VERSION"));
-        assert!(
-            config.lines().any(|l| l == line),
-            "set {line} in crates/hermes-gui/Packager.toml"
-        );
-    }
-
     /// Writes `assets/icons/icon-<size>.png`, from which `assets/icons/hermes.ico` (installer,
     /// shortcuts) is made: `magick icon-16.png … icon-256.png hermes.ico`. Run by hand with
     /// `cargo test -p hermes-gui write_icon_files -- --ignored` after changing the icon.
