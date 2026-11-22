@@ -297,6 +297,9 @@ pub struct General {
     /// instead of the system's credential store, so the folder works on another computer. Read
     /// on start.
     pub sign_ins_in_folder: bool,
+    /// How long the pointer rests on a settings description too long for its line before it
+    /// starts scrolling, in milliseconds; 0 starts it at once.
+    pub hint_scroll_delay_ms: u32,
 }
 
 impl Default for General {
@@ -323,6 +326,7 @@ impl Default for General {
             folded_settings: Vec::new(),
             developer_mode: false,
             sign_ins_in_folder: false,
+            hint_scroll_delay_ms: 500,
         }
     }
 }
@@ -1147,6 +1151,16 @@ mode = \"push_to_talk\"
                 "unknown key `instances[].token` (ignored)",
             ]
         );
+    }
+
+    #[test]
+    fn hint_scroll_delay_defaults_for_older_files() {
+        let config: ClientConfig = toml::from_str(
+            "[general]
+theme = \"dark\"",
+        )
+        .unwrap();
+        assert_eq!(config.general.hint_scroll_delay_ms, 500);
     }
 
     #[test]
