@@ -252,14 +252,19 @@ impl Shell {
                             Keybinds::combo_text(&self.config.keys, *action).unwrap_or_default();
                         let (name, default): (&'static str, &'static str) = (name, default);
                         let waiting = page.capturing_key == Some(name);
-                        setting(
+                        // Reset only where there is something to reset.
+                        let changed = self.config.keys.get(name).is_some_and(|k| k != default);
+                        setting_fit(
                             title,
                             if waiting {
                                 "Press the keys; Escape cancels."
                             } else {
                                 ""
                             },
-                            wrap()
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
                                 .child(key_caps(&combo))
                                 .child(crate::ui::button(
                                     self,
@@ -275,22 +280,27 @@ impl Shell {
                                     },
                                     cx,
                                 ))
-                                .child(crate::ui::button(
-                                    self,
-                                    format!("unbind-{name}"),
-                                    "Reset",
-                                    ButtonKind::Secondary,
-                                    true,
-                                    move |this, _, cx| {
-                                        this.set_config(
-                                            |c| {
-                                                c.keys.insert(name.to_owned(), default.to_owned());
-                                            },
-                                            cx,
-                                        );
-                                    },
-                                    cx,
-                                )),
+                                .when(changed, |d| {
+                                    d.child(crate::ui::button(
+                                        self,
+                                        format!("unbind-{name}"),
+                                        "Reset",
+                                        ButtonKind::Secondary,
+                                        true,
+                                        move |this, _, cx| {
+                                            this.set_config(
+                                                |c| {
+                                                    c.keys.insert(
+                                                        name.to_owned(),
+                                                        default.to_owned(),
+                                                    );
+                                                },
+                                                cx,
+                                            );
+                                        },
+                                        cx,
+                                    ))
+                                }),
                         )
                     })
                     .collect();
@@ -298,23 +308,20 @@ impl Shell {
             })
             .collect();
         groups.push(group(
-            "Everywhere",
-            vec![muted(
-                "Right-click anything for more. Drag channels and roles to reorder them.",
-            )],
-        ));
-        groups.push(group(
             "These do not change",
             vec![
-                setting("Close what is on top", "", key_caps("Escape")),
-                setting("Copy what is selected", "", key_caps("Ctrl+C")),
-                setting("Open the menu", "", key_caps("Shift+F10")),
-                setting("Edit your last message", "", key_caps("Up")),
+                setting_fit("Close what is on top", "", key_caps("Escape")),
+                setting_fit("Copy what is selected", "", key_caps("Ctrl+C")),
+                setting_fit("Open the menu", "", key_caps("Shift+F10")),
+                setting_fit("Edit your last message", "", key_caps("Up")),
             ],
         ));
         page_body(
             "Keybinds",
-            Some("Click Change, then press the keys."),
+            Some(
+                "Click Change, then press the keys. Right-click anything for more; drag channels and \
+                 roles to reorder them.",
+            ),
             groups,
         )
     }

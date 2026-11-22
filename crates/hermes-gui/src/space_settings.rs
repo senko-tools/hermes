@@ -4,8 +4,6 @@
 //! REST and come back as gateway events, so the store stays the only source of truth.
 
 use crate::ui::ButtonKind;
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::prelude::*;
@@ -28,7 +26,7 @@ use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
 use crate::settings::{
     DeviceChoice, centered, frame, group, group_card, muted, page_body, page_body_with, page_part,
-    setting,
+    setting_below, setting_fit, setting_pair,
 };
 use crate::shell::Shell;
 use crate::theme::{self, px};
@@ -1224,118 +1222,158 @@ impl Shell {
         let (inst, space) = (page.inst.clone(), page.space);
         let editable = view::can_in_space(s, space, Permissions::MANAGE_SPACE);
         let is_owner = Some(st.space.owner_id) == s.me_id();
-        let mut rows = vec![
-            setting(
+
+        // The icon on the left, with its buttons under it; the name and description beside it.
+        let has_icon = st.space.icon.is_some();
+        let marker = st.space.icon.as_ref().and_then(|file| {
+            self.images
+                .profile_marker(&inst, file, crate::images::AVATAR_PIXELS)
+        });
+        // Read from the image cache, not through the store again (it is held here).
+        let picture = st.space.icon.as_ref().and_then(|icon| {
+            match self.images.avatars.get(&(inst.clone(), icon.id)) {
+                Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
+                _ => None,
+            }
+        });
+        const ICON: f32 = 88.;
+        let initial = st
+            .space
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let icon_box = div()
+            .relative()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(ICON))
+            .rounded(theme::radius_large())
+            .bg(theme::accent_soft())
+            .text_size(px(32.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::accent())
+            .overflow_hidden()
+            .children(marker)
+            .child(match picture {
+                Some(picture) => gpui_kit::img(picture)
+                    .size(px(ICON))
+                    .object_fit(gpui_kit::ObjectFit::Cover)
+                    .id("space-icon-picture")
+                    .into_any_element(),
+                None => div().child(initial).into_any_element(),
+            });
+        let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
+        let icon_column = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .flex_shrink_0()
+            .child(icon_box)
+            .when(editable, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "space-icon",
+                    if has_icon { "Change" } else { "Upload" },
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        this.pick_space_icon(pick_inst.clone(), space, cx);
+                    },
+                    cx,
+                ))
+                .when(has_icon, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "space-icon-remove",
+                        "Remove",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            let req = UpdateSpaceRequest {
+                                icon_id: Some(None),
+                                ..UpdateSpaceRequest::default()
+                            };
+                            this.call_status(
+                                &remove_inst,
+                                "Icon removed",
+                                move |r| async move { r.update_space(space, &req).await },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                })
+            });
+        let fields = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(240.))
+            .child(setting_below(
                 "Server name",
                 "",
-                Input::new(&page.name).disabled(!editable),
-            ),
-            setting(
+                div()
+                    .w_full()
+                    .child(Input::new(&page.name).disabled(!editable)),
+            ))
+            .child(setting_below(
                 "Description",
                 "Shown on invite pages.",
-                Input::new(&page.description).disabled(!editable),
-            ),
+                div()
+                    .w_full()
+                    .child(Input::new(&page.description).disabled(!editable)),
+            ))
+            // What the icon may be, under the fields rather than squeezed under the icon.
+            .when(editable, |d| {
+                d.child(muted(format!(
+                    "Icon: {}",
+                    crate::crop::CropFor::SpaceIcon(inst.clone(), space).rules()
+                )))
+            });
+        let mut rows = vec![
+            div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap(px(24.))
+                .py(px(12.))
+                .child(icon_column)
+                .child(fields)
+                .into_any_element(),
         ];
-        if editable {
-            let has_icon = st.space.icon.is_some();
-            let marker = st.space.icon.as_ref().and_then(|file| {
-                self.images
-                    .profile_marker(&inst, file, crate::images::AVATAR_PIXELS)
-            });
-            // Read from the image cache, not through the store again (it is held here).
-            let picture = st.space.icon.as_ref().and_then(|icon| {
-                match self.images.avatars.get(&(inst.clone(), icon.id)) {
-                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
-                    _ => None,
-                }
-            });
-            let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
-            rows.push(setting(
-                "Icon",
-                &crate::crop::CropFor::SpaceIcon(inst.clone(), space).rules(),
+        if editable && page.overview_dirty {
+            let save_key = (inst.clone(), space);
+            rows.push(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .relative()
-                    .children(marker)
-                    .children(picture.map(|picture| {
-                        gpui_kit::img(picture)
-                            .size(px(40.))
-                            .rounded(theme::radius_large())
-                            .object_fit(gpui_kit::ObjectFit::Cover)
-                            .id("space-icon-picture")
-                    }))
+                    .py(px(10.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::warning())
+                            .child("You have unsaved changes."),
+                    )
                     .child(crate::ui::button(
                         self,
-                        "space-icon",
-                        if has_icon {
-                            "Change icon…"
-                        } else {
-                            "Upload icon…"
-                        },
-                        ButtonKind::Secondary,
+                        "space-save",
+                        "Save changes",
+                        ButtonKind::Primary,
                         true,
                         move |this, _, cx| {
-                            this.pick_space_icon(pick_inst.clone(), space, cx);
+                            this.save_overview(save_key.clone(), cx);
                         },
                         cx,
                     ))
-                    .when(has_icon, |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "space-icon-remove",
-                            "Remove icon",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, _, cx| {
-                                let req = UpdateSpaceRequest {
-                                    icon_id: Some(None),
-                                    ..UpdateSpaceRequest::default()
-                                };
-                                this.call_status(
-                                    &remove_inst,
-                                    "Icon removed",
-                                    move |r| async move { r.update_space(space, &req).await },
-                                    cx,
-                                );
-                            },
-                            cx,
-                        ))
-                    }),
-            ));
-            if page.overview_dirty {
-                let save_key = (inst.clone(), space);
-                rows.push(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(theme::secondary_size())
-                                .text_color(theme::warning())
-                                .child("You have unsaved changes."),
-                        )
-                        .child(crate::ui::button(
-                            self,
-                            "space-save",
-                            "Save changes",
-                            ButtonKind::Primary,
-                            true,
-                            move |this, _, cx| {
-                                this.save_overview(save_key.clone(), cx);
-                            },
-                            cx,
-                        ))
-                        .into_any_element(),
-                );
-            }
-        } else {
-            rows.push(muted(
-                "You need the Manage server permission to change these.",
-            ));
+                    .into_any_element(),
+            );
         }
         let members = st.members.len();
         let channels = st
@@ -1344,28 +1382,60 @@ impl Shell {
             .filter(|c| c.kind.has_messages())
             .count();
         let owner = s.display_name(Some(space), st.space.owner_id);
-        let mut about = vec![setting(
-            "About",
-            &format!(
-                "Owned by {owner} · {members} member{} · {channels} channel{}",
-                plural(members),
-                plural(channels)
+        let stat = |label: &'static str, value: String| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(120.))
+                .gap(px(2.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded(theme::radius_small())
+                .bg(theme::background())
+                .child(
+                    div()
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(value),
+                )
+        };
+        let mut about = vec![
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .py(px(12.))
+                .child(stat("Owner", owner))
+                .child(stat("Members", members.to_string()))
+                .child(stat("Channels", channels.to_string()))
+                .into_any_element(),
+            setting_fit(
+                "Server ID",
+                "For bug reports and bots.",
+                crate::ui::button(
+                    self,
+                    "space-copy-id",
+                    self.copy_label("space-copy-id", "Copy"),
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
+                    },
+                    cx,
+                ),
             ),
-            crate::ui::button(
-                self,
-                "space-copy-id",
-                self.copy_label("space-copy-id", "Copy server ID"),
-                ButtonKind::Secondary,
-                true,
-                move |this, _, cx| {
-                    this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
-                },
-                cx,
-            ),
-        )];
+        ];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             let invite_inst = inst.clone();
-            about.push(setting(
+            about.push(setting_fit(
                 "Invite people",
                 "Creates a link that works for 7 days and copies it.",
                 crate::ui::button(
@@ -1388,7 +1458,7 @@ impl Shell {
         }
         let danger_inst = inst.clone();
         let danger = if is_owner {
-            setting(
+            setting_fit(
                 "Delete server",
                 "Deletes every channel and message for everyone. This cannot be undone. To keep \
                  the space, give it to someone else from the Members tab first.",
@@ -1410,7 +1480,7 @@ impl Shell {
                 ),
             )
         } else {
-            setting(
+            setting_fit(
                 "Leave server",
                 "You will need a new invite to come back.",
                 crate::ui::button(
@@ -1433,9 +1503,9 @@ impl Shell {
         };
         page_body(
             "Overview",
-            None,
+            (!editable).then_some("You need the Manage server permission to change these."),
             vec![
-                group("Server", rows),
+                group("Server profile", rows),
                 group("About", about),
                 group("Danger zone", vec![danger]),
             ],
@@ -1569,11 +1639,13 @@ impl Shell {
         }
         let mut role_rows: Vec<AnyElement> = Vec::new();
         if !everyone {
-            role_rows.push(setting(
+            let name_row = setting_below(
                 "Name",
                 "",
-                Input::new(&draft.name).disabled(!editable),
-            ));
+                div()
+                    .w_full()
+                    .child(Input::new(&draft.name).disabled(!editable)),
+            );
             let color_text = draft.color.read(cx).value().to_string();
             let parsed = parse_color(&color_text);
             let color_input = draft.color.clone();
@@ -1606,22 +1678,25 @@ impl Shell {
                         .into_any_element()
                 })
                 .collect::<Vec<_>>();
-            role_rows.push(setting(
-                "Color",
-                if parse_color(&color_text).is_err() {
-                    "Use six hex digits, like #3498DB."
-                } else {
-                    "Member names show in the color of their highest colored role."
-                },
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .gap(px(8.))
-                    .child(div().flex().flex_wrap().gap(px(4.)).children(swatches))
-                    .child(Input::new(&draft.color).disabled(!editable)),
+            role_rows.push(setting_pair(
+                name_row,
+                setting_below(
+                    "Color",
+                    if parse_color(&color_text).is_err() {
+                        "Use six hex digits, like #3498DB."
+                    } else {
+                        "Names show in their highest colored role's color."
+                    },
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .gap(px(8.))
+                        .child(Input::new(&draft.color).disabled(!editable))
+                        .child(div().flex().flex_wrap().gap(px(6.)).children(swatches)),
+                ),
             ));
-            role_rows.push(setting(
+            role_rows.push(setting_fit(
                 "Show separately",
                 "Members with this role get their own group in the member list.",
                 {
@@ -1641,27 +1716,33 @@ impl Shell {
                     )
                 },
             ));
-            role_rows.push(setting("Mentionable", "Anyone can @mention this role.", {
-                let on = draft.mentionable;
-                crate::ui::switch(
-                    self,
-                    "role-mention",
-                    on,
-                    editable,
-                    move |this, _, cx| {
-                        if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
-                            d.mentionable = !on;
-                        }
-                        cx.notify();
-                    },
-                    cx,
-                )
-            }));
+            role_rows.push(setting_fit(
+                "Mentionable",
+                "Anyone can @mention this role.",
+                {
+                    let on = draft.mentionable;
+                    crate::ui::switch(
+                        self,
+                        "role-mention",
+                        on,
+                        editable,
+                        move |this, _, cx| {
+                            if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
+                                d.mentionable = !on;
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                },
+            ));
             if editable {
-                role_rows.push(setting(
+                role_rows.push(setting_fit(
                     "Position",
                     "Higher roles can manage lower ones.",
-                    crate::settings::wrap()
+                    div()
+                        .flex()
+                        .gap(px(8.))
                         .child(crate::ui::button(
                             self,
                             "role-up",
@@ -1692,7 +1773,7 @@ impl Shell {
                     let on = draft.permissions.contains(info.flag);
                     let grantable = editable && (on || mine.contains(info.flag));
                     let flag = info.flag;
-                    setting(
+                    setting_fit(
                         info.name,
                         info.description,
                         crate::ui::switch(
@@ -1950,10 +2031,11 @@ impl Shell {
             .child(icon(glyph, 20., theme::text_tertiary()))
             .child(heading(channel.name.clone().unwrap_or_default()))
             .into_any_element();
-        let mut col: Vec<AnyElement> = vec![muted(match channel.topic.as_deref() {
+        let about = match channel.topic.as_deref() {
             Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
             _ => kind.to_owned(),
-        })];
+        };
+        let mut col: Vec<AnyElement> = Vec::new();
         let actions = if manage || manage_here {
             let (edit_inst, here_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
             div()
@@ -2038,12 +2120,22 @@ impl Shell {
         } else {
             div().into_any_element()
         };
-        col.push(muted(if category {
-            "What each role may do in this category. Channels inside it keep their own settings."
-        } else {
-            "What each role may do in this channel. Inherit uses the role's normal permissions; \
-             Deny and Allow override them here."
-        }));
+        col.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(muted(about))
+                .child(muted(if category {
+                    "What each role may do in this category: \u{2715} denies, / follows the \
+                     role's normal permissions, \u{2713} allows. Channels inside it keep their \
+                     own settings."
+                } else {
+                    "What each role may do in this channel: \u{2715} denies it here, / follows \
+                     the role's normal permissions, \u{2713} allows it here."
+                }))
+                .into_any_element(),
+        );
         // Every role can be picked from the dropdown; the ones with overrides here are named
         // under it.
         let current = page.override_role;
@@ -2090,7 +2182,7 @@ impl Shell {
                 });
             col.push(group(
                 "Permissions",
-                vec![setting(
+                vec![setting_fit(
                     "Role",
                     &if with_overrides.is_empty() {
                         "No role has overrides here yet.".to_owned()
@@ -2117,29 +2209,38 @@ impl Shell {
                     .map(|info| {
                         let state = Tri::of(ov, info.flag);
                         let flag = info.flag;
-                        const TRIS: [(Tri, &str); 3] = [
-                            (Tri::Deny, "Deny"),
-                            (Tri::Inherit, "Inherit"),
-                            (Tri::Allow, "Allow"),
-                        ];
+                        // Short: a cross, a slash and a tick (as the line above explains),
+                        // so a long column of them does not run across the card.
+                        const TRIS: [Tri; 3] = [Tri::Deny, Tri::Inherit, Tri::Allow];
                         let options = TRIS
                             .iter()
-                            .map(|(tri, text)| {
+                            .map(|tri| {
                                 let allowed = override_change_allowed(access, ov, flag, *tri);
                                 limited |= access.is_some() && !allowed;
-                                crate::ui::Segment::new(*text).enabled(allowed)
+                                match tri {
+                                    Tri::Deny => crate::ui::Segment::with(
+                                        crate::ui::icon_preview(assets::CLOSE),
+                                        "",
+                                    ),
+                                    Tri::Inherit => crate::ui::Segment::new("/"),
+                                    Tri::Allow => crate::ui::Segment::with(
+                                        crate::ui::icon_preview(assets::CHECK),
+                                        "",
+                                    ),
+                                }
+                                .enabled(allowed)
                             })
                             .collect();
-                        setting(
+                        setting_fit(
                             info.name,
                             info.description,
                             crate::ui::segmented(
                                 self,
                                 format!("override-{}", info.name),
                                 options,
-                                TRIS.iter().position(|(t, _)| *t == state),
+                                TRIS.iter().position(|t| *t == state),
                                 true,
-                                move |this, n, _, cx| this.set_override(flag, TRIS[n].0, cx),
+                                move |this, n, _, cx| this.set_override(flag, TRIS[n], cx),
                                 cx,
                             ),
                         )
@@ -2200,7 +2301,7 @@ impl Shell {
                     .map(|r| r.name.as_str())
                     .collect();
                 list_row(self, format!("settings-member-{user}"), false, cx)
-                    .h(px(44.))
+                    .h(px(52.))
                     .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
                     .child(
                         div()
@@ -2303,15 +2404,26 @@ impl Shell {
             ))
             .child(heading(s.display_name(Some(space), user)))
             .into_any_element();
-        let mut col: Vec<AnyElement> = vec![muted(format!(
-            "@{} · joined {}{}",
-            m.user.username,
-            time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
-            if owner { " · owner" } else { "" }
-        ))];
-        if let Some(status) = m.user.status_text.as_deref().filter(|t| !t.is_empty()) {
-            col.push(muted(status.to_owned()));
-        }
+        let mut col: Vec<AnyElement> = vec![
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(muted(format!(
+                    "@{} · joined {}{}",
+                    m.user.username,
+                    time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
+                    if owner { " · owner" } else { "" }
+                )))
+                .children(
+                    m.user
+                        .status_text
+                        .as_deref()
+                        .filter(|t| !t.is_empty())
+                        .map(|status| muted(status.to_owned())),
+                )
+                .into_any_element(),
+        ];
         let nick = if me {
             can(Permissions::CHANGE_NICKNAME) || can(Permissions::MANAGE_NICKNAMES)
         } else {
@@ -2359,28 +2471,43 @@ impl Shell {
                 let has = m.role_ids.contains(&role.id);
                 let may = view::can_manage_role(s, space, role.id) && (me || above || is_owner);
                 let id = role.id;
-                Checkbox::new(SharedString::from(format!("member-role-{id}")))
-                    .cursor_pointer()
-                    .label(SharedString::from(role.name.clone()))
-                    .checked(has)
-                    .disabled(!may)
-                    .when(!may, |b| b.cursor_default())
-                    .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                        this.set_member_role(user, id, *on, cx);
+                // A chip per role, filled while they have it: all of them fit in a few lines.
+                let chip = crate::ui::chip(
+                    self,
+                    SharedString::from(format!("member-role-{id}")),
+                    role.name.clone(),
+                    has,
+                    cx,
+                );
+                if may {
+                    chip.on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_member_role(user, id, !has, cx);
                     }))
                     .into_any_element()
+                } else {
+                    chip.opacity(0.5).cursor_not_allowed().into_any_element()
+                }
             })
             .collect();
-        col.push(if role_rows.is_empty() {
-            group(
-                "Roles",
-                vec![muted(
-                    "This server has no roles yet. Create them in the Roles tab.",
-                )],
-            )
-        } else {
-            group("Roles", role_rows)
-        });
+        col.push(group(
+            "Roles",
+            vec![if role_rows.is_empty() {
+                div()
+                    .py(px(12.))
+                    .child(muted(
+                        "This server has no roles yet. Create them in the Roles tab.",
+                    ))
+                    .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .py(px(12.))
+                    .children(role_rows)
+                    .into_any_element()
+            }],
+        ));
 
         // Voice moderation, while they are in a voice channel of this space.
         if let Some(vs) = s
@@ -2478,7 +2605,7 @@ impl Shell {
                 });
             col.push(group(
                 &format!("In voice: {channel}"),
-                vec![voice.into_any_element()],
+                vec![voice.py(px(12.)).into_any_element()],
             ));
         }
 
@@ -2487,7 +2614,7 @@ impl Shell {
         let target = Target::Member(inst.clone(), Some(space), user);
         if above && can(Permissions::KICK_MEMBERS) {
             let kick = target.clone();
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Kick",
                 "Removes them from the server; they can come back with a new invite.",
                 crate::ui::button(
@@ -2507,7 +2634,7 @@ impl Shell {
         }
         if above && can(Permissions::BAN_MEMBERS) {
             let ban_inst = inst.clone();
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Ban",
                 "Removes them and keeps them out.",
                 crate::ui::button(
@@ -2524,7 +2651,7 @@ impl Shell {
             ));
         }
         if is_owner && !me {
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Transfer ownership",
                 "Makes them the owner of the space. You keep your roles but can no longer delete \
                  the space.",
@@ -2709,10 +2836,11 @@ impl Shell {
         s: &InstanceStore,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut rows: Vec<AnyElement> = vec![muted(
+        const TEXT: Option<&str> = Some(
             "Messages people reported. A report shows what the reporter chose to share: the server \
              cannot read encrypted messages.",
-        )];
+        );
+        let mut rows: Vec<AnyElement> = Vec::new();
         let list = page.reports.ready();
         if let Some(p) = self.list_placeholder(
             &page.reports,
@@ -2721,7 +2849,7 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Reports", None, rows);
+            return page_body("Reports", TEXT, rows);
         }
         let mut entries: Vec<AnyElement> = Vec::new();
         for report in list.into_iter().flatten() {
@@ -2780,16 +2908,17 @@ impl Shell {
             );
         }
         rows.push(group_card(entries).into_any_element());
-        page_body("Reports", None, rows)
+        page_body("Reports", TEXT, rows)
     }
 
     fn tab_bans(&self, page: &SpacePage, _s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
         let inst = page.inst.clone();
         let space = page.space;
-        let mut rows: Vec<AnyElement> = vec![muted(
+        const TEXT: Option<&str> = Some(
             "Banned people cannot rejoin with an invite. Ban someone from the Members tab or by \
              right-clicking them.",
-        )];
+        );
+        let mut rows: Vec<AnyElement> = Vec::new();
         let list = page.bans.ready();
         if let Some(p) = self.list_placeholder(
             &page.bans,
@@ -2798,7 +2927,7 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Bans", None, rows);
+            return page_body("Bans", TEXT, rows);
         }
         let mut entries: Vec<AnyElement> = Vec::new();
         for ban in list.into_iter().flatten() {
@@ -2850,7 +2979,7 @@ impl Shell {
             );
         }
         rows.push(group_card(entries).into_any_element());
-        page_body("Bans", None, rows)
+        page_body("Bans", TEXT, rows)
     }
 
     fn tab_audit(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
@@ -2878,42 +3007,11 @@ impl Shell {
             .flatten()
             .map(|entry| {
                 let (text, details) = describe(s, page.space, entry);
-                let tip = SharedString::from(details.clone());
-                div()
-                    .id(SharedString::from(format!("audit-{}", entry.id)))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .h(px(32.))
-                    .text_size(theme::secondary_size())
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .w(px(120.))
-                            .text_size(theme::caption_size())
-                            .text_color(theme::text_tertiary())
-                            .child(time::format(
-                                entry.created_at,
-                                "%Y-%m-%d %H:%M",
-                                self.utc_offset,
-                            )),
-                    )
-                    .child(div().flex_shrink(1.).min_w_0().truncate().child(text))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme::text_tertiary())
-                            .child(details.clone()),
-                    )
-                    .when(!details.is_empty(), |d| {
-                        d.tooltip(move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
-                                .build(window, cx)
-                        })
-                    })
-                    .into_any_element()
+                crate::settings::log_entry(
+                    text,
+                    details,
+                    time::format(entry.created_at, "%Y-%m-%d %H:%M", self.utc_offset),
+                )
             })
             .collect();
         let mut parts = vec![group_card(entries).into_any_element()];
@@ -3013,9 +3111,11 @@ fn list_card(rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .gap(px(1.))
-        .p(px(4.))
+        .gap(px(2.))
+        .p(px(6.))
         .rounded(theme::radius_large())
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::sidebar())
         .children(rows)
         .into_any_element()

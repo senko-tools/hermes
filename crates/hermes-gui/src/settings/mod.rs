@@ -291,13 +291,8 @@ pub struct SettingsPage {
     fine_timers: Option<crate::desktop::window::FineTimers>,
     font: Entity<SelectState<Vec<DeviceChoice>>>,
     mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
-    /// The date formats, today's date in each, and Custom ([`CUSTOM_DATE`]).
-    date_select: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     date_format: Entity<InputState>,
-    /// Custom was chosen for the time or date: its pattern field shows.
-    custom_time: bool,
-    custom_date: bool,
     /// Searching every setting by name and hint.
     search: Entity<InputState>,
     ptt_key: Entity<InputState>,
@@ -311,29 +306,6 @@ struct DeviceSelects {
     /// What they were made from: a listing that finds the same changes nothing.
     listed: AudioDevices,
     _events: [Subscription; 2],
-}
-
-/// The date dropdown's value for Custom: no pattern is empty.
-const CUSTOM_DATE: &str = "";
-
-/// The date dropdown's choices for `current`, and which one holds.
-fn date_choices(current: &str, utc_offset: i64) -> (Vec<DeviceChoice>, usize) {
-    let mut choices: Vec<DeviceChoice> = DATE_FORMATS
-        .iter()
-        .map(|f| DeviceChoice {
-            value: (*f).to_owned(),
-            name: time::format(hermes_client_core::now_ms(), f, utc_offset).into(),
-        })
-        .collect();
-    choices.push(DeviceChoice {
-        value: CUSTOM_DATE.to_owned(),
-        name: "Custom…".into(),
-    });
-    let selected = DATE_FORMATS
-        .iter()
-        .position(|f| *f == current)
-        .unwrap_or(DATE_FORMATS.len());
-    (choices, selected)
 }
 
 /// The date formats offered on the day dividers.
@@ -352,32 +324,32 @@ enum Pattern {
     Date,
 }
 
-/// The time patterns offered as chips.
+/// The time patterns offered as presets.
 const TIME_FORMATS: [(&str, &str); 2] = [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")];
 
 impl Shell {
-    /// "Time" or "Date on day lines": preset chips and Custom, which shows the pattern field
-    /// under them. A preset also goes into the field, so the two never disagree (#11).
+    /// "Time" or "Date on day lines": the pattern field is the setting; the presets under it
+    /// fill it in (and save), so the two never disagree (#11). The one in the field is lit.
     fn pattern_row(
         &self,
         page: &SettingsPage,
         which: Pattern,
-        hint: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let b = &self.config.buffer;
-        let (name, current, input, custom_chosen) = match which {
+        let now = hermes_client_core::now_ms();
+        let (name, current, input, help) = match which {
             Pattern::Time => (
                 "Time",
                 &b.timestamp_format,
                 &page.time_format,
-                page.custom_time,
+                "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
             ),
             Pattern::Date => (
                 "Date on day lines",
                 &b.date_format,
                 &page.date_format,
-                page.custom_date,
+                "%e day, %B month, %A weekday, %Y year. Enter saves.",
             ),
         };
         let presets: Vec<(String, String)> = match which {
@@ -387,121 +359,58 @@ impl Shell {
                 .collect(),
             Pattern::Date => DATE_FORMATS
                 .iter()
-                .map(|f| {
-                    let shown = time::format(hermes_client_core::now_ms(), f, self.utc_offset);
-                    ((*f).to_owned(), shown)
-                })
+                .map(|f| ((*f).to_owned(), time::format(now, f, self.utc_offset)))
                 .collect(),
         };
-        let custom = custom_chosen || !presets.iter().any(|(f, _)| f == current);
-        let id = match which {
-            Pattern::Time => "time-format",
-            Pattern::Date => "date-format",
-        };
-        // Picking a preset puts it in the field too; Custom opens the field under them.
-        let formats: Vec<String> = presets.iter().map(|(f, _)| f.clone()).collect();
-        let chosen = if custom {
-            Some(presets.len())
-        } else {
-            presets.iter().position(|(f, _)| f == current)
-        };
-        let pick =
-            move |this: &mut Shell, n: usize, window: &mut Window, cx: &mut Context<Shell>| {
-                match formats.get(n) {
-                    Some(format) => this.set_pattern(which, format.clone(), false, window, cx),
-                    None => {
-                        if let Some(page) = this.settings.as_mut() {
-                            match which {
-                                Pattern::Time => page.custom_time = true,
-                                Pattern::Date => page.custom_date = true,
-                            }
-                        }
-                        cx.notify();
-                    }
-                }
-            };
-        // Times are short: side by side. Dates are long: one under the other.
-        let picker: AnyElement = match which {
-            Pattern::Time => crate::ui::segmented(
-                self,
-                id,
-                presets
-                    .into_iter()
-                    .map(|(_, shown)| crate::ui::Segment::new(shown))
-                    .chain([crate::ui::Segment::new("Custom")])
-                    .collect(),
-                chosen,
-                true,
-                pick,
-                cx,
-            )
-            .into_any_element(),
-            // Dates are long: a dropdown (made in `open_settings`), not a row of them.
-            Pattern::Date => crate::ui::dropdown(&page.date_select, crate::ui::DropWidth::Medium)
-                .into_any_element(),
-        };
-        let field = custom.then(|| {
-            let help = match which {
-                Pattern::Time => "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
-                Pattern::Date => "%e day, %B month, %A weekday, %Y year. Enter saves.",
-            };
-            crate::channel::grow_in(
-                &self.grow_heights,
-                SharedString::from(format!("{id}-custom")),
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_end()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .pt(px(8.))
-                            .w(px(300.))
-                            .child(Input::new(input))
-                            .child(muted(help)),
+        let chips =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(presets.into_iter().enumerate().map(|(n, (format, shown))| {
+                    let chosen = format == *current;
+                    crate::ui::chip(
+                        self,
+                        SharedString::from(format!("{name}-preset-{n}")),
+                        shown,
+                        chosen,
+                        cx,
                     )
-                    .into_any_element(),
-            )
-        });
-        setting(
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_pattern(which, format.clone(), false, window, cx);
+                    }))
+                }));
+        setting_below(
             name,
-            hint,
+            &format!("Now: {}", time::format(now, current, self.utc_offset)),
             div()
                 .flex()
                 .flex_col()
-                .items_end()
-                .child(picker)
-                .children(field),
+                .w_full()
+                .gap(px(8.))
+                .child(Input::new(input))
+                .child(chips)
+                .child(muted(help)),
         )
     }
 
-    /// Saves a time or date pattern and shows it in the pattern field; `custom` keeps the
-    /// field open (it came from the field itself).
+    /// Saves a time or date pattern; `typed` when it came from the field itself (a preset is
+    /// also put in the field).
     fn set_pattern(
         &mut self,
         which: Pattern,
         format: String,
-        custom: bool,
+        typed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(page) = self.settings.as_mut() {
+        if !typed && let Some(page) = self.settings.as_ref() {
             let input = match which {
-                Pattern::Time => {
-                    page.custom_time = custom;
-                    page.time_format.clone()
-                }
-                Pattern::Date => {
-                    page.custom_date = custom;
-                    page.date_format.clone()
-                }
+                Pattern::Time => page.time_format.clone(),
+                Pattern::Date => page.date_format.clone(),
             };
-            if !custom {
-                let shown = format.clone();
-                input.update(cx, |input, cx| input.set_value(shown, window, cx));
-            }
+            let shown = format.clone();
+            input.update(cx, |input, cx| input.set_value(shown, window, cx));
         }
         self.set_config(
             |c| match which {
@@ -617,11 +526,6 @@ fn nav_section(title: &str) -> AnyElement {
 
 // ---- parts, also used by the space settings ---------------------------------------------------
 
-/// Chips side by side, wrapping; they line up on the right, where a setting's control goes.
-pub fn wrap() -> gpui_kit::Div {
-    div().flex().flex_wrap().justify_end().w_full().gap(px(4.))
-}
-
 pub fn muted(text: impl Into<SharedString>) -> AnyElement {
     div()
         .text_size(theme::secondary_size())
@@ -704,8 +608,8 @@ pub fn page_body_with(
     if !recording()
         && let Some(index) = SCROLL_TO.with(Cell::take)
     {
-        // The title and the text come before the groups.
-        scroll.scroll_to_item(index + 1 + usize::from(text.is_some()));
+        // The title (with its text) comes before the groups.
+        scroll.scroll_to_item(index + 1);
     }
     div()
         .id("page-body")
@@ -717,15 +621,23 @@ pub fn page_body_with(
         .size_full()
         .p(px(32.))
         .overflow_y_scroll()
-        .child(page_part(title_bar(
+        // The text hangs under the title: it belongs to it, not to the first section.
+        .child(page_part(
             div()
-                .text_size(theme::heading_size())
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(title.to_owned()))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(title_bar(
+                    div()
+                        .text_size(theme::heading_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(title.to_owned()))
+                        .into_any_element(),
+                    actions,
+                ))
+                .children(text.map(|t| muted(SharedString::from(t.to_owned()))))
                 .into_any_element(),
-            actions,
-        )))
-        .children(text.map(|t| page_part(muted(SharedString::from(t.to_owned())))))
+        ))
         .children(groups.into_iter().map(page_part))
         .into_any_element()
 }
@@ -813,7 +725,7 @@ fn section_header(title: &str, description: &str, actions: Option<AnyElement>) -
     });
     div()
         .flex()
-        .items_end()
+        .items_center()
         .gap(px(12.))
         .child(
             div()
@@ -888,23 +800,15 @@ const HINT_CHARS: usize = 72;
 /// Where a row's control goes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
-    /// On the right, in a column at least 240 px wide (text fields and sliders without a width
-    /// of their own).
-    Column,
     /// On the right, as wide as the control is: switches, short choices, sized dropdowns.
     Fit,
     /// Under the name and hint, across the whole card: wide sliders, tables of switches.
     Below,
 }
 
-/// A row: the name and a one-line hint on the left, the control on the right. A hint too long
-/// for one line puts all of it in the (i) beside the name.
-pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
-    setting_at(Place::Column, name, hint, control)
-}
-
-/// [`setting`] with the control on the right at its own width (#64): a switch, a few choices,
-/// or a dropdown or slider given a width that fits what it holds ([`sized`]).
+/// A row: the name and a one-line hint on the left, the control on the right at its own width:
+/// a switch, a few choices, or a dropdown or slider given a width that fits what it holds
+/// ([`sized`]). A hint too long for one line puts all of it in the (i) beside the name.
 pub fn setting_fit(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
     setting_at(Place::Fit, name, hint, control)
 }
@@ -931,6 +835,42 @@ pub fn setting_pair(first: AnyElement, second: AnyElement) -> AnyElement {
         .gap_x(px(24.))
         .child(cell(first))
         .child(cell(second))
+        .into_any_element()
+}
+
+/// One entry of a log (the audit log, the instance log): what happened on the first line, its
+/// details under it, and when on the right. Long details wrap rather than being cut off.
+pub fn log_entry(what: String, details: String, when: String) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(16.))
+        .py(px(10.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(div().text_size(theme::body_size()).child(what))
+                .when(!details.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_tertiary())
+                            .child(details),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .pt(px(2.))
+                .text_size(theme::caption_size())
+                .text_color(theme::text_tertiary())
+                .child(when),
+        )
         .into_any_element()
 }
 
@@ -1040,8 +980,17 @@ fn setting_at_with(
             .gap(px(10.))
             .py(px(ROW_PAD_Y))
             .child(text)
-            .child(div().w_full().child(control)),
-        Place::Column | Place::Fit => div()
+            // Not stretched: a few choices keep their own width. Sliders, dropdowns and fields
+            // that should run across the card are `w_full` themselves.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(control),
+            ),
+        Place::Fit => div()
             .flex()
             .flex_wrap()
             .items_center()
@@ -1054,8 +1003,6 @@ fn setting_at_with(
                     .flex_col()
                     .items_end()
                     .flex_shrink_0()
-                    // At least wide enough for a slider, which has no width of its own.
-                    .when(place == Place::Column, |d| d.min_w(px(240.)))
                     .max_w_full()
                     .child(control),
             ),

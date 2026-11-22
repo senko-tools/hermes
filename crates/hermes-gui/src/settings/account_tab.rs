@@ -63,11 +63,23 @@ impl Shell {
                 buttons = buttons.child(button("Sign out", Some(MenuAction::LogOut), false));
             }
             buttons = buttons.child(button("Remove", Some(MenuAction::RemoveInstance), true));
-            rows.push(setting(&inst, &hint, buttons));
+            rows.push(setting_fit(&inst, &hint, buttons));
         }
-        rows.push(setting(
-            "Another account",
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .py(px(12.))
+                    .child(muted("No accounts on this computer yet."))
+                    .into_any_element(),
+            );
+        }
+        note_part(
+            "Add an account",
             "Sign in with a Hermes address, or paste an invite link.",
+            "Accounts on this computer",
+        );
+        group_with(
+            "Accounts on this computer",
             crate::ui::button(
                 self,
                 "accounts-add",
@@ -76,9 +88,10 @@ impl Shell {
                 true,
                 |this, window, cx| this.open_add_instance(String::new(), window, cx),
                 cx,
-            ),
-        ));
-        group("Accounts", rows)
+            )
+            .into_any_element(),
+            rows,
+        )
     }
 
     pub(super) fn tab_account(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
@@ -92,7 +105,7 @@ impl Shell {
             let s = selected.as_ref().and_then(|i| store.instance(i));
             s.and_then(|s| s.me.clone())
         };
-        let mut account_rows = Vec::new();
+        let mut groups = Vec::new();
         if instances.len() > 1 {
             // A few, each with who is signed in there: a radio list.
             let options = instances
@@ -109,88 +122,96 @@ impl Shell {
                 .collect();
             let chosen = instances.iter().position(|i| Some(i) == selected.as_ref());
             let pick = instances.clone();
-            account_rows.push(setting_below(
-                "Account",
-                "Which account these settings are for.",
-                crate::ui::radio_list(
-                    self,
-                    "account-inst",
-                    options,
-                    chosen,
-                    move |this, n, _, cx| {
-                        if let Some(page) = &mut this.settings {
-                            page.account_inst = pick.get(n).cloned();
-                        }
-                        this.load_sessions(cx);
-                    },
-                    cx,
-                ),
+            groups.push(group(
+                "Showing",
+                vec![setting_below(
+                    "Account",
+                    "Which account this page is for.",
+                    crate::ui::radio_list(
+                        self,
+                        "account-inst",
+                        options,
+                        chosen,
+                        move |this, n, _, cx| {
+                            if let Some(page) = &mut this.settings {
+                                page.account_inst = pick.get(n).cloned();
+                            }
+                            this.load_sessions(cx);
+                        },
+                        cx,
+                    ),
+                )],
             ));
         }
         let Some(me) = me else {
-            account_rows.push(muted("Not signed in."));
-            return page_body(
-                "Account",
-                None,
-                vec![group("Account", account_rows), self.accounts_group(cx)],
-            );
+            groups.push(group("Profile", vec![muted("Not signed in.")]));
+            groups.push(self.accounts_group(cx));
+            return page_body("Account", None, groups);
         };
         let inst = selected.clone().unwrap_or_default();
-        let mut hint = format!(
-            "{} (@{}){}",
-            me.user.name(),
-            me.user.username,
-            me.user
-                .status_text
-                .as_deref()
-                .map(|s| format!(" · {s}"))
-                .unwrap_or_default()
-        );
-        if me.instance_admin {
-            hint.push_str(" · administrator");
-        }
-        let username_inst = inst.clone();
-        let copy_handle = me.user.handle();
-        account_rows.push(setting(
-            "Username",
-            &format!("You are {copy_handle}. Friends add you by this name."),
-            wrap()
-                .child(crate::ui::button(
-                    self,
-                    "account-username-copy",
-                    self.copy_label("account-username-copy", "Copy"),
-                    ButtonKind::Secondary,
-                    true,
-                    move |this, _, cx| {
-                        this.copy_from(
-                            "account-username-copy",
-                            copy_handle.clone(),
-                            "Username",
-                            cx,
-                        );
-                    },
-                    cx,
-                ))
-                .child(crate::ui::button(
-                    self,
-                    "account-username",
-                    "Change username…",
-                    ButtonKind::Secondary,
-                    true,
-                    move |this, window, cx| {
-                        this.open_form_username(username_inst.clone(), window, cx);
-                    },
-                    cx,
-                )),
-        ));
+        groups.push(self.profile_card(&inst, &me, cx));
+        groups.push(self.login_group(page, &inst, &me.user.handle(), cx));
+        groups.push(self.devices_group(page, cx));
+        groups.push(self.data_group(&inst, cx));
+        groups.push(self.accounts_group(cx));
+        page_body("Account", None, groups)
+    }
+
+    /// Who you are here: picture, names and status, and the way to change them.
+    fn profile_card(
+        &self,
+        inst: &InstanceId,
+        me: &hermes_client_core::proto::models::CurrentUser,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = me.user.name().to_owned();
         let profile_inst = inst.clone();
-        account_rows.push(setting(
-            "Profile",
-            &hint,
-            crate::ui::button(
+        let mut detail = format!("@{}", me.user.username);
+        if me.instance_admin {
+            detail.push_str(" · administrator");
+        }
+        let card = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(16.))
+            .py(px(14.))
+            .child(self.avatar(inst, Some(&me.user), &name, 64.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(160.))
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(theme::heading_size())
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_secondary())
+                            .child(detail),
+                    )
+                    .children(me.user.status_text.clone().filter(|s| !s.is_empty()).map(
+                        |status| {
+                            div()
+                                .truncate()
+                                .text_size(theme::secondary_size())
+                                .text_color(theme::text_tertiary())
+                                .child(status)
+                        },
+                    )),
+            )
+            .child(crate::ui::button(
                 self,
                 "account-profile",
-                "Edit profile…",
+                "Edit profile",
                 ButtonKind::Primary,
                 true,
                 move |this, window, cx| {
@@ -198,28 +219,85 @@ impl Shell {
                     this.open_my_profile(profile_inst.clone(), at, cx);
                 },
                 cx,
-            ),
-        ));
-        let password_inst = inst.clone();
-        account_rows.push(setting(
-            "Password",
-            "Changing it signs out your other devices.",
-            crate::ui::button(
-                self,
-                "account-password",
-                "Change password…",
-                ButtonKind::Secondary,
-                true,
-                move |this, window, cx| this.open_form_password(password_inst.clone(), window, cx),
-                cx,
-            ),
-        ));
+            ))
+            .into_any_element();
+        group("Profile", vec![card])
+    }
 
-        let mut device_rows: Vec<AnyElement> = Vec::new();
-        match &page.sessions {
-            Remote::Idle | Remote::Loading => device_rows.push(theme::skeleton("devices", 3)),
-            Remote::Failed(err) => device_rows.push(
+    /// Signing in: username, password, two-factor, connecting on start.
+    fn login_group(
+        &self,
+        page: &SettingsPage,
+        inst: &InstanceId,
+        handle: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let username_inst = inst.clone();
+        let copy_handle = handle.to_owned();
+        let password_inst = inst.clone();
+        let mut rows = vec![
+            setting_fit(
+                "Username",
+                &format!("You are {handle}. Friends add you by this name."),
                 div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(crate::ui::button(
+                        self,
+                        "account-username-copy",
+                        self.copy_label("account-username-copy", "Copy"),
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            this.copy_from(
+                                "account-username-copy",
+                                copy_handle.clone(),
+                                "Username",
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                    .child(crate::ui::button(
+                        self,
+                        "account-username",
+                        "Change…",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
+                            this.open_form_username(username_inst.clone(), window, cx);
+                        },
+                        cx,
+                    )),
+            ),
+            setting_fit(
+                "Password",
+                "Changing it signs out your other devices.",
+                crate::ui::button(
+                    self,
+                    "account-password",
+                    "Change…",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        this.open_form_password(password_inst.clone(), window, cx);
+                    },
+                    cx,
+                ),
+            ),
+        ];
+        rows.extend(self.security_rows(page, inst, cx));
+        group("Login", rows)
+    }
+
+    /// The devices signed in to this account, each with a way to sign it out.
+    fn devices_group(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
+        let mut rows: Vec<AnyElement> = Vec::new();
+        match &page.sessions {
+            Remote::Idle | Remote::Loading => rows.push(theme::skeleton("devices", 3)),
+            Remote::Failed(err) => rows.push(
+                div()
+                    .py(px(12.))
                     .text_size(theme::secondary_size())
                     .text_color(theme::danger())
                     .child(format!("Could not load: {err}"))
@@ -230,6 +308,7 @@ impl Shell {
                     let seen = time::format(s.last_seen_at, "%Y-%m-%d %H:%M", self.utc_offset);
                     let id = s.id;
                     let control: AnyElement = if s.current {
+                        // A note, not a control: nothing to press here.
                         muted("This device")
                     } else {
                         crate::ui::button(
@@ -243,7 +322,7 @@ impl Shell {
                         )
                         .into_any_element()
                     };
-                    device_rows.push(setting(
+                    rows.push(setting_fit(
                         &s.device_name,
                         &format!("Last active {seen}"),
                         control,
@@ -256,7 +335,6 @@ impl Shell {
             .ready()
             .map(|l| l.iter().filter(|s| !s.current).map(|s| s.id).collect())
             .unwrap_or_default();
-        // In the group's header, at its own width: not a bar across the card.
         let sign_out_others = if others.is_empty() {
             div().into_any_element()
         } else {
@@ -271,15 +349,6 @@ impl Shell {
             )
             .into_any_element()
         };
-        page_body(
-            "Account",
-            None,
-            vec![
-                group("Account", account_rows),
-                group_with("Signed-in devices", sign_out_others, device_rows),
-                self.security_group(page, &inst, cx),
-                self.accounts_group(cx),
-            ],
-        )
+        group_with("Signed-in devices", sign_out_others, rows)
     }
 }

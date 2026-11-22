@@ -5,6 +5,8 @@ use crate::ui::{ButtonKind, Segment};
 
 const STATUS_SECONDS: [u32; 3] = [3, 5, 10];
 const MEDIA_SCALES: [(u32, &str); 3] = [(75, "Small"), (100, "Normal"), (150, "Large")];
+/// How wide a slider on the right of its row is.
+const SLIDER_W: f32 = 240.;
 
 impl Shell {
     /// A switch row for a `bool` in the config; use [`flag!`], which names the field once.
@@ -33,117 +35,114 @@ impl Shell {
 
     pub(super) fn tab_chat(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
         let b = &self.config.buffer;
-        let preview = time::format(
-            hermes_client_core::now_ms(),
-            &b.timestamp_format,
-            self.utc_offset,
+        let messages = section(
+            "Messages",
+            "",
+            vec![
+                flag!(self, cx, "Show avatars", "", buffer.show_avatars),
+                flag!(self, cx, "Show image previews", "", buffer.image_previews),
+                flag!(self, cx, "Show who is typing", "", buffer.show_typing),
+                flag!(
+                    self,
+                    cx,
+                    "Format messages",
+                    "Off: bold, code blocks and the like show as they were typed.",
+                    buffer.markdown
+                ),
+                flag!(
+                    self,
+                    cx,
+                    "Link previews",
+                    "Show the title and picture of linked pages. This computer fetches \
+                    them itself, so the site sees your address (the Hermes server never \
+                    fetches them).",
+                    buffer.link_previews
+                ),
+                flag!(
+                    self,
+                    cx,
+                    "Preview while writing",
+                    "The message shows formatted above the message box. Also the eye \
+                    button next to it.",
+                    buffer.composer_preview
+                ),
+                flag!(
+                    self,
+                    cx,
+                    "Enter sends",
+                    "Shift+Enter starts a new line.",
+                    buffer.enter_sends
+                ),
+            ],
         );
-        let date_preview = time::format(
-            hermes_client_core::now_ms(),
-            &b.date_format,
-            self.utc_offset,
+        // Side by side: each is a field with its presets under it.
+        let times = section(
+            "Time and date",
+            "",
+            vec![setting_pair(
+                self.pattern_row(page, Pattern::Time, cx),
+                self.pattern_row(page, Pattern::Date, cx),
+            )],
+        );
+        let layout = section(
+            "Layout",
+            "",
+            vec![
+                flag!(
+                    self,
+                    cx,
+                    "Compact messages",
+                    "Time, a small picture, the name and the text on one line.",
+                    buffer.compact
+                ),
+                setting_fit(
+                    "Group messages",
+                    &format!("Within {} minutes", b.group_minutes),
+                    sized(SLIDER_W, self.slider(page, SliderKind::GroupMinutes)),
+                ),
+                setting_fit(
+                    "Status line stays",
+                    "",
+                    crate::ui::segmented(
+                        self,
+                        "status-seconds",
+                        STATUS_SECONDS
+                            .iter()
+                            .map(|secs| Segment::new(format!("{secs} s")))
+                            .collect(),
+                        STATUS_SECONDS
+                            .iter()
+                            .position(|&s| s == self.config.general.status_seconds),
+                        true,
+                        |this, n, _, cx| {
+                            let secs = STATUS_SECONDS[n];
+                            this.set_config(|c| c.general.status_seconds = secs, cx);
+                        },
+                        cx,
+                    ),
+                ),
+                setting_fit(
+                    "Quick reactions",
+                    &self.config.buffer.quick_reactions,
+                    crate::ui::button(
+                        self,
+                        "edit-reactions",
+                        "Change",
+                        ButtonKind::Secondary,
+                        true,
+                        |this, window, cx| this.open_form_quick_reactions(window, cx),
+                        cx,
+                    ),
+                ),
+            ],
         );
         page_body(
             "Chat",
             None,
             vec![
-                group(
-                    "Messages",
-                    vec![
-                        flag!(self, cx, "Show avatars", "", buffer.show_avatars),
-                        flag!(self, cx, "Show image previews", "", buffer.image_previews),
-                        flag!(self, cx, "Show who is typing", "", buffer.show_typing),
-                        flag!(
-                            self,
-                            cx,
-                            "Format messages",
-                            "Off: bold, code blocks and the like show as they were typed.",
-                            buffer.markdown
-                        ),
-                        flag!(
-                            self,
-                            cx,
-                            "Link previews",
-                            "Show the title and picture of linked pages. This computer fetches \
-                            them itself, so the site sees your address (the Hermes server never \
-                            fetches them).",
-                            buffer.link_previews
-                        ),
-                        flag!(
-                            self,
-                            cx,
-                            "Preview while writing",
-                            "The message shows formatted above the message box. Also the eye \
-                            button next to it.",
-                            buffer.composer_preview
-                        ),
-                        flag!(
-                            self,
-                            cx,
-                            "Enter sends",
-                            "Shift+Enter starts a new line.",
-                            buffer.enter_sends
-                        ),
-                    ],
-                ),
-                group(
-                    "Layout",
-                    vec![
-                        setting(
-                            "Group messages",
-                            &format!("Within {} minutes", b.group_minutes),
-                            self.slider(page, SliderKind::GroupMinutes),
-                        ),
-                        setting(
-                            "Quick reactions",
-                            &self.config.buffer.quick_reactions,
-                            crate::ui::button(
-                                self,
-                                "edit-reactions",
-                                "Change",
-                                ButtonKind::Secondary,
-                                true,
-                                |this, window, cx| this.open_form_quick_reactions(window, cx),
-                                cx,
-                            ),
-                        ),
-                        setting(
-                            "Status line stays",
-                            &format!("{} seconds", self.config.general.status_seconds),
-                            crate::ui::segmented(
-                                self,
-                                "status-seconds",
-                                STATUS_SECONDS
-                                    .iter()
-                                    .map(|secs| Segment::new(format!("{secs} s")))
-                                    .collect(),
-                                STATUS_SECONDS
-                                    .iter()
-                                    .position(|&s| s == self.config.general.status_seconds),
-                                true,
-                                |this, n, _, cx| {
-                                    let secs = STATUS_SECONDS[n];
-                                    this.set_config(|c| c.general.status_seconds = secs, cx);
-                                },
-                                cx,
-                            ),
-                        ),
-                        flag!(
-                            self,
-                            cx,
-                            "Compact messages",
-                            "Time, a small picture, the name and the text on one line.",
-                            buffer.compact
-                        ),
-                        self.pattern_row(page, Pattern::Time, &format!("Now: {preview}."), cx),
-                        self.pattern_row(
-                            page,
-                            Pattern::Date,
-                            &format!("On the line between days. Now: {date_preview}."),
-                            cx,
-                        ),
-                    ],
-                ),
+                messages,
+                times,
+                layout,
                 self.sidebar_group(cx),
                 self.files_group(page, cx),
             ],
@@ -253,18 +252,44 @@ impl Shell {
         } else {
             g.download_dir.clone()
         };
+        let media_scale = crate::ui::segmented(
+            self,
+            "media-scale",
+            MEDIA_SCALES
+                .iter()
+                .map(|(_, name)| Segment::new(*name))
+                .collect(),
+            MEDIA_SCALES
+                .iter()
+                .position(|(s, _)| *s == self.config.buffer.media_scale),
+            true,
+            |this, n, _, cx| {
+                let scale = MEDIA_SCALES[n].0;
+                this.set_config(|c| c.buffer.media_scale = scale, cx);
+            },
+            cx,
+        );
         group(
-            "Files",
+            "Files and media",
             vec![
-                setting(
-                    "Media volume",
-                    &format!("{:.0} %", self.config.voice.media_volume * 100.),
-                    self.slider(page, SliderKind::MediaVolume),
+                setting_pair(
+                    setting_below(
+                        "Media volume",
+                        &format!("{:.0} %", self.config.voice.media_volume * 100.),
+                        self.slider(page, SliderKind::MediaVolume),
+                    ),
+                    setting_below(
+                        "Size of pictures and videos",
+                        &format!("{} %", self.config.buffer.media_scale),
+                        media_scale,
+                    ),
                 ),
-                setting(
+                setting_fit(
                     "Download folder",
                     &folder,
-                    wrap()
+                    div()
+                        .flex()
+                        .gap(px(8.))
                         .child(crate::ui::button(
                             self,
                             "download-choose",
@@ -274,41 +299,34 @@ impl Shell {
                             |this, _, cx| this.choose_download_dir(cx),
                             cx,
                         ))
-                        .child(crate::ui::button(
-                            self,
-                            "download-reset",
-                            "Reset",
-                            ButtonKind::Secondary,
-                            true,
-                            |this, _, cx| this.set_config(|c| c.general.download_dir.clear(), cx),
-                            cx,
-                        )),
+                        // Only when there is something to reset.
+                        .when(!g.download_dir.is_empty(), |d| {
+                            d.child(crate::ui::button(
+                                self,
+                                "download-reset",
+                                "Reset",
+                                ButtonKind::Secondary,
+                                true,
+                                |this, _, cx| {
+                                    this.set_config(|c| c.general.download_dir.clear(), cx);
+                                },
+                                cx,
+                            ))
+                        }),
                 ),
-                setting(
-                    "Size of pictures and videos",
-                    &format!("{} %", self.config.buffer.media_scale),
-                    crate::ui::segmented(
-                        self,
-                        "media-scale",
-                        MEDIA_SCALES
-                            .iter()
-                            .map(|(_, name)| Segment::new(*name))
-                            .collect(),
-                        MEDIA_SCALES
-                            .iter()
-                            .position(|(s, _)| *s == self.config.buffer.media_scale),
-                        true,
-                        |this, n, _, cx| {
-                            let scale = MEDIA_SCALES[n].0;
-                            this.set_config(|c| c.buffer.media_scale = scale, cx);
-                        },
-                        cx,
-                    ),
+                flag!(
+                    self,
+                    cx,
+                    "Ask where to save",
+                    "Choose a place for each download.",
+                    general.ask_where_to_save
                 ),
-                setting(
+                setting_fit(
                     "Saved on this device",
                     "Thumbnails come back as needed, the search index fills up again.",
-                    wrap()
+                    div()
+                        .flex()
+                        .gap(px(8.))
                         .child(crate::ui::button(
                             self,
                             "clear-thumbs",
@@ -335,13 +353,6 @@ impl Shell {
                             },
                             cx,
                         )),
-                ),
-                flag!(
-                    self,
-                    cx,
-                    "Ask where to save",
-                    "Choose a place for each download.",
-                    general.ask_where_to_save
                 ),
             ],
         )

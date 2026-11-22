@@ -12,7 +12,7 @@ use hermes_client_core::audio::Sound;
 use hermes_client_core::diagnostics::{Check, Level, report};
 
 use crate::assets::{self, icon};
-use crate::settings::{group, page_body};
+use crate::settings::{group, page_body_with};
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
@@ -185,7 +185,6 @@ impl Shell {
         let copy_label = self.copy_label("diagnostics-copy", "Copy report");
         let buttons = div()
             .flex()
-            .flex_wrap()
             .gap(px(8.))
             .child(crate::ui::button(
                 self,
@@ -226,26 +225,25 @@ impl Shell {
             ))
             .into_any_element();
         let developer = self.config.general.developer_mode;
-        let mut groups = vec![
-            group(
-                "Developer",
-                vec![crate::settings::setting(
-                    "Developer mode",
-                    "Menus also offer copying the IDs of servers, channels, messages and people.",
-                    crate::ui::switch(
-                        self,
-                        "developer-mode",
-                        developer,
-                        true,
-                        move |this, _, cx| {
-                            this.set_config(|c| c.general.developer_mode = !developer, cx);
-                        },
-                        cx,
-                    ),
-                )],
-            ),
-            buttons,
-        ];
+        // The developer switch has nothing to do with the tests: it goes under them.
+        let developer_group = group(
+            "Developer",
+            vec![crate::settings::setting_fit(
+                "Developer mode",
+                "Menus also offer copying the IDs of servers, channels, messages and people.",
+                crate::ui::switch(
+                    self,
+                    "developer-mode",
+                    developer,
+                    true,
+                    move |this, _, cx| {
+                        this.set_config(|c| c.general.developer_mode = !developer, cx);
+                    },
+                    cx,
+                ),
+            )],
+        );
+        let mut groups = Vec::new();
         if let Some(run) = run {
             for (heading, checks) in &run.groups {
                 let rows = match checks {
@@ -255,8 +253,10 @@ impl Shell {
                 groups.push(group(heading, rows));
             }
         }
-        page_body(
+        groups.push(developer_group);
+        page_body_with(
             "Diagnostics",
+            Some(buttons),
             Some(
                 "Tests every server you are signed in to and this computer. Working: verified. \
                  Warning: might work, or works in a reduced way, and the test cannot be sure. \

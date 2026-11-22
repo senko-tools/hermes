@@ -64,29 +64,35 @@ impl Shell {
                     cx,
                 ))
                 .into_any_element(),
+            // The cards and their note are one part of the card: no line between them.
             vec![
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .children(cards)
+                    .flex_col()
+                    .gap(px(10.))
+                    .py(px(12.))
+                    .child(div().flex().flex_wrap().gap(px(8.)).children(cards))
+                    .child(muted(
+                        "Your own themes are .toml files in the themes folder.",
+                    ))
                     .into_any_element(),
-                muted("Your own themes are .toml files in the themes folder."),
             ],
         );
         let shown_px = i32::from(config.font.size) + 3;
         let text_group = group(
             "Text",
             vec![
-                setting_fit(
-                    "Font",
-                    "Any font installed on this computer.",
-                    crate::ui::dropdown(&page.font, DropWidth::Medium),
-                ),
-                setting_fit(
-                    "Font size",
-                    &format!("{shown_px} px"),
-                    sized(SLIDER_W, self.slider(page, SliderKind::FontSize)),
+                setting_pair(
+                    setting_below(
+                        "Font",
+                        "Any font installed on this computer.",
+                        crate::ui::dropdown(&page.font, DropWidth::Wide).w_full(),
+                    ),
+                    setting_below(
+                        "Font size",
+                        &format!("{shown_px} px"),
+                        self.slider(page, SliderKind::FontSize),
+                    ),
                 ),
                 self.more(
                     "appearance-text",
@@ -128,20 +134,27 @@ impl Shell {
             ],
         );
         let scale = self.ui_scale_draft.unwrap_or(config.font.ui_scale);
-        let presets = crate::ui::segmented(
-            self,
-            "scale-preset",
-            SCALE_PRESETS
-                .iter()
-                .map(|value| Segment::new(format!("{:.0}%", value * 100.)))
-                .collect(),
-            SCALE_PRESETS.iter().position(|value| {
-                (config.font.ui_scale - value).abs() < 0.001 && self.ui_scale_draft.is_none()
-            }),
-            true,
-            |this, n, window, cx| this.set_ui_scale(SCALE_PRESETS[n], window, cx),
-            cx,
-        );
+        // The slider is the setting; the presets under it set it in one click.
+        let presets =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(SCALE_PRESETS.iter().enumerate().map(|(n, value)| {
+                    let chosen = (config.font.ui_scale - value).abs() < 0.001
+                        && self.ui_scale_draft.is_none();
+                    let value = *value;
+                    crate::ui::chip(
+                        self,
+                        SharedString::from(format!("scale-preset-{n}")),
+                        format!("{:.0}%", value * 100.),
+                        chosen,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_ui_scale(value, window, cx);
+                    }))
+                }));
         let position = crate::ui::segmented(
             self,
             "sidebar-position",
@@ -195,16 +208,21 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .w_full()
-                        .gap(px(8.))
-                        .items_start()
-                        .child(presets)
-                        .child(self.slider(page, SliderKind::UiScale)),
+                        .gap(px(10.))
+                        .child(self.slider(page, SliderKind::UiScale))
+                        .child(presets),
                 ),
-                setting_fit("Sidebar position", "", position),
-                setting_fit(
-                    "Avatar shape",
-                    "How people's pictures are cut, everywhere.",
-                    shape,
+                setting_pair(
+                    setting_below(
+                        "Sidebar position",
+                        "Which side the servers and channels are on.",
+                        position,
+                    ),
+                    setting_below(
+                        "Avatar shape",
+                        "How people's pictures are cut, everywhere.",
+                        shape,
+                    ),
                 ),
                 self.more(
                     "appearance-layout",
@@ -263,8 +281,6 @@ const AVATAR_SHAPES: [(config::AvatarShape, &str); 2] = [
     (config::AvatarShape::Circle, "Circle"),
     (config::AvatarShape::Squircle, "Squircle"),
 ];
-/// A slider on the right of its row.
-const SLIDER_W: f32 = 220.;
 
 /// "Aa" at `size`, for the size of titles.
 fn title_preview(size: f32) -> crate::ui::Preview {

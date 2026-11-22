@@ -81,6 +81,11 @@ pub fn chip(
 /// turns `on_accent` as the thumb covers it).
 pub type Preview = std::rc::Rc<dyn Fn(gpui_kit::Rgba) -> gpui_kit::AnyElement>;
 
+/// An icon as a [`Segment`]'s picture.
+pub fn icon_preview(glyph: &'static str) -> Preview {
+    std::rc::Rc::new(move |color| icon(glyph, 14., color).into_any_element())
+}
+
 // ---------------------------------------------------------------------------------------------
 // The control family (#62): switch, segmented choice, radio list, dropdown, chip and buttons.
 // They share a height, corners, text size, the hover spring, a focus ring (keyboard only) and
@@ -389,12 +394,15 @@ fn segmented_in(
                             };
                             let label = option.label.clone();
                             let preview = option.preview.clone();
+                            // A picture alone (no label) gets a narrower, centered face.
+                            let icon_only = label.is_empty();
                             let face = div()
                                 .flex()
                                 .items_center()
+                                .justify_center()
                                 .gap(px(6.))
                                 .h_full()
-                                .px(px(14.))
+                                .px(px(if icon_only { 10. } else { 14. }))
                                 .when(stretch, |d| d.justify_center())
                                 .rounded(theme::radius_small())
                                 .when(!measured && fill > 0., |d| d.bg(theme::accent()))
@@ -409,7 +417,7 @@ fn segmented_in(
                                         let text = theme::mix(text, theme::on_accent(), fill);
                                         d.text_color(text)
                                             .children(preview.as_ref().map(|p| p(text)))
-                                            .child(label.clone())
+                                            .when(!icon_only, |d| d.child(label.clone()))
                                     },
                                 );
                             let el = div()

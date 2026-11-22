@@ -1,12 +1,20 @@
 //! Privacy and safety.
 
 use super::*;
-use crate::ui::Segment;
+use crate::ui::ButtonKind;
 
-const DM_FROM: [(DmFrom, &str); 3] = [
-    (DmFrom::Everyone, "Everyone"),
-    (DmFrom::Spaces, "People in my servers"),
-    (DmFrom::Nobody, "Nobody"),
+const DM_FROM: [(DmFrom, &str, &str); 3] = [
+    (
+        DmFrom::Everyone,
+        "Everyone",
+        "Anyone on this Hermes server.",
+    ),
+    (
+        DmFrom::Spaces,
+        "People in my servers",
+        "Only people who share a server with you, and your friends.",
+    ),
+    (DmFrom::Nobody, "Nobody", "Only your friends."),
 ];
 
 impl Shell {
@@ -24,20 +32,22 @@ impl Shell {
             }
         };
         let many = self.core.instance_ids().len() > 1;
+        let device = self.core.my_device_id(&inst).unwrap_or_default();
         let dm_from = privacy.dm_from;
         let privacy_rows = vec![
             setting_below(
                 "Direct messages from",
                 "Who can start a conversation with you.",
-                crate::ui::segmented_wide(
+                crate::ui::radio_list(
                     self,
                     "dm-from",
                     DM_FROM
                         .iter()
-                        .map(|(_, name)| Segment::new(*name))
+                        .map(|(_, name, hint)| {
+                            (SharedString::from(*name), Some(SharedString::from(*hint)))
+                        })
                         .collect(),
-                    DM_FROM.iter().position(|(v, _)| *v == dm_from),
-                    true,
+                    DM_FROM.iter().position(|(v, ..)| *v == dm_from),
                     |this, n, _, cx| {
                         this.set_privacy(
                             UpdatePrivacyRequest {
@@ -50,7 +60,7 @@ impl Shell {
                     cx,
                 ),
             ),
-            setting(
+            setting_fit(
                 "Message requests",
                 "Messages from anyone else wait in Requests. Off: they cannot message you.",
                 {
@@ -73,7 +83,7 @@ impl Shell {
                     )
                 },
             ),
-            setting(
+            setting_fit(
                 "Show when I was last online",
                 "On your profile, for people who share a server with you and your friends.",
                 {
@@ -106,13 +116,22 @@ impl Shell {
             group(&title, privacy_rows),
             group(
                 "End-to-end encryption",
-                vec![setting(
+                vec![setting_fit(
                     "This device",
-                    "Only your and their devices can read DMs, files and calls.",
-                    muted(
-                        self.core
-                            .my_device_id(&inst)
-                            .map_or_else(String::new, |d| d.chars().take(16).collect::<String>()),
+                    &format!(
+                        "{} · only your and their devices can read DMs, files and calls.",
+                        device.chars().take(16).collect::<String>()
+                    ),
+                    crate::ui::button(
+                        self,
+                        "device-id-copy",
+                        self.copy_label("device-id-copy", "Copy ID"),
+                        ButtonKind::Secondary,
+                        !device.is_empty(),
+                        move |this, _, cx| {
+                            this.copy_from("device-id-copy", device.clone(), "Device ID", cx);
+                        },
+                        cx,
                     ),
                 )],
             ),
@@ -138,7 +157,7 @@ impl Shell {
                     "Off: the server is not told, and your other devices will not know either.",
                     privacy.send_read_marks
                 ),
-                setting(
+                setting_fit(
                     "Close the microphone while muted",
                     "The system then shows it as unused. Unmuting takes a moment longer.",
                     {
@@ -166,7 +185,28 @@ impl Shell {
                     "Warn about unencrypted chats",
                     "A popup when opening a chat the server can read. The note above \
                         the message box is always there.",
-                    self.warn_unencrypted_choices("settings-warn-unencrypted", cx),
+                    // Long choices: one under the other, not a bar across the card.
+                    {
+                        let current = self.config.privacy.warn_unencrypted;
+                        crate::ui::radio_list(
+                            self,
+                            "settings-warn-unencrypted",
+                            crate::unencrypted::WARN_CHOICES
+                                .iter()
+                                .map(|(_, label)| (SharedString::from(*label), None))
+                                .collect(),
+                            crate::unencrypted::WARN_CHOICES
+                                .iter()
+                                .position(|(v, _)| *v == current),
+                            |this, n, _, cx| {
+                                this.set_warn_unencrypted(
+                                    crate::unencrypted::WARN_CHOICES[n].0,
+                                    cx,
+                                );
+                            },
+                            cx,
+                        )
+                    },
                 ),
             ],
         );

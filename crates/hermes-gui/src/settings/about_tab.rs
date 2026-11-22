@@ -47,15 +47,21 @@ impl Shell {
                             .text_size(theme::secondary_size())
                             .text_color(theme::text_secondary())
                             .child("Self-hostable chat with text, voice and screen sharing."),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child("The app is GPL-3.0-or-later; the server is AGPL-3.0-or-later."),
                     ),
             )
             .into_any_element();
-        let licence = setting(
+        note_part(
             "Licence",
-            "The app is GPL-3.0-or-later; the server is AGPL-3.0-or-later.",
-            div(),
+            "GPL-3.0-or-later, AGPL-3.0-or-later",
+            "Debug info",
         );
-        let debug = setting(
+        let debug = setting_fit(
             "Debug info",
             "Version, system and connection state for bug reports. No tokens or messages.",
             crate::ui::button(
@@ -71,7 +77,7 @@ impl Shell {
                 cx,
             ),
         );
-        let logs = setting(
+        let logs = setting_fit(
             "Logs",
             "Dated log files from this device.",
             crate::ui::button(
@@ -92,7 +98,7 @@ impl Shell {
                 cx,
             ),
         );
-        let project = setting(
+        let project = setting_fit(
             "Project page",
             "Source code, issues and releases.",
             crate::ui::button(
@@ -113,7 +119,8 @@ impl Shell {
             "About",
             None,
             vec![
-                group("Hermes", vec![header, licence]),
+                // Who this is, on its own above the cards.
+                div().py(px(8.)).child(header).into_any_element(),
                 group("Help", vec![debug, logs, project]),
             ],
         )

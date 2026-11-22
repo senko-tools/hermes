@@ -11,64 +11,72 @@ impl Shell {
             .is_some_and(|me| me.instance_admin)
     }
 
-    pub(super) fn security_group(
+    /// Two-factor login and connecting on start, for the Login group of the Account tab.
+    pub(super) fn security_rows(
         &self,
         page: &SettingsPage,
         inst: &InstanceId,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Vec<AnyElement> {
         let on = page.two_factor == Some(true);
-        let (form_inst, export_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
-        group(
-            "Security and your data",
-            vec![
-                setting(
-                    "Two-factor login",
-                    if on {
-                        "On: signing in also needs a code."
-                    } else {
-                        "Signing in can also need a code from an authenticator app."
+        let form_inst = inst.clone();
+        vec![
+            setting_fit(
+                "Two-factor login",
+                if on {
+                    "On: signing in also needs a code."
+                } else {
+                    "Signing in can also need a code from an authenticator app."
+                },
+                crate::ui::button(
+                    self,
+                    "two-factor",
+                    if on { "Turn off" } else { "Turn on" },
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        if on {
+                            this.open_form_two_factor_disable(form_inst.clone(), window, cx);
+                        } else {
+                            this.open_form_two_factor_begin(form_inst.clone(), window, cx);
+                        }
                     },
-                    crate::ui::button(
-                        self,
-                        "two-factor",
-                        if on { "Turn off" } else { "Turn on" },
-                        ButtonKind::Secondary,
-                        true,
-                        move |this, window, cx| {
-                            if on {
-                                this.open_form_two_factor_disable(form_inst.clone(), window, cx);
-                            } else {
-                                this.open_form_two_factor_begin(form_inst.clone(), window, cx);
-                            }
-                        },
-                        cx,
-                    ),
+                    cx,
                 ),
-                setting("Connect when Hermes starts", "", {
-                    let on = self
-                        .config
-                        .instances
-                        .iter()
-                        .find(|e| e.id == *inst)
-                        .is_none_or(|e| e.autoconnect);
-                    let inst = inst.clone();
-                    crate::ui::switch(
-                        self,
-                        "autoconnect",
-                        on,
-                        true,
-                        move |this, _, cx| {
-                            if let Err(err) = this.core.set_autoconnect(&inst, !on) {
-                                this.error(err.to_string(), cx);
-                            }
-                            this.apply_config(cx);
-                        },
-                        cx,
-                    )
-                }),
-                setting(
-                    "Your data",
+            ),
+            setting_fit("Connect when Hermes starts", "", {
+                let on = self
+                    .config
+                    .instances
+                    .iter()
+                    .find(|e| e.id == *inst)
+                    .is_none_or(|e| e.autoconnect);
+                let inst = inst.clone();
+                crate::ui::switch(
+                    self,
+                    "autoconnect",
+                    on,
+                    true,
+                    move |this, _, cx| {
+                        if let Err(err) = this.core.set_autoconnect(&inst, !on) {
+                            this.error(err.to_string(), cx);
+                        }
+                        this.apply_config(cx);
+                    },
+                    cx,
+                )
+            }),
+        ]
+    }
+
+    /// Taking your data with you, or deleting the account.
+    pub(super) fn data_group(&self, inst: &InstanceId, cx: &mut Context<Self>) -> AnyElement {
+        let (export_inst, delete_inst) = (inst.clone(), inst.clone());
+        group(
+            "Your data",
+            vec![
+                setting_fit(
+                    "Export",
                     "A file with your profile, servers and messages as the server holds them.",
                     crate::ui::button(
                         self,
@@ -80,7 +88,7 @@ impl Shell {
                         cx,
                     ),
                 ),
-                setting(
+                setting_fit(
                     "Delete account",
                     "This cannot be undone.",
                     crate::ui::button(
@@ -214,10 +222,29 @@ impl Shell {
                     let disabled = entry.disabled;
                     let admin = entry.instance_admin;
                     let (disable_inst, admin_inst) = (inst.clone(), inst.clone());
-                    users.push(setting(
+                    users.push(setting_fit(
                         &entry.user.handle(),
                         flags,
-                        wrap()
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(crate::ui::button(
+                                self,
+                                format!("admin-admin-{id}"),
+                                if admin { "Remove admin" } else { "Make admin" },
+                                ButtonKind::Secondary,
+                                true,
+                                move |this, _, cx| {
+                                    this.admin_patch(
+                                        admin_inst.clone(),
+                                        id,
+                                        None,
+                                        Some(!admin),
+                                        cx,
+                                    );
+                                },
+                                cx,
+                            ))
                             .child(crate::ui::button(
                                 self,
                                 format!("admin-disable-{id}"),
@@ -238,23 +265,6 @@ impl Shell {
                                     );
                                 },
                                 cx,
-                            ))
-                            .child(crate::ui::button(
-                                self,
-                                format!("admin-admin-{id}"),
-                                if admin { "Remove admin" } else { "Make admin" },
-                                ButtonKind::Secondary,
-                                true,
-                                move |this, _, cx| {
-                                    this.admin_patch(
-                                        admin_inst.clone(),
-                                        id,
-                                        None,
-                                        Some(!admin),
-                                        cx,
-                                    );
-                                },
-                                cx,
                             )),
                     ));
                 }
@@ -264,31 +274,37 @@ impl Shell {
         match &page.admin_log {
             Remote::Idle | Remote::Loading => log.push(theme::skeleton("log", 5)),
             Remote::Failed(err) => log.push(muted(err.clone())),
-            Remote::Ready(list) if list.is_empty() => log.push(muted("Nothing yet.")),
+            Remote::Ready(list) if list.is_empty() => {
+                log.push(
+                    div()
+                        .py(px(12.))
+                        .child(muted("Nothing yet."))
+                        .into_any_element(),
+                );
+            }
             Remote::Ready(list) => {
                 for entry in list {
-                    log.push(muted(format!(
-                        "{} · {} · {}",
+                    log.push(log_entry(
+                        entry.action.clone(),
+                        entry.details.clone(),
                         time::format(entry.created_at, "%Y-%m-%d %H:%M", self.utc_offset),
-                        entry.action,
-                        entry.details
-                    )));
+                    ));
                 }
             }
         }
         page_body(
-            "Instance",
+            "Administration",
             None,
             vec![
                 group(
                     "Who can make an account",
                     vec![
-                        setting(
+                        setting_fit(
                             "Registration",
                             "Takes effect at once, and over the config file.",
                             registration,
                         ),
-                        setting(
+                        setting_fit(
                             "Channels must be encrypted",
                             "Set in the server's config file.",
                             muted(
