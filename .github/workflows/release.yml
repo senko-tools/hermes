@@ -229,32 +229,49 @@ jobs:
           (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
           ls -l dist
       - name: Installer
-        # Inno Setup, pinned and checked, installed for this run only. The installer carries the
-        # files of stage/portable, the same as the portable zip and the update files.
+        # Inno Setup 6.6 or newer builds it from crates/hermes-gui/installer.iss. The runner image
+        # has one installed for all users (installing ours per user beside it hung the step);
+        # without it, the pinned and checked one is installed for this run only. The installer carries the files of
+        # stage/portable, the same as the portable zip and the update files.
         shell: pwsh
-        # It takes about 2 minutes; anything longer is a hang, not a slow build.
-        timeout-minutes: 15
+        # The compile takes a few minutes; anything much longer is a hang, not a slow build.
+        timeout-minutes: 20
         env:
           INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
           INNO_SHA256: 9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732
         run: |
-          $inno = Join-Path $env:RUNNER_TEMP innosetup
-          Invoke-WebRequest $env:INNO_URL -OutFile innosetup.exe
-          if ((Get-FileHash innosetup.exe -Algorithm SHA256).Hash -ne $env:INNO_SHA256) {
-            throw "Inno Setup download does not match its checksum"
+          function Say($text) { Write-Host "$(Get-Date -Format HH:mm:ss) $text" }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          # Its files carry no version (6.7.1 in the image's notes); one too old fails the compile
+          # with an error.
+          if (Test-Path $iscc) {
+            Say "using the runner's Inno Setup 6"
+          } else {
+            $inno = Join-Path $env:RUNNER_TEMP innosetup
+            Say "installing Inno Setup 6.7.3"
+            Invoke-WebRequest $env:INNO_URL -OutFile innosetup.exe
+            if ((Get-FileHash innosetup.exe -Algorithm SHA256).Hash -ne $env:INNO_SHA256) {
+              throw "Inno Setup download does not match its checksum"
+            }
+            # Its setup opens the IDE (Compil32) when it is done, even when silent, and
+            # `Start-Process -Wait` would wait for that too: wait for the setup alone.
+            $setup = Start-Process innosetup.exe -PassThru -ArgumentList '/VERYSILENT',
+              '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=$inno",
+              "/LOG=$env:RUNNER_TEMP\innosetup.log"
+            if (-not $setup.WaitForExit(300000)) {
+              Get-Content "$env:RUNNER_TEMP\innosetup.log" -ErrorAction SilentlyContinue
+              throw "Inno Setup's setup did not finish in 5 minutes"
+            }
+            Get-Process Compil32 -ErrorAction SilentlyContinue | Stop-Process -Force
+            $iscc = "$inno\ISCC.exe"
+            if (-not (Test-Path $iscc)) { throw "Inno Setup did not install" }
           }
-          # Inno Setup's own setup opens its IDE (Compil32) when it is done, even when silent.
-          # `Start-Process -Wait` would wait for that too, forever on a runner: wait for the setup
-          # alone, then close the IDE.
-          $setup = Start-Process innosetup.exe -PassThru -ArgumentList '/VERYSILENT',
-            '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=$inno"
-          $setup.WaitForExit()
-          Get-Process Compil32 -ErrorAction SilentlyContinue | Stop-Process -Force
-          if (-not (Test-Path "$inno\ISCC.exe")) { throw "Inno Setup did not install" }
           # Windows wants numbers only in the file version (a dry run's version is dev-<commit>).
           $fileVersion = if ($env:VERSION -match '^\d+\.\d+\.\d+') { $Matches[0] } else { '0.0.0' }
-          & "$inno\ISCC.exe" /Q "/DVersion=$env:VERSION" "/DFileVersion=$fileVersion" crates\hermes-gui\installer.iss
+          Say "compiling the installer"
+          & $iscc /Q "/DVersion=$env:VERSION" "/DFileVersion=$fileVersion" crates\hermes-gui\installer.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Say "done"
           Get-Item "dist\Hermes-Setup-$env:VERSION.exe"
       - name: Update files
         # What the app's updater downloads (crates/hermes-client-core/src/updater.rs): every file
