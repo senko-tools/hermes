@@ -46,37 +46,52 @@ pub enum NoteLine {
     Text(String),
 }
 
-/// Reads release notes: headings, `-`/`*` lists (nested by indent) and plain lines. Blank lines
-/// go, and so do `**` and backticks; anything else is kept as written.
+/// Reads release notes: headings, `-`/`*` lists (nested by indent) and plain lines. A plain
+/// line right under an item or a line of text goes on with it, as in markdown (a long item
+/// wrapped in the file). Blank lines go, and so do `**` and backticks; anything else is kept as
+/// written.
 pub fn parse_notes(body: &str) -> Vec<NoteLine> {
     let clean = |text: &str| text.replace("**", "").replace('`', "").trim().to_owned();
-    body.lines()
-        .filter_map(|line| {
-            let line = line.trim_end();
-            let trimmed = line.trim_start();
-            if trimmed.is_empty() {
-                return None;
+    let mut out: Vec<NoteLine> = Vec::new();
+    // Whether the line before was blank: a plain line after one starts a paragraph of its own.
+    let mut after_blank = true;
+    for line in body.lines() {
+        let line = line.trim_end();
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            after_blank = true;
+            continue;
+        }
+        let was_blank = std::mem::replace(&mut after_blank, false);
+        let heading = trimmed.trim_start_matches('#');
+        if heading.len() < trimmed.len() && (heading.is_empty() || heading.starts_with(' ')) {
+            out.push(NoteLine::Heading(clean(heading)));
+            continue;
+        }
+        if let Some(text) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+        {
+            let indent: usize = line[..line.len() - trimmed.len()]
+                .chars()
+                .map(|c| if c == '\t' { 2 } else { 1 })
+                .sum();
+            out.push(NoteLine::Item {
+                depth: indent / 2,
+                text: clean(text),
+            });
+            continue;
+        }
+        let text = clean(trimmed);
+        match out.last_mut() {
+            Some(NoteLine::Item { text: before, .. } | NoteLine::Text(before)) if !was_blank => {
+                before.push(' ');
+                before.push_str(&text);
             }
-            let heading = trimmed.trim_start_matches('#');
-            if heading.len() < trimmed.len() && (heading.is_empty() || heading.starts_with(' ')) {
-                return Some(NoteLine::Heading(clean(heading)));
-            }
-            if let Some(text) = trimmed
-                .strip_prefix("- ")
-                .or_else(|| trimmed.strip_prefix("* "))
-            {
-                let indent: usize = line[..line.len() - trimmed.len()]
-                    .chars()
-                    .map(|c| if c == '\t' { 2 } else { 1 })
-                    .sum();
-                return Some(NoteLine::Item {
-                    depth: indent / 2,
-                    text: clean(text),
-                });
-            }
-            Some(NoteLine::Text(clean(trimmed)))
-        })
-        .collect()
+            _ => out.push(NoteLine::Text(text)),
+        }
+    }
+    out
 }
 
 /// The lines under `## <version>` in a changelog, up to the next `## ` heading, blank lines
@@ -283,7 +298,7 @@ mod tests {
 
     #[test]
     fn notes_read_headings_nested_lists_and_text() {
-        let body = "## New\r\n\n- **Bold** thing\n  - nested `code`\n    * deeper\n\t- tab\nplain line\n#hashtag";
+        let body = "## New\r\n\n- **Bold** thing\n  - nested `code`\n    * deeper\n\t- tab\n\nplain line\n#hashtag";
         let item = |depth, text: &str| NoteLine::Item {
             depth,
             text: text.into(),
@@ -296,8 +311,26 @@ mod tests {
                 item(1, "nested code"),
                 item(2, "deeper"),
                 item(1, "tab"),
-                NoteLine::Text("plain line".into()),
-                NoteLine::Text("#hashtag".into()),
+                NoteLine::Text("plain line #hashtag".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrapped_lines_go_on_with_their_item_or_text() {
+        let body = "### New\n- a long item\n  wrapped here\n  - nested\n    and wrapped\n\nOne\nparagraph.\n\nAnother.";
+        let item = |depth, text: &str| NoteLine::Item {
+            depth,
+            text: text.into(),
+        };
+        assert_eq!(
+            parse_notes(body),
+            [
+                NoteLine::Heading("New".into()),
+                item(0, "a long item wrapped here"),
+                item(1, "nested and wrapped"),
+                NoteLine::Text("One paragraph.".into()),
+                NoteLine::Text("Another.".into()),
             ]
         );
     }
