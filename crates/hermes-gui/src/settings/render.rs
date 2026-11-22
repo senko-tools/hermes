@@ -88,7 +88,7 @@ impl Shell {
             Tab::Window => self.tab_window(cx),
             Tab::Keybinds => self.tab_keybinds(page, cx),
             Tab::Voice => self.tab_voice(page, cx),
-            Tab::ScreenShare => self.tab_screen_share(cx),
+            Tab::ScreenShare => self.tab_screen_share(page, cx),
             Tab::Diagnostics => self.tab_diagnostics(cx),
             Tab::Admin => self.tab_admin(page, cx),
             Tab::About => self.tab_about(cx),

@@ -1,6 +1,10 @@
 //! Chat: messages, layout, motion, the sidebar and files.
 
 use super::*;
+use crate::ui::{ButtonKind, Segment};
+
+const STATUS_SECONDS: [u32; 3] = [3, 5, 10];
+const MEDIA_SCALES: [(u32, &str); 3] = [(75, "Small"), (100, "Normal"), (150, "Large")];
 
 impl Shell {
     /// A switch row for a `bool` in the config; use [`flag!`], which names the field once.
@@ -16,13 +20,14 @@ impl Shell {
         setting_fit(
             name,
             hint,
-            Switch::new(SharedString::from(id))
-                .cursor_pointer()
-                .checked(on)
-                .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                    let on = *on;
-                    this.set_config(|c| set(c, on), cx);
-                })),
+            crate::ui::switch(
+                self,
+                id,
+                on,
+                true,
+                move |this, _, cx| this.set_config(|c| set(c, !on), cx),
+                cx,
+            ),
         )
     }
 
@@ -92,35 +97,36 @@ impl Shell {
                         setting(
                             "Quick reactions",
                             &self.config.buffer.quick_reactions,
-                            Button::new("edit-reactions")
-                                .cursor_pointer()
-                                .label("Change")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_form_quick_reactions(window, cx);
-                                })),
+                            crate::ui::button(
+                                self,
+                                "edit-reactions",
+                                "Change",
+                                ButtonKind::Secondary,
+                                true,
+                                |this, window, cx| this.open_form_quick_reactions(window, cx),
+                                cx,
+                            ),
                         ),
                         setting(
                             "Status line stays",
                             &format!("{} seconds", self.config.general.status_seconds),
-                            crate::ui::segments().children([3, 5, 10].into_iter().enumerate().map(
-                                |(n, secs)| {
-                                    crate::ui::segment(
-                                        self,
-                                        ("status-seconds", n),
-                                        format!("{secs} s"),
-                                        self.config.general.status_seconds == secs,
-                                        cx,
-                                    )
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.set_config(
-                                                |c| c.general.status_seconds = secs,
-                                                cx,
-                                            );
-                                        },
-                                    ))
+                            crate::ui::segmented(
+                                self,
+                                "status-seconds",
+                                STATUS_SECONDS
+                                    .iter()
+                                    .map(|secs| Segment::new(format!("{secs} s")))
+                                    .collect(),
+                                STATUS_SECONDS
+                                    .iter()
+                                    .position(|&s| s == self.config.general.status_seconds),
+                                true,
+                                |this, n, _, cx| {
+                                    let secs = STATUS_SECONDS[n];
+                                    this.set_config(|c| c.general.status_seconds = secs, cx);
                                 },
-                            )),
+                                cx,
+                            ),
                         ),
                         flag!(
                             self,
@@ -160,23 +166,22 @@ impl Shell {
                 setting_fit(
                     "Motion speed",
                     "How long things take to slide and fade.",
-                    crate::ui::segments().children(
-                        theme::MOTION_SPEEDS.into_iter().enumerate().map(
-                            |(n, (value, label, _))| {
-                                crate::ui::segment(
-                                    self,
-                                    ("settings-motion", n),
-                                    label,
-                                    g.motion_speed == value,
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_config(|c| c.general.motion_speed = value, cx);
-                                    },
-                                ))
-                            },
-                        ),
+                    crate::ui::segmented(
+                        self,
+                        "settings-motion",
+                        theme::MOTION_SPEEDS
+                            .iter()
+                            .map(|(_, label, _)| Segment::new(*label))
+                            .collect(),
+                        theme::MOTION_SPEEDS
+                            .iter()
+                            .position(|(v, _, _)| *v == g.motion_speed),
+                        true,
+                        |this, n, _, cx| {
+                            let value = theme::MOTION_SPEEDS[n].0;
+                            this.set_config(|c| c.general.motion_speed = value, cx);
+                        },
+                        cx,
                     ),
                 ),
                 flag!(
@@ -260,70 +265,76 @@ impl Shell {
                     "Download folder",
                     &folder,
                     wrap()
-                        .child(
-                            Button::new("download-choose")
-                                .cursor_pointer()
-                                .label("Choose…")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.choose_download_dir(cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new("download-reset")
-                                .cursor_pointer()
-                                .label("Reset")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.set_config(|c| c.general.download_dir.clear(), cx);
-                                })),
-                        ),
+                        .child(crate::ui::button(
+                            self,
+                            "download-choose",
+                            "Choose…",
+                            ButtonKind::Secondary,
+                            true,
+                            |this, _, cx| this.choose_download_dir(cx),
+                            cx,
+                        ))
+                        .child(crate::ui::button(
+                            self,
+                            "download-reset",
+                            "Reset",
+                            ButtonKind::Secondary,
+                            true,
+                            |this, _, cx| this.set_config(|c| c.general.download_dir.clear(), cx),
+                            cx,
+                        )),
                 ),
                 setting(
                     "Size of pictures and videos",
                     &format!("{} %", self.config.buffer.media_scale),
-                    crate::ui::segments().children(
-                        [(75, "Small"), (100, "Normal"), (150, "Large")]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(n, (scale, name))| {
-                                crate::ui::segment(
-                                    self,
-                                    ("media-scale", n),
-                                    name,
-                                    self.config.buffer.media_scale == scale,
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_config(|c| c.buffer.media_scale = scale, cx);
-                                    },
-                                ))
-                            }),
+                    crate::ui::segmented(
+                        self,
+                        "media-scale",
+                        MEDIA_SCALES
+                            .iter()
+                            .map(|(_, name)| Segment::new(*name))
+                            .collect(),
+                        MEDIA_SCALES
+                            .iter()
+                            .position(|(s, _)| *s == self.config.buffer.media_scale),
+                        true,
+                        |this, n, _, cx| {
+                            let scale = MEDIA_SCALES[n].0;
+                            this.set_config(|c| c.buffer.media_scale = scale, cx);
+                        },
+                        cx,
                     ),
                 ),
                 setting(
                     "Saved on this device",
                     "Thumbnails come back as needed, the search index fills up again.",
                     wrap()
-                        .child(
-                            Button::new("clear-thumbs")
-                                .cursor_pointer()
-                                .label("Clear pictures")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.clear_pictures();
-                                    this.success("Pictures cleared", cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("clear-index")
-                                .cursor_pointer()
-                                .label("Clear search index")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    for inst in this.core.instance_ids() {
-                                        this.core.clear_search_index(&inst);
-                                    }
-                                    this.success("Search index cleared", cx);
-                                })),
-                        ),
+                        .child(crate::ui::button(
+                            self,
+                            "clear-thumbs",
+                            "Clear pictures",
+                            ButtonKind::Secondary,
+                            true,
+                            |this, _, cx| {
+                                this.clear_pictures();
+                                this.success("Pictures cleared", cx);
+                            },
+                            cx,
+                        ))
+                        .child(crate::ui::button(
+                            self,
+                            "clear-index",
+                            "Clear search index",
+                            ButtonKind::Secondary,
+                            true,
+                            |this, _, cx| {
+                                for inst in this.core.instance_ids() {
+                                    this.core.clear_search_index(&inst);
+                                }
+                                this.success("Search index cleared", cx);
+                            },
+                            cx,
+                        )),
                 ),
                 flag!(
                     self,

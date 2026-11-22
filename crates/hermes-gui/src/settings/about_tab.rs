@@ -1,6 +1,7 @@
 //! About.
 
 use super::*;
+use crate::ui::ButtonKind;
 
 impl Shell {
     pub(super) fn tab_about(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -57,21 +58,29 @@ impl Shell {
         let debug = setting(
             "Debug info",
             "Version, system and connection state for bug reports. No tokens or messages.",
-            Button::new("about-debug")
-                .cursor_pointer()
-                .label(self.copy_label("about-debug", "Copy"))
-                .on_click(cx.listener(|this, _, _, cx| {
+            crate::ui::button(
+                self,
+                "about-debug",
+                self.copy_label("about-debug", "Copy"),
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| {
                     let text = this.debug_info();
                     this.copy_from("about-debug", text, "Debug info", cx);
-                })),
+                },
+                cx,
+            ),
         );
         let logs = setting(
             "Logs",
             "Dated log files from this device.",
-            Button::new("about-logs")
-                .cursor_pointer()
-                .label("Open folder")
-                .on_click(cx.listener(|this, _, _, cx| {
+            crate::ui::button(
+                self,
+                "about-logs",
+                "Open folder",
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| {
                     if let Some(paths) = this.core.paths() {
                         let dir = paths.dir.join("logs");
                         let _ = std::fs::create_dir_all(&dir);
@@ -79,19 +88,26 @@ impl Shell {
                             this.error(format!("could not open {}: {err}", dir.display()), cx);
                         }
                     }
-                })),
+                },
+                cx,
+            ),
         );
         let project = setting(
             "Project page",
             "Source code, issues and releases.",
-            Button::new("about-project")
-                .cursor_pointer()
-                .label("Open")
-                .on_click(cx.listener(|this, _, _, cx| {
+            crate::ui::button(
+                self,
+                "about-project",
+                "Open",
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| {
                     if let Err(err) = crate::open::url(env!("CARGO_PKG_REPOSITORY")) {
                         this.error(format!("could not open the browser: {err}"), cx);
                     }
-                })),
+                },
+                cx,
+            ),
         );
         page_body(
             "About",

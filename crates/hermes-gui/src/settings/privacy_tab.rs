@@ -1,6 +1,13 @@
 //! Privacy and safety.
 
 use super::*;
+use crate::ui::Segment;
+
+const DM_FROM: [(DmFrom, &str); 3] = [
+    (DmFrom::Everyone, "Everyone"),
+    (DmFrom::Spaces, "People in my servers"),
+    (DmFrom::Nobody, "Nobody"),
+];
 
 impl Shell {
     /// The account's server-side privacy and this device's keys, for the Privacy tab; empty when
@@ -17,63 +24,77 @@ impl Shell {
             }
         };
         let many = self.core.instance_ids().len() > 1;
-        let dm_chips = [
-            (DmFrom::Everyone, "Everyone"),
-            (DmFrom::Spaces, "People in my servers"),
-            (DmFrom::Nobody, "Nobody"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name))| {
-            crate::ui::segment(self, ("dm-from", n), name, privacy.dm_from == value, cx).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.set_privacy(
-                        UpdatePrivacyRequest {
-                            dm_from: Some(value),
-                            ..UpdatePrivacyRequest::default()
-                        },
-                        cx,
-                    );
-                }),
-            )
-        });
+        let dm_from = privacy.dm_from;
         let privacy_rows = vec![
             setting(
                 "Direct messages from",
                 "Who can start a conversation with you.",
-                crate::ui::segments().children(dm_chips),
+                crate::ui::segmented(
+                    self,
+                    "dm-from",
+                    DM_FROM
+                        .iter()
+                        .map(|(_, name)| Segment::new(*name))
+                        .collect(),
+                    DM_FROM.iter().position(|(v, _)| *v == dm_from),
+                    true,
+                    |this, n, _, cx| {
+                        this.set_privacy(
+                            UpdatePrivacyRequest {
+                                dm_from: Some(DM_FROM[n].0),
+                                ..UpdatePrivacyRequest::default()
+                            },
+                            cx,
+                        );
+                    },
+                    cx,
+                ),
             ),
             setting(
                 "Message requests",
                 "Messages from anyone else wait in Requests. Off: they cannot message you.",
-                Switch::new("allow-requests")
-                    .cursor_pointer()
-                    .checked(privacy.message_requests)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.set_privacy(
-                            UpdatePrivacyRequest {
-                                message_requests: Some(*on),
-                                ..UpdatePrivacyRequest::default()
-                            },
-                            cx,
-                        );
-                    })),
+                {
+                    let on = privacy.message_requests;
+                    crate::ui::switch(
+                        self,
+                        "allow-requests",
+                        on,
+                        true,
+                        move |this, _, cx| {
+                            this.set_privacy(
+                                UpdatePrivacyRequest {
+                                    message_requests: Some(!on),
+                                    ..UpdatePrivacyRequest::default()
+                                },
+                                cx,
+                            );
+                        },
+                        cx,
+                    )
+                },
             ),
             setting(
                 "Show when I was last online",
                 "On your profile, for people who share a server with you and your friends.",
-                Switch::new("show-last-online")
-                    .cursor_pointer()
-                    .checked(privacy.show_last_online)
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        this.set_privacy(
-                            UpdatePrivacyRequest {
-                                show_last_online: Some(*on),
-                                ..UpdatePrivacyRequest::default()
-                            },
-                            cx,
-                        );
-                    })),
+                {
+                    let on = privacy.show_last_online;
+                    crate::ui::switch(
+                        self,
+                        "show-last-online",
+                        on,
+                        true,
+                        move |this, _, cx| {
+                            this.set_privacy(
+                                UpdatePrivacyRequest {
+                                    show_last_online: Some(!on),
+                                    ..UpdatePrivacyRequest::default()
+                                },
+                                cx,
+                            );
+                        },
+                        cx,
+                    )
+                },
             ),
         ];
         let title = if many {
@@ -120,13 +141,19 @@ impl Shell {
                 setting(
                     "Close the microphone while muted",
                     "The system then shows it as unused. Unmuting takes a moment longer.",
-                    Switch::new("close-mic")
-                        .cursor_pointer()
-                        .checked(self.config.voice.close_mic_when_muted)
-                        .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            let on = *on;
-                            this.change_voice(cx, |voice| voice.close_mic_when_muted = on);
-                        })),
+                    {
+                        let on = self.config.voice.close_mic_when_muted;
+                        crate::ui::switch(
+                            self,
+                            "close-mic",
+                            on,
+                            true,
+                            move |this, _, cx| {
+                                this.change_voice(cx, |voice| voice.close_mic_when_muted = !on);
+                            },
+                            cx,
+                        )
+                    },
                 ),
                 flag!(
                     self,

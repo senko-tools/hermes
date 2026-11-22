@@ -259,6 +259,7 @@ impl Shell {
             admin_log: Remote::Idle,
             admin_settings: None,
             device_selects: None,
+            screen_select: None,
             mic_test: false,
             fine_timers: None,
             font: font_input,
@@ -397,6 +398,38 @@ impl Shell {
             },
         );
         self.load_screens(cx);
+    }
+
+    /// The screen dropdown of the Screen sharing tab, from the listed screens; made again
+    /// whenever they have been listed.
+    pub(crate) fn refresh_screen_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_none() || self.screen_list.is_empty() {
+            return;
+        }
+        let current = self.config.voice.share_screen.clone();
+        let choices: Vec<DeviceChoice> = self
+            .screen_list
+            .iter()
+            .map(|s| DeviceChoice {
+                value: s.value.clone(),
+                name: s.label().into(),
+            })
+            .collect();
+        let selected = choices.iter().position(|c| c.value == current).unwrap_or(0);
+        let state =
+            cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+        let events = cx.subscribe(
+            &state,
+            |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    let value = value.clone();
+                    this.set_config(|c| c.voice.share_screen = value, cx);
+                }
+            },
+        );
+        if let Some(page) = &mut self.settings {
+            page.screen_select = Some((state, events));
+        }
     }
 
     pub(super) fn device_selects(

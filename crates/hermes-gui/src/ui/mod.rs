@@ -30,7 +30,9 @@ fn state(hovered: bool, chosen: bool) -> f32 {
     }
 }
 
-/// A choice among a few, highlighted when chosen. The caller adds what a click does.
+/// A tag or filter that is on or off, where many can be on: outlined when off, filled with the
+/// accent when on. Never in a joined track (one of a few is [`segmented`]). The caller adds what
+/// a click does.
 pub fn chip(
     shell: &Shell,
     id: impl Into<gpui_kit::ElementId>,
@@ -44,8 +46,9 @@ pub fn chip(
     let face = div()
         .id("face")
         .px(px(10.))
-        .py(px(5.))
-        .rounded(theme::radius_small())
+        .py(px(4.))
+        .rounded_full()
+        .border_1()
         .truncate()
         .child(label.into())
         .with_spring(
@@ -53,17 +56,19 @@ pub fn chip(
             spring(to),
             |d, t| {
                 let t = t.clamp(0., 2.);
-                // Rest to hover: the text turns accent. Hover to chosen: the accent fills in.
+                // Rest to hover: the outline and text turn accent. Hover to on: it fills in.
                 let hover = t.min(1.);
                 let fill = (t - 1.).max(0.);
                 let text = theme::mix(theme::text_secondary(), theme::accent(), hover);
-                d.bg(theme::mix(theme::selected(), theme::accent(), fill))
+                let outline = theme::mix(theme::border(), theme::accent(), hover);
+                d.bg(theme::alpha(theme::accent(), fill))
+                    .border_color(theme::mix(outline, theme::accent(), fill))
                     .text_color(theme::mix(text, theme::on_accent(), fill))
             },
         );
     div()
         .id(id)
-        .rounded(theme::radius_small())
+        .rounded_full()
         .cursor_pointer()
         .max_w_full()
         .overflow_hidden()
@@ -72,86 +77,584 @@ pub fn chip(
         .child(face)
 }
 
-/// The track a setting's [`segment`]s sit in, side by side: one inset strip, the chosen one
-/// filled with the accent. It wraps onto more lines when the row is too narrow.
-pub fn segments() -> gpui_kit::Div {
-    div()
-        .flex()
-        .flex_wrap()
-        .justify_end()
-        .max_w_full()
-        .gap(px(2.))
-        .p(px(3.))
-        .rounded(theme::radius_small())
-        .bg(theme::background())
-}
-
-/// What a [`segment`] shows before its label, drawn in the segment's text colour of the
-/// moment (it turns `on_accent` when chosen).
+/// What a [`Segment`] shows before its label, drawn in its text colour of the moment (it
+/// turns `on_accent` as the thumb covers it).
 pub type Preview = std::rc::Rc<dyn Fn(gpui_kit::Rgba) -> gpui_kit::AnyElement>;
 
-/// An icon as a [`segment`]'s picture.
+/// An icon as a [`Segment`]'s picture.
 pub fn icon_preview(glyph: &'static str) -> Preview {
     std::rc::Rc::new(move |color| icon(glyph, 14., color).into_any_element())
 }
 
-/// One choice of a [`segments`] track: transparent at rest, its text turns accent under the
-/// pointer and the accent fills in when chosen. The caller adds what a click does.
-pub fn segment(
-    shell: &Shell,
-    id: impl Into<gpui_kit::ElementId>,
-    label: impl Into<SharedString>,
-    chosen: bool,
-    cx: &Context<Shell>,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    segment_with(shell, id, None, label, chosen, cx)
+// ---------------------------------------------------------------------------------------------
+// The control family (#62): switch, segmented choice, radio list, dropdown, chip and buttons.
+// They share a height, corners, text size, the hover spring, a focus ring (keyboard only) and
+// one disabled look, and each one's shape shows how it works.
+
+/// How tall a control is: buttons, dropdowns, segmented tracks, icon buttons.
+pub fn control_h() -> gpui_kit::Pixels {
+    px(28.)
 }
 
-/// [`segment`] with a small picture before the label (an icon, a shape, a layout).
-pub fn segment_with(
+/// What a control does when clicked, or pressed with Space or Enter while focused.
+type Act = std::rc::Rc<dyn Fn(&mut gpui_kit::Window, &mut gpui_kit::App)>;
+
+/// A `Shell::track_hover` listener shared by a control drawn again each frame.
+type HoverListener = std::rc::Rc<dyn Fn(&bool, &mut gpui_kit::Window, &mut gpui_kit::App)>;
+
+fn act(
+    cx: &Context<Shell>,
+    action: impl Fn(&mut Shell, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+) -> Act {
+    let listener = cx.listener(move |this, _: &(), window, cx| action(this, window, cx));
+    std::rc::Rc::new(move |window, cx| listener(&(), window, cx))
+}
+
+impl Shell {
+    /// The keyboard focus of the control `key`, made the first time it is drawn.
+    fn control_focus_handle(
+        &self,
+        key: &SharedString,
+        cx: &gpui_kit::App,
+    ) -> gpui_kit::FocusHandle {
+        self.control_focus
+            .borrow_mut()
+            .entry(key.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
+    }
+}
+
+/// Makes `el` a control: its pointer, hover, focus ring and what a click or Space/Enter does.
+/// A disabled one is drawn at half strength and does nothing.
+fn pressable(
+    el: gpui_kit::Stateful<gpui_kit::Div>,
     shell: &Shell,
-    id: impl Into<gpui_kit::ElementId>,
-    preview: Option<Preview>,
-    label: impl Into<SharedString>,
-    chosen: bool,
+    key: &SharedString,
+    enabled: bool,
+    action: Option<Act>,
     cx: &Context<Shell>,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let id = id.into();
-    let hover = SharedString::from(format!("{id:?}-hover"));
-    let to = state(shell.is_hovered(&hover), chosen);
-    let label: SharedString = label.into();
-    let face = div()
-        .id("face")
-        .flex()
-        .items_center()
-        .gap(px(6.))
-        .px(px(10.))
-        .py(px(4.))
-        .rounded(theme::radius_small())
+    let el = el
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .on_hover(shell.track_hover(SharedString::from(format!("{key}-hover")), cx));
+    if !enabled {
+        return el.opacity(0.5).cursor_not_allowed();
+    }
+    let focus = shell.control_focus_handle(key, cx);
+    let el = el
+        .cursor_pointer()
+        .track_focus(&focus)
+        .focus_visible(|s| s.border_color(theme::focus_ring()));
+    match action {
+        Some(action) => {
+            let on_key = action.clone();
+            el.on_click(move |_, window, cx| action(window, cx))
+                .on_key_down(move |event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "space" | "enter") {
+                        cx.stop_propagation();
+                        on_key(window, cx);
+                    }
+                })
+        }
+        None => el,
+    }
+}
+
+fn hovered(shell: &Shell, key: &SharedString) -> bool {
+    shell.is_hovered(&format!("{key}-hover"))
+}
+
+/// An on/off setting: a pill track whose round knob slides across and whose track fills with
+/// the accent when on. The track lightens under the pointer.
+pub fn switch(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    on: bool,
+    enabled: bool,
+    action: impl Fn(&mut Shell, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id: SharedString = id.into();
+    const W: f32 = 34.;
+    const H: f32 = 20.;
+    const KNOB: f32 = 14.;
+    let hover = hovered(shell, &id) && enabled;
+    let lift = div().absolute().inset_0().rounded_full().with_spring(
+        SharedString::from(format!("{id}-lift")),
+        spring(if hover { 1. } else { 0. }),
+        |d, t| d.bg(theme::alpha(theme::hover(), 0.6 * t.clamp(0., 1.))),
+    );
+    let track = div()
+        .relative()
+        .w(px(W))
+        .h(px(H))
+        .rounded_full()
+        .overflow_hidden()
         .with_spring(
-            SharedString::from(format!("{id:?}-chosen")),
-            spring(to),
+            SharedString::from(format!("{id}-on")),
+            spring(if on { 1. } else { 0. }),
             move |d, t| {
-                let t = t.clamp(0., 2.);
-                let hover = t.min(1.);
-                let fill = (t - 1.).max(0.);
-                let text = theme::mix(theme::text_secondary(), theme::accent(), hover);
-                let text = theme::mix(text, theme::on_accent(), fill);
-                d.bg(theme::alpha(theme::accent(), fill))
-                    .text_color(text)
-                    .children(preview.as_ref().map(|p| p(text)))
-                    .child(div().truncate().child(label.clone()))
+                let fill = t.clamp(0., 1.);
+                d.bg(theme::mix(theme::control_track(), theme::accent(), fill))
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px((H - KNOB) / 2.))
+                            .left(px(3. + t * (W - KNOB - 6.)))
+                            .size(px(KNOB))
+                            .rounded_full()
+                            .bg(theme::mix(theme::text(), theme::on_accent(), fill)),
+                    )
             },
         );
-    div()
-        .id(id)
+    let track = track.child(lift);
+    let el = div()
+        .id(id.clone())
+        .flex_shrink_0()
+        .rounded_full()
+        .child(track);
+    pressable(el, shell, &id, enabled, Some(act(cx, action)), cx)
+}
+
+/// One option of a [`segmented`] choice.
+pub struct Segment {
+    pub label: SharedString,
+    pub preview: Option<Preview>,
+    /// Off: shown at half strength and cannot be picked, while the others can.
+    pub enabled: bool,
+}
+
+impl Segment {
+    pub fn new(label: impl Into<SharedString>) -> Segment {
+        Segment {
+            label: label.into(),
+            preview: None,
+            enabled: true,
+        }
+    }
+
+    /// With a small picture before the label (an icon, a shape, a layout).
+    pub fn with(preview: Preview, label: impl Into<SharedString>) -> Segment {
+        Segment {
+            label: label.into(),
+            preview: Some(preview),
+            enabled: true,
+        }
+    }
+
+    /// Whether this one can be picked.
+    pub fn enabled(mut self, enabled: bool) -> Segment {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// Where each option of a segmented choice sat (left edge and width inside its track), by
+/// control id. Recorded after layout and read on the next frame, the way `channel::grow_in`
+/// measures heights, so the thumb knows where to go without an extra redraw.
+pub type Spans =
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<SharedString, Vec<(f32, f32)>>>>;
+
+/// The thumb's left edge and width at `t`, the chosen index as it springs along: whole numbers
+/// sit exactly on an option, anything between blends the two neighbours. Overshoot past either
+/// end is held at that end.
+pub fn thumb_span(spans: &[(f32, f32)], t: f32) -> Option<(f32, f32)> {
+    let last = spans.len().checked_sub(1)?;
+    let t = t.clamp(0., last as f32);
+    let i = (t.floor() as usize).min(last);
+    let j = (i + 1).min(last);
+    let f = t - i as f32;
+    let (a, b) = (spans[i], spans[j]);
+    Some((a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f))
+}
+
+/// How much of `span` the thumb covers, 0 to 1: a label turns the on-accent colour as the thumb
+/// passes over it.
+pub fn coverage(span: (f32, f32), thumb: (f32, f32)) -> f32 {
+    if span.1 <= 0. {
+        return 0.;
+    }
+    let overlap = (span.0 + span.1).min(thumb.0 + thumb.1) - span.0.max(thumb.0);
+    (overlap / span.1).clamp(0., 1.)
+}
+
+/// One of a few short options, in one joined track. The accent thumb slides from the old choice
+/// to the new one on a spring, and each label turns to the on-accent colour as it passes. With
+/// `chosen` `None` nothing is filled.
+#[allow(clippy::too_many_arguments)]
+pub fn segmented(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    options: Vec<Segment>,
+    chosen: Option<usize>,
+    enabled: bool,
+    on_pick: impl Fn(&mut Shell, usize, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use std::rc::Rc;
+    const PAD: f32 = 2.;
+    let id: SharedString = id.into();
+    let on_pick = Rc::new(on_pick);
+    let spans = shell.segment_spans.borrow().get(&id).cloned();
+    // Measured spans of another option count (the list changed) are stale.
+    let spans = spans.filter(|s| s.len() == options.len());
+    let measured = spans.is_some();
+    let spans = spans.unwrap_or_default();
+    let options: Vec<_> = options
+        .into_iter()
+        .enumerate()
+        .map(|(n, option)| {
+            let key = SharedString::from(format!("{id}-{n}"));
+            let enabled = enabled && option.enabled;
+            let hover = enabled && hovered(shell, &key);
+            let action = enabled.then(|| {
+                let on_pick = on_pick.clone();
+                act(cx, move |this, window, cx| on_pick(this, n, window, cx))
+            });
+            let hover_listener: HoverListener =
+                Rc::new(shell.track_hover(SharedString::from(format!("{key}-hover")), cx));
+            let focus = enabled.then(|| shell.control_focus_handle(&key, cx));
+            (key, option, hover, action, hover_listener, focus)
+        })
+        .collect();
+    let options = Rc::new(options);
+    let record = shell.segment_spans.clone();
+    let record_id = id.clone();
+    let row = {
+        let options = options.clone();
+        let spans = spans.clone();
+        div().flex().h_full().with_spring(
+            SharedString::from(format!("{id}-thumb")),
+            spring(chosen.unwrap_or(0) as f32),
+            move |d, t| {
+                let record = record.clone();
+                let record_id = record_id.clone();
+                let d = d.on_children_prepainted(move |bounds, _, _| {
+                    let Some(first) = bounds.first() else { return };
+                    let origin = f32::from(first.origin.x);
+                    let now: Vec<(f32, f32)> = bounds
+                        .iter()
+                        .map(|b| (f32::from(b.origin.x) - origin, f32::from(b.size.width)))
+                        .collect();
+                    let mut all = record.borrow_mut();
+                    if all.get(&record_id) != Some(&now) {
+                        if all.len() > 256 {
+                            all.clear();
+                        }
+                        all.insert(record_id.clone(), now);
+                    }
+                });
+                // Before the options were measured the chosen one fills itself in.
+                let thumb = if measured {
+                    chosen.and_then(|_| thumb_span(&spans, t))
+                } else {
+                    None
+                };
+                d.children(options.iter().enumerate().map(
+                    |(n, (key, option, hover, action, hover_listener, focus))| {
+                        let fill = match (thumb, spans.get(n)) {
+                            (Some(thumb), Some(span)) => coverage(*span, thumb),
+                            _ if !measured && chosen == Some(n) => 1.,
+                            _ => 0.,
+                        };
+                        let label = option.label.clone();
+                        let preview = option.preview.clone();
+                        let face = div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .h_full()
+                            .px(px(10.))
+                            .rounded(theme::radius_small())
+                            .when(!measured && fill > 0., |d| d.bg(theme::accent()))
+                            .whitespace_nowrap()
+                            .with_spring(
+                                SharedString::from(format!("{key}-face")),
+                                spring(if *hover { 1. } else { 0. }),
+                                move |d, h| {
+                                    let h = h.clamp(0., 1.);
+                                    let text =
+                                        theme::mix(theme::text_secondary(), theme::accent(), h);
+                                    let text = theme::mix(text, theme::on_accent(), fill);
+                                    d.text_color(text)
+                                        .children(preview.as_ref().map(|p| p(text)))
+                                        .child(label.clone())
+                                },
+                            );
+                        let el = div()
+                            .id(key.clone())
+                            .h_full()
+                            .rounded(theme::radius_small())
+                            .border_1()
+                            .border_color(gpui_kit::transparent_black())
+                            .on_hover({
+                                let l = hover_listener.clone();
+                                move |h, w, cx| l(h, w, cx)
+                            })
+                            .child(face);
+                        match (action, focus) {
+                            (Some(action), Some(focus)) => {
+                                let click = action.clone();
+                                let key_act = action.clone();
+                                el.cursor_pointer()
+                                    .track_focus(focus)
+                                    .focus_visible(|s| s.border_color(theme::focus_ring()))
+                                    .on_click(move |_, window, cx| click(window, cx))
+                                    .on_key_down(
+                                        move |event: &gpui_kit::KeyDownEvent, window, cx| {
+                                            if matches!(
+                                                event.keystroke.key.as_str(),
+                                                "space" | "enter"
+                                            ) {
+                                                cx.stop_propagation();
+                                                key_act(window, cx);
+                                            }
+                                        },
+                                    )
+                            }
+                            _ if !option.enabled => el.opacity(0.5).cursor_not_allowed(),
+                            _ => el,
+                        }
+                    },
+                ))
+            },
+        )
+    };
+    // The thumb, under the labels: it springs on the same key as the row, so the two agree.
+    let thumb = div()
+        .absolute()
+        .top(gpui_kit::px(PAD))
+        .bottom(gpui_kit::px(PAD))
         .rounded(theme::radius_small())
-        .cursor_pointer()
+        .with_spring(
+            SharedString::from(format!("{id}-thumb-fill")),
+            spring(chosen.unwrap_or(0) as f32),
+            move |d, t| match (measured, chosen, thumb_span(&spans, t)) {
+                (true, Some(_), Some((x, w))) => d
+                    .left(gpui_kit::px(PAD + x))
+                    .w(gpui_kit::px(w))
+                    .bg(theme::accent()),
+                _ => d,
+            },
+        );
+    let el = div()
+        .id(id)
+        .relative()
+        .flex_shrink_0()
         .max_w_full()
-        .overflow_hidden()
+        .h(control_h())
+        .p(gpui_kit::px(PAD))
+        .rounded(theme::radius_small())
+        .bg(theme::control_track())
         .text_size(theme::secondary_size())
-        .on_hover(shell.track_hover(hover, cx))
-        .child(face)
+        .child(thumb)
+        .child(row);
+    if enabled {
+        el
+    } else {
+        el.opacity(0.5).cursor_not_allowed()
+    }
+}
+
+/// One of several options that each want a line of explanation: rows with a radio dot, a title
+/// and an optional hint. The dot fills in when chosen.
+pub fn radio_list(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    options: Vec<(SharedString, Option<SharedString>)>,
+    chosen: Option<usize>,
+    on_pick: impl Fn(&mut Shell, usize, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Div {
+    let id: SharedString = id.into();
+    let on_pick = std::rc::Rc::new(on_pick);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.))
+        .children(options.into_iter().enumerate().map(|(n, (title, hint))| {
+            let key = SharedString::from(format!("{id}-{n}"));
+            let hover = hovered(shell, &key);
+            let on = chosen == Some(n);
+            let dot = div()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(16.))
+                .rounded_full()
+                .border_2()
+                .with_spring(
+                    SharedString::from(format!("{key}-dot")),
+                    spring(state(hover, on)),
+                    |d, t| {
+                        let t = t.clamp(0., 2.);
+                        let h = t.min(1.);
+                        let fill = (t - 1.).max(0.);
+                        let ring = theme::mix(theme::text_tertiary(), theme::accent(), h.max(fill));
+                        d.border_color(ring)
+                            .child(div().size(px(8. * fill)).rounded_full().bg(theme::accent()))
+                    },
+                );
+            let text = div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_size(theme::body_size())
+                        .text_color(if on {
+                            theme::text()
+                        } else {
+                            theme::text_secondary()
+                        })
+                        .child(title),
+                )
+                .children(hint.map(|hint| {
+                    div()
+                        .text_size(theme::secondary_size())
+                        .text_color(theme::text_tertiary())
+                        .child(hint)
+                }));
+            let face = div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(theme::radius_small())
+                .with_spring(
+                    SharedString::from(format!("{key}-row")),
+                    spring(if hover { 1. } else { 0. }),
+                    |d, t| d.bg(theme::alpha(theme::hover(), t.clamp(0., 1.))),
+                )
+                .child(dot)
+                .child(text);
+            let on_pick = on_pick.clone();
+            let action = act(cx, move |this, window, cx| on_pick(this, n, window, cx));
+            pressable(
+                div()
+                    .id(key.clone())
+                    .rounded(theme::radius_small())
+                    .child(face),
+                shell,
+                &key,
+                true,
+                Some(action),
+                cx,
+            )
+        }))
+}
+
+/// How wide a [`dropdown`] is, by what it holds.
+#[derive(Debug, Clone, Copy)]
+pub enum DropWidth {
+    /// Fonts, themes, account names.
+    Medium,
+    /// Device and screen names.
+    Wide,
+}
+
+/// A field showing the current value with a chevron, opening the list of options: for many
+/// options or long names. Wraps the kit's `Select` at the family's height.
+pub fn dropdown<D>(
+    state: &gpui_kit::Entity<gpui_kit::component::select::SelectState<D>>,
+    width: DropWidth,
+) -> gpui_kit::Div
+where
+    D: gpui_kit::component::select::SelectDelegate + 'static,
+{
+    let w = match width {
+        DropWidth::Medium => 220.,
+        DropWidth::Wide => 300.,
+    };
+    div().w(px(w)).max_w_full().flex_shrink_0().child(
+        gpui_kit::component::select::Select::new(state)
+            .h(control_h())
+            .text_size(theme::secondary_size())
+            .cursor_pointer(),
+    )
+}
+
+/// What a [`button`] is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    /// The main action of a form or dialog: filled accent.
+    Primary,
+    /// "Change", "Test", "Reset": a subtle filled surface, a shade lighter under the pointer.
+    Secondary,
+    /// Delete, leave, log out: red text, filling red under the pointer.
+    Danger,
+}
+
+/// A button with a label. Its colours spring under the pointer like every other control's.
+#[allow(clippy::too_many_arguments)]
+pub fn button(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    kind: ButtonKind,
+    enabled: bool,
+    action: impl Fn(&mut Shell, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let id: SharedString = id.into();
+    let label: SharedString = label.into();
+    let hover = enabled && hovered(shell, &id);
+    let face = div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(6.))
+        .h_full()
+        .px(px(12.))
+        .rounded(theme::radius_small())
+        .whitespace_nowrap()
+        .with_spring(
+            SharedString::from(format!("{id}-face")),
+            spring(if hover { 1. } else { 0. }),
+            move |d, t| {
+                let t = t.clamp(0., 1.);
+                let (bg, text) = button_colors(kind, t);
+                d.bg(bg).text_color(text).child(label.clone())
+            },
+        );
+    let el = div()
+        .id(id.clone())
+        .flex_shrink_0()
+        .h(control_h())
+        .rounded(theme::radius_small())
+        .text_size(theme::secondary_size())
+        .child(face);
+    pressable(el, shell, &id, enabled, Some(act(cx, action)), cx)
+}
+
+/// A button's fill and text at hover `t` (0 at rest, 1 under the pointer).
+fn button_colors(kind: ButtonKind, t: f32) -> (gpui_kit::Rgba, gpui_kit::Rgba) {
+    match kind {
+        ButtonKind::Primary => (
+            theme::mix(theme::button_primary(), theme::button_primary_hover(), t),
+            theme::button_primary_text(),
+        ),
+        ButtonKind::Secondary => (
+            theme::mix(
+                theme::button_secondary(),
+                theme::button_secondary_hover(),
+                t,
+            ),
+            theme::button_secondary_text(),
+        ),
+        ButtonKind::Danger => (
+            theme::mix(
+                theme::alpha(theme::button_danger(), 0.12),
+                theme::button_danger(),
+                t,
+            ),
+            theme::mix(theme::danger(), theme::button_danger_text(), t),
+        ),
+    }
 }
 
 /// An entry of a page's navigation column (settings tabs, server settings tabs). The caller
@@ -400,6 +903,43 @@ pub fn tip_button(
 
 #[cfg(test)]
 mod tests {
+    use super::{coverage, thumb_span};
+
+    const SPANS: [(f32, f32); 3] = [(0., 40.), (40., 60.), (100., 30.)];
+
+    #[test]
+    fn thumb_sits_on_whole_choices() {
+        for (n, span) in SPANS.iter().enumerate() {
+            assert_eq!(thumb_span(&SPANS, n as f32), Some(*span));
+        }
+    }
+
+    #[test]
+    fn thumb_blends_neighbours_on_the_way() {
+        // Halfway from the first to the second: left edge and width both halfway.
+        assert_eq!(thumb_span(&SPANS, 0.5), Some((20., 50.)));
+        // A quarter of the way from the second to the third.
+        assert_eq!(thumb_span(&SPANS, 1.25), Some((55., 52.5)));
+    }
+
+    #[test]
+    fn thumb_overshoot_is_held_at_the_ends() {
+        assert_eq!(thumb_span(&SPANS, -0.3), Some(SPANS[0]));
+        assert_eq!(thumb_span(&SPANS, 2.4), Some(SPANS[2]));
+        assert_eq!(thumb_span(&[], 0.), None);
+        assert_eq!(thumb_span(&[(5., 10.)], 0.7), Some((5., 10.)));
+    }
+
+    #[test]
+    fn labels_turn_as_the_thumb_covers_them() {
+        let thumb = thumb_span(&SPANS, 0.5).unwrap(); // 20..70
+        assert_eq!(coverage(SPANS[0], thumb), 0.5);
+        assert_eq!(coverage(SPANS[1], thumb), 0.5);
+        assert_eq!(coverage(SPANS[2], thumb), 0.);
+        assert_eq!(coverage(SPANS[1], SPANS[1]), 1.);
+        assert_eq!(coverage((0., 0.), SPANS[0]), 0.);
+    }
+
     /// gpui's `.hover` keeps a stale state for a text colour whose hover style comes and goes
     /// (see the module docs): no text-colour `.hover` may sit inside a `.when(..)`.
     #[test]

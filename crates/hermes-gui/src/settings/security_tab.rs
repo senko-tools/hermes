@@ -1,6 +1,7 @@
 //! Security, your data, and Administration.
 
 use super::*;
+use crate::ui::{ButtonKind, Segment};
 
 impl Shell {
     pub(super) fn is_instance_admin(&self) -> bool {
@@ -28,59 +29,71 @@ impl Shell {
                     } else {
                         "Signing in can also need a code from an authenticator app."
                     },
-                    Button::new("two-factor")
-                        .cursor_pointer()
-                        .label(if on { "Turn off" } else { "Turn on" })
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                    crate::ui::button(
+                        self,
+                        "two-factor",
+                        if on { "Turn off" } else { "Turn on" },
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
                             if on {
                                 this.open_form_two_factor_disable(form_inst.clone(), window, cx);
                             } else {
                                 this.open_form_two_factor_begin(form_inst.clone(), window, cx);
                             }
-                        })),
+                        },
+                        cx,
+                    ),
                 ),
-                setting(
-                    "Connect when Hermes starts",
-                    "",
-                    Switch::new("autoconnect")
-                        .cursor_pointer()
-                        .checked(
-                            self.config
-                                .instances
-                                .iter()
-                                .find(|e| e.id == *inst)
-                                .is_none_or(|e| e.autoconnect),
-                        )
-                        .on_click(cx.listener({
-                            let inst = inst.clone();
-                            move |this, on: &bool, _, cx| {
-                                if let Err(err) = this.core.set_autoconnect(&inst, *on) {
-                                    this.error(err.to_string(), cx);
-                                }
-                                this.apply_config(cx);
+                setting("Connect when Hermes starts", "", {
+                    let on = self
+                        .config
+                        .instances
+                        .iter()
+                        .find(|e| e.id == *inst)
+                        .is_none_or(|e| e.autoconnect);
+                    let inst = inst.clone();
+                    crate::ui::switch(
+                        self,
+                        "autoconnect",
+                        on,
+                        true,
+                        move |this, _, cx| {
+                            if let Err(err) = this.core.set_autoconnect(&inst, !on) {
+                                this.error(err.to_string(), cx);
                             }
-                        })),
-                ),
+                            this.apply_config(cx);
+                        },
+                        cx,
+                    )
+                }),
                 setting(
                     "Your data",
                     "A file with your profile, servers and messages as the server holds them.",
-                    Button::new("export-account")
-                        .cursor_pointer()
-                        .label("Export…")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.export_account(export_inst.clone(), cx);
-                        })),
+                    crate::ui::button(
+                        self,
+                        "export-account",
+                        "Export…",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| this.export_account(export_inst.clone(), cx),
+                        cx,
+                    ),
                 ),
                 setting(
                     "Delete account",
                     "This cannot be undone.",
-                    Button::new("delete-account")
-                        .cursor_pointer()
-                        .danger()
-                        .label("Delete…")
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                    crate::ui::button(
+                        self,
+                        "delete-account",
+                        "Delete…",
+                        ButtonKind::Danger,
+                        true,
+                        move |this, window, cx| {
                             this.open_form_delete_account(delete_inst.clone(), window, cx);
-                        })),
+                        },
+                        cx,
+                    ),
                 ),
             ],
         )
@@ -150,17 +163,21 @@ impl Shell {
             return muted("Add an account first.");
         };
         let current = page.admin_settings.map(|s| s.registration_mode);
-        let chips = [
+        const MODES: [(Mode, &str); 3] = [
             (Mode::Open, "Open"),
             (Mode::InviteOnly, "Invite only"),
             (Mode::Closed, "Closed"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (mode, name))| {
+        ];
+        let registration = {
             let inst = inst.clone();
-            crate::ui::segment(self, ("registration", n), name, current == Some(mode), cx).on_click(
-                cx.listener(move |this, _, _, cx| {
+            crate::ui::segmented(
+                self,
+                "registration",
+                MODES.iter().map(|(_, name)| Segment::new(*name)).collect(),
+                current.and_then(|c| MODES.iter().position(|(m, _)| *m == c)),
+                true,
+                move |this, n, _, cx| {
+                    let mode = MODES[n].0;
                     let core = this.core.clone();
                     let inst = inst.clone();
                     this.run(
@@ -178,9 +195,10 @@ impl Shell {
                             Err(err) => this.error(err, cx),
                         },
                     );
-                }),
+                },
+                cx,
             )
-        });
+        };
         let mut users: Vec<AnyElement> = Vec::new();
         match &page.admin_users {
             Remote::Idle | Remote::Loading => users.push(theme::skeleton("users", 4)),
@@ -200,34 +218,44 @@ impl Shell {
                         &entry.user.handle(),
                         flags,
                         wrap()
-                            .child(
-                                Button::new(SharedString::from(format!("admin-disable-{id}")))
-                                    .cursor_pointer()
-                                    .label(if disabled { "Enable" } else { "Disable" })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.admin_patch(
-                                            disable_inst.clone(),
-                                            id,
-                                            Some(!disabled),
-                                            None,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("admin-admin-{id}")))
-                                    .cursor_pointer()
-                                    .label(if admin { "Remove admin" } else { "Make admin" })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.admin_patch(
-                                            admin_inst.clone(),
-                                            id,
-                                            None,
-                                            Some(!admin),
-                                            cx,
-                                        );
-                                    })),
-                            ),
+                            .child(crate::ui::button(
+                                self,
+                                format!("admin-disable-{id}"),
+                                if disabled { "Enable" } else { "Disable" },
+                                if disabled {
+                                    ButtonKind::Secondary
+                                } else {
+                                    ButtonKind::Danger
+                                },
+                                true,
+                                move |this, _, cx| {
+                                    this.admin_patch(
+                                        disable_inst.clone(),
+                                        id,
+                                        Some(!disabled),
+                                        None,
+                                        cx,
+                                    );
+                                },
+                                cx,
+                            ))
+                            .child(crate::ui::button(
+                                self,
+                                format!("admin-admin-{id}"),
+                                if admin { "Remove admin" } else { "Make admin" },
+                                ButtonKind::Secondary,
+                                true,
+                                move |this, _, cx| {
+                                    this.admin_patch(
+                                        admin_inst.clone(),
+                                        id,
+                                        None,
+                                        Some(!admin),
+                                        cx,
+                                    );
+                                },
+                                cx,
+                            )),
                     ));
                 }
             }
@@ -258,7 +286,7 @@ impl Shell {
                         setting(
                             "Registration",
                             "Takes effect at once, and over the config file.",
-                            crate::ui::segments().children(chips),
+                            registration,
                         ),
                         setting(
                             "Channels must be encrypted",

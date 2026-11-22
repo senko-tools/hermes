@@ -1,6 +1,7 @@
 //! Notifications and keybinds.
 
 use super::*;
+use crate::ui::ButtonKind;
 
 impl Shell {
     pub(super) fn tab_notifications(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -32,22 +33,28 @@ impl Shell {
                 div()
                     .flex()
                     .gap(px(8.))
-                    .child(
-                        Button::new("test-sound-message")
-                            .cursor_pointer()
-                            .label("Message")
-                            .on_click(cx.listener(|this, _, _, _| {
-                                this.core.play_sound(Sound::Message);
-                            })),
-                    )
-                    .child(
-                        Button::new("test-sound-mention")
-                            .cursor_pointer()
-                            .label("Mention")
-                            .on_click(cx.listener(|this, _, _, _| {
-                                this.core.play_sound(Sound::Ping);
-                            })),
-                    ),
+                    .child(crate::ui::button(
+                        self,
+                        "test-sound-message",
+                        "Message",
+                        ButtonKind::Secondary,
+                        true,
+                        |this, _, _| {
+                            this.core.play_sound(Sound::Message);
+                        },
+                        cx,
+                    ))
+                    .child(crate::ui::button(
+                        self,
+                        "test-sound-mention",
+                        "Mention",
+                        ButtonKind::Secondary,
+                        true,
+                        |this, _, _| {
+                            this.core.play_sound(Sound::Ping);
+                        },
+                        cx,
+                    )),
             )]
         };
         let messages = group(
@@ -74,12 +81,17 @@ impl Shell {
                     } else {
                         format!("{} to {}", n.quiet_from, n.quiet_to)
                     },
-                    Button::new("quiet-hours")
-                        .cursor_pointer()
-                        .label("Change")
-                        .on_click(cx.listener(|this, _, window, cx| {
+                    crate::ui::button(
+                        self,
+                        "quiet-hours",
+                        "Change",
+                        ButtonKind::Secondary,
+                        true,
+                        |this, window, cx| {
                             this.open_form_quiet_hours(window, cx);
-                        })),
+                        },
+                        cx,
+                    ),
                 ),
                 setting_fit(
                     "Words that notify me",
@@ -88,12 +100,17 @@ impl Shell {
                     } else {
                         n.keywords.clone()
                     },
-                    Button::new("keywords")
-                        .cursor_pointer()
-                        .label("Change")
-                        .on_click(cx.listener(|this, _, window, cx| {
+                    crate::ui::button(
+                        self,
+                        "keywords",
+                        "Change",
+                        ButtonKind::Secondary,
+                        true,
+                        |this, window, cx| {
                             this.open_form_keywords(window, cx);
-                        })),
+                        },
+                        cx,
+                    ),
                 ),
             ],
         );
@@ -161,20 +178,23 @@ impl Shell {
             for ((id, field), kind) in cells.into_iter().zip(kinds) {
                 note_part(&format!("{search_name} {}", kind.to_lowercase()), "", ROW);
                 let on = *field(&mut current);
-                line =
-                    line.child(
-                        div()
-                            .w(px(cell_width))
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_center()
-                            .child(Switch::new(id).cursor_pointer().checked(on).on_click(
-                                cx.listener(move |this, on: &bool, _, cx| {
-                                    let on = *on;
-                                    this.set_config(|c| *field(&mut c.notifications) = on, cx);
-                                }),
-                            )),
-                    );
+                line = line.child(
+                    div()
+                        .w(px(cell_width))
+                        .flex_shrink_0()
+                        .flex()
+                        .justify_center()
+                        .child(crate::ui::switch(
+                            self,
+                            id,
+                            on,
+                            true,
+                            move |this, _, cx| {
+                                this.set_config(|c| *field(&mut c.notifications) = !on, cx);
+                            },
+                            cx,
+                        )),
+                );
             }
             table = table.child(line);
         }
@@ -241,33 +261,36 @@ impl Shell {
                             },
                             wrap()
                                 .child(key_caps(&combo))
-                                .child(
-                                    Button::new(SharedString::from(format!("bind-{name}")))
-                                        .cursor_pointer()
-                                        .label(if waiting { "Waiting…" } else { "Change" })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if let Some(page) = &mut this.settings {
-                                                page.capturing_key = Some(name);
-                                            }
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!("unbind-{name}")))
-                                        .cursor_pointer()
-                                        .label("Reset")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.set_config(
-                                                |c| {
-                                                    c.keys.insert(
-                                                        name.to_owned(),
-                                                        default.to_owned(),
-                                                    );
-                                                },
-                                                cx,
-                                            );
-                                        })),
-                                ),
+                                .child(crate::ui::button(
+                                    self,
+                                    format!("bind-{name}"),
+                                    if waiting { "Waiting…" } else { "Change" },
+                                    ButtonKind::Secondary,
+                                    true,
+                                    move |this, _, cx| {
+                                        if let Some(page) = &mut this.settings {
+                                            page.capturing_key = Some(name);
+                                        }
+                                        cx.notify();
+                                    },
+                                    cx,
+                                ))
+                                .child(crate::ui::button(
+                                    self,
+                                    format!("unbind-{name}"),
+                                    "Reset",
+                                    ButtonKind::Secondary,
+                                    true,
+                                    move |this, _, cx| {
+                                        this.set_config(
+                                            |c| {
+                                                c.keys.insert(name.to_owned(), default.to_owned());
+                                            },
+                                            cx,
+                                        );
+                                    },
+                                    cx,
+                                )),
                         )
                     })
                     .collect();

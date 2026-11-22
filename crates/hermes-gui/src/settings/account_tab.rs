@@ -1,6 +1,7 @@
 //! Account: the accounts and the Account tab.
 
 use super::*;
+use crate::ui::ButtonKind;
 
 impl Shell {
     /// Every account (an instance signed in to), with signing in and out, going offline and
@@ -29,17 +30,24 @@ impl Shell {
             };
             let button = |label: &'static str, action: Option<MenuAction>, danger: bool| {
                 let inst = inst.clone();
-                Button::new(SharedString::from(format!("account-{inst}-{label}")))
-                    .cursor_pointer()
-                    .small()
-                    .label(label)
-                    .when(danger, |b| b.danger())
-                    .on_click(cx.listener(move |this, _, window, cx| match action {
+                crate::ui::button(
+                    self,
+                    format!("account-{inst}-{label}"),
+                    label,
+                    if danger {
+                        ButtonKind::Danger
+                    } else {
+                        ButtonKind::Secondary
+                    },
+                    true,
+                    move |this, window, cx| match action {
                         Some(action) => {
                             this.menu_action(Target::Instance(inst.clone()), action, window, cx)
                         }
                         None => this.sign_in(&inst, window, cx),
-                    }))
+                    },
+                    cx,
+                )
             };
             let mut buttons = div().flex().flex_wrap().justify_end().gap(px(6.));
             buttons = match status {
@@ -60,13 +68,15 @@ impl Shell {
         rows.push(setting(
             "Another account",
             "Sign in with a Hermes address, or paste an invite link.",
-            Button::new("accounts-add")
-                .cursor_pointer()
-                .small()
-                .label("Add an account")
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.open_add_instance(String::new(), window, cx);
-                })),
+            crate::ui::button(
+                self,
+                "accounts-add",
+                "Add an account",
+                ButtonKind::Secondary,
+                true,
+                |this, window, cx| this.open_add_instance(String::new(), window, cx),
+                cx,
+            ),
         ));
         group("Accounts", rows)
     }
@@ -84,22 +94,37 @@ impl Shell {
         };
         let mut account_rows = Vec::new();
         if instances.len() > 1 {
-            let chips = instances.iter().enumerate().map(|(n, inst)| {
-                let chosen = Some(inst) == selected.as_ref();
-                let inst = inst.clone();
-                crate::ui::segment(self, ("account-inst", n), inst.clone(), chosen, cx).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        if let Some(page) = &mut this.settings {
-                            page.account_inst = Some(inst.clone());
-                        }
-                        this.load_sessions(cx);
-                    }),
-                )
-            });
-            account_rows.push(setting(
+            // A few, each with who is signed in there: a radio list.
+            let options = instances
+                .iter()
+                .map(|inst| {
+                    let username = self
+                        .config
+                        .instances
+                        .iter()
+                        .find(|e| &e.id == inst)
+                        .map(|e| SharedString::from(format!("@{}", e.username)));
+                    (SharedString::from(inst.to_string()), username)
+                })
+                .collect();
+            let chosen = instances.iter().position(|i| Some(i) == selected.as_ref());
+            let pick = instances.clone();
+            account_rows.push(setting_below(
                 "Account",
                 "Which account these settings are for.",
-                crate::ui::segments().children(chips),
+                crate::ui::radio_list(
+                    self,
+                    "account-inst",
+                    options,
+                    chosen,
+                    move |this, n, _, cx| {
+                        if let Some(page) = &mut this.settings {
+                            page.account_inst = pick.get(n).cloned();
+                        }
+                        this.load_sessions(cx);
+                    },
+                    cx,
+                ),
             ));
         }
         let Some(me) = me else {
@@ -130,53 +155,64 @@ impl Shell {
             "Username",
             &format!("You are {copy_handle}. Friends add you by this name."),
             wrap()
-                .child(
-                    Button::new("account-username-copy")
-                        .cursor_pointer()
-                        .label(self.copy_label("account-username-copy", "Copy"))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.copy_from(
-                                "account-username-copy",
-                                copy_handle.clone(),
-                                "Username",
-                                cx,
-                            );
-                        })),
-                )
-                .child(
-                    Button::new("account-username")
-                        .cursor_pointer()
-                        .label("Change username…")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_form_username(username_inst.clone(), window, cx);
-                        })),
-                ),
+                .child(crate::ui::button(
+                    self,
+                    "account-username-copy",
+                    self.copy_label("account-username-copy", "Copy"),
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        this.copy_from(
+                            "account-username-copy",
+                            copy_handle.clone(),
+                            "Username",
+                            cx,
+                        );
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    "account-username",
+                    "Change username…",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        this.open_form_username(username_inst.clone(), window, cx);
+                    },
+                    cx,
+                )),
         ));
         let profile_inst = inst.clone();
         account_rows.push(setting(
             "Profile",
             &hint,
-            Button::new("account-profile")
-                .cursor_pointer()
-                .primary()
-                .label("Edit profile…")
-                .on_click(
-                    cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                        let at = this.popup_from(event.position());
-                        this.open_my_profile(profile_inst.clone(), at, cx);
-                    }),
-                ),
+            crate::ui::button(
+                self,
+                "account-profile",
+                "Edit profile…",
+                ButtonKind::Primary,
+                true,
+                move |this, window, cx| {
+                    let at = this.popup_from(window.mouse_position());
+                    this.open_my_profile(profile_inst.clone(), at, cx);
+                },
+                cx,
+            ),
         ));
         let password_inst = inst.clone();
         account_rows.push(setting(
             "Password",
             "Changing it signs out your other devices.",
-            Button::new("account-password")
-                .cursor_pointer()
-                .label("Change password…")
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_form_password(password_inst.clone(), window, cx);
-                })),
+            crate::ui::button(
+                self,
+                "account-password",
+                "Change password…",
+                ButtonKind::Secondary,
+                true,
+                move |this, window, cx| this.open_form_password(password_inst.clone(), window, cx),
+                cx,
+            ),
         ));
 
         let mut device_rows: Vec<AnyElement> = Vec::new();
@@ -196,13 +232,16 @@ impl Shell {
                     let control: AnyElement = if s.current {
                         muted("This device")
                     } else {
-                        Button::new(SharedString::from(format!("session-{id}")))
-                            .cursor_pointer()
-                            .label("Sign out")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.revoke_sessions(vec![id], cx);
-                            }))
-                            .into_any_element()
+                        crate::ui::button(
+                            self,
+                            format!("session-{id}"),
+                            "Sign out",
+                            ButtonKind::Secondary,
+                            true,
+                            move |this, _, cx| this.revoke_sessions(vec![id], cx),
+                            cx,
+                        )
+                        .into_any_element()
                     };
                     device_rows.push(setting(
                         &s.device_name,
@@ -219,14 +258,16 @@ impl Shell {
             .unwrap_or_default();
         if !others.is_empty() {
             device_rows.push(
-                Button::new("sessions-others")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Sign out all others")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.revoke_sessions(others.clone(), cx);
-                    }))
-                    .into_any_element(),
+                crate::ui::button(
+                    self,
+                    "sessions-others",
+                    "Sign out all others",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| this.revoke_sessions(others.clone(), cx),
+                    cx,
+                )
+                .into_any_element(),
             );
         }
         page_body(

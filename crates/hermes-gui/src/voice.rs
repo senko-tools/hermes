@@ -1721,8 +1721,9 @@ impl Shell {
                     .await
                     .unwrap_or_default()
             },
-            |this, screens, _, cx| {
+            |this, screens, window, cx| {
                 this.screen_list = screens;
+                this.refresh_screen_select(window, cx);
                 cx.notify();
             },
         );

@@ -6,12 +6,9 @@ use std::cell::{Cell, RefCell};
 
 use gpui_kit::AnimationExt as _;
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::select::{SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::audio::{AudioDevices, Sound};
@@ -281,6 +278,8 @@ pub struct SettingsPage {
     admin_settings: Option<hermes_client_core::proto::api::AdminSettings>,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
+    /// The screen dropdown, once the screens have been listed.
+    screen_select: Option<(Entity<SelectState<Vec<DeviceChoice>>>, Subscription)>,
     pub mic_test: bool,
     /// Held while the Voice tab and its level meter show.
     fine_timers: Option<crate::desktop::window::FineTimers>,
@@ -366,31 +365,58 @@ impl Shell {
             Pattern::Time => "time-format",
             Pattern::Date => "date-format",
         };
-        let mut chips: Vec<AnyElement> = presets
-            .into_iter()
-            .enumerate()
-            .map(|(n, (format, shown))| {
-                let chosen = !custom && *current == format;
-                crate::ui::segment(self, (id, n), shown, chosen, cx)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.set_pattern(which, format.clone(), false, window, cx);
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-        chips.push(
-            crate::ui::segment(self, (id, 99usize), "Custom", custom, cx)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.settings.as_mut() {
-                        match which {
-                            Pattern::Time => page.custom_time = true,
-                            Pattern::Date => page.custom_date = true,
+        // Picking a preset puts it in the field too; Custom opens the field under them.
+        let formats: Vec<String> = presets.iter().map(|(f, _)| f.clone()).collect();
+        let chosen = if custom {
+            Some(presets.len())
+        } else {
+            presets.iter().position(|(f, _)| f == current)
+        };
+        let pick =
+            move |this: &mut Shell, n: usize, window: &mut Window, cx: &mut Context<Shell>| {
+                match formats.get(n) {
+                    Some(format) => this.set_pattern(which, format.clone(), false, window, cx),
+                    None => {
+                        if let Some(page) = this.settings.as_mut() {
+                            match which {
+                                Pattern::Time => page.custom_time = true,
+                                Pattern::Date => page.custom_date = true,
+                            }
                         }
+                        cx.notify();
                     }
-                    cx.notify();
-                }))
-                .into_any_element(),
-        );
+                }
+            };
+        // Times are short: side by side. Dates are long: one under the other.
+        let picker: AnyElement = match which {
+            Pattern::Time => crate::ui::segmented(
+                self,
+                id,
+                presets
+                    .into_iter()
+                    .map(|(_, shown)| crate::ui::Segment::new(shown))
+                    .chain([crate::ui::Segment::new("Custom")])
+                    .collect(),
+                chosen,
+                true,
+                pick,
+                cx,
+            )
+            .into_any_element(),
+            Pattern::Date => crate::ui::radio_list(
+                self,
+                id,
+                presets
+                    .into_iter()
+                    .map(|(_, shown)| (SharedString::from(shown), None))
+                    .chain([(SharedString::from("Custom"), None)])
+                    .collect(),
+                chosen,
+                pick,
+                cx,
+            )
+            .into_any_element(),
+        };
         let field = custom.then(|| {
             let help = match which {
                 Pattern::Time => "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
@@ -423,7 +449,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .items_end()
-                .child(crate::ui::segments().children(chips))
+                .child(picker)
                 .children(field),
         )
     }

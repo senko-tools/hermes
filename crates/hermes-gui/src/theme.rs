@@ -922,6 +922,21 @@ colors! {
     success = |t| t.text.success.0;
     scrim = |t| alpha(t.surface.deep.0, 0.7);
     scrim_strong = |t| alpha(t.surface.deep.0, 0.9);
+    focus_ring = |t| t.accent.focus.0;
+    button_primary = |t| t.buttons.primary.background.0;
+    button_primary_hover = |t| t.buttons.primary.background_hover.0;
+    button_primary_text = |t| t.buttons.primary.text.0;
+    button_secondary = |t| t.buttons.secondary.background.0;
+    button_secondary_hover = |t| t.buttons.secondary.background_hover.0;
+    button_secondary_text = |t| t.buttons.secondary.text.0;
+    button_danger = |t| t.buttons.danger.background.0;
+    button_danger_text = |t| t.buttons.danger.text.0;
+}
+
+/// The track a switch's knob or a segmented choice's thumb moves in: a raised surface between
+/// the sidebar and a selected row, so it does not look like a hole in its card (#62).
+pub fn control_track() -> Rgba {
+    mix(sidebar(), selected(), 0.5)
 }
 
 /// The corner radii and the width of a row's state bar.
@@ -1031,7 +1046,7 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.caret = text().into();
     // Switches, checkboxes and radio buttons read `tokens.primary`, the dropdowns' rows the list
     // tokens. Left alone they keep the kit's own black and white.
-    theme.switch = selected().into();
+    theme.switch = control_track().into();
     theme.switch_thumb = text().into();
     theme.list_hover = selected().into();
     theme.list_active = accent_soft().into();
@@ -1040,7 +1055,7 @@ pub fn apply_to_kit(cx: &mut gpui_kit::App) {
     theme.tokens.primary = token(accent());
     theme.tokens.primary_hover = token(with(|a| a.theme.accent.highlight.0));
     theme.tokens.primary_active = token(with(|a| a.theme.accent.highlight.0));
-    theme.tokens.switch = token(selected());
+    theme.tokens.switch = token(control_track());
     theme.tokens.switch_thumb = token(text());
     // The dropdowns' panels are `overlay`, the same as `hover` in some themes: `selected` shows.
     theme.tokens.list_hover = token(selected());

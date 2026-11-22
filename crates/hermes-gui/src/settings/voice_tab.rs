@@ -1,6 +1,24 @@
 //! Voice and audio.
 
 use super::*;
+use crate::ui::{ButtonKind, DropWidth, Segment};
+
+const VOICE_MODES: [(config::VoiceMode, &str, &str); 2] = [
+    (
+        config::VoiceMode::VoiceActivity,
+        "Voice activity",
+        assets::WAVEFORM,
+    ),
+    (
+        config::VoiceMode::PushToTalk,
+        "Push-to-talk",
+        assets::KEYBOARD,
+    ),
+];
+const JOIN_ON: [(config::JoinOn, &str); 2] = [
+    (config::JoinOn::DoubleClick, "Double-click"),
+    (config::JoinOn::SingleClick, "Single click"),
+];
 
 impl Shell {
     pub(super) fn tab_voice(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
@@ -8,34 +26,28 @@ impl Shell {
         let device_select = |state: Option<&Entity<SelectState<Vec<DeviceChoice>>>>| {
             state.map_or_else(
                 || muted("Listing devices…"),
-                |state| Select::new(state).cursor_pointer().into_any_element(),
+                |state| crate::ui::dropdown(state, DropWidth::Wide).into_any_element(),
             )
         };
         let selects = page.device_selects.as_ref();
-        // Device names are long: their dropdowns are wide.
-        const DEVICE_W: f32 = 340.;
         // Sliders on the right; volumes run the card's width under their name.
         const SLIDER_W: f32 = 240.;
         note_part("Refresh devices", "Device list", "Microphone");
         let devices = group_with(
             "Devices",
-            Button::new("devices-refresh")
-                .cursor_pointer()
-                .small()
-                .label("Refresh devices")
-                .on_click(cx.listener(|this, _, _, cx| this.load_devices(cx)))
-                .into_any_element(),
+            crate::ui::button(
+                self,
+                "devices-refresh",
+                "Refresh devices",
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| this.load_devices(cx),
+                cx,
+            )
+            .into_any_element(),
             vec![
-                setting_fit(
-                    "Microphone",
-                    "",
-                    sized(DEVICE_W, device_select(selects.map(|s| &s.input))),
-                ),
-                setting_fit(
-                    "Speakers",
-                    "",
-                    sized(DEVICE_W, device_select(selects.map(|s| &s.output))),
-                ),
+                setting_fit("Microphone", "", device_select(selects.map(|s| &s.input))),
+                setting_fit("Speakers", "", device_select(selects.map(|s| &s.output))),
             ],
         );
         let volumes = group(
@@ -54,33 +66,21 @@ impl Shell {
             ],
         );
         let ptt_mode = v.mode == config::VoiceMode::PushToTalk;
-        let mode_chips = [
-            (
-                config::VoiceMode::VoiceActivity,
-                "Voice activity",
-                assets::WAVEFORM,
-            ),
-            (
-                config::VoiceMode::PushToTalk,
-                "Push-to-talk",
-                assets::KEYBOARD,
-            ),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name, glyph))| {
-            crate::ui::segment_with(
-                self,
-                ("voice-mode", n),
-                Some(crate::ui::icon_preview(glyph)),
-                name,
-                v.mode == value,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
+        let mode = crate::ui::segmented(
+            self,
+            "voice-mode",
+            VOICE_MODES
+                .iter()
+                .map(|(_, name, glyph)| Segment::with(crate::ui::icon_preview(glyph), *name))
+                .collect(),
+            VOICE_MODES.iter().position(|(m, _, _)| *m == v.mode),
+            true,
+            |this, n, _, cx| {
+                let value = VOICE_MODES[n].0;
                 this.change_voice(cx, move |voice| voice.mode = value);
-            }))
-        });
+            },
+            cx,
+        );
         // The bar moves smoothly; it is green while the microphone would go through, as the
         // input mode decides: above the line, or while push-to-talk is held.
         let level = self.meter_shown.clamp(METER_MIN, 0.);
@@ -112,11 +112,7 @@ impl Shell {
                         },
                     ),
             );
-        let mut input_rows = vec![setting_fit(
-            "Input mode",
-            "",
-            crate::ui::segments().children(mode_chips),
-        )];
+        let mut input_rows = vec![setting_fit("Input mode", "", mode)];
         if ptt_mode {
             input_rows.push(setting_fit(
                 "Push-to-talk key",
@@ -164,29 +160,38 @@ impl Shell {
         input_rows.push(setting_fit(
             "Mic test",
             "Hear yourself (use headphones).",
-            Button::new("mic-test")
-                .cursor_pointer()
-                .label(if mic_test { "Stop test" } else { "Start test" })
-                .when(mic_test, |b| b.danger())
-                .on_click(cx.listener(move |this, _, _, cx| {
+            crate::ui::button(
+                self,
+                "mic-test",
+                if mic_test { "Stop test" } else { "Start test" },
+                if mic_test {
+                    ButtonKind::Danger
+                } else {
+                    ButtonKind::Secondary
+                },
+                true,
+                move |this, _, cx| {
                     if let Some(page) = &mut this.settings {
                         page.mic_test = !mic_test;
                     }
                     this.core.set_mic_test(!mic_test);
                     cx.notify();
-                })),
+                },
+                cx,
+            ),
         ));
         let voice_switch = |id: &'static str,
                             on: bool,
                             set: fn(&mut hermes_client_core::config::Voice, bool),
                             cx: &mut Context<Self>| {
-            Switch::new(id)
-                .cursor_pointer()
-                .checked(on)
-                .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                    let on = *on;
-                    this.change_voice(cx, move |voice| set(voice, on));
-                }))
+            crate::ui::switch(
+                self,
+                id,
+                on,
+                true,
+                move |this, _, cx| this.change_voice(cx, move |voice| set(voice, !on)),
+                cx,
+            )
         };
         if !ptt_mode {
             let level_only = v.vad_level_only;
@@ -281,20 +286,6 @@ impl Shell {
                 advanced,
             ],
         );
-        let join_chips = [
-            (config::JoinOn::DoubleClick, "Double-click"),
-            (config::JoinOn::SingleClick, "Single click"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name))| {
-            crate::ui::segment(self, ("join-on", n), name, v.join_on == value, cx).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    this.set_config(|c| c.voice.join_on = value, cx);
-                }),
-            )
-        })
-        .collect::<Vec<_>>();
         let sounds = group(
             "Sounds and joining",
             vec![
@@ -311,7 +302,21 @@ impl Shell {
                 setting_fit(
                     "Join a voice channel with",
                     "",
-                    crate::ui::segments().children(join_chips),
+                    crate::ui::segmented(
+                        self,
+                        "join-on",
+                        JOIN_ON
+                            .iter()
+                            .map(|(_, name)| Segment::new(*name))
+                            .collect(),
+                        JOIN_ON.iter().position(|(j, _)| *j == v.join_on),
+                        true,
+                        |this, n, _, cx| {
+                            let value = JOIN_ON[n].0;
+                            this.set_config(|c| c.voice.join_on = value, cx);
+                        },
+                        cx,
+                    ),
                 ),
             ],
         );

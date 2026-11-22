@@ -2,11 +2,11 @@
 //! whether new members can read the past, for the whole server and per channel, and who is waiting
 //! to be let in. The server's rules are the owner's; a channel's are the owner's or an admin's.
 
+use crate::ui::ButtonKind;
 use std::collections::HashMap;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, SharedString, div};
+use gpui_kit::{AnyElement, Context, div};
 use hermes_client_core::InstanceId;
 use hermes_client_core::proto::e2ee::{KeyHandover, KeyPolicy, KeyPolicyOverride, KeyRequest};
 use hermes_client_core::proto::id::Id;
@@ -15,7 +15,7 @@ use hermes_client_core::store::InstanceStore;
 use hermes_client_core::view;
 
 use crate::results::Remote;
-use crate::settings::{group, muted, page_body, setting, wrap};
+use crate::settings::{group, muted, page_body, setting};
 use crate::shell::Shell;
 use crate::space_settings::SpacePage;
 use crate::theme::{self, px};
@@ -59,25 +59,20 @@ fn choices<T: Copy + PartialEq + 'static>(
     cx: &mut Context<Shell>,
     run: impl Fn(&mut Shell, T, &mut Context<Shell>) + Clone + 'static,
 ) -> AnyElement {
-    let chips = options.iter().map(|(label, value)| {
-        let value = *value;
-        let run = run.clone();
-        let element = crate::ui::chip(
-            shell,
-            SharedString::from(format!("{id}-{label}")),
-            *label,
-            value == current,
-            cx,
-        );
-        if enabled {
-            element
-                .on_click(cx.listener(move |this, _, _, cx| run(this, value, cx)))
-                .into_any_element()
-        } else {
-            element.cursor_default().into_any_element()
-        }
-    });
-    wrap().children(chips).into_any_element()
+    let values: Vec<T> = options.iter().map(|(_, value)| *value).collect();
+    crate::ui::segmented(
+        shell,
+        id.to_owned(),
+        options
+            .iter()
+            .map(|(label, _)| crate::ui::Segment::new(*label))
+            .collect(),
+        values.iter().position(|v| *v == current),
+        enabled,
+        move |this, n, _, cx| run(this, values[n], cx),
+        cx,
+    )
+    .into_any_element()
 }
 
 impl Shell {
@@ -334,24 +329,29 @@ impl Shell {
                     .text_size(theme::secondary_size())
                     .child(format!("{name} wants to read #{channel} on a new device")),
             )
-            .child(
-                Button::new(("key-approve", n))
-                    .cursor_pointer()
-                    .primary()
-                    .label("Approve")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.approve_key_request(approve_inst.clone(), approve_request.clone(), cx);
-                    })),
-            )
-            .child(
-                Button::new(("key-dismiss", n))
-                    .cursor_pointer()
-                    .label("Not now")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.core.dismiss_key_request(&dismiss_inst, &request);
-                        cx.notify();
-                    })),
-            )
+            .child(crate::ui::button(
+                self,
+                format!("key-approve-{n}"),
+                "Approve",
+                ButtonKind::Primary,
+                true,
+                move |this, _, cx| {
+                    this.approve_key_request(approve_inst.clone(), approve_request.clone(), cx);
+                },
+                cx,
+            ))
+            .child(crate::ui::button(
+                self,
+                format!("key-dismiss-{n}"),
+                "Not now",
+                ButtonKind::Secondary,
+                true,
+                move |this, _, cx| {
+                    this.core.dismiss_key_request(&dismiss_inst, &request);
+                    cx.notify();
+                },
+                cx,
+            ))
             .into_any_element()
     }
 

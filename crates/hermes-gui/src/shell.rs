@@ -183,6 +183,10 @@ pub struct Shell {
     /// The keys `track_hover` was given while drawing the last frame. Something that is no
     /// longer drawn never hears the pointer leave, so its key is dropped from `hovered` instead.
     pub hover_tracked: std::rc::Rc<std::cell::RefCell<HashSet<gpui_kit::SharedString>>>,
+    /// Where each option of a segmented choice sat last frame, by control id (`ui::segmented`).
+    pub segment_spans: crate::ui::Spans,
+    /// Keyboard focus of our own controls, by control id.
+    pub control_focus: std::cell::RefCell<HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>>,
     /// The copy button used a moment ago: it says "Copied".
     pub copied: Option<String>,
     /// Code blocks' own scrolling and "Show all" (#65).
@@ -449,6 +453,8 @@ impl Shell {
             hovered_file: None,
             hovered: HashSet::new(),
             hover_tracked: Default::default(),
+            segment_spans: Default::default(),
+            control_focus: Default::default(),
             copied: None,
             code_blocks: Default::default(),
             closing_serials: HashMap::new(),
