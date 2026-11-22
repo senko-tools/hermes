@@ -343,6 +343,8 @@ pub async fn test_check(current: &str) -> Option<Result<Option<crate::update::Up
             Ok(newer.then(|| crate::update::Update {
                 version: manifest.version,
                 url: base.clone(),
+                // The test server has none.
+                notes: Vec::new(),
             }))
         }
         .await,

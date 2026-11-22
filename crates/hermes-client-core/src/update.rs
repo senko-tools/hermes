@@ -1,5 +1,6 @@
 //! The update check (PLAN.md section 15.7): on start, ask the GitHub releases API whether a newer
-//! version exists. Nothing is downloaded or installed; the UIs show a link.
+//! version exists, and what changed on the way to it (each release's notes, written in
+//! CHANGELOG.md; see `.github/release-notes.sh`). Nothing is downloaded or installed here.
 
 use std::cmp::Ordering;
 use std::time::Duration;
@@ -17,6 +18,86 @@ pub struct Update {
     pub version: String,
     /// The release page.
     pub url: String,
+    /// What changed: every release after this version up to and including `version`, newest
+    /// first.
+    pub notes: Vec<ReleaseNotes>,
+}
+
+/// One release's notes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseNotes {
+    /// Without the `v`.
+    pub version: String,
+    /// `YYYY-MM-DD`, when GitHub says.
+    pub date: Option<String>,
+    pub lines: Vec<NoteLine>,
+}
+
+/// A line of release notes: the little markdown CHANGELOG.md uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoteLine {
+    /// `#`, `##` or `###`.
+    Heading(String),
+    /// `- ` or `* `; `depth` 0 is the outermost list, each two spaces or tab of indent one more.
+    Item {
+        depth: usize,
+        text: String,
+    },
+    Text(String),
+}
+
+/// Reads release notes: headings, `-`/`*` lists (nested by indent) and plain lines. Blank lines
+/// go, and so do `**` and backticks; anything else is kept as written.
+pub fn parse_notes(body: &str) -> Vec<NoteLine> {
+    let clean = |text: &str| text.replace("**", "").replace('`', "").trim().to_owned();
+    body.lines()
+        .filter_map(|line| {
+            let line = line.trim_end();
+            let trimmed = line.trim_start();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let heading = trimmed.trim_start_matches('#');
+            if heading.len() < trimmed.len() && (heading.is_empty() || heading.starts_with(' ')) {
+                return Some(NoteLine::Heading(clean(heading)));
+            }
+            if let Some(text) = trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+            {
+                let indent: usize = line[..line.len() - trimmed.len()]
+                    .chars()
+                    .map(|c| if c == '\t' { 2 } else { 1 })
+                    .sum();
+                return Some(NoteLine::Item {
+                    depth: indent / 2,
+                    text: clean(text),
+                });
+            }
+            Some(NoteLine::Text(clean(trimmed)))
+        })
+        .collect()
+}
+
+/// The lines under `## <version>` in a changelog, up to the next `## ` heading, blank lines
+/// around them dropped; `None` when there are none. The same rule as `.github/release-notes.sh`,
+/// which makes each release's text.
+pub fn changelog_section(changelog: &str, version: &str) -> Option<String> {
+    let want = format!("## {version}");
+    let mut inside = false;
+    let mut lines = Vec::new();
+    for line in changelog.lines() {
+        if line.starts_with("## ") {
+            inside = line.trim_end() == want;
+            continue;
+        }
+        if inside {
+            lines.push(line.trim_end_matches('\r'));
+        }
+    }
+    let text = lines.join("\n");
+    let text = text.trim_start_matches('\n').trim_end();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +108,10 @@ struct Release {
     draft: bool,
     #[serde(default)]
     prerelease: bool,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
 }
 
 /// `major.minor.patch` and an optional pre-release part (`1.0.0-alpha.6`).
@@ -95,20 +180,35 @@ impl Ord for Version {
     }
 }
 
-/// The newest release newer than `current`, from a releases API answer. Pre-releases count
-/// only when `current` is one itself.
+/// The newest release newer than `current`, from a releases API answer, with the notes of every
+/// release on the way to it. Pre-releases count only when `current` is one itself.
 fn newest(current: &str, releases: Vec<Release>) -> Option<Update> {
     let current = Version::parse(current)?;
-    releases
+    let mut newer: Vec<(Version, Release)> = releases
         .into_iter()
         .filter(|r| !r.draft && (!r.prerelease || current.pre.is_some()))
         .filter_map(|r| Some((Version::parse(&r.tag_name)?, r)))
         .filter(|(v, _)| *v > current)
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map(|(_, r)| Update {
+        .collect();
+    newer.sort_by(|(a, _), (b, _)| b.cmp(a));
+    let url = newer.first()?.1.html_url.clone();
+    let notes: Vec<ReleaseNotes> = newer
+        .into_iter()
+        .map(|(_, r)| ReleaseNotes {
             version: r.tag_name.trim_start_matches('v').to_owned(),
-            url: r.html_url,
+            date: r
+                .published_at
+                .as_deref()
+                .and_then(|d| d.get(..10))
+                .map(str::to_owned),
+            lines: parse_notes(r.body.as_deref().unwrap_or_default()),
         })
+        .collect();
+    Some(Update {
+        version: notes[0].version.clone(),
+        url,
+        notes,
+    })
 }
 
 /// Asks GitHub (or the update test server, see `updater::TESTING`); `Ok(None)` when this is the
@@ -150,7 +250,83 @@ mod tests {
             html_url: format!("https://example.org/{tag}"),
             draft: false,
             prerelease,
+            body: Some(format!("### Fixed\n- something in {tag}")),
+            published_at: Some("2026-11-22T10:00:00Z".into()),
         }
+    }
+
+    #[test]
+    fn notes_cover_every_skipped_release_newest_first() {
+        let list = vec![
+            release("v1.0.1", false),
+            release("v1.0.3", false),
+            release("v1.0.2", false),
+            release("v1.0.0", false),
+        ];
+        let update = newest("1.0.0", list).unwrap();
+        assert_eq!(update.version, "1.0.3");
+        assert_eq!(update.url, "https://example.org/v1.0.3");
+        let versions: Vec<&str> = update.notes.iter().map(|n| n.version.as_str()).collect();
+        assert_eq!(versions, ["1.0.3", "1.0.2", "1.0.1"]);
+        assert_eq!(update.notes[0].date.as_deref(), Some("2026-11-22"));
+        assert_eq!(
+            update.notes[2].lines,
+            [
+                NoteLine::Heading("Fixed".into()),
+                NoteLine::Item {
+                    depth: 0,
+                    text: "something in v1.0.1".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn notes_read_headings_nested_lists_and_text() {
+        let body = "## New\r\n\n- **Bold** thing\n  - nested `code`\n    * deeper\n\t- tab\nplain line\n#hashtag";
+        let item = |depth, text: &str| NoteLine::Item {
+            depth,
+            text: text.into(),
+        };
+        assert_eq!(
+            parse_notes(body),
+            [
+                NoteLine::Heading("New".into()),
+                item(0, "Bold thing"),
+                item(1, "nested code"),
+                item(2, "deeper"),
+                item(1, "tab"),
+                NoteLine::Text("plain line".into()),
+                NoteLine::Text("#hashtag".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn changelog_sections_are_found_like_the_release_script() {
+        let changelog = "# Changelog\n\nintro\n\n## Unreleased\n\n### New\n- a\n\n## 1.4.2\n\n- b\n  - c\n\n## 1.4.1\n";
+        assert_eq!(
+            changelog_section(changelog, "Unreleased").as_deref(),
+            Some("### New\n- a")
+        );
+        assert_eq!(
+            changelog_section(changelog, "1.4.2").as_deref(),
+            Some("- b\n  - c")
+        );
+        assert_eq!(changelog_section(changelog, "1.4.1"), None);
+        assert_eq!(changelog_section(changelog, "1.4"), None);
+    }
+
+    /// The release workflow stops without notes: this catches it before then.
+    #[test]
+    fn the_changelog_has_notes_for_the_next_release() {
+        let changelog = include_str!("../../../CHANGELOG.md");
+        assert!(
+            changelog_section(changelog, "Unreleased").is_some()
+                || changelog_section(changelog, env!("CARGO_PKG_VERSION")).is_some(),
+            "CHANGELOG.md needs notes under ## Unreleased or ## {}",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     #[test]
