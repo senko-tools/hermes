@@ -91,9 +91,9 @@ pub fn icon_preview(glyph: &'static str) -> Preview {
 // They share a height, corners, text size, the hover spring, a focus ring (keyboard only) and
 // one disabled look, and each one's shape shows how it works.
 
-/// How tall a control is: buttons, dropdowns, segmented tracks, icon buttons.
+/// How tall a control is: buttons, dropdowns, segmented tracks.
 pub fn control_h() -> gpui_kit::Pixels {
-    px(28.)
+    px(32.)
 }
 
 /// What a control does when clicked, or pressed with Space or Enter while focused.
@@ -293,8 +293,37 @@ pub fn segmented(
     on_pick: impl Fn(&mut Shell, usize, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
     cx: &Context<Shell>,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    segmented_in(shell, id, options, chosen, enabled, false, on_pick, cx)
+}
+
+/// [`segmented`] across the whole width it is given, each option an equal share with its label
+/// centered: for options with long labels, under the setting's name.
+#[allow(clippy::too_many_arguments)]
+pub fn segmented_wide(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    options: Vec<Segment>,
+    chosen: Option<usize>,
+    enabled: bool,
+    on_pick: impl Fn(&mut Shell, usize, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    segmented_in(shell, id, options, chosen, enabled, true, on_pick, cx)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn segmented_in(
+    shell: &Shell,
+    id: impl Into<SharedString>,
+    options: Vec<Segment>,
+    chosen: Option<usize>,
+    enabled: bool,
+    stretch: bool,
+    on_pick: impl Fn(&mut Shell, usize, &mut gpui_kit::Window, &mut Context<Shell>) + 'static,
+    cx: &Context<Shell>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     use std::rc::Rc;
-    const PAD: f32 = 2.;
+    const PAD: f32 = 3.;
     let id: SharedString = id.into();
     let on_pick = Rc::new(on_pick);
     let spans = shell.segment_spans.borrow().get(&id).cloned();
@@ -325,102 +354,108 @@ pub fn segmented(
     let row = {
         let options = options.clone();
         let spans = spans.clone();
-        div().flex().h_full().with_spring(
-            SharedString::from(format!("{id}-thumb")),
-            spring(chosen.unwrap_or(0) as f32),
-            move |d, t| {
-                let record = record.clone();
-                let record_id = record_id.clone();
-                let d = d.on_children_prepainted(move |bounds, _, _| {
-                    let Some(first) = bounds.first() else { return };
-                    let origin = f32::from(first.origin.x);
-                    let now: Vec<(f32, f32)> = bounds
-                        .iter()
-                        .map(|b| (f32::from(b.origin.x) - origin, f32::from(b.size.width)))
-                        .collect();
-                    let mut all = record.borrow_mut();
-                    if all.get(&record_id) != Some(&now) {
-                        if all.len() > 256 {
-                            all.clear();
-                        }
-                        all.insert(record_id.clone(), now);
-                    }
-                });
-                // Before the options were measured the chosen one fills itself in.
-                let thumb = if measured {
-                    chosen.and_then(|_| thumb_span(&spans, t))
-                } else {
-                    None
-                };
-                d.children(options.iter().enumerate().map(
-                    |(n, (key, option, hover, action, hover_listener, focus))| {
-                        let fill = match (thumb, spans.get(n)) {
-                            (Some(thumb), Some(span)) => coverage(*span, thumb),
-                            _ if !measured && chosen == Some(n) => 1.,
-                            _ => 0.,
-                        };
-                        let label = option.label.clone();
-                        let preview = option.preview.clone();
-                        let face = div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .h_full()
-                            .px(px(10.))
-                            .rounded(theme::radius_small())
-                            .when(!measured && fill > 0., |d| d.bg(theme::accent()))
-                            .whitespace_nowrap()
-                            .with_spring(
-                                SharedString::from(format!("{key}-face")),
-                                spring(if *hover { 1. } else { 0. }),
-                                move |d, h| {
-                                    let h = h.clamp(0., 1.);
-                                    let text =
-                                        theme::mix(theme::text_secondary(), theme::accent(), h);
-                                    let text = theme::mix(text, theme::on_accent(), fill);
-                                    d.text_color(text)
-                                        .children(preview.as_ref().map(|p| p(text)))
-                                        .child(label.clone())
-                                },
-                            );
-                        let el = div()
-                            .id(key.clone())
-                            .h_full()
-                            .rounded(theme::radius_small())
-                            .border_1()
-                            .border_color(gpui_kit::transparent_black())
-                            .on_hover({
-                                let l = hover_listener.clone();
-                                move |h, w, cx| l(h, w, cx)
-                            })
-                            .child(face);
-                        match (action, focus) {
-                            (Some(action), Some(focus)) => {
-                                let click = action.clone();
-                                let key_act = action.clone();
-                                el.cursor_pointer()
-                                    .track_focus(focus)
-                                    .focus_visible(|s| s.border_color(theme::focus_ring()))
-                                    .on_click(move |_, window, cx| click(window, cx))
-                                    .on_key_down(
-                                        move |event: &gpui_kit::KeyDownEvent, window, cx| {
-                                            if matches!(
-                                                event.keystroke.key.as_str(),
-                                                "space" | "enter"
-                                            ) {
-                                                cx.stop_propagation();
-                                                key_act(window, cx);
-                                            }
-                                        },
-                                    )
+        div()
+            .flex()
+            .h_full()
+            .when(stretch, |d| d.w_full())
+            .with_spring(
+                SharedString::from(format!("{id}-thumb")),
+                spring(chosen.unwrap_or(0) as f32),
+                move |d, t| {
+                    let record = record.clone();
+                    let record_id = record_id.clone();
+                    let d = d.on_children_prepainted(move |bounds, _, _| {
+                        let Some(first) = bounds.first() else { return };
+                        let origin = f32::from(first.origin.x);
+                        let now: Vec<(f32, f32)> = bounds
+                            .iter()
+                            .map(|b| (f32::from(b.origin.x) - origin, f32::from(b.size.width)))
+                            .collect();
+                        let mut all = record.borrow_mut();
+                        if all.get(&record_id) != Some(&now) {
+                            if all.len() > 256 {
+                                all.clear();
                             }
-                            _ if !option.enabled => el.opacity(0.5).cursor_not_allowed(),
-                            _ => el,
+                            all.insert(record_id.clone(), now);
                         }
-                    },
-                ))
-            },
-        )
+                    });
+                    // Before the options were measured the chosen one fills itself in.
+                    let thumb = if measured {
+                        chosen.and_then(|_| thumb_span(&spans, t))
+                    } else {
+                        None
+                    };
+                    d.children(options.iter().enumerate().map(
+                        |(n, (key, option, hover, action, hover_listener, focus))| {
+                            let fill = match (thumb, spans.get(n)) {
+                                (Some(thumb), Some(span)) => coverage(*span, thumb),
+                                _ if !measured && chosen == Some(n) => 1.,
+                                _ => 0.,
+                            };
+                            let label = option.label.clone();
+                            let preview = option.preview.clone();
+                            let face = div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .h_full()
+                                .px(px(14.))
+                                .when(stretch, |d| d.justify_center())
+                                .rounded(theme::radius_small())
+                                .when(!measured && fill > 0., |d| d.bg(theme::accent()))
+                                .whitespace_nowrap()
+                                .with_spring(
+                                    SharedString::from(format!("{key}-face")),
+                                    spring(if *hover { 1. } else { 0. }),
+                                    move |d, h| {
+                                        let h = h.clamp(0., 1.);
+                                        let text =
+                                            theme::mix(theme::text_secondary(), theme::accent(), h);
+                                        let text = theme::mix(text, theme::on_accent(), fill);
+                                        d.text_color(text)
+                                            .children(preview.as_ref().map(|p| p(text)))
+                                            .child(label.clone())
+                                    },
+                                );
+                            let el = div()
+                                .id(key.clone())
+                                .h_full()
+                                .when(stretch, |d| d.flex_1().min_w_0())
+                                .rounded(theme::radius_small())
+                                .border_1()
+                                .border_color(gpui_kit::transparent_black())
+                                .on_hover({
+                                    let l = hover_listener.clone();
+                                    move |h, w, cx| l(h, w, cx)
+                                })
+                                .child(face);
+                            match (action, focus) {
+                                (Some(action), Some(focus)) => {
+                                    let click = action.clone();
+                                    let key_act = action.clone();
+                                    el.cursor_pointer()
+                                        .track_focus(focus)
+                                        .focus_visible(|s| s.border_color(theme::focus_ring()))
+                                        .on_click(move |_, window, cx| click(window, cx))
+                                        .on_key_down(
+                                            move |event: &gpui_kit::KeyDownEvent, window, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "space" | "enter"
+                                                ) {
+                                                    cx.stop_propagation();
+                                                    key_act(window, cx);
+                                                }
+                                            },
+                                        )
+                                }
+                                _ if !option.enabled => el.opacity(0.5).cursor_not_allowed(),
+                                _ => el,
+                            }
+                        },
+                    ))
+                },
+            )
     };
     // The thumb, under the labels: it springs on the same key as the row, so the two agree.
     let thumb = div()
@@ -443,12 +478,13 @@ pub fn segmented(
         .id(id)
         .relative()
         .flex_shrink_0()
+        .when(stretch, |d| d.w_full())
         .max_w_full()
         .h(control_h())
         .p(gpui_kit::px(PAD))
         .rounded(theme::radius_small())
         .bg(theme::control_track())
-        .text_size(theme::secondary_size())
+        .text_size(theme::body_size())
         .child(thumb)
         .child(row);
     if enabled {
@@ -523,7 +559,7 @@ pub fn radio_list(
                 .items_center()
                 .gap(px(10.))
                 .px(px(8.))
-                .py(px(6.))
+                .py(px(4.))
                 .rounded(theme::radius_small())
                 .with_spring(
                     SharedString::from(format!("{key}-row")),

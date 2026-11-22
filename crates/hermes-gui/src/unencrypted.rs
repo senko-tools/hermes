@@ -85,7 +85,7 @@ impl Shell {
     /// The choices as a row of chips; `id` keeps the popup's apart from the setting's.
     pub fn warn_unencrypted_choices(&self, id: &'static str, cx: &mut Context<Self>) -> AnyElement {
         let current = self.config.privacy.warn_unencrypted;
-        crate::ui::segmented(
+        crate::ui::segmented_wide(
             self,
             id,
             WARN_CHOICES

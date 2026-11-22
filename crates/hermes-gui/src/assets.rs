@@ -67,7 +67,6 @@ pub const BELL: &str = "bell-outline";
 pub const ACCOUNT_PLUS: &str = "account-plus";
 pub const LINK: &str = "link-variant";
 pub const BAN: &str = "cancel";
-pub const FOLDER_PLUS: &str = "folder-plus-outline";
 pub const ALERT: &str = "alert";
 pub const PULSE: &str = "pulse";
 pub const EYE: &str = "eye-outline";

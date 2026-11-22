@@ -84,6 +84,26 @@ impl Shell {
         };
         let (font_input, font_events) = font_select(&font.family, |c| &mut c.font.family);
         let (mono_input, mono_events) = font_select(&font.mono_family, |c| &mut c.font.mono_family);
+        let (choices, selected) = date_choices(&self.config.buffer.date_format, self.utc_offset);
+        let date_select =
+            cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+        let date_events = cx.subscribe_in(
+            &date_select,
+            window,
+            |this, _, event: &SelectEvent<Vec<DeviceChoice>>, window, cx| {
+                let SelectEvent::Confirm(Some(value)) = event else {
+                    return;
+                };
+                if value == CUSTOM_DATE {
+                    if let Some(page) = this.settings.as_mut() {
+                        page.custom_date = true;
+                    }
+                    cx.notify();
+                } else {
+                    this.set_pattern(Pattern::Date, value.clone(), false, window, cx);
+                }
+            },
+        );
         let time_format = text_field(
             self.config.buffer.timestamp_format.clone(),
             "%H:%M",
@@ -118,6 +138,7 @@ impl Shell {
             }),
             font_events,
             mono_events,
+            date_events,
             cx.subscribe_in(&time_format, window, |this, input, event, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
@@ -264,6 +285,7 @@ impl Shell {
             fine_timers: None,
             font: font_input,
             mono_font: mono_input,
+            date_select,
             time_format,
             custom_time: false,
             custom_date: false,

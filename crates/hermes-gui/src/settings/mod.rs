@@ -170,9 +170,9 @@ fn the_meter_rises_quickly_and_falls_slowly() {
 
 /// A choice of the audio device dropdowns; `value` is what the config stores.
 #[derive(Clone)]
-struct DeviceChoice {
-    value: String,
-    name: SharedString,
+pub(crate) struct DeviceChoice {
+    pub(crate) value: String,
+    pub(crate) name: SharedString,
 }
 
 /// A switch row for a `bool` in the config, naming the field once so what the switch shows and
@@ -285,6 +285,8 @@ pub struct SettingsPage {
     fine_timers: Option<crate::desktop::window::FineTimers>,
     font: Entity<SelectState<Vec<DeviceChoice>>>,
     mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
+    /// The date formats, today's date in each, and Custom ([`CUSTOM_DATE`]).
+    date_select: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     date_format: Entity<InputState>,
     /// Custom was chosen for the time or date: its pattern field shows.
@@ -303,7 +305,30 @@ struct DeviceSelects {
     _events: [Subscription; 2],
 }
 
-/// The date formats offered as chips on the day dividers.
+/// The date dropdown's value for Custom: no pattern is empty.
+const CUSTOM_DATE: &str = "";
+
+/// The date dropdown's choices for `current`, and which one holds.
+fn date_choices(current: &str, utc_offset: i64) -> (Vec<DeviceChoice>, usize) {
+    let mut choices: Vec<DeviceChoice> = DATE_FORMATS
+        .iter()
+        .map(|f| DeviceChoice {
+            value: (*f).to_owned(),
+            name: time::format(hermes_client_core::now_ms(), f, utc_offset).into(),
+        })
+        .collect();
+    choices.push(DeviceChoice {
+        value: CUSTOM_DATE.to_owned(),
+        name: "Custom…".into(),
+    });
+    let selected = DATE_FORMATS
+        .iter()
+        .position(|f| *f == current)
+        .unwrap_or(DATE_FORMATS.len());
+    (choices, selected)
+}
+
+/// The date formats offered on the day dividers.
 const DATE_FORMATS: [&str; 5] = [
     "%B %e, %Y",
     "%e %B %Y",
@@ -403,19 +428,9 @@ impl Shell {
                 cx,
             )
             .into_any_element(),
-            Pattern::Date => crate::ui::radio_list(
-                self,
-                id,
-                presets
-                    .into_iter()
-                    .map(|(_, shown)| (SharedString::from(shown), None))
-                    .chain([(SharedString::from("Custom"), None)])
-                    .collect(),
-                chosen,
-                pick,
-                cx,
-            )
-            .into_any_element(),
+            // Dates are long: a dropdown (made in `open_settings`), not a row of them.
+            Pattern::Date => crate::ui::dropdown(&page.date_select, crate::ui::DropWidth::Medium)
+                .into_any_element(),
         };
         let field = custom.then(|| {
             let help = match which {
@@ -663,6 +678,20 @@ pub fn frame(
 
 /// A tab's content: title, optional text and groups, scrolling.
 pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> AnyElement {
+    page_body_with(title, None, text, groups)
+}
+
+/// [`page_body`] with buttons on the right of the title ("Refresh", "Create invite…").
+///
+/// Every part sits in one column at most [`PAGE_W`] wide, centered in the space beside the
+/// navigation; a narrow window gets what there is. Each part gets its own box (not one wrapper)
+/// so the search can still scroll to the n-th group.
+pub fn page_body_with(
+    title: &str,
+    actions: Option<AnyElement>,
+    text: Option<&str>,
+    groups: Vec<AnyElement>,
+) -> AnyElement {
     let scroll = PAGE_SCROLL.with(|h| h.clone());
     if !recording()
         && let Some(index) = SCROLL_TO.with(Cell::take)
@@ -680,15 +709,47 @@ pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> An
         .size_full()
         .p(px(24.))
         .overflow_y_scroll()
-        .child(
+        .child(page_part(
             div()
-                .text_size(theme::heading_size())
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(title.to_owned())),
-        )
-        .children(text.map(|t| muted(SharedString::from(t.to_owned()))))
-        .children(groups)
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .min_h(crate::ui::control_h())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(theme::heading_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(title.to_owned())),
+                )
+                .children(actions)
+                .into_any_element(),
+        ))
+        .children(text.map(|t| page_part(muted(SharedString::from(t.to_owned())))))
+        .children(groups.into_iter().map(page_part))
         .into_any_element()
+}
+
+/// How wide a page's column may grow (#62): wider, a row's name and its control drift apart.
+pub const PAGE_W: f32 = 760.;
+
+/// One part of a page in the centered column.
+pub fn page_part(part: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w_full()
+        .max_w(px(PAGE_W))
+        .self_center()
+        .child(part)
+        .into_any_element()
+}
+
+/// Something at its own width, centered under a card ("Load older entries").
+pub fn centered(part: impl IntoElement) -> AnyElement {
+    div().flex().justify_center().child(part).into_any_element()
 }
 
 pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
@@ -726,7 +787,7 @@ fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
 }
 
 /// A group's rows on their card, a thin line between each two.
-fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
+pub(crate) fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
     let count = rows.len();
     let mut children: Vec<AnyElement> = Vec::with_capacity(count * 2);
     for (n, row) in rows.into_iter().enumerate() {
@@ -751,10 +812,6 @@ fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
         .children(children)
 }
 
-/// How wide a group may grow: it takes the window's width, and only a very wide window leaves
-/// room beside it (rows that long would be hard to read across).
-pub const CONTENT_MAX_W: f32 = 1100.;
-
 /// The title line over the card (none while folded).
 fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
     div()
@@ -763,7 +820,6 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
         .flex_shrink_0()
         .gap(px(10.))
         .w_full()
-        .max_w(px(CONTENT_MAX_W))
         .child(header)
         .children(card)
         .into_any_element()

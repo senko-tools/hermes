@@ -100,7 +100,6 @@ impl Shell {
             .flex_shrink_0()
             .gap(px(2.))
             .w_full()
-            .max_w(px(super::CONTENT_MAX_W))
             .children(rows)
             .into_any_element();
         page_body("Search", Some(&count), vec![list])

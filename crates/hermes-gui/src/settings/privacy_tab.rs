@@ -26,10 +26,10 @@ impl Shell {
         let many = self.core.instance_ids().len() > 1;
         let dm_from = privacy.dm_from;
         let privacy_rows = vec![
-            setting(
+            setting_below(
                 "Direct messages from",
                 "Who can start a conversation with you.",
-                crate::ui::segmented(
+                crate::ui::segmented_wide(
                     self,
                     "dm-from",
                     DM_FROM
@@ -162,7 +162,7 @@ impl Shell {
                     "Older unencrypted messages are then not found.",
                     privacy.local_search_only
                 ),
-                setting(
+                setting_below(
                     "Warn about unencrypted chats",
                     "A popup when opening a chat the server can read. The note above \
                         the message box is always there.",

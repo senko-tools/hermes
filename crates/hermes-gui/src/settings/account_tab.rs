@@ -256,26 +256,27 @@ impl Shell {
             .ready()
             .map(|l| l.iter().filter(|s| !s.current).map(|s| s.id).collect())
             .unwrap_or_default();
-        if !others.is_empty() {
-            device_rows.push(
-                crate::ui::button(
-                    self,
-                    "sessions-others",
-                    "Sign out all others",
-                    ButtonKind::Danger,
-                    true,
-                    move |this, _, cx| this.revoke_sessions(others.clone(), cx),
-                    cx,
-                )
-                .into_any_element(),
-            );
-        }
+        // In the group's header, at its own width: not a bar across the card.
+        let sign_out_others = if others.is_empty() {
+            div().into_any_element()
+        } else {
+            crate::ui::button(
+                self,
+                "sessions-others",
+                "Sign out all others",
+                ButtonKind::Danger,
+                true,
+                move |this, _, cx| this.revoke_sessions(others.clone(), cx),
+                cx,
+            )
+            .into_any_element()
+        };
         page_body(
             "Account",
             None,
             vec![
                 group("Account", account_rows),
-                group("Signed-in devices", device_rows),
+                group_with("Signed-in devices", sign_out_others, device_rows),
                 self.security_group(page, &inst, cx),
                 self.accounts_group(cx),
             ],

@@ -7,6 +7,7 @@ use crate::ui::ButtonKind;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::proto::api::{
@@ -25,15 +26,16 @@ use crate::assets::{self, icon};
 use crate::drag::{Ghost, Item, Kind, Shape};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
-use crate::settings::{frame, group, muted, page_body, setting};
+use crate::settings::{
+    DeviceChoice, centered, frame, group, group_card, muted, page_body, page_body_with, page_part,
+    setting,
+};
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
 const AUDIT_PAGE: u32 = 50;
-/// At most this many member rows are built; the search narrows bigger spaces.
-const MAX_ROWS: usize = 300;
-/// Width of the list column of the Roles, Channels and Members tabs.
-const SIDE_LIST: f32 = 240.0;
+/// How many members the list shows at first, and how many more each "Show more" adds.
+const MEMBER_PAGE: usize = 50;
 /// Preset colors offered next to the hex field.
 const SWATCHES: [u32; 12] = [
     0x1ABC9C, 0x2ECC71, 0x3498DB, 0x9B59B6, 0xE91E63, 0xF1C40F, 0xE67E22, 0xE74C3C, 0x95A5A6,
@@ -208,6 +210,10 @@ pub struct SpacePage {
     pub override_role: Option<Id>,
     /// The member whose actions are shown.
     pub member: Option<Id>,
+    /// How many members the list shows (grows by [`MEMBER_PAGE`]).
+    member_limit: usize,
+    /// The channel page's role dropdown and its subscription.
+    override_select: Option<(Entity<SelectState<Vec<DeviceChoice>>>, Subscription)>,
     pub invites: Remote<Vec<Invite>>,
     pub bans: Remote<Vec<Ban>>,
     pub reports: Remote<Vec<hermes_client_core::proto::models::Report>>,
@@ -462,6 +468,8 @@ impl Shell {
                     channel: None,
                     override_role: None,
                     member: None,
+                    member_limit: MEMBER_PAGE,
+                    override_select: None,
                     invites: Remote::Idle,
                     bans: Remote::Idle,
                     reports: Remote::Idle,
@@ -529,6 +537,13 @@ impl Shell {
         let Some(page) = self.space_pages.get_mut(&done) else {
             return;
         };
+        if !force {
+            // Its list, not the page of what was open in it last time.
+            page.role = None;
+            page.channel = None;
+            page.member = None;
+            page.member_limit = MEMBER_PAGE;
+        }
         page.tab = tab;
         crate::settings::reset_page_scroll();
         match tab {
@@ -906,20 +921,63 @@ impl Shell {
 
     // ---- channels -----------------------------------------------------------------------------
 
-    pub fn select_settings_channel(&mut self, channel: Id, cx: &mut Context<Self>) {
+    pub fn select_settings_channel(
+        &mut self,
+        channel: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some((inst, space)) = self.open_space_page.clone() else {
             return;
         };
-        let first = {
+        let (first, roles) = {
             let store = self.core.store();
-            store
-                .instance(&inst)
+            let s = store.instance(&inst);
+            let first = s
                 .and_then(|s| s.channel(channel))
-                .and_then(|c| c.overrides.first().map(|o| o.role_id))
+                .and_then(|c| c.overrides.first().map(|o| o.role_id));
+            let roles: Vec<(Id, String)> = s
+                .and_then(|s| s.spaces.get(&space))
+                .map(|st| st.roles.iter().map(|r| (r.id, r.name.clone())).collect())
+                .unwrap_or_default();
+            (first, roles)
         };
+        let current = first.unwrap_or(space);
+        // The roles whose overrides can be shown; which have some is said under it, so it
+        // stays right as overrides come and go.
+        let choices: Vec<DeviceChoice> = roles
+            .iter()
+            .map(|(id, name)| DeviceChoice {
+                value: id.to_string(),
+                name: SharedString::from(name.clone()),
+            })
+            .collect();
+        let selected = roles.iter().position(|(id, _)| *id == current).unwrap_or(0);
+        let state = cx.new(|cx| {
+            SelectState::new(
+                choices,
+                Some(gpui_kit::component::IndexPath::new(selected)),
+                window,
+                cx,
+            )
+        });
+        let events = cx.subscribe(
+            &state,
+            |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event
+                    && let Ok(role) = value.parse::<u64>()
+                {
+                    if let Some(page) = this.open_page() {
+                        page.override_role = Some(Id::from(role));
+                    }
+                    cx.notify();
+                }
+            },
+        );
         if let Some(page) = self.open_page() {
             page.channel = Some(channel);
-            page.override_role = Some(first.unwrap_or(space));
+            page.override_role = Some(current);
+            page.override_select = Some((state, events));
         }
         cx.notify();
     }
@@ -1060,7 +1118,7 @@ impl Shell {
                     .and_then(|s| s.space_of(channel));
                 if let Some(space) = space {
                     self.open_space_settings(inst, space, Tab::Channels, window, cx);
-                    self.select_settings_channel(channel, cx);
+                    self.select_settings_channel(channel, window, cx);
                 }
             }
             (Target::Member(inst, Some(space), user), Action::ManageRoles) => {
@@ -1386,8 +1444,10 @@ impl Shell {
 
     fn tab_roles(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
         let st = &s.spaces[&page.space];
+        if let Some(draft) = page.role.as_ref().filter(|d| st.role(d.id).is_some()) {
+            return self.role_editor(page, s, draft, cx);
+        }
         let space = page.space;
-        let selected = page.role.as_ref().map(|r| r.id);
         let can_manage = view::can_in_space(s, space, Permissions::MANAGE_ROLES);
         // How many members have each role, in one pass over the members.
         let mut counts = std::collections::HashMap::<Id, usize>::new();
@@ -1404,11 +1464,16 @@ impl Shell {
                     counts.get(&role.id).copied().unwrap_or_default()
                 };
                 let id = role.id;
-                let chosen = selected == Some(id);
-                let element = list_row(self, format!("role-{id}"), chosen, cx)
+                let draggable = !role.is_everyone() && view::can_manage_role(s, space, role.id);
+                let element = list_row(self, format!("role-{id}"), false, cx)
+                    .h(px(40.))
+                    .child(div().w(px(14.)).flex_shrink_0().when(draggable, |d| {
+                        d.child(icon(assets::DRAG, 14., theme::text_tertiary()))
+                    }))
                     .child(
                         div()
                             .size(px(10.))
+                            .flex_shrink_0()
                             .rounded(px(5.))
                             .bg(role.color.map_or(theme::text_tertiary(), theme::rgb_u32)),
                     )
@@ -1417,12 +1482,12 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child(count.to_string()),
+                            .child(format!("{count} member{}", plural(count))),
                     )
+                    .child(opens())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_role(id, window, cx);
                     }));
-                let draggable = !role.is_everyone() && view::can_manage_role(s, space, role.id);
                 let element = if draggable {
                     self.with_list_drag(element, page, Kind::Role, id, role.name.clone(), cx)
                 } else {
@@ -1433,21 +1498,26 @@ impl Shell {
             })
             .collect();
         let create = can_manage.then(|| {
-            crate::ui::tip_button(self, "role-create", assets::PLUS, "Create a role", cx)
-                .on_click(cx.listener(|this, _, _, cx| this.create_role(cx)))
-                .into_any_element()
+            crate::ui::button(
+                self,
+                "role-create",
+                "Create role",
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| this.create_role(cx),
+                cx,
+            )
+            .into_any_element()
         });
-        let list = side_list("Roles", create, rows);
-        let detail = match &page.role {
-            Some(draft) if st.role(draft.id).is_some() => self.role_editor(page, s, draft, cx),
-            _ => hint_panel(
-                "Pick a role to edit it.",
-                "Roles give members permissions. A member has every permission of each of their \
-                 roles, plus @everyone's. Higher roles in the list can manage lower ones; drag a \
-                 role (or use Move up / down) to change the order.",
+        page_body_with(
+            "Roles",
+            create,
+            Some(
+                "Roles give members permissions: each of their roles' and @everyone's. Higher \
+                 roles can manage lower ones; drag a role to change the order.",
             ),
-        };
-        two_columns(list, detail)
+            vec![list_card(rows)],
+        )
     }
 
     fn role_editor(
@@ -1466,11 +1536,26 @@ impl Shell {
         // You cannot grant what you do not have (the owner and administrators have everything).
         let mine = s.permissions(space, None);
         let mut col: Vec<AnyElement> = Vec::new();
-        col.push(strong(if everyone {
-            "@everyone: what every member can do".to_owned()
-        } else {
-            format!("Edit role: {}", role.name)
-        }));
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .size(px(12.))
+                    .flex_shrink_0()
+                    .rounded(px(6.))
+                    .bg(role.color.map_or(theme::text_tertiary(), theme::rgb_u32)),
+            )
+            .child(heading(if everyone {
+                "@everyone".to_owned()
+            } else {
+                role.name.clone()
+            }))
+            .into_any_element();
+        if everyone {
+            col.push(muted("What every member can do."));
+        }
         if !editable {
             col.push(
                 div()
@@ -1482,8 +1567,9 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        let mut role_rows: Vec<AnyElement> = Vec::new();
         if !everyone {
-            col.push(setting(
+            role_rows.push(setting(
                 "Name",
                 "",
                 Input::new(&draft.name).disabled(!editable),
@@ -1520,7 +1606,7 @@ impl Shell {
                         .into_any_element()
                 })
                 .collect::<Vec<_>>();
-            col.push(setting(
+            role_rows.push(setting(
                 "Color",
                 if parse_color(&color_text).is_err() {
                     "Use six hex digits, like #3498DB."
@@ -1535,7 +1621,7 @@ impl Shell {
                     .child(div().flex().flex_wrap().gap(px(4.)).children(swatches))
                     .child(Input::new(&draft.color).disabled(!editable)),
             ));
-            col.push(setting(
+            role_rows.push(setting(
                 "Show separately",
                 "Members with this role get their own group in the member list.",
                 {
@@ -1555,7 +1641,7 @@ impl Shell {
                     )
                 },
             ));
-            col.push(setting("Mentionable", "Anyone can @mention this role.", {
+            role_rows.push(setting("Mentionable", "Anyone can @mention this role.", {
                 let on = draft.mentionable;
                 crate::ui::switch(
                     self,
@@ -1571,6 +1657,32 @@ impl Shell {
                     cx,
                 )
             }));
+            if editable {
+                role_rows.push(setting(
+                    "Position",
+                    "Higher roles can manage lower ones.",
+                    crate::settings::wrap()
+                        .child(crate::ui::button(
+                            self,
+                            "role-up",
+                            "Move up",
+                            ButtonKind::Secondary,
+                            true,
+                            move |this, _, cx| this.move_role(id, -1, cx),
+                            cx,
+                        ))
+                        .child(crate::ui::button(
+                            self,
+                            "role-down",
+                            "Move down",
+                            ButtonKind::Secondary,
+                            true,
+                            move |this, _, cx| this.move_role(id, 1, cx),
+                            cx,
+                        )),
+                ));
+            }
+            col.push(group("Role", role_rows));
         }
         for permission_group in PermissionGroup::ALL {
             let rows: Vec<AnyElement> = CATALOG
@@ -1612,40 +1724,20 @@ impl Shell {
         let mut buttons = div().flex().flex_wrap().items_center().gap(px(8.));
         if editable && !everyone {
             let inst = page.inst.clone();
-            buttons = buttons
-                .child(crate::ui::button(
-                    self,
-                    "role-up",
-                    "Move up",
-                    ButtonKind::Secondary,
-                    true,
-                    move |this, _, cx| this.move_role(id, -1, cx),
-                    cx,
-                ))
-                .child(crate::ui::button(
-                    self,
-                    "role-down",
-                    "Move down",
-                    ButtonKind::Secondary,
-                    true,
-                    move |this, _, cx| this.move_role(id, 1, cx),
-                    cx,
-                ))
-                .child(crate::ui::button(
-                    self,
-                    "role-delete",
-                    "Delete role",
-                    ButtonKind::Danger,
-                    true,
-                    move |this, _, cx| {
-                        this.confirm =
-                            Some((Target::Role(inst.clone(), space, id), Action::DeleteRole));
-                        cx.notify();
-                    },
-                    cx,
-                ));
+            buttons = buttons.child(crate::ui::button(
+                self,
+                "role-delete",
+                "Delete role",
+                ButtonKind::Danger,
+                true,
+                move |this, _, cx| {
+                    this.confirm =
+                        Some((Target::Role(inst.clone(), space, id), Action::DeleteRole));
+                    cx.notify();
+                },
+                cx,
+            ));
         }
-        buttons = buttons.child(div().flex_1());
         if editable && dirty {
             buttons = buttons
                 .child(crate::ui::button(
@@ -1669,8 +1761,12 @@ impl Shell {
                     ))
                 });
         }
-        col.push(buttons.into_any_element());
-        detail_panel(col)
+        item_page(
+            self.back_line("Roles", |page| page.role = None, cx),
+            title,
+            buttons.into_any_element(),
+            col,
+        )
     }
 
     fn tab_channels(
@@ -1680,6 +1776,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let space = page.space;
+        if let Some(channel) = page.channel.and_then(|id| s.channel(id))
+            && channel.space_id == Some(space)
+        {
+            return self.channel_detail(page, s, channel.id, cx);
+        }
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
         let tree = view::channel_tree(s, space);
@@ -1707,18 +1808,30 @@ impl Shell {
                     ChannelKind::Voice => assets::VOLUME,
                     _ => assets::POUND,
                 };
-                let element = list_row(
-                    self,
-                    format!("settings-channel-{id}"),
-                    page.channel == Some(id),
-                    cx,
-                )
-                .when(c.depth > 0, |d| d.ml(px(14.)))
-                .child(icon(glyph, 18., theme::text_tertiary()))
-                .child(div().flex_1().min_w_0().truncate().child(c.name.clone()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_settings_channel(id, cx);
-                }));
+                let category = c.kind == ChannelKind::Category;
+                let element = list_row(self, format!("settings-channel-{id}"), false, cx)
+                    .h(px(36.))
+                    .when(c.depth > 0, |d| d.pl(px(28.)))
+                    .child(icon(glyph, 16., theme::text_tertiary()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .when(category, |d| {
+                                d.text_size(theme::caption_size())
+                                    .text_color(theme::category_text())
+                            })
+                            .child(if category {
+                                c.name.to_uppercase()
+                            } else {
+                                c.name.clone()
+                            }),
+                    )
+                    .child(opens())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_settings_channel(id, window, cx);
+                    }));
                 let element = if manage {
                     let item = Item {
                         inst: page.inst.clone(),
@@ -1736,18 +1849,14 @@ impl Shell {
             .collect();
         let actions = manage.then(|| {
             let (channel_inst, category_inst) = (inst.clone(), inst.clone());
-            div()
-                .flex()
-                .gap(px(2.))
-                .child(
-                    crate::ui::tip_button(
-                        self,
-                        "channel-create",
-                        assets::PLUS,
-                        "Create a channel",
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+            crate::settings::wrap()
+                .child(crate::ui::button(
+                    self,
+                    "channel-create",
+                    "+ Channel",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
                         this.open_form_create_channel(
                             channel_inst.clone(),
                             space,
@@ -1755,20 +1864,20 @@ impl Shell {
                             window,
                             cx,
                         );
-                    })),
-                )
-                .child(
-                    crate::ui::tip_button(
-                        self,
-                        "category-create",
-                        assets::FOLDER_PLUS,
-                        "Create a category",
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    "category-create",
+                    "+ Category",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
                         this.open_form_create_category(category_inst.clone(), space, window, cx);
-                    })),
-                )
+                    },
+                    cx,
+                ))
                 .into_any_element()
         });
         let rows = if manage {
@@ -1781,7 +1890,7 @@ impl Shell {
                 .gap(px(1.))
                 .children(rows)
                 .child(self.channel_end_drop(
-                    div().id("channel-list-end").flex_grow(1.).min_h(px(32.)),
+                    div().id("channel-list-end").flex_grow(1.).min_h(px(8.)),
                     cx,
                 ));
             vec![
@@ -1791,22 +1900,18 @@ impl Shell {
         } else {
             rows
         };
-        let list = side_list("Channels", actions, rows);
-        let detail = match page.channel.and_then(|id| s.channel(id)) {
-            Some(channel) if channel.space_id == Some(space) => {
-                self.channel_detail(page, s, channel.id, cx)
-            }
-            _ => hint_panel(
-                "Pick a channel to edit it.",
-                if manage {
-                    "Drag channels to reorder them, or onto a category to move them into it. Each \
-                     channel can change what a role may do in it."
-                } else {
-                    "You need the Manage channels permission to change channels."
-                },
-            ),
-        };
-        two_columns(list, detail)
+        page_body_with(
+            "Channels",
+            actions,
+            Some(if manage {
+                "Drag channels to reorder them, or onto a category to move them into it. Open \
+                 one to change what each role may do in it."
+            } else {
+                "Open a channel to see what each role may do in it. Changing them needs the \
+                 Manage channels permission."
+            }),
+            vec![list_card(rows)],
+        )
     }
 
     fn channel_detail(
@@ -1829,134 +1934,121 @@ impl Shell {
             ChannelKind::Voice => "Voice channel",
             _ => "Text channel",
         };
-        let mut col: Vec<AnyElement> = vec![
-            strong(channel.name.clone().unwrap_or_default()),
-            muted(match channel.topic.as_deref() {
-                Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
-                _ => kind.to_owned(),
-            }),
-        ];
-        if manage || manage_here {
+        let glyph = match channel.kind {
+            ChannelKind::Category => assets::CHEVRON_DOWN,
+            ChannelKind::Voice => assets::VOLUME,
+            _ => assets::POUND,
+        };
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(icon(glyph, 20., theme::text_tertiary()))
+            .child(heading(channel.name.clone().unwrap_or_default()))
+            .into_any_element();
+        let mut col: Vec<AnyElement> = vec![muted(match channel.topic.as_deref() {
+            Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
+            _ => kind.to_owned(),
+        })];
+        let actions = if manage || manage_here {
             let (edit_inst, here_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
-            col.push(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .when(manage_here, |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "channel-edit",
-                            "Edit…",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, window, cx| {
-                                this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
-                            },
-                            cx,
-                        ))
-                    })
-                    .when(manage, |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "channel-up",
-                            "Move up",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, _, cx| this.move_channel_step(id, -1, cx),
-                            cx,
-                        ))
-                        .child(crate::ui::button(
-                            self,
-                            "channel-down",
-                            "Move down",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, _, cx| this.move_channel_step(id, 1, cx),
-                            cx,
-                        ))
-                    })
-                    .when(category && manage, |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "channel-here",
-                            "+ Channel here",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, window, cx| {
-                                this.open_form_create_channel(
-                                    here_inst.clone(),
-                                    space,
-                                    Some(id),
-                                    window,
-                                    cx,
-                                );
-                            },
-                            cx,
-                        ))
-                    })
-                    .when(manage_here, |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "channel-delete",
-                            if category {
-                                "Delete category"
-                            } else {
-                                "Delete channel"
-                            },
-                            ButtonKind::Danger,
-                            true,
-                            move |this, _, cx| {
-                                this.cancel_closing("confirm");
-                                this.confirm = Some((
-                                    Target::Channel(delete_inst.clone(), id),
-                                    Action::DeleteChannel,
-                                ));
-                                cx.notify();
-                            },
-                            cx,
-                        ))
-                    })
-                    .into_any_element(),
-            );
-        }
-        col.push(strong("Permissions".to_owned()));
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .when(manage_here, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-edit",
+                        "Edit…",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
+                            this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
+                        },
+                        cx,
+                    ))
+                })
+                .when(manage, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-up",
+                        "Move up",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| this.move_channel_step(id, -1, cx),
+                        cx,
+                    ))
+                    .child(crate::ui::button(
+                        self,
+                        "channel-down",
+                        "Move down",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| this.move_channel_step(id, 1, cx),
+                        cx,
+                    ))
+                })
+                .when(category && manage, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-here",
+                        "+ Channel here",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
+                            this.open_form_create_channel(
+                                here_inst.clone(),
+                                space,
+                                Some(id),
+                                window,
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                })
+                .when(manage_here, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-delete",
+                        if category {
+                            "Delete category"
+                        } else {
+                            "Delete channel"
+                        },
+                        ButtonKind::Danger,
+                        true,
+                        move |this, _, cx| {
+                            this.cancel_closing("confirm");
+                            this.confirm = Some((
+                                Target::Channel(delete_inst.clone(), id),
+                                Action::DeleteChannel,
+                            ));
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                })
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
         col.push(muted(if category {
             "What each role may do in this category. Channels inside it keep their own settings."
         } else {
             "What each role may do in this channel. Inherit uses the role's normal permissions; \
              Deny and Allow override them here."
         }));
-        // Every role can be picked; those with an override here say so.
+        // Every role can be picked from the dropdown; the ones with overrides here are named
+        // under it.
         let current = page.override_role;
-        let roles: Vec<Id> = st.roles.iter().map(|r| r.id).collect();
-        let options = st
+        let with_overrides: Vec<String> = st
             .roles
             .iter()
-            .map(|role| {
-                let has = channel.overrides.iter().any(|o| o.role_id == role.id);
-                (
-                    SharedString::from(role.name.clone()),
-                    has.then(|| SharedString::from("Has overrides here")),
-                )
-            })
+            .filter(|r| channel.overrides.iter().any(|o| o.role_id == r.id))
+            .map(|r| r.name.clone())
             .collect();
-        col.push(
-            crate::ui::radio_list(
-                self,
-                "override-role",
-                options,
-                current.and_then(|c| roles.iter().position(|r| *r == c)),
-                move |this, n, _, cx| {
-                    if let Some(page) = this.open_page() {
-                        page.override_role = roles.get(n).copied();
-                    }
-                    cx.notify();
-                },
-                cx,
-            )
-            .into_any_element(),
-        );
         if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
             let ov = channel.overrides.iter().find(|o| o.role_id == role_id);
             let role_name = st.role(role_id).map(|r| r.name.clone()).unwrap_or_default();
@@ -1964,36 +2056,46 @@ impl Shell {
             // Some toggles are off because they would allow or deny what I do not have.
             let mut limited = false;
             let clear_inst = inst.clone();
-            col.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(theme::secondary_size())
-                            .child(format!("Overrides for {role_name}")),
-                    )
-                    .when(access.is_some() && ov.is_some(), |d| {
-                        d.child(crate::ui::button(
-                            self,
-                            "override-clear",
-                            "Remove override",
-                            ButtonKind::Secondary,
-                            true,
-                            move |this, _, cx| {
-                                this.call_status(
-                                    &clear_inst,
-                                    "Override removed",
-                                    move |r| async move { r.delete_override(id, role_id).await },
-                                    cx,
-                                );
-                            },
-                            cx,
-                        ))
-                    })
-                    .into_any_element(),
-            );
+            let _ = &role_name;
+            let picker = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(
+                    page.override_select
+                        .as_ref()
+                        .map(|(state, _)| crate::ui::dropdown(state, crate::ui::DropWidth::Medium)),
+                )
+                .when(access.is_some() && ov.is_some(), |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "override-clear",
+                        "Remove override",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            this.call_status(
+                                &clear_inst,
+                                "Override removed",
+                                move |r| async move { r.delete_override(id, role_id).await },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                });
+            col.push(group(
+                "Permissions",
+                vec![setting(
+                    "Role",
+                    &if with_overrides.is_empty() {
+                        "No role has overrides here yet.".to_owned()
+                    } else {
+                        format!("Overrides here: {}", with_overrides.join(", "))
+                    },
+                    picker,
+                )],
+            ));
             for permission_group in PermissionGroup::ALL {
                 let entries: Vec<_> = CATALOG
                     .iter()
@@ -2057,7 +2159,12 @@ impl Shell {
                 ));
             }
         }
-        detail_panel(col)
+        item_page(
+            self.back_line("Channels", |page| page.channel = None, cx),
+            title,
+            actions,
+            col,
+        )
     }
 
     fn tab_members(
@@ -2067,80 +2174,101 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let space = page.space;
+        if let Some(m) = page.member.and_then(|u| s.member(space, u)) {
+            return self.member_detail(page, s, m, cx);
+        }
+        let st = &s.spaces[&space];
         let query = page.member_query.read(cx).value().to_string();
         let members = filter_members(s, space, &query);
         let total = members.len();
+        let shown = total.min(page.member_limit);
         let rows: Vec<AnyElement> = members
             .into_iter()
-            .take(MAX_ROWS)
+            .take(shown)
             .map(|(name, m)| {
                 let user = m.user.id;
                 let name_color = hermes_client_core::view::role_color(s, space, user)
                     .map_or(theme::text(), theme::rgb_u32);
-                list_row(
-                    self,
-                    format!("settings-member-{user}"),
-                    page.member == Some(user),
-                    cx,
-                )
-                .h(px(46.))
-                .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().truncate().text_color(name_color).child(name))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(theme::caption_size())
-                                .text_color(theme::text_tertiary())
-                                .child(format!("@{}", m.user.username)),
-                        ),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.open_page() {
-                        page.member = Some(user);
-                    }
-                    cx.notify();
-                }))
-                .into_any_element()
+                let roles: Vec<&str> = st
+                    .roles
+                    .iter()
+                    .filter(|r| !r.is_everyone() && m.role_ids.contains(&r.id))
+                    .map(|r| r.name.as_str())
+                    .collect();
+                list_row(self, format!("settings-member-{user}"), false, cx)
+                    .h(px(44.))
+                    .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().truncate().text_color(name_color).child(name))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(theme::caption_size())
+                                    .text_color(theme::text_tertiary())
+                                    .child(format!("@{}", m.user.username)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .max_w(px(220.))
+                            .truncate()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(roles.join(", ")),
+                    )
+                    .child(opens())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(page) = this.open_page() {
+                            page.member = Some(user);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
             })
             .collect();
-        let more = total.saturating_sub(MAX_ROWS);
-        let list = div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(8.))
-            .w(px(SIDE_LIST))
-            .h_full()
-            .p(px(8.))
-            .bg(theme::sidebar())
+        let search = div()
+            .w(px(240.))
+            .max_w_full()
             .child(Input::new(&page.member_query))
-            .child(muted(format!("{total} member{}", plural(total))))
-            .child(
-                div()
-                    .id("settings-members")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .gap(px(1.))
-                    .overflow_y_scroll()
-                    .children(rows)
-                    .when(more > 0, |d| {
-                        d.child(muted(format!("…and {more} more. Search to narrow.")))
-                    }),
-            )
             .into_any_element();
-        let detail = match page.member.and_then(|u| s.member(space, u)) {
-            Some(m) => self.member_detail(page, s, m, cx),
-            None => hint_panel("Pick a member to see what you can do.", ""),
-        };
-        two_columns(list, detail)
+        let mut parts = vec![if rows.is_empty() {
+            muted("Nobody matches.")
+        } else {
+            list_card(rows)
+        }];
+        if shown < total {
+            parts.push(centered(crate::ui::button(
+                self,
+                "members-more",
+                format!("Show {} more", (total - shown).min(MEMBER_PAGE)),
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| {
+                    if let Some(page) = this.open_page() {
+                        page.member_limit += MEMBER_PAGE;
+                    }
+                    cx.notify();
+                },
+                cx,
+            )));
+        }
+        page_body_with(
+            "Members",
+            Some(search),
+            Some(&if shown < total {
+                format!("{total} member{}, {shown} shown", plural(total))
+            } else {
+                format!("{total} member{}", plural(total))
+            }),
+            parts,
+        )
     }
 
     fn member_detail(
@@ -2159,15 +2287,24 @@ impl Shell {
         let owner = st.space.owner_id == user;
         let is_owner = Some(st.space.owner_id) == s.me_id();
         let can = |p| view::can_in_space(s, space, p);
-        let mut col: Vec<AnyElement> = vec![
-            strong(s.display_name(Some(space), user)),
-            muted(format!(
-                "@{} · joined {}{}",
-                m.user.username,
-                time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
-                if owner { " · owner" } else { "" }
-            )),
-        ];
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(self.avatar(
+                &inst,
+                Some(&m.user),
+                &s.display_name(Some(space), user),
+                36.,
+            ))
+            .child(heading(s.display_name(Some(space), user)))
+            .into_any_element();
+        let mut col: Vec<AnyElement> = vec![muted(format!(
+            "@{} · joined {}{}",
+            m.user.username,
+            time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
+            if owner { " · owner" } else { "" }
+        ))];
         if let Some(status) = m.user.status_text.as_deref().filter(|t| !t.is_empty()) {
             col.push(muted(status.to_owned()));
         }
@@ -2177,40 +2314,38 @@ impl Shell {
             above && can(Permissions::MANAGE_NICKNAMES)
         };
         let (dm_inst, nick_inst) = (inst.clone(), inst.clone());
-        col.push(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(8.))
-                .when(!me, |d| {
-                    d.child(crate::ui::button(
-                        self,
-                        "member-dm",
-                        "Message",
-                        ButtonKind::Primary,
-                        true,
-                        move |this, window, cx| {
-                            this.close_space_settings(cx);
-                            this.message_user(dm_inst.clone(), user, window, cx);
-                        },
-                        cx,
-                    ))
-                })
-                .when(nick, |d| {
-                    d.child(crate::ui::button(
-                        self,
-                        "member-nick",
-                        "Change nickname…",
-                        ButtonKind::Secondary,
-                        true,
-                        move |this, window, cx| {
-                            this.open_form_nickname(nick_inst.clone(), space, user, window, cx);
-                        },
-                        cx,
-                    ))
-                })
-                .into_any_element(),
-        );
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .when(!me, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "member-dm",
+                    "Message",
+                    ButtonKind::Primary,
+                    true,
+                    move |this, window, cx| {
+                        this.close_space_settings(cx);
+                        this.message_user(dm_inst.clone(), user, window, cx);
+                    },
+                    cx,
+                ))
+            })
+            .when(nick, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "member-nick",
+                    "Change nickname…",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        this.open_form_nickname(nick_inst.clone(), space, user, window, cx);
+                    },
+                    cx,
+                ))
+            })
+            .into_any_element();
 
         let role_rows: Vec<AnyElement> = st
             .roles
@@ -2407,7 +2542,12 @@ impl Shell {
         if !danger.is_empty() {
             col.push(group("Danger zone", danger));
         }
-        detail_panel(col)
+        item_page(
+            self.back_line("Members", |page| page.member = None, cx),
+            title,
+            actions,
+            col,
+        )
     }
 
     /// "Loading…", an error, or the empty text for a REST list; `None` once there are rows.
@@ -2427,8 +2567,8 @@ impl Shell {
         Some(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(8.))
+                .items_center()
+                .gap(px(12.))
                 .child(muted(text))
                 .child(crate::ui::button(
                     self,
@@ -2457,28 +2597,27 @@ impl Shell {
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_INVITES);
         let create_inst = inst.clone();
-        let mut rows: Vec<AnyElement> = vec![muted("Anyone with a valid link can join.")];
-        if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
-            rows.push(
-                crate::ui::button(
-                    self,
-                    "invite-create",
-                    "Create invite…",
-                    ButtonKind::Primary,
-                    true,
-                    move |this, window, cx| {
-                        this.open_form_invite(create_inst.clone(), space, window, cx);
-                    },
-                    cx,
-                )
-                .into_any_element(),
-            );
-        }
+        let create = view::can_in_space(s, space, Permissions::CREATE_INVITES).then(|| {
+            crate::ui::button(
+                self,
+                "invite-create",
+                "Create invite…",
+                ButtonKind::Primary,
+                true,
+                move |this, window, cx| {
+                    this.open_form_invite(create_inst.clone(), space, window, cx);
+                },
+                cx,
+            )
+            .into_any_element()
+        });
+        let text = Some("Anyone with a valid link can join.");
+        let mut rows: Vec<AnyElement> = Vec::new();
         if !manage {
             rows.push(muted(
                 "Seeing everyone's invites needs the Manage invites permission.",
             ));
-            return page_body("Invites", None, rows);
+            return page_body_with("Invites", create, text, rows);
         }
         let list = page.invites.ready();
         if let Some(p) = self.list_placeholder(
@@ -2488,8 +2627,9 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Invites", None, rows);
+            return page_body_with("Invites", create, text, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         let now = now_ms();
         for (n, invite) in list.into_iter().flatten().enumerate() {
             let uses = match invite.max_uses {
@@ -2517,7 +2657,7 @@ impl Shell {
                     .child(invite.code.clone()),
                 muted(format!("{uses} · {expires} · by {creator}")),
             );
-            rows.push(
+            entries.push(
                 row.child(crate::ui::button(
                     self,
                     format!("invite-copy-{n}"),
@@ -2555,7 +2695,8 @@ impl Shell {
                 .into_any_element(),
             );
         }
-        page_body("Invites", None, rows)
+        rows.push(group_card(entries).into_any_element());
+        page_body_with("Invites", create, text, rows)
     }
 
     fn tab_reports(
@@ -2578,6 +2719,7 @@ impl Shell {
             rows.push(p);
             return page_body("Reports", None, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         for report in list.into_iter().flatten() {
             let (inst, space, id) = (page.inst.clone(), page.space, report.id);
             let jump_inst = page.inst.clone();
@@ -2592,7 +2734,7 @@ impl Shell {
                 )),
                 muted(report.excerpt.clone()),
             );
-            rows.push(
+            entries.push(
                 row.child(crate::ui::button(
                     self,
                     format!("report-open-{id}"),
@@ -2633,6 +2775,7 @@ impl Shell {
                 .into_any_element(),
             );
         }
+        rows.push(group_card(entries).into_any_element());
         page_body("Reports", None, rows)
     }
 
@@ -2653,6 +2796,7 @@ impl Shell {
             rows.push(p);
             return page_body("Bans", None, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         for ban in list.into_iter().flatten() {
             let reason = ban
                 .reason
@@ -2672,7 +2816,7 @@ impl Shell {
                     time::format(ban.created_at, "%Y-%m-%d", self.utc_offset)
                 )),
             );
-            rows.push(
+            entries.push(
                 row.child(crate::ui::button(
                     self,
                     format!("unban-{user}"),
@@ -2701,22 +2845,21 @@ impl Shell {
                 .into_any_element(),
             );
         }
+        rows.push(group_card(entries).into_any_element());
         page_body("Bans", None, rows)
     }
 
     fn tab_audit(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
-        let mut rows: Vec<AnyElement> = vec![
-            crate::ui::button(
-                self,
-                "audit-refresh",
-                "Refresh",
-                ButtonKind::Secondary,
-                true,
-                |this, _, cx| this.set_space_tab(Tab::Audit, true, cx),
-                cx,
-            )
-            .into_any_element(),
-        ];
+        let refresh = crate::ui::button(
+            self,
+            "audit-refresh",
+            "Refresh",
+            ButtonKind::Secondary,
+            true,
+            |this, _, cx| this.set_space_tab(Tab::Audit, true, cx),
+            cx,
+        )
+        .into_any_element();
         let list = page.audit.ready();
         if let Some(p) = self.list_placeholder(
             &page.audit,
@@ -2724,60 +2867,65 @@ impl Shell {
             "Nothing has been changed yet.",
             cx,
         ) {
-            rows.push(p);
-            return page_body("Audit log", None, rows);
+            return page_body_with("Audit log", Some(refresh), None, vec![p]);
         }
-        for entry in list.into_iter().flatten() {
-            let (text, details) = describe(s, page.space, entry);
-            rows.push(
+        let entries: Vec<AnyElement> = list
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                let (text, details) = describe(s, page.space, entry);
+                let tip = SharedString::from(details.clone());
                 div()
+                    .id(SharedString::from(format!("audit-{}", entry.id)))
                     .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .gap(px(2.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme::border())
+                    .items_center()
+                    .gap(px(12.))
+                    .h(px(32.))
+                    .text_size(theme::secondary_size())
                     .child(
                         div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .w(px(130.))
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(time::format(
-                                        entry.created_at,
-                                        "%Y-%m-%d %H:%M",
-                                        self.utc_offset,
-                                    )),
-                            )
-                            .child(div().text_size(theme::secondary_size()).child(text)),
+                            .flex_shrink_0()
+                            .w(px(120.))
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(time::format(
+                                entry.created_at,
+                                "%Y-%m-%d %H:%M",
+                                self.utc_offset,
+                            )),
+                    )
+                    .child(div().flex_shrink(1.).min_w_0().truncate().child(text))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text_tertiary())
+                            .child(details.clone()),
                     )
                     .when(!details.is_empty(), |d| {
-                        d.child(div().pl(px(138.)).child(muted(details)))
+                        d.tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                .build(window, cx)
+                        })
                     })
-                    .into_any_element(),
-            );
-        }
+                    .into_any_element()
+            })
+            .collect();
+        let mut parts = vec![group_card(entries).into_any_element()];
         if page.audit_more {
             let before = list.and_then(|l| l.last()).map(|e| e.id);
-            rows.push(
-                crate::ui::button(
-                    self,
-                    "audit-more",
-                    "Load older entries",
-                    ButtonKind::Secondary,
-                    true,
-                    move |this, _, cx| this.load_audit(before, cx),
-                    cx,
-                )
-                .into_any_element(),
-            );
+            parts.push(centered(crate::ui::button(
+                self,
+                "audit-more",
+                "Load older entries",
+                ButtonKind::Secondary,
+                true,
+                move |this, _, cx| this.load_audit(before, cx),
+                cx,
+            )));
         }
-        page_body("Audit log", None, rows)
+        page_body_with("Audit log", Some(refresh), None, parts)
     }
 
     /// Lets a role row be dragged onto another of the roles' list.
@@ -2821,9 +2969,7 @@ fn space_settings_list_row(title: gpui_kit::Div, detail: AnyElement) -> gpui_kit
         .flex_shrink_0()
         .items_center()
         .gap(px(8.))
-        .py(px(6.))
-        .border_t_1()
-        .border_color(theme::border())
+        .py(px(8.))
         .child(
             div()
                 .flex()
@@ -2833,14 +2979,6 @@ fn space_settings_list_row(title: gpui_kit::Div, detail: AnyElement) -> gpui_kit
                 .child(title)
                 .child(detail),
         )
-}
-
-fn strong(text: String) -> AnyElement {
-    div()
-        .text_size(theme::body_size())
-        .font_weight(FontWeight::MEDIUM)
-        .child(text)
-        .into_any_element()
 }
 
 /// A row of the lists here: [`crate::ui::list_row`], a little smaller.
@@ -2855,83 +2993,101 @@ fn list_row(
         .text_size(theme::secondary_size())
 }
 
-/// A narrow list column with a header and scrolling rows.
-fn side_list(title: &str, actions: Option<AnyElement>, rows: Vec<AnyElement>) -> AnyElement {
+/// A page's title (an item's name).
+fn heading(text: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .truncate()
+        .text_size(theme::heading_size())
+        .font_weight(FontWeight::MEDIUM)
+        .child(text)
+        .into_any_element()
+}
+
+/// The items of a list tab on one card; each row opens the item's own page (#62).
+fn list_card(rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .flex_shrink_0()
-        .gap(px(8.))
-        .w(px(SIDE_LIST))
-        .h_full()
-        .p(px(8.))
+        .gap(px(1.))
+        .p(px(4.))
+        .rounded(theme::radius_large())
         .bg(theme::sidebar())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .h(px(28.))
-                .child(
-                    div()
-                        .flex_1()
-                        .px(px(4.))
-                        .text_size(theme::caption_size())
-                        .text_color(theme::text_tertiary())
-                        .child(title.to_uppercase()),
-                )
-                .children(actions),
-        )
-        .child(
-            div()
-                .id("side-list-rows")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .gap(px(1.))
-                .overflow_y_scroll()
-                .children(rows),
-        )
+        .children(rows)
         .into_any_element()
 }
 
-fn two_columns(list: AnyElement, detail: AnyElement) -> AnyElement {
-    div()
-        .flex()
-        .size_full()
-        .child(list)
-        .child(div().flex_1().min_w_0().h_full().child(detail))
-        .into_any_element()
+/// The `›` at the end of a row that opens a page.
+fn opens() -> impl IntoElement {
+    icon(assets::CHEVRON_DOWN, 16., theme::text_tertiary()).with_transformation(
+        gpui_kit::Transformation::rotate(gpui_kit::radians(-std::f32::consts::FRAC_PI_2)),
+    )
 }
 
-fn detail_panel(content: Vec<AnyElement>) -> AnyElement {
+/// An item's own page: the line back to its list, its title with buttons on the right, and its
+/// parts, in the same centered column as every page.
+fn item_page(
+    back: AnyElement,
+    title: AnyElement,
+    actions: AnyElement,
+    parts: Vec<AnyElement>,
+) -> AnyElement {
     div()
-        .id("detail-panel")
+        .id("item-page")
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .gap(px(20.))
         .size_full()
-        .p(px(20.))
-        .overflow_y_scroll()
-        .children(content)
-        .into_any_element()
-}
-
-fn hint_panel(title: &'static str, text: &'static str) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .max_w(px(520.))
         .p(px(24.))
-        .child(
+        .overflow_y_scroll()
+        .child(page_part(back))
+        .child(page_part(
             div()
-                .text_size(theme::secondary_size())
-                .text_color(theme::text_secondary())
-                .child(title),
-        )
-        .child(muted(text))
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(12.))
+                .child(div().flex_1().min_w(px(200.)).child(title))
+                .child(actions)
+                .into_any_element(),
+        ))
+        .children(parts.into_iter().map(page_part))
         .into_any_element()
+}
+
+impl Shell {
+    /// "‹ Roles": back from an item's page to its list; `close` forgets the open item.
+    fn back_line(
+        &self,
+        list: &'static str,
+        close: impl Fn(&mut SpacePage) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("item-back")
+            .group("item-back")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(24.))
+            .cursor_pointer()
+            .text_size(theme::secondary_size())
+            .text_color(theme::text_tertiary())
+            .hover(|d| d.text_color(theme::accent()))
+            .child(
+                icon(assets::ARROW_LEFT, 16., theme::text_tertiary())
+                    .group_hover("item-back", |s| s.text_color(theme::accent())),
+            )
+            .child(list)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(page) = this.open_page() {
+                    close(page);
+                }
+                crate::settings::reset_page_scroll();
+                cx.notify();
+            }))
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]
