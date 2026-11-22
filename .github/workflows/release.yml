@@ -213,6 +213,15 @@ jobs:
           cp "$r/hermes.exe" "$r/hermes-tui.exe" LICENSE-GPL-3.0 target/ffmpeg/* stage/portable/
           cp "$r/hermes-tui.exe" LICENSE-GPL-3.0 stage/tui/
           (cd stage/portable && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" .)
+          # The zip alone gets the portable marker (the same as a portable install writes): in
+          # stage/portable it would also go into the installer and the update files, and make
+          # every install portable.
+          mkdir -p stage/marker
+          printf '%s\n' \
+            '# This file makes Hermes portable: with it next to hermes.exe, Hermes keeps its settings,' \
+            '# data and logs in this folder. Settings are added here as you change them.' \
+            > stage/marker/config.toml
+          (cd stage/marker && 7z a -tzip -bso0 "../../dist/Hermes-$VERSION-portable.zip" config.toml)
           (cd stage/tui && 7z a -tzip -bso0 "../../dist/hermes-tui-$VERSION-x86_64-pc-windows-msvc.zip" .)
           ls -l dist
       - name: Installer
