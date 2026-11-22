@@ -49,7 +49,6 @@
 ; Where the NSIS installer kept its install (cargo-packager's template).
 #define NsisUninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppName
 #define NsisProductKey "Software\senko-tools\" + AppName
-#define LicenseUrl "https://www.gnu.org/licenses/gpl-3.0.html"
 
 [Setup]
 AppId={{{#AppGuid}}
@@ -112,6 +111,8 @@ ReadyLabel2a=Click Accept and install to continue, or click Back to review or ch
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+; The licence shown by "Read the licence" on the last page, from inside the installer (no internet).
+Source: "..\..\LICENSE-GPL-3.0"; DestName: "licence-shown.txt"; Flags: dontcopy
 Source: "{#Source}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -327,11 +328,49 @@ end;
 
 { ---- Licence, on the last page ---- }
 
+{ The GPL in a window of its own, from the copy inside the installer. }
 procedure OpenLicense(Sender: TObject);
 var
-  Code: Integer;
+  Form: TSetupForm;
+  Memo: TNewMemo;
+  CloseButton: TNewButton;
+  Text: AnsiString;
+  Shown: String;
 begin
-  ShellExec('open', '{#LicenseUrl}', '', '', SW_SHOWNORMAL, ewNoWait, Code);
+  ExtractTemporaryFile('licence-shown.txt');
+  if not LoadStringFromFile(ExpandConstant('{tmp}\licence-shown.txt'), Text) then
+    exit;
+  Shown := String(Text);
+  StringChangeEx(Shown, #13#10, #10, True);
+  StringChangeEx(Shown, #10, #13#10, True);
+  Form := CreateCustomForm(ScaleX(600), ScaleY(480), False, True);
+  try
+    Form.Caption := 'GNU General Public License v3';
+    Memo := TNewMemo.Create(Form);
+    Memo.Parent := Form;
+    Memo.Left := ScaleX(10);
+    Memo.Top := ScaleY(10);
+    Memo.Width := Form.ClientWidth - ScaleX(20);
+    Memo.Height := Form.ClientHeight - ScaleY(60);
+    Memo.ReadOnly := True;
+    Memo.ScrollBars := ssVertical;
+    Memo.WordWrap := True;
+    Memo.Text := Shown;
+    CloseButton := TNewButton.Create(Form);
+    CloseButton.Parent := Form;
+    CloseButton.Caption := 'Close';
+    CloseButton.Width := ScaleX(90);
+    CloseButton.Height := ScaleY(28);
+    CloseButton.Left := Form.ClientWidth - CloseButton.Width - ScaleX(10);
+    CloseButton.Top := Form.ClientHeight - CloseButton.Height - ScaleY(12);
+    CloseButton.ModalResult := mrOk;
+    CloseButton.Default := True;
+    CloseButton.Cancel := True;
+    Form.ActiveControl := CloseButton;
+    Form.ShowModal();
+  finally
+    Form.Free();
+  end;
 end;
 
 procedure AddLicenseNote();
@@ -529,7 +568,18 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  I: Integer;
 begin
+  { A Hermes that was just closed may still hold the folder for a moment: the empty folder is
+    removed once it lets go (RemoveDir never removes a folder with anything in it). }
+  if CurUninstallStep = usPostUninstall then
+    for I := 1 to 30 do
+    begin
+      if not DirExists(ExpandConstant('{app}')) or RemoveDir(ExpandConstant('{app}')) then
+        break;
+      Sleep(100);
+    end;
   if CurUninstallStep = usUninstall then
   begin
     CloseRunningApp();
