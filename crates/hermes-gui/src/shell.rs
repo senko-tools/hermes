@@ -19,6 +19,9 @@ use hermes_client_core::store::Changed;
 use hermes_client_core::{Core, CoreEvent, CoreEvents, InstanceId};
 use tokio::runtime::Handle;
 
+use crate::notice::{Notice, Severity};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+
 use crate::add_instance::AddInstance;
 use crate::assets::{self, icon};
 use crate::channel::{ChatView, Viewer};
@@ -77,7 +80,8 @@ pub enum Selected {
     Space(InstanceId, Id),
 }
 
-/// A line shown over the main panel until dismissed; info lines go away by themselves.
+/// A notice shown over the content area until dismissed; info and success notices go away by
+/// themselves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub text: String,
@@ -89,6 +93,7 @@ pub struct Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
     Info,
+    Success,
     Warning,
     Error,
 }
@@ -101,6 +106,43 @@ const RECENT_CHANNELS: usize = 10;
 
 /// How long an info line stays: `general.status_seconds`.
 static INFO_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
+
+/// Counts the frames drawn while frames keep coming, and says in the log how many per second
+/// that was, focused or not (#66). A pause starts a new count, so idle time doesn't lower it.
+#[derive(Default)]
+struct FrameRate {
+    since: Option<Instant>,
+    last: Option<Instant>,
+    frames: u32,
+}
+
+impl FrameRate {
+    /// A pause longer than this between frames starts a new count.
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+    /// How long a count runs before it is logged.
+    const SPAN: std::time::Duration = std::time::Duration::from_secs(1);
+
+    fn count(&mut self, focused: bool) {
+        let now = Instant::now();
+        if self
+            .last
+            .is_none_or(|last| now.duration_since(last) > Self::PAUSE)
+        {
+            self.since = Some(now);
+            self.frames = 0;
+        }
+        self.last = Some(now);
+        self.frames += 1;
+        let since = *self.since.get_or_insert(now);
+        let span = now.duration_since(since);
+        if span >= Self::SPAN {
+            let fps = f64::from(self.frames - 1) / span.as_secs_f64();
+            tracing::debug!(fps = format!("{fps:.1}"), focused, "frames drawn");
+            self.since = Some(now);
+            self.frames = 1;
+        }
+    }
+}
 
 /// The member list of each (instance, channel) shown.
 type MemberGroupsCache = std::cell::RefCell<
@@ -125,6 +167,8 @@ pub struct Shell {
     pub images: Images,
     pub status: Option<Status>,
     status_serial: u64,
+    /// How far down the notices over the content area reach (`notice::stack`).
+    notice_height: std::rc::Rc<std::cell::Cell<f32>>,
     /// Where the right button went down, until it comes up.
     pub right_pressed: Option<Target>,
     /// The page drawn in the last frame, and the one fading out after a change (with a serial
@@ -139,8 +183,14 @@ pub struct Shell {
     /// The keys `track_hover` was given while drawing the last frame. Something that is no
     /// longer drawn never hears the pointer leave, so its key is dropped from `hovered` instead.
     pub hover_tracked: std::rc::Rc<std::cell::RefCell<HashSet<gpui_kit::SharedString>>>,
+    /// Where each option of a segmented choice sat last frame, by control id (`ui::segmented`).
+    pub segment_spans: crate::ui::Spans,
+    /// Keyboard focus of our own controls, by control id.
+    pub control_focus: std::cell::RefCell<HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>>,
     /// The copy button used a moment ago: it says "Copied".
     pub copied: Option<String>,
+    /// Code blocks' own scrolling and "Show all" (#65).
+    pub code_blocks: crate::channel::CodeBlocks,
     /// What is playing its way out, with the serial of its close (`modal.rs`).
     pub closing_serials: HashMap<&'static str, u64>,
     pub closing_serial: u64,
@@ -255,6 +305,8 @@ pub struct Shell {
     pub member_groups_cache: MemberGroupsCache,
     /// Plays mouse-wheel notches back smoothly.
     pub smooth_scroll: crate::smooth_scroll::SmoothScroll,
+    /// When the window is next drawn for a moving picture (a timer waits for it), if it is.
+    redraw_at: std::rc::Rc<std::cell::Cell<Option<std::time::Instant>>>,
     /// Sound and video files that were clicked: loading, playing or paused.
     pub media: crate::media::cards::Media,
     /// A picked picture being cropped before it is uploaded.
@@ -324,6 +376,10 @@ pub struct Shell {
     /// A share shown in a window of its own.
     pub popped_out: crate::screen::popout::PoppedOut,
     pub launched: std::time::Instant,
+    /// Whether a frame was rendered yet (the startup log).
+    first_frame: std::cell::Cell<bool>,
+    /// Frames drawn in the current run of frames, for the frame-rate log (#66).
+    frame_rate: FrameRate,
     pub first_chat: std::cell::Cell<bool>,
     /// Accounts whose gateway was READY once since the start (each is logged the first time).
     pub gateways_ready: std::collections::HashSet<InstanceId>,
@@ -397,11 +453,15 @@ impl Shell {
             hovered_file: None,
             hovered: HashSet::new(),
             hover_tracked: Default::default(),
+            segment_spans: Default::default(),
+            control_focus: Default::default(),
             copied: None,
+            code_blocks: Default::default(),
             closing_serials: HashMap::new(),
             closing_serial: 0,
             reactions_seen: Default::default(),
             reconnect_banner: Default::default(),
+            notice_height: Default::default(),
             sidebar_order: Default::default(),
             drag_rows: Default::default(),
             drop_at: Default::default(),
@@ -458,6 +518,7 @@ impl Shell {
             link_cards: HashMap::new(),
             member_groups_cache: Default::default(),
             smooth_scroll: crate::smooth_scroll::SmoothScroll::default(),
+            redraw_at: Default::default(),
             crop: None,
             media: Default::default(),
             utc_offset: hermes_client_core::time::local_offset_secs(),
@@ -497,6 +558,8 @@ impl Shell {
             tray,
             global_keys: None,
             launched,
+            first_frame: Default::default(),
+            frame_rate: Default::default(),
             first_chat: Default::default(),
             gateways_ready: Default::default(),
             first_server: Default::default(),
@@ -873,7 +936,7 @@ impl Shell {
             level,
             serial,
         });
-        if level == Level::Info {
+        if matches!(level, Level::Info | Level::Success) {
             cx.spawn(async move |this, cx| {
                 let seconds = INFO_SECONDS.load(std::sync::atomic::Ordering::Relaxed);
                 cx.background_executor()
@@ -892,6 +955,11 @@ impl Shell {
 
     pub fn info(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.show_status(text.into(), Level::Info, cx);
+    }
+
+    /// Something asked for went through.
+    pub fn success(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.show_status(text.into(), Level::Success, cx);
     }
 
     pub fn warn(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
@@ -965,8 +1033,14 @@ impl Shell {
             .unwrap_or_default()
     }
 
-    /// Whether animated pictures move right now.
+    /// Whether animated pictures move right now. Under an open picture viewer nothing does: it
+    /// covers them, and a streamed one under it would decode every frame a second time (#60).
     pub fn animating(&self) -> bool {
+        self.viewer.is_none() && self.viewer_animating()
+    }
+
+    /// Whether the picture in the viewer moves.
+    pub fn viewer_animating(&self) -> bool {
         let general = &self.config.general;
         general.animate_pictures && (self.focused || general.animate_unfocused)
     }
@@ -994,7 +1068,7 @@ impl Shell {
     /// Puts text on the clipboard; `what` names it for the status line.
     pub fn copy(&mut self, text: String, what: &str, cx: &mut Context<Self>) {
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
-        self.info(format!("{what} copied"), cx);
+        self.success(format!("{what} copied"), cx);
     }
 
     /// The same from a copy button named `button`: it says "Copied" for a moment.
@@ -1323,85 +1397,60 @@ impl Shell {
         ]
     }
 
-    fn render_status(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        use gpui_kit::AnimationExt as _;
+    /// The status line, as a notice.
+    fn status_notice(&self, cx: &mut Context<Self>) -> Option<Notice> {
         let status = self.status.as_ref()?;
-        let (color, glyph) = match status.level {
-            Level::Info => (theme::text_secondary(), assets::INFO),
-            Level::Warning => (theme::accent(), assets::INFO),
-            Level::Error => (theme::danger(), assets::BAN),
+        let severity = match status.level {
+            Level::Info => Severity::Info,
+            Level::Success => Severity::Success,
+            Level::Warning => Severity::Warning,
+            Level::Error => Severity::Error,
         };
         let serial = status.serial;
-        let leaving = crate::modal::closing("status");
+        let text = if matches!(status.level, Level::Info | Level::Success) {
+            div().child(status.text.clone())
+        } else {
+            // Warnings and errors can be selected and copied (#18).
+            crate::ui::error_text(self, format!("status-{serial}"), status.text.clone(), cx)
+        };
+        let notice = Notice::new(format!("status-{serial}"), severity, text)
+            .dismiss(
+                crate::ui::tip_button(self, "status-dismiss", assets::CLOSE, "Dismiss", cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_later("status", |s| s.status = None, cx);
+                    })),
+            )
+            .leaving(crate::modal::closing("status"));
         // An info line goes by itself: a thin bar runs out until it does.
-        let countdown = (status.level == Level::Info).then(|| {
+        Some(if matches!(status.level, Level::Info | Level::Success) {
             let seconds = INFO_SECONDS
                 .load(std::sync::atomic::Ordering::Relaxed)
                 .max(1);
-            div()
-                .absolute()
-                .left_0()
-                .bottom_0()
-                .h(px(2.))
-                .bg(theme::alpha(theme::accent(), 0.5))
-                .with_animation(
-                    gpui_kit::SharedString::from(format!("status-countdown-{serial}")),
-                    gpui_kit::Animation::new(Duration::from_secs(seconds)),
-                    |d, t| d.w(gpui_kit::relative(1. - t)),
-                )
-        });
-        Some(
-            div()
-                .id("status-line")
-                .relative()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(6.))
-                .bg(theme::sidebar())
-                .border_b_1()
-                .border_color(theme::border())
-                .text_size(theme::secondary_size())
-                .text_color(color)
-                .child(icon(glyph, 16., color))
-                .child(div().flex_1().min_w_0().map(|d| {
-                    if status.level == Level::Info {
-                        d.child(status.text.clone())
-                    } else {
-                        // Warnings and errors can be selected and copied (#18).
-                        d.child(crate::ui::error_text(
-                            self,
-                            format!("status-{serial}"),
-                            status.text.clone(),
-                            cx,
-                        ))
-                    }
-                }))
-                .child(
-                    crate::ui::tip_button(self, "status-dismiss", assets::CLOSE, "Dismiss", cx)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.close_later("status", |s| s.status = None, cx);
-                        })),
-                )
-                .children(countdown)
-                // Each new line fades in, and out when it goes.
-                .with_animation(
-                    gpui_kit::SharedString::from(format!(
-                        "status-{}-{serial}",
-                        if leaving { "out" } else { "in" }
-                    )),
-                    gpui_kit::Animation::new(if leaving {
-                        crate::modal::pop()
-                    } else {
-                        theme::fade() * 2
-                    })
-                    .with_easing(gpui_kit::ease_out_quint()),
-                    move |d, t| d.opacity(if leaving { 1. - t } else { t }),
-                )
-                .into_any_element(),
-        )
+            notice.countdown(Duration::from_secs(seconds))
+        } else {
+            notice
+        })
+    }
+
+    /// Every notice that shows now, over the top of the content area (#61): an incoming call,
+    /// the open chat's connection, the status line, then an update.
+    pub fn render_notices(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let mut notices = Vec::new();
+        notices.extend(self.call_notice(cx));
+        if let Page::Chat(inst, _) = &self.page {
+            notices.extend(self.connection_notice(inst, cx));
+        }
+        notices.extend(self.status_notice(cx));
+        notices.extend(
+            self.update_notice(cx)
+                .or_else(|| self.newer_server_notice(cx)),
+        );
+        crate::notice::stack(notices, self.notice_height.clone())
+    }
+
+    /// How far down the notices reach in the content area, in unscaled pixels: 0 with none.
+    pub fn notices_bottom(&self) -> f32 {
+        self.notice_height.get()
     }
 }
 
@@ -1470,7 +1519,7 @@ impl Shell {
                     this.update = Some(update);
                     cx.notify();
                 }
-                Ok(None) => this.info("Hermes is up to date", cx),
+                Ok(None) => this.success("Hermes is up to date", cx),
                 Err(err) => this.error(format!("could not check for updates: {err}"), cx),
             },
         );
@@ -1499,53 +1548,47 @@ impl Shell {
         );
     }
 
-    fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn update_notice(&self, cx: &mut Context<Self>) -> Option<Notice> {
         let update = self.update.as_ref()?;
         let url = update.url.clone();
         let version = update.version.clone();
-        // This build updates itself: the banner starts it, else it opens the release page.
+        // This build updates itself: the button starts it, else it opens the release page.
         let self_update = hermes_client_core::updater::available();
         Some(
-            div()
-                .id("update-banner")
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(6.))
-                .bg(theme::accent_soft())
-                .child(
-                    crate::ui::tip_button(self, "update-dismiss", assets::CLOSE, "Not now", cx)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.update = None;
-                            cx.notify();
-                        })),
-                )
-                .cursor_pointer()
-                .hover(|d| d.text_color(theme::accent()))
-                .text_size(crate::theme::secondary_size())
-                .child(div().flex_1().child(if self_update {
-                    format!("Hermes {} is available: click to update", update.version)
-                } else {
-                    format!("Hermes {} is available: click to open it", update.version)
-                }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if self_update {
-                        this.start_update(version.clone(), url.clone(), cx);
-                        return;
-                    }
-                    if let Err(err) = crate::open::url(&url) {
-                        this.error(format!("could not open the browser: {err}"), cx);
-                    }
-                }))
-                .into_any_element(),
+            Notice::new(
+                format!("update-{}", update.version),
+                Severity::Info,
+                format!("Hermes {} is available", update.version),
+            )
+            .icon(icon(assets::DOWNLOAD, 16., theme::accent()))
+            .button(
+                Button::new("update-start")
+                    .cursor_pointer()
+                    .primary()
+                    .label(if self_update { "Update" } else { "Open" })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if self_update {
+                            this.start_update(version.clone(), url.clone(), cx);
+                            return;
+                        }
+                        if let Err(err) = crate::open::url(&url) {
+                            this.error(format!("could not open the browser: {err}"), cx);
+                        }
+                    })),
+            )
+            .dismiss(
+                crate::ui::tip_button(self, "update-dismiss", assets::CLOSE, "Not now", cx)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_later("update-notice", |s| s.update = None, cx);
+                    })),
+            )
+            .leaving(crate::modal::closing("update-notice")),
         )
     }
 
     /// A server can do things this build doesn't know: some of it doesn't show until Hermes is
     /// updated.
-    fn render_newer_server_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn newer_server_notice(&self, cx: &mut Context<Self>) -> Option<Notice> {
         if self.newer_server_dismissed {
             return None;
         }
@@ -1557,37 +1600,30 @@ impl Shell {
             return None;
         }
         Some(
-            div()
-                .id("newer-server-banner")
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(8.))
-                .px(px(16.))
-                .py(px(6.))
-                .bg(theme::accent_soft())
-                .child(
-                    crate::ui::tip_button(
-                        self,
-                        "newer-server-dismiss",
-                        assets::CLOSE,
-                        "Not now",
-                        cx,
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.newer_server_dismissed = true;
-                        cx.notify();
-                    })),
+            Notice::new(
+                "newer-server",
+                Severity::Info,
+                "A server you use is newer than this Hermes: some things won't show until you                 update.",
+            )
+            .button(
+                Button::new("newer-server-check")
+                    .cursor_pointer()
+                    .label("Check for update")
+                    .on_click(cx.listener(|this, _, _, cx| this.check_for_update_now(cx))),
+            )
+            .dismiss(
+                crate::ui::tip_button(
+                    self,
+                    "newer-server-dismiss",
+                    assets::CLOSE,
+                    "Not now",
+                    cx,
                 )
-                .cursor_pointer()
-                .hover(|d| d.text_color(theme::accent()))
-                .text_size(crate::theme::secondary_size())
-                .child(div().flex_1().child(
-                    "A server you use is newer than this Hermes: some things won't show until \
-                    you update. Click to check for an update",
-                ))
-                .on_click(cx.listener(|this, _, _, cx| this.check_for_update_now(cx)))
-                .into_any_element(),
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.close_later("newer-server", |s| s.newer_server_dismissed = true, cx);
+                })),
+            )
+            .leaving(crate::modal::closing("newer-server")),
         )
     }
 
@@ -1733,6 +1769,8 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         watchdog::beat();
         let _phase = watchdog::in_view();
+        let first_frame = !self.first_frame.replace(true);
+        self.frame_rate.count(self.focused);
         self.prepare_media_frame(window, cx);
         self.images
             .free_unused(self.viewer.as_ref().map(|v| &v.image), window);
@@ -1757,11 +1795,13 @@ impl Render for Shell {
             crate::desktop::taskbar::set_count(window, count);
             self.taskbar_count = Some(count);
         }
+        // What the pictures and players drawn this time ask for is gathered from here on (see
+        // `redraw_waker`).
+        let _ = crate::images::take_wake();
         self.advance_media(window);
-        if crate::images::advance_streams(window) {
-            window.request_animation_frame();
-        }
+        crate::images::advance_streams(window);
         self.advance_selection(window);
+        self.code_blocks.advance();
         if std::mem::take(&mut self.focus_composer) {
             self.focus_open_composer(window, cx);
         }
@@ -1806,6 +1846,17 @@ impl Render for Shell {
             }
             _ => None,
         };
+        let full_page = self
+            .render_space_settings(cx)
+            .or_else(|| self.render_settings(cx));
+        let showing_page = full_page.is_some();
+        // The notices go over whichever content area shows: the chat's, or the settings'.
+        let notices = self.render_notices(cx);
+        let (notices, page_notices) = if showing_page {
+            (None, notices)
+        } else {
+            (notices, None)
+        };
         let header = self.render_header(cx);
         let main_column = div()
             .flex()
@@ -1814,12 +1865,6 @@ impl Render for Shell {
             .min_w_0()
             .h_full()
             .child(header)
-            .children(self.render_call_banner(cx))
-            .children(
-                self.render_update_banner(cx)
-                    .or_else(|| self.render_newer_server_banner(cx)),
-            )
-            .children(self.render_status(cx))
             .child(
                 div()
                     .flex()
@@ -1836,14 +1881,11 @@ impl Render for Shell {
                                 let id =
                                     gpui_kit::SharedString::from(format!("page-{:?}", self.page));
                                 theme::enter_after_dip(id, main)
-                            }),
+                            })
+                            .children(notices),
                     )
                     .children(members),
             );
-        let full_page = self
-            .render_space_settings(cx)
-            .or_else(|| self.render_settings(cx));
-        let showing_page = full_page.is_some();
         let body = match full_page {
             // Settings replace the sidebar and the chat.
             Some(page) => div()
@@ -1852,7 +1894,7 @@ impl Render for Shell {
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .children(self.render_status(cx))
+                .relative()
                 .child(div().flex_1().min_h_0().child(theme::enter(
                     if self.open_space_page.is_some() {
                         "space-settings"
@@ -1861,6 +1903,7 @@ impl Render for Shell {
                     },
                     page,
                 )))
+                .children(page_notices)
                 .into_any_element(),
             None => main_column.into_any_element(),
         };
@@ -1935,6 +1978,7 @@ impl Render for Shell {
             .child(self.smooth_scroll.catcher())
             .children(self.media_scrub_catcher(cx))
             .children(self.selection_catcher(cx))
+            .children(self.code_scroll_catcher(cx))
             // Any press lets go of the video Space plays and pauses; a press on a video takes it
             // again when it is let go (its click).
             .capture_any_mouse_down(cx.listener(|this, _, _, _| this.media.focused = None))
@@ -1956,6 +2000,60 @@ impl Render for Shell {
             .child(body)
             .children(self.render_modals(cx))
             .children(self.render_menu())
+            .child(self.redraw_waker(cx))
+            .children(first_frame.then(|| self.first_paint_marker()))
+    }
+}
+
+impl Shell {
+    /// Drawn last: by its paint every picture of this frame has said when it changes next (the
+    /// chat's rows are built during layout, after `render`). One timer then draws the window
+    /// again at the earliest of those moments, instead of on every screen refresh (#60).
+    /// Says in the log when the first frame is painted: the window shows something.
+    fn first_paint_marker(&self) -> AnyElement {
+        let launched = self.launched;
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, (), _, _| {
+                tracing::info!(
+                    elapsed_ms = launched.elapsed().as_millis(),
+                    "first frame painted"
+                );
+            },
+        )
+        .absolute()
+        .size_0()
+        .into_any_element()
+    }
+
+    fn redraw_waker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let shell = cx.entity().downgrade();
+        let pending = self.redraw_at.clone();
+        gpui_kit::canvas(
+            |_, _, _| {},
+            move |_, (), _, cx| {
+                let Some(at) = crate::images::take_wake() else {
+                    return;
+                };
+                // A timer for this moment or an earlier one waits already.
+                if pending.get().is_some_and(|p| p <= at) {
+                    return;
+                }
+                pending.set(Some(at));
+                let wait = at.saturating_duration_since(std::time::Instant::now());
+                cx.spawn(async move |cx| {
+                    cx.background_executor().timer(wait).await;
+                    if pending.get() == Some(at) {
+                        pending.set(None);
+                        let _ = shell.update(cx, |_, cx| cx.notify());
+                    }
+                })
+                .detach();
+            },
+        )
+        .absolute()
+        .size_0()
+        .into_any_element()
     }
 }
 

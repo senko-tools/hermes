@@ -254,10 +254,15 @@ impl Task {
         let handshake = async {
             // Our own connect, so the gateway skips an address family that does not answer
             // like HTTPS does (see `net`).
+            let started = Instant::now();
             let tcp = crate::net::connect_tcp(host, port, TCP_CONNECT_EACH)
                 .await
                 .map_err(|e| e.to_string())?;
             let _ = tcp.set_nodelay(true);
+            tracing::debug!(
+                tcp_ms = started.elapsed().as_millis(),
+                "gateway {host}: connected"
+            );
             tokio_tungstenite::client_async_tls_with_config(
                 self.url.as_str(),
                 tcp,
@@ -296,6 +301,7 @@ impl Task {
     /// One connection, from connecting to its end. Sets `connected` once `ready`/`resumed`
     /// arrived, so the next attempt starts with a short backoff.
     async fn connection(&mut self, connected: &mut bool) -> End {
+        let started = Instant::now();
         let mut ws = match self.connect().await {
             Ok(ws) => ws,
             Err(err) => {
@@ -320,6 +326,11 @@ impl Task {
             Ok(Some(Ok(WsMessage::Close(frame)))) => return self.closed(frame),
             _ => return End::Retry,
         };
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "gateway {}: hello",
+            self.url
+        );
         if !Self::send(&mut ws, &self.identify()).await {
             return End::Retry;
         }
@@ -356,6 +367,12 @@ impl Task {
                         ServerEvent::Hello { .. } => {}
                         ServerEvent::HeartbeatAck {} => last_ack = Instant::now(),
                         ServerEvent::Ready(ready) => {
+                            tracing::debug!(
+                                elapsed_ms = started.elapsed().as_millis(),
+                                bytes = text.len(),
+                                "gateway {}: ready",
+                                self.url
+                            );
                             self.session_id = Some(ready.session_id.clone());
                             *connected = true;
                             if !self.emit(GatewayEvent::Ready(ready))

@@ -2,9 +2,9 @@
 //! whether new members can read the past, for the whole server and per channel, and who is waiting
 //! to be let in. The server's rules are the owner's; a channel's are the owner's or an admin's.
 
+use crate::ui::ButtonKind;
 use std::collections::HashMap;
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, SharedString, div};
 use hermes_client_core::InstanceId;
@@ -15,7 +15,7 @@ use hermes_client_core::store::InstanceStore;
 use hermes_client_core::view;
 
 use crate::results::Remote;
-use crate::settings::{group, muted, page_body, setting, wrap};
+use crate::settings::{muted, page_body, section, setting_below, setting_fit};
 use crate::shell::Shell;
 use crate::space_settings::SpacePage;
 use crate::theme::{self, px};
@@ -59,25 +59,20 @@ fn choices<T: Copy + PartialEq + 'static>(
     cx: &mut Context<Shell>,
     run: impl Fn(&mut Shell, T, &mut Context<Shell>) + Clone + 'static,
 ) -> AnyElement {
-    let chips = options.iter().map(|(label, value)| {
-        let value = *value;
-        let run = run.clone();
-        let element = crate::ui::chip(
-            shell,
-            SharedString::from(format!("{id}-{label}")),
-            *label,
-            value == current,
-            cx,
-        );
-        if enabled {
-            element
-                .on_click(cx.listener(move |this, _, _, cx| run(this, value, cx)))
-                .into_any_element()
-        } else {
-            element.cursor_default().into_any_element()
-        }
-    });
-    wrap().children(chips).into_any_element()
+    let values: Vec<T> = options.iter().map(|(_, value)| *value).collect();
+    crate::ui::segmented(
+        shell,
+        id.to_owned(),
+        options
+            .iter()
+            .map(|(label, _)| crate::ui::Segment::new(*label))
+            .collect(),
+        values.iter().position(|v| *v == current),
+        enabled,
+        move |this, n, _, cx| run(this, values[n], cx),
+        cx,
+    )
+    .into_any_element()
 }
 
 impl Shell {
@@ -205,7 +200,7 @@ impl Shell {
         let admin = owner || view::can_in_space(s, space, Permissions::ADMINISTRATOR);
         let mut groups = Vec::new();
 
-        // Those waiting to be let in.
+        // Those waiting to be let in come first: they are waiting on someone.
         if view::can_in_space(s, space, Permissions::MANAGE_SPACE) {
             let waiting: Vec<KeyRequest> = self
                 .core
@@ -219,86 +214,114 @@ impl Shell {
                     .enumerate()
                     .map(|(n, request)| self.waiting_row(n, &inst, space, s, request, cx))
                     .collect();
-                groups.push(group("Waiting for keys", rows));
+                groups.push(section(
+                    "Waiting for keys",
+                    "New devices that asked to read a channel.",
+                    rows,
+                ));
             }
         }
 
-        let handover_options = [
-            ("Automatic", KeyHandover::Automatic),
-            ("Approved", KeyHandover::Approved),
-        ];
-        let history_options = [("Yes", true), ("No", false)];
-        let (handover_key, history_key) = (key.clone(), key.clone());
-        groups.push(group(
+        let handover_key = key.clone();
+        let handover = if owner {
+            crate::ui::radio_list(
+                self,
+                "server-handover",
+                HANDOVERS
+                    .iter()
+                    .map(|(_, name, hint)| {
+                        (SharedString::from(*name), Some(SharedString::from(*hint)))
+                    })
+                    .collect(),
+                HANDOVERS.iter().position(|(h, ..)| *h == policy.handover),
+                move |this, n, _, cx| {
+                    let policy = KeyPolicy {
+                        handover: HANDOVERS[n].0,
+                        ..policy
+                    };
+                    this.set_server_key_rules(handover_key.clone(), policy, cx);
+                },
+                cx,
+            )
+            .into_any_element()
+        } else {
+            // Only the owner changes it: say which one holds, and what it means.
+            let (_, name, hint) = HANDOVERS
+                .iter()
+                .find(|(h, ..)| *h == policy.handover)
+                .copied()
+                .unwrap_or(HANDOVERS[0]);
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_size(theme::body_size()).child(name))
+                .child(muted(hint))
+                .into_any_element()
+        };
+        let history_key = key.clone();
+        let read_history = policy.new_members_read_history;
+        groups.push(section(
             "This server",
+            if owner {
+                "Changing these never takes back keys someone already has."
+            } else {
+                "Only the owner can change these."
+            },
             vec![
-                setting(
-                    "Who shares a channel's keys",
-                    "Automatic: any member's Hermes shares them by itself. It is simple, but a \
-                     server that lies about who is a member could get them. Approved: someone \
-                     with Manage Server lets each new device in, which stops that too.",
-                    choices(
-                        self,
-                        "server-handover",
-                        &handover_options,
-                        policy.handover,
-                        owner,
-                        cx,
-                        move |this, handover, cx| {
-                            let policy = KeyPolicy { handover, ..policy };
-                            this.set_server_key_rules(handover_key.clone(), policy, cx);
-                        },
-                    ),
-                ),
-                setting(
+                setting_below("Who shares a channel's keys", "", handover),
+                setting_fit(
                     "New members can read earlier messages",
-                    "When this is off, each new member starts a new key and gets only that one.",
-                    choices(
+                    "Off: each new member starts a new key and gets only that one.",
+                    crate::ui::switch(
                         self,
                         "server-history",
-                        &history_options,
-                        policy.new_members_read_history,
+                        read_history,
                         owner,
-                        cx,
-                        move |this, read, cx| {
+                        move |this, _, cx| {
                             let policy = KeyPolicy {
-                                new_members_read_history: read,
+                                new_members_read_history: !read_history,
                                 ..policy
                             };
                             this.set_server_key_rules(history_key.clone(), policy, cx);
                         },
+                        cx,
                     ),
                 ),
-                muted(if owner {
-                    "Changing these never takes back keys someone already has."
-                } else {
-                    "Only the owner can change these."
-                }),
             ],
         ));
 
-        let mut rows = vec![muted(if admin {
-            "A channel can differ from the server. Only the owner and administrators can change this."
-        } else {
-            "Only the owner and administrators can change these."
-        })];
-        for (channel, name) in message_channels(s, space) {
-            rows.push(
-                self.channel_rules_row(
-                    &key,
-                    channel,
-                    name,
-                    page.keys
-                        .channels
-                        .get(&channel)
-                        .copied()
-                        .unwrap_or_default(),
-                    admin,
-                    cx,
-                ),
-            );
+        // One line per channel, in columns, as the notification table has them.
+        let channels = message_channels(s, space);
+        let mut rows = vec![channel_rules_header()];
+        for (channel, name) in &channels {
+            rows.push(self.channel_rules_row(
+                &key,
+                *channel,
+                name,
+                page.keys.channels.get(channel).copied().unwrap_or_default(),
+                admin,
+                cx,
+            ));
         }
-        groups.push(group("Channels", rows));
+        if channels.is_empty() {
+            rows = vec![
+                div()
+                    .py(px(12.))
+                    .child(muted("No channels yet."))
+                    .into_any_element(),
+            ];
+        }
+        groups.push(section(
+            "Channels",
+            if admin {
+                "A channel can differ from the server. Server: it follows the rule above."
+            } else {
+                "A channel can differ from the server. Only the owner and administrators can \
+                 change this."
+            },
+            rows,
+        ));
         page_body("Encryption", Some(intro), groups)
     }
 
@@ -318,77 +341,61 @@ impl Shell {
             .unwrap_or_default();
         let (approve_inst, approve_request) = (inst.clone(), request.clone());
         let dismiss_inst = inst.clone();
-        div()
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .gap(px(8.))
-            .py(px(6.))
-            .border_t_1()
-            .border_color(theme::border())
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(theme::secondary_size())
-                    .child(format!("{name} wants to read #{channel} on a new device")),
-            )
-            .child(
-                Button::new(("key-approve", n))
-                    .cursor_pointer()
-                    .primary()
-                    .label("Approve")
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.approve_key_request(approve_inst.clone(), approve_request.clone(), cx);
-                    })),
-            )
-            .child(
-                Button::new(("key-dismiss", n))
-                    .cursor_pointer()
-                    .label("Not now")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+        setting_fit(
+            &name,
+            &format!("Wants to read #{channel} on a new device"),
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(crate::ui::button(
+                    self,
+                    format!("key-dismiss-{n}"),
+                    "Not now",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
                         this.core.dismiss_key_request(&dismiss_inst, &request);
                         cx.notify();
-                    })),
-            )
-            .into_any_element()
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    format!("key-approve-{n}"),
+                    "Approve",
+                    ButtonKind::Primary,
+                    true,
+                    move |this, _, cx| {
+                        this.approve_key_request(approve_inst.clone(), approve_request.clone(), cx);
+                    },
+                    cx,
+                )),
+        )
     }
 
     fn channel_rules_row(
         &self,
         key: &(InstanceId, Id),
         channel: Id,
-        name: String,
+        name: &str,
         own: KeyPolicyOverride,
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let handover_options = [
-            ("Follow server", None),
+            ("Server", None),
             ("Automatic", Some(KeyHandover::Automatic)),
             ("Approved", Some(KeyHandover::Approved)),
         ];
-        let history_options = [
-            ("Follow server", None),
-            ("History", Some(true)),
-            ("No history", Some(false)),
-        ];
+        let history_options = [("Server", None), ("Yes", Some(true)), ("No", Some(false))];
         let (handover_key, history_key) = (key.clone(), key.clone());
-        div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(6.))
-            .py(px(8.))
-            .border_t_1()
-            .border_color(theme::border())
-            .child(
-                div()
-                    .text_size(theme::secondary_size())
-                    .child(format!("#{name}")),
-            )
-            .child(choices(
+        table_line(
+            div()
+                .truncate()
+                .text_size(theme::body_size())
+                .child(format!("#{name}"))
+                .into_any_element(),
+            choices(
                 self,
                 &format!("channel-handover-{channel}"),
                 &handover_options,
@@ -399,8 +406,8 @@ impl Shell {
                     let policy = KeyPolicyOverride { handover, ..own };
                     this.set_channel_key_rules(handover_key.clone(), channel, policy, cx);
                 },
-            ))
-            .child(choices(
+            ),
+            choices(
                 self,
                 &format!("channel-history-{channel}"),
                 &history_options,
@@ -414,7 +421,55 @@ impl Shell {
                     };
                     this.set_channel_key_rules(history_key.clone(), channel, policy, cx);
                 },
-            ))
-            .into_any_element()
+            ),
+        )
     }
+}
+
+/// The server's handover rules: the rule, its name and what it means.
+const HANDOVERS: [(KeyHandover, &str, &str); 2] = [
+    (
+        KeyHandover::Automatic,
+        "Automatic",
+        "Any member's Hermes shares them by itself. Simple, but a server that lies about who \
+         is a member could get them.",
+    ),
+    (
+        KeyHandover::Approved,
+        "Approved",
+        "Someone with Manage Server lets each new device in, which stops that too.",
+    ),
+];
+
+/// How wide the channel table's columns of choices are.
+const HANDOVER_COL_W: f32 = 290.;
+const HISTORY_COL_W: f32 = 200.;
+
+/// A line of the channel table: the channel, then its two choices in their columns.
+fn table_line(name: AnyElement, handover: AnyElement, history: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .py(px(8.))
+        .child(div().flex_1().min_w(px(100.)).child(name))
+        .child(div().w(px(HANDOVER_COL_W)).flex_shrink_0().child(handover))
+        .child(div().w(px(HISTORY_COL_W)).flex_shrink_0().child(history))
+        .into_any_element()
+}
+
+/// The channel table's column names.
+fn channel_rules_header() -> AnyElement {
+    let caption = |text: &'static str| {
+        div()
+            .text_size(theme::secondary_size())
+            .text_color(theme::text_secondary())
+            .child(text)
+            .into_any_element()
+    };
+    table_line(
+        caption("Channel"),
+        caption("Who shares keys"),
+        caption("Earlier messages"),
+    )
 }

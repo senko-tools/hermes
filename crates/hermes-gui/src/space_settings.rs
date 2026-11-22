@@ -3,11 +3,9 @@
 //! the invite, ban and audit lists are loaded over REST when their tab opens. Changes go through
 //! REST and come back as gateway events, so the store stays the only source of truth.
 
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
+use crate::ui::ButtonKind;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::switch::Switch;
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::proto::api::{
@@ -26,15 +24,16 @@ use crate::assets::{self, icon};
 use crate::drag::{Ghost, Item, Kind, Shape};
 use crate::menu_entries::{Action, Target};
 use crate::results::Remote;
-use crate::settings::{frame, group, muted, page_body, setting, wrap};
+use crate::settings::{
+    DeviceChoice, centered, frame, group, group_card, muted, page_body, page_body_with, page_part,
+    setting_below, setting_fit, setting_pair,
+};
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
 const AUDIT_PAGE: u32 = 50;
-/// At most this many member rows are built; the search narrows bigger spaces.
-const MAX_ROWS: usize = 300;
-/// Width of the list column of the Roles, Channels and Members tabs.
-const SIDE_LIST: f32 = 240.0;
+/// How many members the list shows at first, and how many more each "Show more" adds.
+const MEMBER_PAGE: usize = 50;
 /// Preset colors offered next to the hex field.
 const SWATCHES: [u32; 12] = [
     0x1ABC9C, 0x2ECC71, 0x3498DB, 0x9B59B6, 0xE91E63, 0xF1C40F, 0xE67E22, 0xE74C3C, 0x95A5A6,
@@ -209,6 +208,10 @@ pub struct SpacePage {
     pub override_role: Option<Id>,
     /// The member whose actions are shown.
     pub member: Option<Id>,
+    /// How many members the list shows (grows by [`MEMBER_PAGE`]).
+    member_limit: usize,
+    /// The channel page's role dropdown and its subscription.
+    override_select: Option<(Entity<SelectState<Vec<DeviceChoice>>>, Subscription)>,
     pub invites: Remote<Vec<Invite>>,
     pub bans: Remote<Vec<Ban>>,
     pub reports: Remote<Vec<hermes_client_core::proto::models::Report>>,
@@ -463,6 +466,8 @@ impl Shell {
                     channel: None,
                     override_role: None,
                     member: None,
+                    member_limit: MEMBER_PAGE,
+                    override_select: None,
                     invites: Remote::Idle,
                     bans: Remote::Idle,
                     reports: Remote::Idle,
@@ -530,6 +535,13 @@ impl Shell {
         let Some(page) = self.space_pages.get_mut(&done) else {
             return;
         };
+        if !force {
+            // Its list, not the page of what was open in it last time.
+            page.role = None;
+            page.channel = None;
+            page.member = None;
+            page.member_limit = MEMBER_PAGE;
+        }
         page.tab = tab;
         crate::settings::reset_page_scroll();
         match tab {
@@ -699,7 +711,7 @@ impl Shell {
                         page.overview_dirty = false;
                         page.overview_loaded = (name, description);
                     }
-                    this.info("Server saved", cx);
+                    this.success("Server saved", cx);
                 }
                 Err(err) => this.error(format!("could not save: {err}"), cx),
             },
@@ -842,7 +854,7 @@ impl Shell {
                 Ok::<_, CoreError>(role.name)
             },
             |this, result, _, cx| match result {
-                Ok(name) => this.info(format!("Role {name} saved"), cx),
+                Ok(name) => this.success(format!("Role {name} saved"), cx),
                 Err(err) => this.error(format!("could not save the role: {err}"), cx),
             },
         );
@@ -907,20 +919,63 @@ impl Shell {
 
     // ---- channels -----------------------------------------------------------------------------
 
-    pub fn select_settings_channel(&mut self, channel: Id, cx: &mut Context<Self>) {
+    pub fn select_settings_channel(
+        &mut self,
+        channel: Id,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some((inst, space)) = self.open_space_page.clone() else {
             return;
         };
-        let first = {
+        let (first, roles) = {
             let store = self.core.store();
-            store
-                .instance(&inst)
+            let s = store.instance(&inst);
+            let first = s
                 .and_then(|s| s.channel(channel))
-                .and_then(|c| c.overrides.first().map(|o| o.role_id))
+                .and_then(|c| c.overrides.first().map(|o| o.role_id));
+            let roles: Vec<(Id, String)> = s
+                .and_then(|s| s.spaces.get(&space))
+                .map(|st| st.roles.iter().map(|r| (r.id, r.name.clone())).collect())
+                .unwrap_or_default();
+            (first, roles)
         };
+        let current = first.unwrap_or(space);
+        // The roles whose overrides can be shown; which have some is said under it, so it
+        // stays right as overrides come and go.
+        let choices: Vec<DeviceChoice> = roles
+            .iter()
+            .map(|(id, name)| DeviceChoice {
+                value: id.to_string(),
+                name: SharedString::from(name.clone()),
+            })
+            .collect();
+        let selected = roles.iter().position(|(id, _)| *id == current).unwrap_or(0);
+        let state = cx.new(|cx| {
+            SelectState::new(
+                choices,
+                Some(gpui_kit::component::IndexPath::new(selected)),
+                window,
+                cx,
+            )
+        });
+        let events = cx.subscribe(
+            &state,
+            |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event
+                    && let Ok(role) = value.parse::<u64>()
+                {
+                    if let Some(page) = this.open_page() {
+                        page.override_role = Some(Id::from(role));
+                    }
+                    cx.notify();
+                }
+            },
+        );
         if let Some(page) = self.open_page() {
             page.channel = Some(channel);
-            page.override_role = Some(first.unwrap_or(space));
+            page.override_role = Some(current);
+            page.override_select = Some((state, events));
         }
         cx.notify();
     }
@@ -1061,7 +1116,7 @@ impl Shell {
                     .and_then(|s| s.space_of(channel));
                 if let Some(space) = space {
                     self.open_space_settings(inst, space, Tab::Channels, window, cx);
-                    self.select_settings_channel(channel, cx);
+                    self.select_settings_channel(channel, window, cx);
                 }
             }
             (Target::Member(inst, Some(space), user), Action::ManageRoles) => {
@@ -1167,110 +1222,158 @@ impl Shell {
         let (inst, space) = (page.inst.clone(), page.space);
         let editable = view::can_in_space(s, space, Permissions::MANAGE_SPACE);
         let is_owner = Some(st.space.owner_id) == s.me_id();
-        let mut rows = vec![
-            setting(
+
+        // The icon on the left, with its buttons under it; the name and description beside it.
+        let has_icon = st.space.icon.is_some();
+        let marker = st.space.icon.as_ref().and_then(|file| {
+            self.images
+                .profile_marker(&inst, file, crate::images::AVATAR_PIXELS)
+        });
+        // Read from the image cache, not through the store again (it is held here).
+        let picture = st.space.icon.as_ref().and_then(|icon| {
+            match self.images.avatars.get(&(inst.clone(), icon.id)) {
+                Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
+                _ => None,
+            }
+        });
+        const ICON: f32 = 88.;
+        let initial = st
+            .space
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let icon_box = div()
+            .relative()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(ICON))
+            .rounded(theme::radius_large())
+            .bg(theme::accent_soft())
+            .text_size(px(32.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(theme::accent())
+            .overflow_hidden()
+            .children(marker)
+            .child(match picture {
+                Some(picture) => gpui_kit::img(picture)
+                    .size(px(ICON))
+                    .object_fit(gpui_kit::ObjectFit::Cover)
+                    .id("space-icon-picture")
+                    .into_any_element(),
+                None => div().child(initial).into_any_element(),
+            });
+        let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
+        let icon_column = div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .flex_shrink_0()
+            .child(icon_box)
+            .when(editable, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "space-icon",
+                    if has_icon { "Change" } else { "Upload" },
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        this.pick_space_icon(pick_inst.clone(), space, cx);
+                    },
+                    cx,
+                ))
+                .when(has_icon, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "space-icon-remove",
+                        "Remove",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            let req = UpdateSpaceRequest {
+                                icon_id: Some(None),
+                                ..UpdateSpaceRequest::default()
+                            };
+                            this.call_status(
+                                &remove_inst,
+                                "Icon removed",
+                                move |r| async move { r.update_space(space, &req).await },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                })
+            });
+        let fields = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w(px(240.))
+            .child(setting_below(
                 "Server name",
                 "",
-                Input::new(&page.name).disabled(!editable),
-            ),
-            setting(
+                div()
+                    .w_full()
+                    .child(Input::new(&page.name).disabled(!editable)),
+            ))
+            .child(setting_below(
                 "Description",
                 "Shown on invite pages.",
-                Input::new(&page.description).disabled(!editable),
-            ),
+                div()
+                    .w_full()
+                    .child(Input::new(&page.description).disabled(!editable)),
+            ))
+            // What the icon may be, under the fields rather than squeezed under the icon.
+            .when(editable, |d| {
+                d.child(muted(format!(
+                    "Icon: {}",
+                    crate::crop::CropFor::SpaceIcon(inst.clone(), space).rules()
+                )))
+            });
+        let mut rows = vec![
+            div()
+                .flex()
+                .flex_wrap()
+                .items_start()
+                .gap(px(24.))
+                .py(px(12.))
+                .child(icon_column)
+                .child(fields)
+                .into_any_element(),
         ];
-        if editable {
-            let has_icon = st.space.icon.is_some();
-            let marker = st.space.icon.as_ref().and_then(|file| {
-                self.images
-                    .profile_marker(&inst, file, crate::images::AVATAR_PIXELS)
-            });
-            // Read from the image cache, not through the store again (it is held here).
-            let picture = st.space.icon.as_ref().and_then(|icon| {
-                match self.images.avatars.get(&(inst.clone(), icon.id)) {
-                    Some(crate::images::Img::Ready(image)) => Some(image.shown(self.animating())),
-                    _ => None,
-                }
-            });
-            let (pick_inst, remove_inst) = (inst.clone(), inst.clone());
-            rows.push(setting(
-                "Icon",
-                &crate::crop::CropFor::SpaceIcon(inst.clone(), space).rules(),
+        if editable && page.overview_dirty {
+            let save_key = (inst.clone(), space);
+            rows.push(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .relative()
-                    .children(marker)
-                    .children(picture.map(|picture| {
-                        gpui_kit::img(picture)
-                            .size(px(40.))
-                            .rounded(theme::radius_large())
-                            .object_fit(gpui_kit::ObjectFit::Cover)
-                            .id("space-icon-picture")
-                    }))
+                    .py(px(10.))
                     .child(
-                        Button::new("space-icon")
-                            .cursor_pointer()
-                            .label(if has_icon {
-                                "Change icon…"
-                            } else {
-                                "Upload icon…"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_space_icon(pick_inst.clone(), space, cx);
-                            })),
+                        div()
+                            .flex_1()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::warning())
+                            .child("You have unsaved changes."),
                     )
-                    .when(has_icon, |d| {
-                        d.child(
-                            Button::new("space-icon-remove")
-                                .cursor_pointer()
-                                .label("Remove icon")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let req = UpdateSpaceRequest {
-                                        icon_id: Some(None),
-                                        ..UpdateSpaceRequest::default()
-                                    };
-                                    this.call_status(
-                                        &remove_inst,
-                                        "Icon removed",
-                                        move |r| async move { r.update_space(space, &req).await },
-                                        cx,
-                                    );
-                                })),
-                        )
-                    }),
-            ));
-            if page.overview_dirty {
-                let save_key = (inst.clone(), space);
-                rows.push(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(theme::secondary_size())
-                                .text_color(theme::warning())
-                                .child("You have unsaved changes."),
-                        )
-                        .child(
-                            Button::new("space-save")
-                                .cursor_pointer()
-                                .primary()
-                                .label("Save changes")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.save_overview(save_key.clone(), cx);
-                                })),
-                        )
-                        .into_any_element(),
-                );
-            }
-        } else {
-            rows.push(muted(
-                "You need the Manage server permission to change these.",
-            ));
+                    .child(crate::ui::button(
+                        self,
+                        "space-save",
+                        "Save changes",
+                        ButtonKind::Primary,
+                        true,
+                        move |this, _, cx| {
+                            this.save_overview(save_key.clone(), cx);
+                        },
+                        cx,
+                    ))
+                    .into_any_element(),
+            );
         }
         let members = st.members.len();
         let channels = st
@@ -1279,81 +1382,130 @@ impl Shell {
             .filter(|c| c.kind.has_messages())
             .count();
         let owner = s.display_name(Some(space), st.space.owner_id);
-        let mut about = vec![setting(
-            "About",
-            &format!(
-                "Owned by {owner} · {members} member{} · {channels} channel{}",
-                plural(members),
-                plural(channels)
+        let stat = |label: &'static str, value: String| {
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(120.))
+                .gap(px(2.))
+                .px(px(14.))
+                .py(px(10.))
+                .rounded(theme::radius_small())
+                .bg(theme::background())
+                .child(
+                    div()
+                        .text_size(theme::caption_size())
+                        .text_color(theme::text_tertiary())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(value),
+                )
+        };
+        let mut about = vec![
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .py(px(12.))
+                .child(stat("Owner", owner))
+                .child(stat("Members", members.to_string()))
+                .child(stat("Channels", channels.to_string()))
+                .into_any_element(),
+            setting_fit(
+                "Server ID",
+                "For bug reports and bots.",
+                crate::ui::button(
+                    self,
+                    "space-copy-id",
+                    self.copy_label("space-copy-id", "Copy"),
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
+                    },
+                    cx,
+                ),
             ),
-            Button::new("space-copy-id")
-                .cursor_pointer()
-                .label(self.copy_label("space-copy-id", "Copy server ID"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.copy_from("space-copy-id", space.to_string(), "Server ID", cx)
-                })),
-        )];
+        ];
         if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
             let invite_inst = inst.clone();
-            about.push(setting(
+            about.push(setting_fit(
                 "Invite people",
                 "Creates a link that works for 7 days and copies it.",
-                Button::new("space-invite")
-                    .cursor_pointer()
-                    .primary()
-                    .label("Copy invite link")
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                crate::ui::button(
+                    self,
+                    "space-invite",
+                    "Copy invite link",
+                    ButtonKind::Primary,
+                    true,
+                    move |this, window, cx| {
                         this.run_action(
                             Target::Space(invite_inst.clone(), space),
                             Action::InvitePeople,
                             window,
                             cx,
                         );
-                    })),
+                    },
+                    cx,
+                ),
             ));
         }
         let danger_inst = inst.clone();
         let danger = if is_owner {
-            setting(
+            setting_fit(
                 "Delete server",
                 "Deletes every channel and message for everyone. This cannot be undone. To keep \
                  the space, give it to someone else from the Members tab first.",
-                Button::new("space-delete")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Delete server")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                crate::ui::button(
+                    self,
+                    "space-delete",
+                    "Delete server",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| {
                         this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::DeleteSpace,
                         ));
                         cx.notify();
-                    })),
+                    },
+                    cx,
+                ),
             )
         } else {
-            setting(
+            setting_fit(
                 "Leave server",
                 "You will need a new invite to come back.",
-                Button::new("space-leave")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Leave server")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                crate::ui::button(
+                    self,
+                    "space-leave",
+                    "Leave server",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| {
                         this.cancel_closing("confirm");
                         this.confirm = Some((
                             Target::Space(danger_inst.clone(), space),
                             Action::LeaveSpace,
                         ));
                         cx.notify();
-                    })),
+                    },
+                    cx,
+                ),
             )
         };
         page_body(
             "Overview",
-            None,
+            (!editable).then_some("You need the Manage server permission to change these."),
             vec![
-                group("Server", rows),
+                group("Server profile", rows),
                 group("About", about),
                 group("Danger zone", vec![danger]),
             ],
@@ -1362,8 +1514,10 @@ impl Shell {
 
     fn tab_roles(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
         let st = &s.spaces[&page.space];
+        if let Some(draft) = page.role.as_ref().filter(|d| st.role(d.id).is_some()) {
+            return self.role_editor(page, s, draft, cx);
+        }
         let space = page.space;
-        let selected = page.role.as_ref().map(|r| r.id);
         let can_manage = view::can_in_space(s, space, Permissions::MANAGE_ROLES);
         // How many members have each role, in one pass over the members.
         let mut counts = std::collections::HashMap::<Id, usize>::new();
@@ -1380,11 +1534,16 @@ impl Shell {
                     counts.get(&role.id).copied().unwrap_or_default()
                 };
                 let id = role.id;
-                let chosen = selected == Some(id);
-                let element = list_row(self, format!("role-{id}"), chosen, cx)
+                let draggable = !role.is_everyone() && view::can_manage_role(s, space, role.id);
+                let element = list_row(self, format!("role-{id}"), false, cx)
+                    .h(px(40.))
+                    .child(div().w(px(14.)).flex_shrink_0().when(draggable, |d| {
+                        d.child(icon(assets::DRAG, 14., theme::text_tertiary()))
+                    }))
                     .child(
                         div()
                             .size(px(10.))
+                            .flex_shrink_0()
                             .rounded(px(5.))
                             .bg(role.color.map_or(theme::text_tertiary(), theme::rgb_u32)),
                     )
@@ -1393,12 +1552,12 @@ impl Shell {
                         div()
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
-                            .child(count.to_string()),
+                            .child(format!("{count} member{}", plural(count))),
                     )
+                    .child(opens())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_role(id, window, cx);
                     }));
-                let draggable = !role.is_everyone() && view::can_manage_role(s, space, role.id);
                 let element = if draggable {
                     self.with_list_drag(element, page, Kind::Role, id, role.name.clone(), cx)
                 } else {
@@ -1409,21 +1568,26 @@ impl Shell {
             })
             .collect();
         let create = can_manage.then(|| {
-            crate::ui::tip_button(self, "role-create", assets::PLUS, "Create a role", cx)
-                .on_click(cx.listener(|this, _, _, cx| this.create_role(cx)))
-                .into_any_element()
+            crate::ui::button(
+                self,
+                "role-create",
+                "Create role",
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| this.create_role(cx),
+                cx,
+            )
+            .into_any_element()
         });
-        let list = side_list("Roles", create, rows);
-        let detail = match &page.role {
-            Some(draft) if st.role(draft.id).is_some() => self.role_editor(page, s, draft, cx),
-            _ => hint_panel(
-                "Pick a role to edit it.",
-                "Roles give members permissions. A member has every permission of each of their \
-                 roles, plus @everyone's. Higher roles in the list can manage lower ones; drag a \
-                 role (or use Move up / down) to change the order.",
+        page_body_with(
+            "Roles",
+            create,
+            Some(
+                "Roles give members permissions: each of their roles' and @everyone's. Higher \
+                 roles can manage lower ones; drag a role to change the order.",
             ),
-        };
-        two_columns(list, detail)
+            vec![list_card(rows)],
+        )
     }
 
     fn role_editor(
@@ -1442,11 +1606,26 @@ impl Shell {
         // You cannot grant what you do not have (the owner and administrators have everything).
         let mine = s.permissions(space, None);
         let mut col: Vec<AnyElement> = Vec::new();
-        col.push(strong(if everyone {
-            "@everyone: what every member can do".to_owned()
-        } else {
-            format!("Edit role: {}", role.name)
-        }));
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(
+                div()
+                    .size(px(12.))
+                    .flex_shrink_0()
+                    .rounded(px(6.))
+                    .bg(role.color.map_or(theme::text_tertiary(), theme::rgb_u32)),
+            )
+            .child(heading(if everyone {
+                "@everyone".to_owned()
+            } else {
+                role.name.clone()
+            }))
+            .into_any_element();
+        if everyone {
+            col.push(muted("What every member can do."));
+        }
         if !editable {
             col.push(
                 div()
@@ -1458,12 +1637,15 @@ impl Shell {
                     .into_any_element(),
             );
         }
+        let mut role_rows: Vec<AnyElement> = Vec::new();
         if !everyone {
-            col.push(setting(
+            let name_row = setting_below(
                 "Name",
                 "",
-                Input::new(&draft.name).disabled(!editable),
-            ));
+                div()
+                    .w_full()
+                    .child(Input::new(&draft.name).disabled(!editable)),
+            );
             let color_text = draft.color.read(cx).value().to_string();
             let parsed = parse_color(&color_text);
             let color_input = draft.color.clone();
@@ -1496,51 +1678,92 @@ impl Shell {
                         .into_any_element()
                 })
                 .collect::<Vec<_>>();
-            col.push(setting(
-                "Color",
-                if parse_color(&color_text).is_err() {
-                    "Use six hex digits, like #3498DB."
-                } else {
-                    "Member names show in the color of their highest colored role."
-                },
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .gap(px(8.))
-                    .child(div().flex().flex_wrap().gap(px(4.)).children(swatches))
-                    .child(Input::new(&draft.color).disabled(!editable)),
+            role_rows.push(setting_pair(
+                name_row,
+                setting_below(
+                    "Color",
+                    if parse_color(&color_text).is_err() {
+                        "Use six hex digits, like #3498DB."
+                    } else {
+                        "Names show in their highest colored role's color."
+                    },
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .gap(px(8.))
+                        .child(Input::new(&draft.color).disabled(!editable))
+                        .child(div().flex().flex_wrap().gap(px(6.)).children(swatches)),
+                ),
             ));
-            col.push(setting(
+            role_rows.push(setting_fit(
                 "Show separately",
                 "Members with this role get their own group in the member list.",
-                Switch::new("role-hoist")
-                    .cursor_pointer()
-                    .checked(draft.hoist)
-                    .disabled(!editable)
-                    .when(!editable, |b| b.cursor_default())
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
-                            d.hoist = *on;
-                        }
-                        cx.notify();
-                    })),
+                {
+                    let on = draft.hoist;
+                    crate::ui::switch(
+                        self,
+                        "role-hoist",
+                        on,
+                        editable,
+                        move |this, _, cx| {
+                            if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
+                                d.hoist = !on;
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                },
             ));
-            col.push(setting(
+            role_rows.push(setting_fit(
                 "Mentionable",
                 "Anyone can @mention this role.",
-                Switch::new("role-mention")
-                    .cursor_pointer()
-                    .checked(draft.mentionable)
-                    .disabled(!editable)
-                    .when(!editable, |b| b.cursor_default())
-                    .on_click(cx.listener(|this, on: &bool, _, cx| {
-                        if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
-                            d.mentionable = *on;
-                        }
-                        cx.notify();
-                    })),
+                {
+                    let on = draft.mentionable;
+                    crate::ui::switch(
+                        self,
+                        "role-mention",
+                        on,
+                        editable,
+                        move |this, _, cx| {
+                            if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
+                                d.mentionable = !on;
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                },
             ));
+            if editable {
+                role_rows.push(setting_fit(
+                    "Position",
+                    "Higher roles can manage lower ones.",
+                    div()
+                        .flex()
+                        .gap(px(8.))
+                        .child(crate::ui::button(
+                            self,
+                            "role-up",
+                            "Move up",
+                            ButtonKind::Secondary,
+                            true,
+                            move |this, _, cx| this.move_role(id, -1, cx),
+                            cx,
+                        ))
+                        .child(crate::ui::button(
+                            self,
+                            "role-down",
+                            "Move down",
+                            ButtonKind::Secondary,
+                            true,
+                            move |this, _, cx| this.move_role(id, 1, cx),
+                            cx,
+                        )),
+                ));
+            }
+            col.push(group("Role", role_rows));
         }
         for permission_group in PermissionGroup::ALL {
             let rows: Vec<AnyElement> = CATALOG
@@ -1550,20 +1773,22 @@ impl Shell {
                     let on = draft.permissions.contains(info.flag);
                     let grantable = editable && (on || mine.contains(info.flag));
                     let flag = info.flag;
-                    setting(
+                    setting_fit(
                         info.name,
                         info.description,
-                        Switch::new(SharedString::from(format!("perm-{}", info.name)))
-                            .cursor_pointer()
-                            .checked(on)
-                            .disabled(!grantable)
-                            .when(!grantable, |b| b.cursor_default())
-                            .on_click(cx.listener(move |this, value: &bool, _, cx| {
+                        crate::ui::switch(
+                            self,
+                            format!("perm-{}", info.name),
+                            on,
+                            grantable,
+                            move |this, _, cx| {
                                 if let Some(d) = this.open_page().and_then(|p| p.role.as_mut()) {
-                                    d.permissions.set(flag, *value);
+                                    d.permissions.set(flag, !on);
                                 }
                                 cx.notify();
-                            })),
+                            },
+                            cx,
+                        ),
                     )
                 })
                 .collect();
@@ -1580,55 +1805,49 @@ impl Shell {
         let mut buttons = div().flex().flex_wrap().items_center().gap(px(8.));
         if editable && !everyone {
             let inst = page.inst.clone();
-            buttons = buttons
-                .child(
-                    Button::new("role-up")
-                        .cursor_pointer()
-                        .label("Move up")
-                        .on_click(cx.listener(move |this, _, _, cx| this.move_role(id, -1, cx))),
-                )
-                .child(
-                    Button::new("role-down")
-                        .cursor_pointer()
-                        .label("Move down")
-                        .on_click(cx.listener(move |this, _, _, cx| this.move_role(id, 1, cx))),
-                )
-                .child(
-                    Button::new("role-delete")
-                        .cursor_pointer()
-                        .danger()
-                        .label("Delete role")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.confirm =
-                                Some((Target::Role(inst.clone(), space, id), Action::DeleteRole));
-                            cx.notify();
-                        })),
-                );
+            buttons = buttons.child(crate::ui::button(
+                self,
+                "role-delete",
+                "Delete role",
+                ButtonKind::Danger,
+                true,
+                move |this, _, cx| {
+                    this.confirm =
+                        Some((Target::Role(inst.clone(), space, id), Action::DeleteRole));
+                    cx.notify();
+                },
+                cx,
+            ));
         }
-        buttons = buttons.child(div().flex_1());
         if editable && dirty {
-            buttons =
-                buttons
-                    .child(
-                        Button::new("role-reset")
-                            .cursor_pointer()
-                            .label("Reset")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select_role(id, window, cx)
-                            })),
-                    )
-                    .when(valid, |d| {
-                        d.child(
-                            Button::new("role-save")
-                                .cursor_pointer()
-                                .primary()
-                                .label("Save changes")
-                                .on_click(cx.listener(|this, _, _, cx| this.save_role(cx))),
-                        )
-                    });
+            buttons = buttons
+                .child(crate::ui::button(
+                    self,
+                    "role-reset",
+                    "Reset",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| this.select_role(id, window, cx),
+                    cx,
+                ))
+                .when(valid, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "role-save",
+                        "Save changes",
+                        ButtonKind::Primary,
+                        true,
+                        |this, _, cx| this.save_role(cx),
+                        cx,
+                    ))
+                });
         }
-        col.push(buttons.into_any_element());
-        detail_panel(col)
+        item_page(
+            self.back_line("Roles", |page| page.role = None, cx),
+            title,
+            buttons.into_any_element(),
+            col,
+        )
     }
 
     fn tab_channels(
@@ -1638,6 +1857,11 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let space = page.space;
+        if let Some(channel) = page.channel.and_then(|id| s.channel(id))
+            && channel.space_id == Some(space)
+        {
+            return self.channel_detail(page, s, channel.id, cx);
+        }
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_CHANNELS);
         let tree = view::channel_tree(s, space);
@@ -1665,18 +1889,30 @@ impl Shell {
                     ChannelKind::Voice => assets::VOLUME,
                     _ => assets::POUND,
                 };
-                let element = list_row(
-                    self,
-                    format!("settings-channel-{id}"),
-                    page.channel == Some(id),
-                    cx,
-                )
-                .when(c.depth > 0, |d| d.ml(px(14.)))
-                .child(icon(glyph, 18., theme::text_tertiary()))
-                .child(div().flex_1().min_w_0().truncate().child(c.name.clone()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.select_settings_channel(id, cx);
-                }));
+                let category = c.kind == ChannelKind::Category;
+                let element = list_row(self, format!("settings-channel-{id}"), false, cx)
+                    .h(px(36.))
+                    .when(c.depth > 0, |d| d.pl(px(28.)))
+                    .child(icon(glyph, 16., theme::text_tertiary()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .when(category, |d| {
+                                d.text_size(theme::caption_size())
+                                    .text_color(theme::category_text())
+                            })
+                            .child(if category {
+                                c.name.to_uppercase()
+                            } else {
+                                c.name.clone()
+                            }),
+                    )
+                    .child(opens())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_settings_channel(id, window, cx);
+                    }));
                 let element = if manage {
                     let item = Item {
                         inst: page.inst.clone(),
@@ -1694,18 +1930,18 @@ impl Shell {
             .collect();
         let actions = manage.then(|| {
             let (channel_inst, category_inst) = (inst.clone(), inst.clone());
+            // Not `settings::wrap()`: that is as wide as its parent, and it squeezed the title
+            // to a letter per line.
             div()
                 .flex()
-                .gap(px(2.))
-                .child(
-                    crate::ui::tip_button(
-                        self,
-                        "channel-create",
-                        assets::PLUS,
-                        "Create a channel",
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                .gap(px(8.))
+                .child(crate::ui::button(
+                    self,
+                    "channel-create",
+                    "+ Channel",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
                         this.open_form_create_channel(
                             channel_inst.clone(),
                             space,
@@ -1713,20 +1949,20 @@ impl Shell {
                             window,
                             cx,
                         );
-                    })),
-                )
-                .child(
-                    crate::ui::tip_button(
-                        self,
-                        "category-create",
-                        assets::FOLDER_PLUS,
-                        "Create a category",
-                        cx,
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    "category-create",
+                    "+ Category",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
                         this.open_form_create_category(category_inst.clone(), space, window, cx);
-                    })),
-                )
+                    },
+                    cx,
+                ))
                 .into_any_element()
         });
         let rows = if manage {
@@ -1739,7 +1975,7 @@ impl Shell {
                 .gap(px(1.))
                 .children(rows)
                 .child(self.channel_end_drop(
-                    div().id("channel-list-end").flex_grow(1.).min_h(px(32.)),
+                    div().id("channel-list-end").flex_grow(1.).min_h(px(8.)),
                     cx,
                 ));
             vec![
@@ -1749,22 +1985,18 @@ impl Shell {
         } else {
             rows
         };
-        let list = side_list("Channels", actions, rows);
-        let detail = match page.channel.and_then(|id| s.channel(id)) {
-            Some(channel) if channel.space_id == Some(space) => {
-                self.channel_detail(page, s, channel.id, cx)
-            }
-            _ => hint_panel(
-                "Pick a channel to edit it.",
-                if manage {
-                    "Drag channels to reorder them, or onto a category to move them into it. Each \
-                     channel can change what a role may do in it."
-                } else {
-                    "You need the Manage channels permission to change channels."
-                },
-            ),
-        };
-        two_columns(list, detail)
+        page_body_with(
+            "Channels",
+            actions,
+            Some(if manage {
+                "Drag channels to reorder them, or onto a category to move them into it. Open \
+                 one to change what each role may do in it."
+            } else {
+                "Open a channel to see what each role may do in it. Changing them needs the \
+                 Manage channels permission."
+            }),
+            vec![list_card(rows)],
+        )
     }
 
     fn channel_detail(
@@ -1787,114 +2019,132 @@ impl Shell {
             ChannelKind::Voice => "Voice channel",
             _ => "Text channel",
         };
-        let mut col: Vec<AnyElement> = vec![
-            strong(channel.name.clone().unwrap_or_default()),
-            muted(match channel.topic.as_deref() {
-                Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
-                _ => kind.to_owned(),
-            }),
-        ];
-        if manage || manage_here {
+        let glyph = match channel.kind {
+            ChannelKind::Category => assets::CHEVRON_DOWN,
+            ChannelKind::Voice => assets::VOLUME,
+            _ => assets::POUND,
+        };
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(icon(glyph, 20., theme::text_tertiary()))
+            .child(heading(channel.name.clone().unwrap_or_default()))
+            .into_any_element();
+        let about = match channel.topic.as_deref() {
+            Some(topic) if !topic.is_empty() => format!("{kind} · {topic}"),
+            _ => kind.to_owned(),
+        };
+        let mut col: Vec<AnyElement> = Vec::new();
+        let actions = if manage || manage_here {
             let (edit_inst, here_inst, delete_inst) = (inst.clone(), inst.clone(), inst.clone());
-            col.push(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .when(manage_here, |d| {
-                        d.child(
-                            Button::new("channel-edit")
-                                .cursor_pointer()
-                                .label("Edit…")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
-                                })),
-                        )
-                    })
-                    .when(manage, |d| {
-                        d.child(
-                            Button::new("channel-up")
-                                .cursor_pointer()
-                                .label("Move up")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.move_channel_step(id, -1, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("channel-down")
-                                .cursor_pointer()
-                                .label("Move down")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.move_channel_step(id, 1, cx)
-                                })),
-                        )
-                    })
-                    .when(category && manage, |d| {
-                        d.child(
-                            Button::new("channel-here")
-                                .cursor_pointer()
-                                .label("+ Channel here")
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.open_form_create_channel(
-                                        here_inst.clone(),
-                                        space,
-                                        Some(id),
-                                        window,
-                                        cx,
-                                    );
-                                })),
-                        )
-                    })
-                    .when(manage_here, |d| {
-                        d.child(
-                            Button::new("channel-delete")
-                                .cursor_pointer()
-                                .danger()
-                                .label(if category {
-                                    "Delete category"
-                                } else {
-                                    "Delete channel"
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.cancel_closing("confirm");
-                                    this.confirm = Some((
-                                        Target::Channel(delete_inst.clone(), id),
-                                        Action::DeleteChannel,
-                                    ));
-                                    cx.notify();
-                                })),
-                        )
-                    })
-                    .into_any_element(),
-            );
-        }
-        col.push(strong("Permissions".to_owned()));
-        col.push(muted(if category {
-            "What each role may do in this category. Channels inside it keep their own settings."
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .when(manage_here, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-edit",
+                        "Edit…",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
+                            this.open_form_edit_channel(edit_inst.clone(), id, window, cx);
+                        },
+                        cx,
+                    ))
+                })
+                .when(manage, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-up",
+                        "Move up",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| this.move_channel_step(id, -1, cx),
+                        cx,
+                    ))
+                    .child(crate::ui::button(
+                        self,
+                        "channel-down",
+                        "Move down",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| this.move_channel_step(id, 1, cx),
+                        cx,
+                    ))
+                })
+                .when(category && manage, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-here",
+                        "+ Channel here",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, window, cx| {
+                            this.open_form_create_channel(
+                                here_inst.clone(),
+                                space,
+                                Some(id),
+                                window,
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                })
+                .when(manage_here, |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "channel-delete",
+                        if category {
+                            "Delete category"
+                        } else {
+                            "Delete channel"
+                        },
+                        ButtonKind::Danger,
+                        true,
+                        move |this, _, cx| {
+                            this.cancel_closing("confirm");
+                            this.confirm = Some((
+                                Target::Channel(delete_inst.clone(), id),
+                                Action::DeleteChannel,
+                            ));
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                })
+                .into_any_element()
         } else {
-            "What each role may do in this channel. Inherit uses the role's normal permissions; \
-             Deny and Allow override them here."
-        }));
-        // Every role can be picked; those with an override are marked with a dot.
+            div().into_any_element()
+        };
+        col.push(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(muted(about))
+                .child(muted(if category {
+                    "What each role may do in this category: \u{2715} denies, / follows the \
+                     role's normal permissions, \u{2713} allows. Channels inside it keep their \
+                     own settings."
+                } else {
+                    "What each role may do in this channel: \u{2715} denies it here, / follows \
+                     the role's normal permissions, \u{2713} allows it here."
+                }))
+                .into_any_element(),
+        );
+        // Every role can be picked from the dropdown; the ones with overrides here are named
+        // under it.
         let current = page.override_role;
-        let chips = st.roles.iter().enumerate().map(|(n, role)| {
-            let has = channel.overrides.iter().any(|o| o.role_id == role.id);
-            let id = role.id;
-            let name = if has {
-                format!("● {}", role.name)
-            } else {
-                role.name.clone()
-            };
-            crate::ui::chip(self, ("override-role", n), name, current == Some(id), cx).on_click(
-                cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.open_page() {
-                        page.override_role = Some(id);
-                    }
-                    cx.notify();
-                }),
-            )
-        });
-        col.push(wrap().justify_start().children(chips).into_any_element());
+        let with_overrides: Vec<String> = st
+            .roles
+            .iter()
+            .filter(|r| channel.overrides.iter().any(|o| o.role_id == r.id))
+            .map(|r| r.name.clone())
+            .collect();
         if let Some(role_id) = current.filter(|r| st.role(*r).is_some()) {
             let ov = channel.overrides.iter().find(|o| o.role_id == role_id);
             let role_name = st.role(role_id).map(|r| r.name.clone()).unwrap_or_default();
@@ -1902,33 +2152,46 @@ impl Shell {
             // Some toggles are off because they would allow or deny what I do not have.
             let mut limited = false;
             let clear_inst = inst.clone();
-            col.push(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_size(theme::secondary_size())
-                            .child(format!("Overrides for {role_name}")),
-                    )
-                    .when(access.is_some() && ov.is_some(), |d| {
-                        d.child(
-                            Button::new("override-clear")
-                                .cursor_pointer()
-                                .label("Remove override")
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.call_status(
-                                    &clear_inst,
-                                    "Override removed",
-                                    move |r| async move { r.delete_override(id, role_id).await },
-                                    cx,
-                                );
-                                })),
-                        )
-                    })
-                    .into_any_element(),
-            );
+            let _ = &role_name;
+            let picker = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(
+                    page.override_select
+                        .as_ref()
+                        .map(|(state, _)| crate::ui::dropdown(state, crate::ui::DropWidth::Medium)),
+                )
+                .when(access.is_some() && ov.is_some(), |d| {
+                    d.child(crate::ui::button(
+                        self,
+                        "override-clear",
+                        "Remove override",
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            this.call_status(
+                                &clear_inst,
+                                "Override removed",
+                                move |r| async move { r.delete_override(id, role_id).await },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
+                });
+            col.push(group(
+                "Permissions",
+                vec![setting_fit(
+                    "Role",
+                    &if with_overrides.is_empty() {
+                        "No role has overrides here yet.".to_owned()
+                    } else {
+                        format!("Overrides here: {}", with_overrides.join(", "))
+                    },
+                    picker,
+                )],
+            ));
             for permission_group in PermissionGroup::ALL {
                 let entries: Vec<_> = CATALOG
                     .iter()
@@ -1946,31 +2209,40 @@ impl Shell {
                     .map(|info| {
                         let state = Tri::of(ov, info.flag);
                         let flag = info.flag;
-                        let mut toggle = |tri: Tri, text: &'static str, cx: &mut Context<Self>| {
-                            let allowed = override_change_allowed(access, ov, flag, tri);
-                            limited |= access.is_some() && !allowed;
-                            crate::ui::chip(
-                                self,
-                                SharedString::from(format!("{}-{text}", info.name)),
-                                text,
-                                state == tri,
-                                cx,
-                            )
-                            .when(allowed, |d| {
-                                d.on_click(cx.listener(move |this, _, _, cx| {
-                                    this.set_override(flag, tri, cx);
-                                }))
+                        // Short: a cross, a slash and a tick (as the line above explains),
+                        // so a long column of them does not run across the card.
+                        const TRIS: [Tri; 3] = [Tri::Deny, Tri::Inherit, Tri::Allow];
+                        let options = TRIS
+                            .iter()
+                            .map(|tri| {
+                                let allowed = override_change_allowed(access, ov, flag, *tri);
+                                limited |= access.is_some() && !allowed;
+                                match tri {
+                                    Tri::Deny => crate::ui::Segment::with(
+                                        crate::ui::icon_preview(assets::CLOSE),
+                                        "",
+                                    ),
+                                    Tri::Inherit => crate::ui::Segment::new("/"),
+                                    Tri::Allow => crate::ui::Segment::with(
+                                        crate::ui::icon_preview(assets::CHECK),
+                                        "",
+                                    ),
+                                }
+                                .enabled(allowed)
                             })
-                        };
-                        setting(
+                            .collect();
+                        setting_fit(
                             info.name,
                             info.description,
-                            div()
-                                .flex()
-                                .gap(px(2.))
-                                .child(toggle(Tri::Deny, "Deny", cx))
-                                .child(toggle(Tri::Inherit, "Inherit", cx))
-                                .child(toggle(Tri::Allow, "Allow", cx)),
+                            crate::ui::segmented(
+                                self,
+                                format!("override-{}", info.name),
+                                options,
+                                TRIS.iter().position(|t| *t == state),
+                                true,
+                                move |this, n, _, cx| this.set_override(flag, TRIS[n], cx),
+                                cx,
+                            ),
                         )
                     })
                     .collect();
@@ -1992,7 +2264,12 @@ impl Shell {
                 ));
             }
         }
-        detail_panel(col)
+        item_page(
+            self.back_line("Channels", |page| page.channel = None, cx),
+            title,
+            actions,
+            col,
+        )
     }
 
     fn tab_members(
@@ -2002,80 +2279,101 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let space = page.space;
+        if let Some(m) = page.member.and_then(|u| s.member(space, u)) {
+            return self.member_detail(page, s, m, cx);
+        }
+        let st = &s.spaces[&space];
         let query = page.member_query.read(cx).value().to_string();
         let members = filter_members(s, space, &query);
         let total = members.len();
+        let shown = total.min(page.member_limit);
         let rows: Vec<AnyElement> = members
             .into_iter()
-            .take(MAX_ROWS)
+            .take(shown)
             .map(|(name, m)| {
                 let user = m.user.id;
                 let name_color = hermes_client_core::view::role_color(s, space, user)
                     .map_or(theme::text(), theme::rgb_u32);
-                list_row(
-                    self,
-                    format!("settings-member-{user}"),
-                    page.member == Some(user),
-                    cx,
-                )
-                .h(px(46.))
-                .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(div().truncate().text_color(name_color).child(name))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(theme::caption_size())
-                                .text_color(theme::text_tertiary())
-                                .child(format!("@{}", m.user.username)),
-                        ),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.open_page() {
-                        page.member = Some(user);
-                    }
-                    cx.notify();
-                }))
-                .into_any_element()
+                let roles: Vec<&str> = st
+                    .roles
+                    .iter()
+                    .filter(|r| !r.is_everyone() && m.role_ids.contains(&r.id))
+                    .map(|r| r.name.as_str())
+                    .collect();
+                list_row(self, format!("settings-member-{user}"), false, cx)
+                    .h(px(52.))
+                    .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().truncate().text_color(name_color).child(name))
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(theme::caption_size())
+                                    .text_color(theme::text_tertiary())
+                                    .child(format!("@{}", m.user.username)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink(1.)
+                            .min_w_0()
+                            .max_w(px(220.))
+                            .truncate()
+                            .text_size(theme::caption_size())
+                            .text_color(theme::text_tertiary())
+                            .child(roles.join(", ")),
+                    )
+                    .child(opens())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(page) = this.open_page() {
+                            page.member = Some(user);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
             })
             .collect();
-        let more = total.saturating_sub(MAX_ROWS);
-        let list = div()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .gap(px(8.))
-            .w(px(SIDE_LIST))
-            .h_full()
-            .p(px(8.))
-            .bg(theme::sidebar())
+        let search = div()
+            .w(px(240.))
+            .max_w_full()
             .child(Input::new(&page.member_query))
-            .child(muted(format!("{total} member{}", plural(total))))
-            .child(
-                div()
-                    .id("settings-members")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .gap(px(1.))
-                    .overflow_y_scroll()
-                    .children(rows)
-                    .when(more > 0, |d| {
-                        d.child(muted(format!("…and {more} more. Search to narrow.")))
-                    }),
-            )
             .into_any_element();
-        let detail = match page.member.and_then(|u| s.member(space, u)) {
-            Some(m) => self.member_detail(page, s, m, cx),
-            None => hint_panel("Pick a member to see what you can do.", ""),
-        };
-        two_columns(list, detail)
+        let mut parts = vec![if rows.is_empty() {
+            muted("Nobody matches.")
+        } else {
+            list_card(rows)
+        }];
+        if shown < total {
+            parts.push(centered(crate::ui::button(
+                self,
+                "members-more",
+                format!("Show {} more", (total - shown).min(MEMBER_PAGE)),
+                ButtonKind::Secondary,
+                true,
+                |this, _, cx| {
+                    if let Some(page) = this.open_page() {
+                        page.member_limit += MEMBER_PAGE;
+                    }
+                    cx.notify();
+                },
+                cx,
+            )));
+        }
+        page_body_with(
+            "Members",
+            Some(search),
+            Some(&if shown < total {
+                format!("{total} member{}, {shown} shown", plural(total))
+            } else {
+                format!("{total} member{}", plural(total))
+            }),
+            parts,
+        )
     }
 
     fn member_detail(
@@ -2094,53 +2392,76 @@ impl Shell {
         let owner = st.space.owner_id == user;
         let is_owner = Some(st.space.owner_id) == s.me_id();
         let can = |p| view::can_in_space(s, space, p);
+        let title = div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .child(self.avatar(
+                &inst,
+                Some(&m.user),
+                &s.display_name(Some(space), user),
+                36.,
+            ))
+            .child(heading(s.display_name(Some(space), user)))
+            .into_any_element();
         let mut col: Vec<AnyElement> = vec![
-            strong(s.display_name(Some(space), user)),
-            muted(format!(
-                "@{} · joined {}{}",
-                m.user.username,
-                time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
-                if owner { " · owner" } else { "" }
-            )),
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(muted(format!(
+                    "@{} · joined {}{}",
+                    m.user.username,
+                    time::format(m.joined_at, "%Y-%m-%d", self.utc_offset),
+                    if owner { " · owner" } else { "" }
+                )))
+                .children(
+                    m.user
+                        .status_text
+                        .as_deref()
+                        .filter(|t| !t.is_empty())
+                        .map(|status| muted(status.to_owned())),
+                )
+                .into_any_element(),
         ];
-        if let Some(status) = m.user.status_text.as_deref().filter(|t| !t.is_empty()) {
-            col.push(muted(status.to_owned()));
-        }
         let nick = if me {
             can(Permissions::CHANGE_NICKNAME) || can(Permissions::MANAGE_NICKNAMES)
         } else {
             above && can(Permissions::MANAGE_NICKNAMES)
         };
         let (dm_inst, nick_inst) = (inst.clone(), inst.clone());
-        col.push(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap(px(8.))
-                .when(!me, |d| {
-                    d.child(
-                        Button::new("member-dm")
-                            .cursor_pointer()
-                            .primary()
-                            .label("Message")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_space_settings(cx);
-                                this.message_user(dm_inst.clone(), user, window, cx);
-                            })),
-                    )
-                })
-                .when(nick, |d| {
-                    d.child(
-                        Button::new("member-nick")
-                            .cursor_pointer()
-                            .label("Change nickname…")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_form_nickname(nick_inst.clone(), space, user, window, cx);
-                            })),
-                    )
-                })
-                .into_any_element(),
-        );
+        let actions = div()
+            .flex()
+            .flex_wrap()
+            .gap(px(8.))
+            .when(!me, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "member-dm",
+                    "Message",
+                    ButtonKind::Primary,
+                    true,
+                    move |this, window, cx| {
+                        this.close_space_settings(cx);
+                        this.message_user(dm_inst.clone(), user, window, cx);
+                    },
+                    cx,
+                ))
+            })
+            .when(nick, |d| {
+                d.child(crate::ui::button(
+                    self,
+                    "member-nick",
+                    "Change nickname…",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        this.open_form_nickname(nick_inst.clone(), space, user, window, cx);
+                    },
+                    cx,
+                ))
+            })
+            .into_any_element();
 
         let role_rows: Vec<AnyElement> = st
             .roles
@@ -2150,28 +2471,43 @@ impl Shell {
                 let has = m.role_ids.contains(&role.id);
                 let may = view::can_manage_role(s, space, role.id) && (me || above || is_owner);
                 let id = role.id;
-                Checkbox::new(SharedString::from(format!("member-role-{id}")))
-                    .cursor_pointer()
-                    .label(SharedString::from(role.name.clone()))
-                    .checked(has)
-                    .disabled(!may)
-                    .when(!may, |b| b.cursor_default())
-                    .on_click(cx.listener(move |this, on: &bool, _, cx| {
-                        this.set_member_role(user, id, *on, cx);
+                // A chip per role, filled while they have it: all of them fit in a few lines.
+                let chip = crate::ui::chip(
+                    self,
+                    SharedString::from(format!("member-role-{id}")),
+                    role.name.clone(),
+                    has,
+                    cx,
+                );
+                if may {
+                    chip.on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_member_role(user, id, !has, cx);
                     }))
                     .into_any_element()
+                } else {
+                    chip.opacity(0.5).cursor_not_allowed().into_any_element()
+                }
             })
             .collect();
-        col.push(if role_rows.is_empty() {
-            group(
-                "Roles",
-                vec![muted(
-                    "This server has no roles yet. Create them in the Roles tab.",
-                )],
-            )
-        } else {
-            group("Roles", role_rows)
-        });
+        col.push(group(
+            "Roles",
+            vec![if role_rows.is_empty() {
+                div()
+                    .py(px(12.))
+                    .child(muted(
+                        "This server has no roles yet. Create them in the Roles tab.",
+                    ))
+                    .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .py(px(12.))
+                    .children(role_rows)
+                    .into_any_element()
+            }],
+        ));
 
         // Voice moderation, while they are in a voice channel of this space.
         if let Some(vs) = s
@@ -2189,79 +2525,87 @@ impl Shell {
                 .flex_wrap()
                 .gap(px(8.))
                 .when(can(Permissions::MUTE_MEMBERS), |d| {
-                    d.child(
-                        Button::new("member-mute")
-                            .cursor_pointer()
-                            .label(if server_mute {
-                                "Server unmute"
-                            } else {
-                                "Server mute"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.patch_voice(
-                                    user,
-                                    VoiceStatePatchRequest {
-                                        server_mute: Some(!server_mute),
-                                        ..VoiceStatePatchRequest::default()
-                                    },
-                                    if server_mute {
-                                        "Server unmuted"
-                                    } else {
-                                        "Server muted"
-                                    },
-                                    cx,
-                                );
-                            })),
-                    )
+                    d.child(crate::ui::button(
+                        self,
+                        "member-mute",
+                        if server_mute {
+                            "Server unmute"
+                        } else {
+                            "Server mute"
+                        },
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            this.patch_voice(
+                                user,
+                                VoiceStatePatchRequest {
+                                    server_mute: Some(!server_mute),
+                                    ..VoiceStatePatchRequest::default()
+                                },
+                                if server_mute {
+                                    "Server unmuted"
+                                } else {
+                                    "Server muted"
+                                },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
                 })
                 .when(can(Permissions::DEAFEN_MEMBERS), |d| {
-                    d.child(
-                        Button::new("member-deafen")
-                            .cursor_pointer()
-                            .label(if server_deaf {
-                                "Server undeafen"
-                            } else {
-                                "Server deafen"
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.patch_voice(
-                                    user,
-                                    VoiceStatePatchRequest {
-                                        server_deaf: Some(!server_deaf),
-                                        ..VoiceStatePatchRequest::default()
-                                    },
-                                    if server_deaf {
-                                        "Server undeafened"
-                                    } else {
-                                        "Server deafened"
-                                    },
-                                    cx,
-                                );
-                            })),
-                    )
+                    d.child(crate::ui::button(
+                        self,
+                        "member-deafen",
+                        if server_deaf {
+                            "Server undeafen"
+                        } else {
+                            "Server deafen"
+                        },
+                        ButtonKind::Secondary,
+                        true,
+                        move |this, _, cx| {
+                            this.patch_voice(
+                                user,
+                                VoiceStatePatchRequest {
+                                    server_deaf: Some(!server_deaf),
+                                    ..VoiceStatePatchRequest::default()
+                                },
+                                if server_deaf {
+                                    "Server undeafened"
+                                } else {
+                                    "Server deafened"
+                                },
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
                 })
                 .when(can(Permissions::MOVE_MEMBERS), |d| {
-                    d.child(
-                        Button::new("member-disconnect")
-                            .cursor_pointer()
-                            .danger()
-                            .label("Disconnect")
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.patch_voice(
-                                    user,
-                                    VoiceStatePatchRequest {
-                                        channel_id: Some(None),
-                                        ..VoiceStatePatchRequest::default()
-                                    },
-                                    "Disconnected from voice",
-                                    cx,
-                                );
-                            })),
-                    )
+                    d.child(crate::ui::button(
+                        self,
+                        "member-disconnect",
+                        "Disconnect",
+                        ButtonKind::Danger,
+                        true,
+                        move |this, _, cx| {
+                            this.patch_voice(
+                                user,
+                                VoiceStatePatchRequest {
+                                    channel_id: Some(None),
+                                    ..VoiceStatePatchRequest::default()
+                                },
+                                "Disconnected from voice",
+                                cx,
+                            );
+                        },
+                        cx,
+                    ))
                 });
             col.push(group(
                 &format!("In voice: {channel}"),
-                vec![voice.into_any_element()],
+                vec![voice.py(px(12.)).into_any_element()],
             ));
         }
 
@@ -2270,54 +2614,71 @@ impl Shell {
         let target = Target::Member(inst.clone(), Some(space), user);
         if above && can(Permissions::KICK_MEMBERS) {
             let kick = target.clone();
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Kick",
                 "Removes them from the server; they can come back with a new invite.",
-                Button::new("member-kick")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Kick")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                crate::ui::button(
+                    self,
+                    "member-kick",
+                    "Kick",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| {
                         this.cancel_closing("confirm");
                         this.confirm = Some((kick.clone(), Action::Kick));
                         cx.notify();
-                    })),
+                    },
+                    cx,
+                ),
             ));
         }
         if above && can(Permissions::BAN_MEMBERS) {
             let ban_inst = inst.clone();
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Ban",
                 "Removes them and keeps them out.",
-                Button::new("member-ban")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Ban…")
-                    .on_click(cx.listener(move |this, _, window, cx| {
+                crate::ui::button(
+                    self,
+                    "member-ban",
+                    "Ban…",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, window, cx| {
                         this.open_form_ban(ban_inst.clone(), space, user, window, cx);
-                    })),
+                    },
+                    cx,
+                ),
             ));
         }
         if is_owner && !me {
-            danger.push(setting(
+            danger.push(setting_fit(
                 "Transfer ownership",
                 "Makes them the owner of the space. You keep your roles but can no longer delete \
                  the space.",
-                Button::new("member-transfer")
-                    .cursor_pointer()
-                    .danger()
-                    .label("Transfer…")
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                crate::ui::button(
+                    self,
+                    "member-transfer",
+                    "Transfer…",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| {
                         this.cancel_closing("confirm");
                         this.confirm = Some((target.clone(), Action::TransferOwnership));
                         cx.notify();
-                    })),
+                    },
+                    cx,
+                ),
             ));
         }
         if !danger.is_empty() {
             col.push(group("Danger zone", danger));
         }
-        detail_panel(col)
+        item_page(
+            self.back_line("Members", |page| page.member = None, cx),
+            title,
+            actions,
+            col,
+        )
     }
 
     /// "Loading…", an error, or the empty text for a REST list; `None` once there are rows.
@@ -2337,19 +2698,22 @@ impl Shell {
         Some(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(8.))
+                .items_center()
+                .gap(px(12.))
                 .child(muted(text))
-                .child(
-                    Button::new("list-refresh")
-                        .cursor_pointer()
-                        .label("Refresh")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(tab) = this.open_page().map(|p| p.tab) {
-                                this.set_space_tab(tab, true, cx);
-                            }
-                        })),
-                )
+                .child(crate::ui::button(
+                    self,
+                    "list-refresh",
+                    "Refresh",
+                    ButtonKind::Secondary,
+                    true,
+                    |this, _, cx| {
+                        if let Some(tab) = this.open_page().map(|p| p.tab) {
+                            this.set_space_tab(tab, true, cx);
+                        }
+                    },
+                    cx,
+                ))
                 .into_any_element(),
         )
     }
@@ -2364,24 +2728,27 @@ impl Shell {
         let inst = page.inst.clone();
         let manage = view::can_in_space(s, space, Permissions::MANAGE_INVITES);
         let create_inst = inst.clone();
-        let mut rows: Vec<AnyElement> = vec![muted("Anyone with a valid link can join.")];
-        if view::can_in_space(s, space, Permissions::CREATE_INVITES) {
-            rows.push(
-                Button::new("invite-create")
-                    .cursor_pointer()
-                    .primary()
-                    .label("Create invite…")
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_form_invite(create_inst.clone(), space, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
+        let create = view::can_in_space(s, space, Permissions::CREATE_INVITES).then(|| {
+            crate::ui::button(
+                self,
+                "invite-create",
+                "Create invite…",
+                ButtonKind::Primary,
+                true,
+                move |this, window, cx| {
+                    this.open_form_invite(create_inst.clone(), space, window, cx);
+                },
+                cx,
+            )
+            .into_any_element()
+        });
+        let text = Some("Anyone with a valid link can join.");
+        let mut rows: Vec<AnyElement> = Vec::new();
         if !manage {
             rows.push(muted(
                 "Seeing everyone's invites needs the Manage invites permission.",
             ));
-            return page_body("Invites", None, rows);
+            return page_body_with("Invites", create, text, rows);
         }
         let list = page.invites.ready();
         if let Some(p) = self.list_placeholder(
@@ -2391,8 +2758,9 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Invites", None, rows);
+            return page_body_with("Invites", create, text, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         let now = now_ms();
         for (n, invite) in list.into_iter().flatten().enumerate() {
             let uses = match invite.max_uses {
@@ -2420,42 +2788,46 @@ impl Shell {
                     .child(invite.code.clone()),
                 muted(format!("{uses} · {expires} · by {creator}")),
             );
-            rows.push(
-                row.child(
-                    Button::new(("invite-copy", n))
-                        .cursor_pointer()
-                        .label(
-                            self.copy_label(&format!("invite-copy-{}", invite.code), "Copy link"),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
-                                this.copy_from(
-                                    format!("invite-copy-{copy_code}"),
-                                    link,
-                                    "Invite link",
-                                    cx,
-                                );
-                            }
-                        })),
-                )
-                .child(
-                    Button::new(("invite-revoke", n))
-                        .cursor_pointer()
-                        .danger()
-                        .label("Revoke")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.cancel_closing("confirm");
-                            this.confirm = Some((
-                                Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
-                                Action::RevokeInvite,
-                            ));
-                            cx.notify();
-                        })),
-                )
+            entries.push(
+                row.child(crate::ui::button(
+                    self,
+                    format!("invite-copy-{n}"),
+                    self.copy_label(&format!("invite-copy-{}", invite.code), "Copy link"),
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        if let Some(link) = this.core.invite_link(&copy_inst, &copy_code) {
+                            this.copy_from(
+                                format!("invite-copy-{copy_code}"),
+                                link,
+                                "Invite link",
+                                cx,
+                            );
+                        }
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    format!("invite-revoke-{n}"),
+                    "Revoke",
+                    ButtonKind::Danger,
+                    true,
+                    move |this, _, cx| {
+                        this.cancel_closing("confirm");
+                        this.confirm = Some((
+                            Target::Invite(revoke_inst.clone(), space, revoke_code.clone()),
+                            Action::RevokeInvite,
+                        ));
+                        cx.notify();
+                    },
+                    cx,
+                ))
                 .into_any_element(),
             );
         }
-        page_body("Invites", None, rows)
+        rows.push(group_card(entries).into_any_element());
+        page_body_with("Invites", create, text, rows)
     }
 
     fn tab_reports(
@@ -2464,10 +2836,11 @@ impl Shell {
         s: &InstanceStore,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut rows: Vec<AnyElement> = vec![muted(
+        const TEXT: Option<&str> = Some(
             "Messages people reported. A report shows what the reporter chose to share: the server \
              cannot read encrypted messages.",
-        )];
+        );
+        let mut rows: Vec<AnyElement> = Vec::new();
         let list = page.reports.ready();
         if let Some(p) = self.list_placeholder(
             &page.reports,
@@ -2476,8 +2849,9 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Reports", None, rows);
+            return page_body("Reports", TEXT, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         for report in list.into_iter().flatten() {
             let (inst, space, id) = (page.inst.clone(), page.space, report.id);
             let jump_inst = page.inst.clone();
@@ -2492,51 +2866,59 @@ impl Shell {
                 )),
                 muted(report.excerpt.clone()),
             );
-            rows.push(
-                row.child(
-                    Button::new(SharedString::from(format!("report-open-{id}")))
-                        .cursor_pointer()
-                        .label("Go to it")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.close_pages(cx);
-                            this.jump_to(jump_inst.clone(), channel, message, window, cx);
-                        })),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("report-done-{id}")))
-                        .cursor_pointer()
-                        .label("Dealt with")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let core = this.core.clone();
-                            let inst = inst.clone();
-                            this.run(
-                                cx,
-                                async move {
-                                    core.rest(&inst)?
-                                        .resolve_report(space, id)
-                                        .await
-                                        .map_err(|e| e.to_string())
-                                },
-                                |this, result, _, cx| match result {
-                                    Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
-                                    Err(err) => this.error(err, cx),
-                                },
-                            );
-                        })),
-                )
+            entries.push(
+                row.child(crate::ui::button(
+                    self,
+                    format!("report-open-{id}"),
+                    "Go to it",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, window, cx| {
+                        this.close_pages(cx);
+                        this.jump_to(jump_inst.clone(), channel, message, window, cx);
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    format!("report-done-{id}"),
+                    "Dealt with",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        let core = this.core.clone();
+                        let inst = inst.clone();
+                        this.run(
+                            cx,
+                            async move {
+                                core.rest(&inst)?
+                                    .resolve_report(space, id)
+                                    .await
+                                    .map_err(|e| e.to_string())
+                            },
+                            |this, result, _, cx| match result {
+                                Ok(()) => this.set_space_tab(Tab::Reports, true, cx),
+                                Err(err) => this.error(err, cx),
+                            },
+                        );
+                    },
+                    cx,
+                ))
                 .into_any_element(),
             );
         }
-        page_body("Reports", None, rows)
+        rows.push(group_card(entries).into_any_element());
+        page_body("Reports", TEXT, rows)
     }
 
     fn tab_bans(&self, page: &SpacePage, _s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
         let inst = page.inst.clone();
         let space = page.space;
-        let mut rows: Vec<AnyElement> = vec![muted(
+        const TEXT: Option<&str> = Some(
             "Banned people cannot rejoin with an invite. Ban someone from the Members tab or by \
              right-clicking them.",
-        )];
+        );
+        let mut rows: Vec<AnyElement> = Vec::new();
         let list = page.bans.ready();
         if let Some(p) = self.list_placeholder(
             &page.bans,
@@ -2545,8 +2927,9 @@ impl Shell {
             cx,
         ) {
             rows.push(p);
-            return page_body("Bans", None, rows);
+            return page_body("Bans", TEXT, rows);
         }
+        let mut entries: Vec<AnyElement> = Vec::new();
         for ban in list.into_iter().flatten() {
             let reason = ban
                 .reason
@@ -2566,43 +2949,50 @@ impl Shell {
                     time::format(ban.created_at, "%Y-%m-%d", self.utc_offset)
                 )),
             );
-            rows.push(
-                row.child(
-                    Button::new(SharedString::from(format!("unban-{user}")))
-                        .cursor_pointer()
-                        .label("Unban")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let core = this.core.clone();
-                            let inst = unban_inst.clone();
-                            this.run(
-                                cx,
-                                async move {
-                                    core.rest(&inst)?.unban(space, user).await?;
-                                    Ok::<_, CoreError>(())
-                                },
-                                |this, result, _, cx| match result {
-                                    Ok(()) => this.set_space_tab(Tab::Bans, true, cx),
-                                    Err(err) => {
-                                        this.error(format!("could not unban: {err}"), cx);
-                                    }
-                                },
-                            );
-                        })),
-                )
+            entries.push(
+                row.child(crate::ui::button(
+                    self,
+                    format!("unban-{user}"),
+                    "Unban",
+                    ButtonKind::Secondary,
+                    true,
+                    move |this, _, cx| {
+                        let core = this.core.clone();
+                        let inst = unban_inst.clone();
+                        this.run(
+                            cx,
+                            async move {
+                                core.rest(&inst)?.unban(space, user).await?;
+                                Ok::<_, CoreError>(())
+                            },
+                            |this, result, _, cx| match result {
+                                Ok(()) => this.set_space_tab(Tab::Bans, true, cx),
+                                Err(err) => {
+                                    this.error(format!("could not unban: {err}"), cx);
+                                }
+                            },
+                        );
+                    },
+                    cx,
+                ))
                 .into_any_element(),
             );
         }
-        page_body("Bans", None, rows)
+        rows.push(group_card(entries).into_any_element());
+        page_body("Bans", TEXT, rows)
     }
 
     fn tab_audit(&self, page: &SpacePage, s: &InstanceStore, cx: &mut Context<Self>) -> AnyElement {
-        let mut rows: Vec<AnyElement> = vec![
-            Button::new("audit-refresh")
-                .cursor_pointer()
-                .label("Refresh")
-                .on_click(cx.listener(|this, _, _, cx| this.set_space_tab(Tab::Audit, true, cx)))
-                .into_any_element(),
-        ];
+        let refresh = crate::ui::button(
+            self,
+            "audit-refresh",
+            "Refresh",
+            ButtonKind::Secondary,
+            true,
+            |this, _, cx| this.set_space_tab(Tab::Audit, true, cx),
+            cx,
+        )
+        .into_any_element();
         let list = page.audit.ready();
         if let Some(p) = self.list_placeholder(
             &page.audit,
@@ -2610,55 +3000,34 @@ impl Shell {
             "Nothing has been changed yet.",
             cx,
         ) {
-            rows.push(p);
-            return page_body("Audit log", None, rows);
+            return page_body_with("Audit log", Some(refresh), None, vec![p]);
         }
-        for entry in list.into_iter().flatten() {
-            let (text, details) = describe(s, page.space, entry);
-            rows.push(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_shrink_0()
-                    .gap(px(2.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme::border())
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .flex_shrink_0()
-                                    .w(px(130.))
-                                    .text_size(theme::caption_size())
-                                    .text_color(theme::text_tertiary())
-                                    .child(time::format(
-                                        entry.created_at,
-                                        "%Y-%m-%d %H:%M",
-                                        self.utc_offset,
-                                    )),
-                            )
-                            .child(div().text_size(theme::secondary_size()).child(text)),
-                    )
-                    .when(!details.is_empty(), |d| {
-                        d.child(div().pl(px(138.)).child(muted(details)))
-                    })
-                    .into_any_element(),
-            );
-        }
+        let entries: Vec<AnyElement> = list
+            .into_iter()
+            .flatten()
+            .map(|entry| {
+                let (text, details) = describe(s, page.space, entry);
+                crate::settings::log_entry(
+                    text,
+                    details,
+                    time::format(entry.created_at, "%Y-%m-%d %H:%M", self.utc_offset),
+                )
+            })
+            .collect();
+        let mut parts = vec![group_card(entries).into_any_element()];
         if page.audit_more {
             let before = list.and_then(|l| l.last()).map(|e| e.id);
-            rows.push(
-                Button::new("audit-more")
-                    .cursor_pointer()
-                    .label("Load older entries")
-                    .on_click(cx.listener(move |this, _, _, cx| this.load_audit(before, cx)))
-                    .into_any_element(),
-            );
+            parts.push(centered(crate::ui::button(
+                self,
+                "audit-more",
+                "Load older entries",
+                ButtonKind::Secondary,
+                true,
+                move |this, _, cx| this.load_audit(before, cx),
+                cx,
+            )));
         }
-        page_body("Audit log", None, rows)
+        page_body_with("Audit log", Some(refresh), None, parts)
     }
 
     /// Lets a role row be dragged onto another of the roles' list.
@@ -2702,9 +3071,7 @@ fn space_settings_list_row(title: gpui_kit::Div, detail: AnyElement) -> gpui_kit
         .flex_shrink_0()
         .items_center()
         .gap(px(8.))
-        .py(px(6.))
-        .border_t_1()
-        .border_color(theme::border())
+        .py(px(8.))
         .child(
             div()
                 .flex()
@@ -2714,14 +3081,6 @@ fn space_settings_list_row(title: gpui_kit::Div, detail: AnyElement) -> gpui_kit
                 .child(title)
                 .child(detail),
         )
-}
-
-fn strong(text: String) -> AnyElement {
-    div()
-        .text_size(theme::body_size())
-        .font_weight(FontWeight::MEDIUM)
-        .child(text)
-        .into_any_element()
 }
 
 /// A row of the lists here: [`crate::ui::list_row`], a little smaller.
@@ -2736,83 +3095,94 @@ fn list_row(
         .text_size(theme::secondary_size())
 }
 
-/// A narrow list column with a header and scrolling rows.
-fn side_list(title: &str, actions: Option<AnyElement>, rows: Vec<AnyElement>) -> AnyElement {
+/// A page's title (an item's name).
+fn heading(text: String) -> AnyElement {
+    div()
+        .min_w_0()
+        .truncate()
+        .text_size(theme::heading_size())
+        .font_weight(FontWeight::MEDIUM)
+        .child(text)
+        .into_any_element()
+}
+
+/// The items of a list tab on one card; each row opens the item's own page (#62).
+fn list_card(rows: Vec<AnyElement>) -> AnyElement {
     div()
         .flex()
         .flex_col()
-        .flex_shrink_0()
-        .gap(px(8.))
-        .w(px(SIDE_LIST))
-        .h_full()
-        .p(px(8.))
+        .gap(px(2.))
+        .p(px(6.))
+        .rounded(theme::radius_large())
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::sidebar())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .h(px(28.))
-                .child(
-                    div()
-                        .flex_1()
-                        .px(px(4.))
-                        .text_size(theme::caption_size())
-                        .text_color(theme::text_tertiary())
-                        .child(title.to_uppercase()),
-                )
-                .children(actions),
-        )
-        .child(
-            div()
-                .id("side-list-rows")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .min_h_0()
-                .gap(px(1.))
-                .overflow_y_scroll()
-                .children(rows),
-        )
+        .children(rows)
         .into_any_element()
 }
 
-fn two_columns(list: AnyElement, detail: AnyElement) -> AnyElement {
-    div()
-        .flex()
-        .size_full()
-        .child(list)
-        .child(div().flex_1().min_w_0().h_full().child(detail))
-        .into_any_element()
+/// The `›` at the end of a row that opens a page.
+fn opens() -> impl IntoElement {
+    icon(assets::CHEVRON_DOWN, 16., theme::text_tertiary()).with_transformation(
+        gpui_kit::Transformation::rotate(gpui_kit::radians(-std::f32::consts::FRAC_PI_2)),
+    )
 }
 
-fn detail_panel(content: Vec<AnyElement>) -> AnyElement {
+/// An item's own page: the line back to its list, its title with buttons on the right, and its
+/// parts, in the same centered column as every page.
+fn item_page(
+    back: AnyElement,
+    title: AnyElement,
+    actions: AnyElement,
+    parts: Vec<AnyElement>,
+) -> AnyElement {
     div()
-        .id("detail-panel")
+        .id("item-page")
         .flex()
         .flex_col()
-        .gap(px(14.))
+        .gap(px(20.))
         .size_full()
-        .p(px(20.))
+        .p(px(32.))
         .overflow_y_scroll()
-        .children(content)
+        .child(page_part(back))
+        .child(page_part(crate::settings::title_bar(title, Some(actions))))
+        .children(parts.into_iter().map(page_part))
         .into_any_element()
 }
 
-fn hint_panel(title: &'static str, text: &'static str) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(8.))
-        .max_w(px(520.))
-        .p(px(24.))
-        .child(
-            div()
-                .text_size(theme::secondary_size())
-                .text_color(theme::text_secondary())
-                .child(title),
-        )
-        .child(muted(text))
-        .into_any_element()
+impl Shell {
+    /// "‹ Roles": back from an item's page to its list; `close` forgets the open item.
+    fn back_line(
+        &self,
+        list: &'static str,
+        close: impl Fn(&mut SpacePage) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("item-back")
+            .group("item-back")
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(px(24.))
+            .cursor_pointer()
+            .text_size(theme::secondary_size())
+            .text_color(theme::text_tertiary())
+            .hover(|d| d.text_color(theme::accent()))
+            .child(
+                icon(assets::ARROW_LEFT, 16., theme::text_tertiary())
+                    .group_hover("item-back", |s| s.text_color(theme::accent())),
+            )
+            .child(list)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if let Some(page) = this.open_page() {
+                    close(page);
+                }
+                crate::settings::reset_page_scroll();
+                cx.notify();
+            }))
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]

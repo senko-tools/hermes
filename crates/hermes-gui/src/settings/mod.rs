@@ -6,12 +6,9 @@ use std::cell::{Cell, RefCell};
 
 use gpui_kit::AnimationExt as _;
 use gpui_kit::component::IndexPath;
-use gpui_kit::component::Sizable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::select::{SelectEvent, SelectItem, SelectState};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::switch::Switch;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, FontWeight, SharedString, Subscription, Window, div};
 use hermes_client_core::audio::{AudioDevices, Sound};
@@ -147,6 +144,8 @@ enum SliderKind {
 /// How often the level meter can redraw the window at most. Every frame redraws the whole window,
 /// so this is not the display's rate: drawing at 144 Hz all the time cost about 10 % CPU and GPU.
 const METER_FPS: f32 = 60.0;
+/// How often the Voice tab lists the audio devices again while it shows.
+const DEVICE_POLL: std::time::Duration = std::time::Duration::from_secs(3);
 /// The bar has to move this far for a redraw (under a pixel on a setting row), so a settled
 /// meter costs nothing.
 const METER_STEP_DB: f32 = 0.1;
@@ -173,9 +172,9 @@ fn the_meter_rises_quickly_and_falls_slowly() {
 
 /// A choice of the audio device dropdowns; `value` is what the config stores.
 #[derive(Clone)]
-struct DeviceChoice {
-    value: String,
-    name: SharedString,
+pub(crate) struct DeviceChoice {
+    pub(crate) value: String,
+    pub(crate) name: SharedString,
 }
 
 /// A switch row for a `bool` in the config, naming the field once so what the switch shows and
@@ -281,6 +280,12 @@ pub struct SettingsPage {
     admin_settings: Option<hermes_client_core::proto::api::AdminSettings>,
     /// The audio device dropdowns, once the Voice & Audio tab has listed the devices.
     device_selects: Option<DeviceSelects>,
+    /// The audio devices are being listed (a click or the timer then does not list them again).
+    devices_listing: bool,
+    /// Counts the times the Voice tab opened; a refresh timer of an older opening stops.
+    device_poll: u64,
+    /// The screen dropdown, once the screens have been listed.
+    screen_select: Option<(Entity<SelectState<Vec<DeviceChoice>>>, Subscription)>,
     pub mic_test: bool,
     /// Held while the Voice tab and its level meter show.
     fine_timers: Option<crate::desktop::window::FineTimers>,
@@ -288,9 +293,6 @@ pub struct SettingsPage {
     mono_font: Entity<SelectState<Vec<DeviceChoice>>>,
     time_format: Entity<InputState>,
     date_format: Entity<InputState>,
-    /// Custom was chosen for the time or date: its pattern field shows.
-    custom_time: bool,
-    custom_date: bool,
     /// Searching every setting by name and hint.
     search: Entity<InputState>,
     ptt_key: Entity<InputState>,
@@ -301,10 +303,12 @@ pub struct SettingsPage {
 struct DeviceSelects {
     input: Entity<SelectState<Vec<DeviceChoice>>>,
     output: Entity<SelectState<Vec<DeviceChoice>>>,
+    /// What they were made from: a listing that finds the same changes nothing.
+    listed: AudioDevices,
     _events: [Subscription; 2],
 }
 
-/// The date formats offered as chips on the day dividers.
+/// The date formats offered on the day dividers.
 const DATE_FORMATS: [&str; 5] = [
     "%B %e, %Y",
     "%e %B %Y",
@@ -320,32 +324,32 @@ enum Pattern {
     Date,
 }
 
-/// The time patterns offered as chips.
+/// The time patterns offered as presets.
 const TIME_FORMATS: [(&str, &str); 2] = [("%H:%M", "24 hour"), ("%I:%M %p", "12 hour")];
 
 impl Shell {
-    /// "Time" or "Date on day lines": preset chips and Custom, which shows the pattern field
-    /// under them. A preset also goes into the field, so the two never disagree (#11).
+    /// "Time" or "Date on day lines": the pattern field is the setting; the presets under it
+    /// fill it in (and save), so the two never disagree (#11). The one in the field is lit.
     fn pattern_row(
         &self,
         page: &SettingsPage,
         which: Pattern,
-        hint: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let b = &self.config.buffer;
-        let (name, current, input, custom_chosen) = match which {
+        let now = hermes_client_core::now_ms();
+        let (name, current, input, help) = match which {
             Pattern::Time => (
                 "Time",
                 &b.timestamp_format,
                 &page.time_format,
-                page.custom_time,
+                "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
             ),
             Pattern::Date => (
                 "Date on day lines",
                 &b.date_format,
                 &page.date_format,
-                page.custom_date,
+                "%e day, %B month, %A weekday, %Y year. Enter saves.",
             ),
         };
         let presets: Vec<(String, String)> = match which {
@@ -355,104 +359,58 @@ impl Shell {
                 .collect(),
             Pattern::Date => DATE_FORMATS
                 .iter()
-                .map(|f| {
-                    let shown = time::format(hermes_client_core::now_ms(), f, self.utc_offset);
-                    ((*f).to_owned(), shown)
-                })
+                .map(|f| ((*f).to_owned(), time::format(now, f, self.utc_offset)))
                 .collect(),
         };
-        let custom = custom_chosen || !presets.iter().any(|(f, _)| f == current);
-        let id = match which {
-            Pattern::Time => "time-format",
-            Pattern::Date => "date-format",
-        };
-        let mut chips: Vec<AnyElement> = presets
-            .into_iter()
-            .enumerate()
-            .map(|(n, (format, shown))| {
-                let chosen = !custom && *current == format;
-                crate::ui::segment(self, (id, n), shown, chosen, cx)
+        let chips =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(presets.into_iter().enumerate().map(|(n, (format, shown))| {
+                    let chosen = format == *current;
+                    crate::ui::chip(
+                        self,
+                        SharedString::from(format!("{name}-preset-{n}")),
+                        shown,
+                        chosen,
+                        cx,
+                    )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.set_pattern(which, format.clone(), false, window, cx);
                     }))
-                    .into_any_element()
-            })
-            .collect();
-        chips.push(
-            crate::ui::segment(self, (id, 99usize), "Custom", custom, cx)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(page) = this.settings.as_mut() {
-                        match which {
-                            Pattern::Time => page.custom_time = true,
-                            Pattern::Date => page.custom_date = true,
-                        }
-                    }
-                    cx.notify();
-                }))
-                .into_any_element(),
-        );
-        let field = custom.then(|| {
-            let help = match which {
-                Pattern::Time => "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
-                Pattern::Date => "%e day, %B month, %A weekday, %Y year. Enter saves.",
-            };
-            crate::channel::grow_in(
-                &self.grow_heights,
-                SharedString::from(format!("{id}-custom")),
-                div()
-                    .w_full()
-                    .flex()
-                    .justify_end()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .pt(px(8.))
-                            .w(px(300.))
-                            .child(Input::new(input))
-                            .child(muted(help)),
-                    )
-                    .into_any_element(),
-            )
-        });
-        setting(
+                }));
+        setting_below(
             name,
-            hint,
+            &format!("Now: {}", time::format(now, current, self.utc_offset)),
             div()
                 .flex()
                 .flex_col()
-                .items_end()
-                .child(crate::ui::segments().children(chips))
-                .children(field),
+                .w_full()
+                .gap(px(8.))
+                .child(Input::new(input))
+                .child(chips)
+                .child(muted(help)),
         )
     }
 
-    /// Saves a time or date pattern and shows it in the pattern field; `custom` keeps the
-    /// field open (it came from the field itself).
+    /// Saves a time or date pattern; `typed` when it came from the field itself (a preset is
+    /// also put in the field).
     fn set_pattern(
         &mut self,
         which: Pattern,
         format: String,
-        custom: bool,
+        typed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(page) = self.settings.as_mut() {
+        if !typed && let Some(page) = self.settings.as_ref() {
             let input = match which {
-                Pattern::Time => {
-                    page.custom_time = custom;
-                    page.time_format.clone()
-                }
-                Pattern::Date => {
-                    page.custom_date = custom;
-                    page.date_format.clone()
-                }
+                Pattern::Time => page.time_format.clone(),
+                Pattern::Date => page.date_format.clone(),
             };
-            if !custom {
-                let shown = format.clone();
-                input.update(cx, |input, cx| input.set_value(shown, window, cx));
-            }
+            let shown = format.clone();
+            input.update(cx, |input, cx| input.set_value(shown, window, cx));
         }
         self.set_config(
             |c| match which {
@@ -479,43 +437,51 @@ pub(crate) struct Found {
     pub index: usize,
     pub name: String,
     pub hint: String,
-    /// The group folds under this key.
-    pub fold: Option<&'static str>,
+    /// The row sits in a group's "More" part, which opens under this key.
+    pub more: Option<&'static str>,
+    /// The row to light when it is a part of another row (a cell of a table of switches).
+    pub lit: Option<String>,
 }
 
 /// What [`setting`] and [`group_with`] noted while a tab was built for the search.
 #[derive(Default)]
 struct Recording {
     /// Rows of the group being built (its rows come before its title).
-    rows: Vec<(String, String)>,
+    rows: Vec<Noted>,
     groups: usize,
     found: Vec<Found>,
 }
 
+/// A row noted for the search, before its group's title is known.
+struct Noted {
+    name: String,
+    hint: String,
+    more: Option<&'static str>,
+    lit: Option<String>,
+}
+
 impl Recording {
-    fn row(&mut self, name: &str, hint: &str) {
-        self.rows.push((name.to_owned(), hint.to_owned()));
+    fn row(&mut self, name: &str, hint: &str, lit: Option<&str>) {
+        self.rows.push(Noted {
+            name: name.to_owned(),
+            hint: hint.to_owned(),
+            more: IN_MORE.with(Cell::get),
+            lit: lit.map(str::to_owned),
+        });
     }
 
     fn group(&mut self, title: &str) {
         let index = self.groups;
         self.groups += 1;
-        for (name, hint) in self.rows.drain(..) {
+        for row in self.rows.drain(..) {
             self.found.push(Found {
                 group: title.to_owned(),
                 index,
-                name,
-                hint,
-                fold: None,
+                name: row.name,
+                hint: row.hint,
+                more: row.more,
+                lit: row.lit,
             });
-        }
-    }
-
-    /// The group just noted folds under `key`.
-    fn fold_last(&mut self, key: &'static str) {
-        let last = self.groups.saturating_sub(1);
-        for f in self.found.iter_mut().filter(|f| f.index == last) {
-            f.fold = Some(key);
         }
     }
 }
@@ -529,6 +495,8 @@ thread_local! {
     static PAGE_SCROLL: gpui_kit::ScrollHandle = gpui_kit::ScrollHandle::new();
     /// The group a page scrolls to when it is next drawn.
     static SCROLL_TO: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The "More" part whose rows are being built, for the search.
+    static IN_MORE: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 fn recording() -> bool {
@@ -557,11 +525,6 @@ fn nav_section(title: &str) -> AnyElement {
 }
 
 // ---- parts, also used by the space settings ---------------------------------------------------
-
-/// Chips side by side, wrapping; they line up on the right, where a setting's control goes.
-pub fn wrap() -> gpui_kit::Div {
-    div().flex().flex_wrap().justify_end().w_full().gap(px(4.))
-}
 
 pub fn muted(text: impl Into<SharedString>) -> AnyElement {
     div()
@@ -627,48 +590,134 @@ pub fn frame(
 
 /// A tab's content: title, optional text and groups, scrolling.
 pub fn page_body(title: &str, text: Option<&str>, groups: Vec<AnyElement>) -> AnyElement {
+    page_body_with(title, None, text, groups)
+}
+
+/// [`page_body`] with buttons on the right of the title ("Refresh", "Create invite…").
+///
+/// Every part sits in one column at most [`PAGE_W`] wide, centered in the space beside the
+/// navigation; a narrow window gets what there is. Each part gets its own box (not one wrapper)
+/// so the search can still scroll to the n-th group.
+pub fn page_body_with(
+    title: &str,
+    actions: Option<AnyElement>,
+    text: Option<&str>,
+    groups: Vec<AnyElement>,
+) -> AnyElement {
     let scroll = PAGE_SCROLL.with(|h| h.clone());
     if !recording()
         && let Some(index) = SCROLL_TO.with(Cell::take)
     {
-        // The title and the text come before the groups.
-        scroll.scroll_to_item(index + 1 + usize::from(text.is_some()));
+        // The title (with its text) comes before the groups.
+        scroll.scroll_to_item(index + 1);
     }
     div()
         .id("page-body")
         .track_scroll(&scroll)
         .flex()
         .flex_col()
-        .gap(px(20.))
+        // Sections stand further apart than the rows inside them.
+        .gap(px(SECTION_GAP))
         .size_full()
-        .p(px(24.))
+        .p(px(32.))
         .overflow_y_scroll()
-        .child(
+        // The text hangs under the title: it belongs to it, not to the first section.
+        .child(page_part(
             div()
-                .text_size(theme::heading_size())
-                .font_weight(FontWeight::MEDIUM)
-                .child(SharedString::from(title.to_owned())),
-        )
-        .children(text.map(|t| muted(SharedString::from(t.to_owned()))))
-        .children(groups)
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(title_bar(
+                    div()
+                        .text_size(theme::heading_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(title.to_owned()))
+                        .into_any_element(),
+                    actions,
+                ))
+                .children(text.map(|t| muted(SharedString::from(t.to_owned()))))
+                .into_any_element(),
+        ))
+        .children(groups.into_iter().map(page_part))
         .into_any_element()
 }
 
-pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
-    group_with(title, div().into_any_element(), rows)
+/// How far apart a page's sections stand.
+pub const SECTION_GAP: f32 = 32.;
+
+/// A page's (or an item's) title with its buttons on the right. The title keeps its own width
+/// and only truncates once the buttons need the room: a wide box of buttons must never squeeze
+/// it to a letter per line.
+pub fn title_bar(title: AnyElement, actions: Option<AnyElement>) -> AnyElement {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .min_h(crate::ui::control_h())
+        .child(div().flex_1().min_w(px(120.)).truncate().child(title))
+        .children(actions.map(|a| {
+            div()
+                .flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap(px(8.))
+                .child(a)
+        }))
+        .into_any_element()
 }
 
-/// A titled group of settings, with something on the title's right.
+/// How wide a page's column may grow: wide enough to use the window, narrow enough that a
+/// row's name and its control do not drift apart.
+pub const PAGE_W: f32 = 960.;
+
+/// One part of a page in the centered column.
+pub fn page_part(part: AnyElement) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .w_full()
+        .max_w(px(PAGE_W))
+        .self_center()
+        .child(part)
+        .into_any_element()
+}
+
+/// Something at its own width, centered under a card ("Load older entries").
+pub fn centered(part: impl IntoElement) -> AnyElement {
+    div().flex().justify_center().child(part).into_any_element()
+}
+
+pub fn group(title: &str, rows: Vec<AnyElement>) -> AnyElement {
+    section(title, "", rows)
+}
+
+/// A titled group of settings, with something (a button) on the right of its title.
 pub fn group_with(title: &str, actions: AnyElement, rows: Vec<AnyElement>) -> AnyElement {
-    let header = group_header(title, actions);
+    section_with(title, "", Some(actions), rows)
+}
+
+/// A section: its name, and a short description under it, above its card of rows.
+pub fn section(title: &str, description: &str, rows: Vec<AnyElement>) -> AnyElement {
+    section_with(title, description, None, rows)
+}
+
+/// [`section`] with something (a button) on the right of its name.
+pub fn section_with(
+    title: &str,
+    description: &str,
+    actions: Option<AnyElement>,
+    rows: Vec<AnyElement>,
+) -> AnyElement {
+    let header = section_header(title, description, actions);
     group_column(
         header,
         (!rows.is_empty()).then(|| group_card(rows).into_any_element()),
     )
 }
 
-/// A group's title line, with something on its right.
-fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
+/// A section's name and description, with its buttons on the right.
+fn section_header(title: &str, description: &str, actions: Option<AnyElement>) -> gpui_kit::Div {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
             r.group(title);
@@ -677,19 +726,34 @@ fn group_header(title: &str, actions: AnyElement) -> gpui_kit::Div {
     div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(px(12.))
         .child(
             div()
+                .flex()
+                .flex_col()
                 .flex_1()
-                .text_size(theme::caption_size())
-                .text_color(theme::text_tertiary())
-                .child(title.to_uppercase()),
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(title.to_owned())),
+                )
+                .when(!description.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_tertiary())
+                            .child(SharedString::from(description.to_owned())),
+                    )
+                }),
         )
-        .child(actions)
+        .children(actions.map(|a| div().flex_shrink_0().child(a)))
 }
 
 /// A group's rows on their card, a thin line between each two.
-fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
+pub(crate) fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
     let count = rows.len();
     let mut children: Vec<AnyElement> = Vec::with_capacity(count * 2);
     for (n, row) in rows.into_iter().enumerate() {
@@ -707,18 +771,16 @@ fn group_card(rows: Vec<AnyElement>) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
-        .px(px(14.))
-        .py(px(4.))
+        .px(px(16.))
+        .py(px(6.))
         .rounded(theme::radius_large())
+        .border_1()
+        .border_color(theme::border())
         .bg(theme::sidebar())
         .children(children)
 }
 
-/// How wide a group may grow: it takes the window's width, and only a very wide window leaves
-/// room beside it (rows that long would be hard to read across).
-pub const CONTENT_MAX_W: f32 = 1100.;
-
-/// The title line over the card (none while folded).
+/// The header over the card (no card while it has no rows).
 fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
     div()
         .flex()
@@ -726,7 +788,6 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
         .flex_shrink_0()
         .gap(px(10.))
         .w_full()
-        .max_w(px(CONTENT_MAX_W))
         .child(header)
         .children(card)
         .into_any_element()
@@ -736,12 +797,140 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
 /// start and the rest in the (i) next to the name.
 const HINT_CHARS: usize = 72;
 
-/// A row: the name and a one-line hint on the left, the control on the right. A hint too long
-/// for one line puts all of it in the (i) beside the name.
-pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+/// Where a row's control goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// On the right, as wide as the control is: switches, short choices, sized dropdowns.
+    Fit,
+    /// Under the name and hint, across the whole card: wide sliders, tables of switches.
+    Below,
+}
+
+/// A row: the name and a one-line hint on the left, the control on the right at its own width:
+/// a switch, a few choices, or a dropdown or slider given a width that fits what it holds
+/// ([`sized`]). A hint too long for one line puts all of it in the (i) beside the name.
+pub fn setting_fit(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at(Place::Fit, name, hint, control)
+}
+
+/// [`setting`] with the control under the name and hint, as wide as the card (#64): a volume
+/// slider, a table of switches.
+pub fn setting_below(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at(Place::Below, name, hint, control)
+}
+
+/// Two [`setting_below`] side by side on one row ("Input volume" and "Output volume"); a card
+/// too narrow for both puts the second under the first.
+pub fn setting_pair(first: AnyElement, second: AnyElement) -> AnyElement {
+    let cell = |row: AnyElement| {
+        div()
+            .flex_grow_1()
+            .flex_basis(px(0.))
+            .min_w(px(PAIR_CELL_MIN_W))
+            .child(row)
+    };
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_x(px(24.))
+        .child(cell(first))
+        .child(cell(second))
+        .into_any_element()
+}
+
+/// One entry of a log (the audit log, the instance log): what happened on the first line, its
+/// details under it, and when on the right. Long details wrap rather than being cut off.
+pub fn log_entry(what: String, details: String, when: String) -> AnyElement {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(16.))
+        .py(px(10.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(div().text_size(theme::body_size()).child(what))
+                .when(!details.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_size(theme::secondary_size())
+                            .text_color(theme::text_tertiary())
+                            .child(details),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .pt(px(2.))
+                .text_size(theme::caption_size())
+                .text_color(theme::text_tertiary())
+                .child(when),
+        )
+        .into_any_element()
+}
+
+/// How narrow one half of a [`setting_pair`] may get before they stack.
+const PAIR_CELL_MIN_W: f32 = 240.;
+
+/// The space above and under a row's content.
+const ROW_PAD_Y: f32 = 12.;
+
+/// Notes for the search a setting that is a part of the row named `row` (a cell of a table of
+/// switches): finding it lights that row. Draws nothing.
+pub fn note_part(name: &str, hint: &str, row: &str) {
     RECORDING.with(|r| {
         if let Some(r) = r.borrow_mut().as_mut() {
-            r.row(name, hint);
+            r.row(name, hint, Some(row));
+        }
+    });
+}
+
+/// A control `width` px wide, for [`setting_fit`]: sliders and dropdowns take their parent's
+/// width.
+pub fn sized(width: f32, control: impl IntoElement) -> AnyElement {
+    div()
+        .w(px(width))
+        .max_w_full()
+        .child(control)
+        .into_any_element()
+}
+
+/// A row with its name and hint, a control on the right of them, and more across the card under
+/// them: "Voice activity sensitivity" with Automatic gain beside it and the level bar under it.
+pub fn setting_split(
+    name: &str,
+    hint: &str,
+    control: impl IntoElement,
+    below: impl IntoElement,
+) -> AnyElement {
+    setting_at_with(
+        Place::Fit,
+        name,
+        hint,
+        control,
+        Some(below.into_any_element()),
+    )
+}
+
+fn setting_at(place: Place, name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
+    setting_at_with(place, name, hint, control, None)
+}
+
+fn setting_at_with(
+    place: Place,
+    name: &str,
+    hint: &str,
+    control: impl IntoElement,
+    below: Option<AnyElement>,
+) -> AnyElement {
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.row(name, hint, None);
         }
     });
     // Just found by the search: it glows and fades back.
@@ -762,49 +951,72 @@ pub fn setting(name: &str, hint: &str, control: impl IntoElement) -> AnyElement 
                 gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
             })
     });
-    let row = div()
+    let text = div()
         .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(12.))
-        .py(px(10.))
+        .flex_col()
+        .gap(px(2.))
         .child(
             div()
                 .flex()
-                .flex_col()
-                .flex_1()
-                .min_w(px(220.))
-                .gap(px(2.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(theme::body_size())
-                        .child(SharedString::from(name.to_owned()))
-                        .children(info),
-                )
-                .when(!hint.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .text_size(theme::secondary_size())
-                            .text_color(theme::text_tertiary())
-                            .truncate()
-                            .child(full_hint),
-                    )
-                }),
+                .items_center()
+                .gap(px(6.))
+                .text_size(theme::body_size())
+                .child(SharedString::from(name.to_owned()))
+                .children(info),
         )
-        .child(
-            // At least wide enough for a slider, which has no width of its own.
-            div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .flex_shrink_0()
-                .min_w(px(240.))
-                .max_w_full()
-                .child(control),
-        );
+        .when(!hint.is_empty(), |d| {
+            d.child(
+                div()
+                    .text_size(theme::secondary_size())
+                    .text_color(theme::text_tertiary())
+                    .truncate()
+                    .child(full_hint),
+            )
+        });
+    let row = match place {
+        Place::Below => div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(ROW_PAD_Y))
+            .child(text)
+            // Not stretched: a few choices keep their own width. Sliders, dropdowns and fields
+            // that should run across the card are `w_full` themselves.
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(control),
+            ),
+        Place::Fit => div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .when(below.is_none(), |d| d.py(px(ROW_PAD_Y)))
+            .child(text.flex_1().min_w(px(220.)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .flex_shrink_0()
+                    .max_w_full()
+                    .child(control),
+            ),
+    };
+    let row = match below {
+        Some(below) => div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .py(px(ROW_PAD_Y))
+            .child(row)
+            .child(div().w_full().child(below)),
+        None => row,
+    };
     if !lit {
         return row.into_any_element();
     }

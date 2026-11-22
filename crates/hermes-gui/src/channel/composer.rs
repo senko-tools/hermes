@@ -86,8 +86,12 @@ impl Shell {
             shift || secondary
         };
         if send {
+            // Sending trims the end, so a newline the box already put in for Shift+Enter (when
+            // Enter doesn't send) is not sent.
             self.submit(key.clone(), window, cx);
-        } else if let Some(view) = self.chats.get(key) {
+        } else if !shift // The box inserts the newline for Shift+Enter itself.
+            && let Some(view) = self.chats.get(key)
+        {
             view.input
                 .update(cx, |input, cx| input.insert("\n", window, cx));
         }

@@ -1828,7 +1828,7 @@ impl Shell {
                     .map_err(|e| e.to_string())
             },
             move |this, result, _, cx| match result {
-                Ok(_) => this.info("Channels reordered", cx),
+                Ok(_) => this.success("Channels reordered", cx),
                 Err(err) => {
                     this.core.restore_channels(&inst, old);
                     this.error(err, cx);

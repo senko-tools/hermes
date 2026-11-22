@@ -442,6 +442,8 @@ impl WindowsPlatform {
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
+                // Hermes patch: see `hermes_covered`.
+                let mut coverage = std::collections::HashMap::<isize, hermes_covered::Coverage>::new();
                 loop {
                     let signal_source = vsync_provider.wait_for_vsync();
                     let signal_at = PlatformFrameSignal::capture(scheduler::Instant::now);
@@ -463,7 +465,19 @@ impl WindowsPlatform {
                     let Some(all_windows) = all_windows.upgrade() else {
                         break;
                     };
-                    for hwnd in all_windows.read().iter() {
+                    let all_windows = all_windows.read();
+                    coverage.retain(|raw, _| all_windows.iter().any(|w| w.as_raw().0 as isize == *raw));
+                    for hwnd in all_windows.iter() {
+                        // Hermes patch: a window hidden behind another one is drawn only a few
+                        // times a second.
+                        if !coverage
+                            .entry(hwnd.as_raw().0 as isize)
+                            .or_default()
+                            .may_draw(hwnd.as_raw())
+                        {
+                            hwnd.frame_signal.take();
+                            continue;
+                        }
                         unsafe {
                             if let Some(signal_at) = signal_at {
                                 if IsWindowVisible(hwnd.as_raw()).as_bool()
@@ -2022,5 +2036,139 @@ mod tests {
                 vec![12],
             )),
         );
+    }
+}
+
+/// Hermes patch. Hermes turns off gpui's frame limit for inactive windows
+/// (`WindowOptions::inactive_frame_interval`), so a window beside the focused one scrolls and
+/// animates smoothly. A window that cannot be seen should still not draw at the display's rate:
+/// a minimized window is not invalidated, and one that is not in front and lies wholly under one
+/// other window is invalidated only every [`hermes_covered::CHECK`].
+/// Being covered by several windows together is not detected; such a window draws as usual.
+mod hermes_covered {
+    use std::time::{Duration, Instant};
+
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GW_HWNDPREV, GWL_EXSTYLE, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect,
+        IsIconic, IsWindowVisible, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
+    };
+
+    /// How often a covered window is drawn, and how often coverage is looked at again.
+    pub(super) const CHECK: Duration = Duration::from_millis(250);
+    /// The most windows above it that are looked at.
+    const MAX_ABOVE: usize = 512;
+
+    #[derive(Default)]
+    pub(super) struct Coverage {
+        checked: Option<Instant>,
+        covered: bool,
+        drawn: Option<Instant>,
+    }
+
+    impl Coverage {
+        /// Whether `hwnd` may be invalidated for this vsync.
+        pub(super) fn may_draw(&mut self, hwnd: HWND) -> bool {
+            // Minimized: nothing to see. Restoring it invalidates it, which draws it again.
+            if unsafe { IsIconic(hwnd) }.as_bool() {
+                return false;
+            }
+            let now = Instant::now();
+            if self.checked.is_none_or(|at| now.duration_since(at) >= CHECK) {
+                self.covered = unsafe { covered(hwnd) };
+                self.checked = Some(now);
+            }
+            if !self.covered {
+                self.drawn = None;
+                return true;
+            }
+            if self.drawn.is_some_and(|at| now.duration_since(at) < CHECK) {
+                return false;
+            }
+            self.drawn = Some(now);
+            true
+        }
+    }
+
+    /// The window's visible frame, without the invisible resize borders.
+    unsafe fn frame(hwnd: HWND) -> Option<RECT> {
+        let mut rect = RECT::default();
+        let got = unsafe {
+            DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut rect as *mut RECT as *mut _,
+                size_of::<RECT>() as u32,
+            )
+        };
+        if got.is_err() && unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+            return None;
+        }
+        (rect.right > rect.left && rect.bottom > rect.top).then_some(rect)
+    }
+
+    /// Whether `other` is an opaque window that hides all of `rect`.
+    unsafe fn hides(other: HWND, rect: &RECT) -> bool {
+        unsafe {
+            if !IsWindowVisible(other).as_bool() || IsIconic(other).as_bool() {
+                return false;
+            }
+            // Overlays, tool windows and see-through windows may not hide what is under them.
+            let style = GetWindowLongW(other, GWL_EXSTYLE) as u32;
+            let see_through =
+                WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0 | WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0;
+            if style & see_through != 0 {
+                return false;
+            }
+            // On another virtual desktop, or otherwise not shown.
+            let mut cloaked = 0u32;
+            if DwmGetWindowAttribute(
+                other,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut u32 as *mut _,
+                size_of::<u32>() as u32,
+            )
+            .is_ok()
+                && cloaked != 0
+            {
+                return false;
+            }
+            frame(other).is_some_and(|r| {
+                r.left <= rect.left
+                    && r.top <= rect.top
+                    && r.right >= rect.right
+                    && r.bottom >= rect.bottom
+            })
+        }
+    }
+
+    /// Whether `hwnd` is not in front and one window above it hides it whole.
+    unsafe fn covered(hwnd: HWND) -> bool {
+        unsafe {
+            if GetForegroundWindow() == hwnd {
+                return false;
+            }
+            let Some(rect) = frame(hwnd) else {
+                return false;
+            };
+            let mut above = GetWindow(hwnd, GW_HWNDPREV);
+            for _ in 0..MAX_ABOVE {
+                let Ok(other) = above else {
+                    return false;
+                };
+                if other.is_invalid() {
+                    return false;
+                }
+                if hides(other, &rect) {
+                    return true;
+                }
+                above = GetWindow(other, GW_HWNDPREV);
+            }
+            false
+        }
     }
 }

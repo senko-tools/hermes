@@ -926,4 +926,89 @@ fn the_wheel_and_menus_over_a_chat_do_not_crash(cx: &mut gpui_kit::TestAppContex
         });
         visual.run_until_parked();
     }
+
+    // Code blocks: a long one and a one-line one draw, and the wheel over them does no harm.
+    let core = visual.update(|_, cx| shell.read(cx).core.clone());
+    let long_line = "x".repeat(400);
+    let long_code: String = (0..60).map(|n| format!("let line_{n} = {n};\n")).collect();
+    for content in [
+        format!("```rust\n{long_line}\n{long_code}```"),
+        format!("```\n{long_line}\n```"),
+    ] {
+        core.send_message(
+            &inst,
+            channel,
+            Draft {
+                content,
+                ..Draft::default()
+            },
+        )
+        .unwrap();
+    }
+    let mut code_messages = Vec::new();
+    for _ in 0..400 {
+        visual.run_until_parked();
+        let count = visual.update(|_, _| {
+            let store = core.store();
+            store
+                .instance(&inst)
+                .and_then(|s| s.window(channel))
+                .map_or(0, |w| w.messages.len())
+        });
+        if count == 5 {
+            code_messages = (3..5)
+                .map(|n| visual.update(|_, cx| visual_message(&shell, cx, &inst, channel, n)))
+                .collect();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(code_messages.len(), 2, "the code messages arrived");
+    // A few frames: the blocks measure themselves on the first.
+    for _ in 0..4 {
+        visual.update(|window, cx| {
+            shell.update(cx, |this, cx| {
+                if let Some(view) = this.chats.get(&key) {
+                    view.list.scroll_to_end();
+                }
+                cx.notify();
+            });
+            window.refresh();
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+    }
+    for message in &code_messages {
+        let viewport = visual
+            .update(|_, cx| shell.read(cx).code_blocks.viewport_of(*message, 0))
+            .expect("the code block was painted");
+        let over = viewport.center();
+        for modifiers in [Modifiers::none(), Modifiers::shift(), Modifiers::control()] {
+            visual.simulate_event(ScrollEvent {
+                position: over,
+                delta: ScrollDelta::Lines(point(0.0, -1.0)),
+                modifiers,
+                ..Default::default()
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+        }
+    }
+
+    // Shift+Enter puts one newline in the message box, not two.
+    visual.update(|window, cx| {
+        shell.update(cx, |this, cx| {
+            let input = this.chats.get(&key).unwrap().input.clone();
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+    });
+    visual.simulate_keystrokes("a shift-enter");
+    visual.run_until_parked();
+    visual.update(|_, cx| {
+        let input = shell.read(cx).chats.get(&key).unwrap().input.clone();
+        assert_eq!(input.read(cx).value().to_string(), "a\n");
+    });
 }

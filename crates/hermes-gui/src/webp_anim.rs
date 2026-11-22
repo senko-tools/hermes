@@ -1,66 +1,32 @@
-//! Animated WebP, put together here instead of by `image-webp` (0.2.4), which keeps what a frame
-//! should clear away ("dispose to background") unless a background colour is set, and then
-//! clears opaque frames with the wrong stride. Each frame is cut out of the file as a still WebP,
-//! decoded by `image`, and laid onto the canvas the way the WebP container spec says.
+//! Animated WebP, decoded by libwebp's animation decoder: it lays each frame onto the canvas the
+//! way the WebP container spec says (dispose, blend) and is several times faster than `image-webp`
+//! (15 against 54 ms for a full-HD lossy frame on one thread). `image-webp` 0.2.4 also kept what a
+//! frame should clear away ("dispose to background").
+
+use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 use image::{Delay, Frame, Frames, RgbaImage};
+use libwebp_sys as webp;
 
-/// One frame as the file describes it.
-struct Part<'a> {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    duration_ms: u32,
-    /// Laid over what is there (else it replaces it).
-    blend: bool,
-    /// Its area is cleared before the next frame.
-    dispose: bool,
-    alpha: Option<&'a [u8]>,
-    /// The `VP8 ` or `VP8L` chunk: its name and data.
-    image: ([u8; 4], &'a [u8]),
-}
-
-/// The canvas size and the frames of an animated WebP; `None` for any other file.
-fn parse(bytes: &[u8]) -> Option<((u32, u32), Vec<Part<'_>>)> {
+/// The canvas size and frame count of an animated WebP, read from its chunks only; `None` for any
+/// other file (a still WebP too).
+pub fn size_and_count(bytes: &[u8]) -> Option<((u32, u32), usize)> {
     if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
         return None;
     }
     let mut canvas = None;
-    let mut parts = Vec::new();
+    let mut count = 0;
     for (name, data) in chunks(&bytes[12..]) {
         match &name {
             b"VP8X" if data.len() >= 10 => {
                 canvas = Some((u24(&data[4..]) + 1, u24(&data[7..]) + 1));
             }
-            b"ANMF" if data.len() >= 16 => {
-                let flags = data[15];
-                let mut alpha = None;
-                let mut image = None;
-                for (inner, body) in chunks(&data[16..]) {
-                    match &inner {
-                        b"ALPH" => alpha = Some(body),
-                        b"VP8 " | b"VP8L" => image = Some((inner, body)),
-                        _ => {}
-                    }
-                }
-                parts.push(Part {
-                    x: u24(&data[0..]) * 2,
-                    y: u24(&data[3..]) * 2,
-                    width: u24(&data[6..]) + 1,
-                    height: u24(&data[9..]) + 1,
-                    duration_ms: u24(&data[12..]),
-                    blend: flags & 0b10 == 0,
-                    dispose: flags & 0b01 != 0,
-                    alpha,
-                    image: image?,
-                });
-            }
+            b"ANMF" if data.len() >= 16 => count += 1,
             _ => {}
         }
     }
-    let canvas = canvas?;
-    (!parts.is_empty()).then_some((canvas, parts))
+    canvas.filter(|_| count > 0).map(|canvas| (canvas, count))
 }
 
 fn u24(b: &[u8]) -> u32 {
@@ -81,181 +47,123 @@ fn chunks(mut bytes: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
     })
 }
 
-/// A chunk as bytes: name, length, data, padding.
-fn chunk(out: &mut Vec<u8>, name: &[u8; 4], data: &[u8]) {
-    out.extend_from_slice(name);
-    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    out.extend_from_slice(data);
-    if data.len() & 1 == 1 {
-        out.push(0);
-    }
+/// libwebp's animation decoder over `bytes`, which it reads in place.
+pub struct Decoder<'a> {
+    dec: NonNull<webp::WebPAnimDecoder>,
+    width: u32,
+    height: u32,
+    /// Where the frame before ended, in ms from the start.
+    ended: i32,
+    _bytes: PhantomData<&'a [u8]>,
 }
 
-/// A frame on its own, as a still WebP file.
-fn still(part: &Part) -> Vec<u8> {
-    let mut body = Vec::new();
-    if let Some(alpha) = part.alpha.filter(|_| &part.image.0 == b"VP8 ") {
-        let mut header = [0u8; 10];
-        header[0] = 0x10; // has alpha
-        header[4..7].copy_from_slice(&(part.width - 1).to_le_bytes()[..3]);
-        header[7..10].copy_from_slice(&(part.height - 1).to_le_bytes()[..3]);
-        chunk(&mut body, b"VP8X", &header);
-        chunk(&mut body, b"ALPH", alpha);
-    }
-    chunk(&mut body, &part.image.0, part.image.1);
-    let mut out = Vec::with_capacity(body.len() + 12);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(body.len() as u32 + 4).to_le_bytes());
-    out.extend_from_slice(b"WEBP");
-    out.extend_from_slice(&body);
-    out
-}
+// SAFETY: the decoder is only used through `&mut self` (one thread at a time) and holds no
+// thread-local state; the bytes it reads are borrowed for `'a` and never written.
+#[allow(unsafe_code)]
+unsafe impl Send for Decoder<'_> {}
 
-/// `top` laid over `under` (straight alpha).
-fn over(under: [u8; 4], top: [u8; 4]) -> [u8; 4] {
-    let ta = u32::from(top[3]);
-    if ta == 255 {
-        return top;
-    }
-    if ta == 0 {
-        return under;
-    }
-    let ua = u32::from(under[3]) * (255 - ta) / 255;
-    let a = ta + ua;
-    let mut out = [0, 0, 0, a as u8];
-    for i in 0..3 {
-        out[i] = ((u32::from(top[i]) * ta + u32::from(under[i]) * ua + a / 2) / a) as u8;
-    }
-    out
-}
-
-/// The canvas size and frame count of an animated WebP, read from its chunks only.
-pub fn size_and_count(bytes: &[u8]) -> Option<((u32, u32), usize)> {
-    parse(bytes).map(|(canvas, parts)| (canvas, parts.len()))
-}
-
-/// One frame's own picture, decoded on its own.
-fn decode_part(part: &Part) -> image::ImageResult<RgbaImage> {
-    image::load_from_memory_with_format(&still(part), image::ImageFormat::WebP)
-        .map(|image| image.into_rgba8())
-}
-
-/// How many frames are decoded side by side: each frame's own picture does not depend on the
-/// others, only laying them onto the canvas goes in order.
-fn workers() -> usize {
-    std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .clamp(1, 4)
-}
-
-/// `pixels` laid onto `canvas` at (`x`, `y`): over what is there when `blend`, else in its place.
-fn lay(canvas: &mut RgbaImage, pixels: &RgbaImage, x: u32, y: u32, blend: bool) {
-    let (width, height) = canvas.dimensions();
-    if x >= width || y >= height {
-        return;
-    }
-    let w = pixels.width().min(width - x) as usize;
-    let rows = pixels.height().min(height - y);
-    let stride = width as usize * 4;
-    let source_stride = pixels.width() as usize * 4;
-    let canvas = &mut **canvas;
-    for row in 0..rows as usize {
-        let at = (y as usize + row) * stride + x as usize * 4;
-        let target = &mut canvas[at..at + w * 4];
-        let source = &pixels.as_raw()[row * source_stride..row * source_stride + w * 4];
-        if !blend {
-            target.copy_from_slice(source);
-            continue;
-        }
-        for (t, s) in target
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(source.as_chunks::<4>().0)
-        {
-            *t = over(*t, *s);
-        }
-    }
-}
-
-/// Clears the area (`x`, `y`, `w`, `h`) of `canvas` to see-through.
-fn clear_area(canvas: &mut RgbaImage, (x, y, w, h): (u32, u32, u32, u32)) {
-    let (width, height) = canvas.dimensions();
-    if x >= width || y >= height {
-        return;
-    }
-    let w = w.min(width - x) as usize;
-    let stride = width as usize * 4;
-    let canvas = &mut **canvas;
-    for row in y..(y + h).min(height) {
-        let at = row as usize * stride + x as usize * 4;
-        canvas[at..at + w * 4].fill(0);
-    }
-}
-
-/// The frames of an animated WebP, each the whole canvas; `None` if it is not one. Frames are
-/// decoded as they are asked for, a few at once on as many threads.
-pub fn frames(bytes: &[u8]) -> Option<Frames<'_>> {
-    let ((width, height), parts) = parse(bytes)?;
-    let mut canvas = RgbaImage::new(width, height);
-    // The area the frame before asked to be cleared.
-    let mut clear: Option<(u32, u32, u32, u32)> = None;
-    let mut parts = parts.into_iter().peekable();
-    let workers = workers();
-    let mut ready: std::collections::VecDeque<(Part, image::ImageResult<RgbaImage>)> =
-        std::collections::VecDeque::new();
-    Some(Frames::new(Box::new(std::iter::from_fn(move || {
-        if ready.is_empty() {
-            let batch: Vec<Part> = parts.by_ref().take(workers).collect();
-            if batch.len() <= 1 {
-                ready.extend(batch.into_iter().map(|p| {
-                    let pixels = decode_part(&p);
-                    (p, pixels)
-                }));
-            } else {
-                let decoded: Vec<_> = std::thread::scope(|scope| {
-                    let handles: Vec<_> = batch
-                        .iter()
-                        .map(|p| scope.spawn(move || decode_part(p)))
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| {
-                            h.join().unwrap_or_else(|_| {
-                                Err(image::ImageError::Decoding(
-                                    image::error::DecodingError::from_format_hint(
-                                        image::error::ImageFormatHint::Exact(
-                                            image::ImageFormat::WebP,
-                                        ),
-                                    ),
-                                ))
-                            })
-                        })
-                        .collect()
-                });
-                ready.extend(batch.into_iter().zip(decoded));
+impl<'a> Decoder<'a> {
+    /// A decoder of whole frames in BGRA (what gpui draws) or, without `bgra`, RGBA; `None` when
+    /// `bytes` are not an animated WebP.
+    #[allow(unsafe_code)]
+    pub fn new(bytes: &'a [u8], bgra: bool) -> Option<Self> {
+        size_and_count(bytes)?;
+        // SAFETY: the options are initialised by libwebp before use; `data` points into `bytes`,
+        // which outlive the decoder (`'a`); a null decoder is turned into `None`.
+        unsafe {
+            let mut options: webp::WebPAnimDecoderOptions = std::mem::zeroed();
+            if webp::WebPAnimDecoderOptionsInit(&mut options) == 0 {
+                return None;
             }
+            options.color_mode = if bgra {
+                webp::WEBP_CSP_MODE::MODE_BGRA
+            } else {
+                webp::WEBP_CSP_MODE::MODE_RGBA
+            };
+            options.use_threads = 0;
+            let data = webp::WebPData {
+                bytes: bytes.as_ptr(),
+                size: bytes.len(),
+            };
+            let dec = NonNull::new(webp::WebPAnimDecoderNew(&data, &options))?;
+            let mut info: webp::WebPAnimInfo = std::mem::zeroed();
+            if webp::WebPAnimDecoderGetInfo(dec.as_ptr(), &mut info) == 0 {
+                webp::WebPAnimDecoderDelete(dec.as_ptr());
+                return None;
+            }
+            Some(Decoder {
+                dec,
+                width: info.canvas_width,
+                height: info.canvas_height,
+                ended: 0,
+                _bytes: PhantomData,
+            })
         }
-        let (part, pixels) = ready.pop_front()?;
-        if let Some(area) = clear.take() {
-            clear_area(&mut canvas, area);
+    }
+
+    /// The next whole frame and how long it shows; `None` after the last one.
+    #[allow(unsafe_code)]
+    pub fn next_frame(&mut self) -> Option<Result<(RgbaImage, Delay), String>> {
+        // SAFETY: `dec` is a live decoder; on success `buf` points at its canvas of
+        // width × height × 4 bytes, valid until the next call, and is copied out at once.
+        unsafe {
+            if webp::WebPAnimDecoderHasMoreFrames(self.dec.as_ptr()) == 0 {
+                return None;
+            }
+            let mut buf = std::ptr::null_mut();
+            let mut ends = 0;
+            if webp::WebPAnimDecoderGetNext(self.dec.as_ptr(), &mut buf, &mut ends) == 0
+                || buf.is_null()
+            {
+                return Some(Err("a WebP frame could not be decoded".into()));
+            }
+            let len = self.width as usize * self.height as usize * 4;
+            let pixels = std::slice::from_raw_parts(buf, len).to_vec();
+            let ms = (ends - self.ended).max(0) as u32;
+            self.ended = ends;
+            let image = RgbaImage::from_raw(self.width, self.height, pixels)?;
+            Some(Ok((image, Delay::from_numer_denom_ms(ms, 1))))
         }
-        let pixels = match pixels {
-            Ok(pixels) => pixels,
-            Err(err) => return Some(Err(err)),
-        };
-        lay(&mut canvas, &pixels, part.x, part.y, part.blend);
-        if part.dispose {
-            clear = Some((part.x, part.y, part.width, part.height));
-        }
-        let delay = Delay::from_numer_denom_ms(part.duration_ms, 1);
-        Some(Ok(Frame::from_parts(canvas.clone(), 0, 0, delay)))
+    }
+}
+
+impl Drop for Decoder<'_> {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: `dec` came from `WebPAnimDecoderNew` and is freed only here.
+        unsafe { webp::WebPAnimDecoderDelete(self.dec.as_ptr()) };
+    }
+}
+
+/// The frames of an animated WebP in RGBA, each the whole canvas; `None` if it is not one.
+pub fn frames(bytes: &[u8]) -> Option<Frames<'_>> {
+    let mut decoder = Decoder::new(bytes, false)?;
+    Some(Frames::new(Box::new(std::iter::from_fn(move || {
+        Some(match decoder.next_frame()? {
+            Ok((pixels, delay)) => Ok(Frame::from_parts(pixels, 0, 0, delay)),
+            Err(err) => Err(image::ImageError::Decoding(
+                image::error::DecodingError::new(
+                    image::error::ImageFormatHint::Exact(image::ImageFormat::WebP),
+                    err,
+                ),
+            )),
+        })
     }))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chunk as bytes: name, length, data, padding.
+    fn chunk(out: &mut Vec<u8>, name: &[u8; 4], data: &[u8]) {
+        out.extend_from_slice(name);
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() & 1 == 1 {
+            out.push(0);
+        }
+    }
 
     /// A still picture as a lossless WebP's `VP8L` chunk data.
     fn vp8l(pixels: &RgbaImage) -> Vec<u8> {

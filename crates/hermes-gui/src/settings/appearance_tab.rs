@@ -1,6 +1,7 @@
 //! Appearance.
 
 use super::*;
+use crate::ui::{ButtonKind, DropWidth, Segment};
 
 impl Shell {
     pub(super) fn slider(&self, page: &SettingsPage, kind: SliderKind) -> AnyElement {
@@ -33,146 +34,170 @@ impl Shell {
             div()
                 .flex()
                 .gap(px(8.))
-                .child(
-                    Button::new("themes-folder")
-                        .cursor_pointer()
-                        .small()
-                        .label("Open themes folder")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(paths) = this.core.paths() {
-                                let dir = paths.dir.join(theme::THEMES_DIR);
-                                let _ = std::fs::create_dir_all(&dir);
-                                if let Err(err) = crate::open::path(&dir) {
-                                    this.error(
-                                        format!("could not open {}: {err}", dir.display()),
-                                        cx,
-                                    );
-                                }
+                .child(crate::ui::button(
+                    self,
+                    "themes-folder",
+                    "Open themes folder",
+                    ButtonKind::Secondary,
+                    true,
+                    |this, _, cx| {
+                        if let Some(paths) = this.core.paths() {
+                            let dir = paths.dir.join(theme::THEMES_DIR);
+                            let _ = std::fs::create_dir_all(&dir);
+                            if let Err(err) = crate::open::path(&dir) {
+                                this.error(format!("could not open {}: {err}", dir.display()), cx);
                             }
-                        })),
-                )
-                .child(
-                    Button::new("themes-copy")
-                        .cursor_pointer()
-                        .small()
-                        .label("Copy current theme")
-                        .on_click(cx.listener(|this, _, _, cx| match this.copy_theme(cx) {
-                            Ok(name) => this.set_theme(name, cx),
-                            Err(err) => this.error(format!("theme not copied: {err}"), cx),
-                        })),
-                )
+                        }
+                    },
+                    cx,
+                ))
+                .child(crate::ui::button(
+                    self,
+                    "themes-copy",
+                    "Copy current theme",
+                    ButtonKind::Secondary,
+                    true,
+                    |this, _, cx| match this.copy_theme(cx) {
+                        Ok(name) => this.set_theme(name, cx),
+                        Err(err) => this.error(format!("theme not copied: {err}"), cx),
+                    },
+                    cx,
+                ))
                 .into_any_element(),
+            // The cards and their note are one part of the card: no line between them.
             vec![
                 div()
                     .flex()
-                    .flex_wrap()
-                    .gap(px(8.))
-                    .children(cards)
+                    .flex_col()
+                    .gap(px(10.))
+                    .py(px(12.))
+                    .child(div().flex().flex_wrap().gap(px(8.)).children(cards))
+                    .child(muted(
+                        "Your own themes are .toml files in the themes folder.",
+                    ))
                     .into_any_element(),
-                muted("Your own themes are .toml files in the themes folder."),
             ],
         );
         let shown_px = i32::from(config.font.size) + 3;
         let text_group = group(
             "Text",
             vec![
-                setting(
-                    "Font",
-                    "Any font installed on this computer.",
-                    Select::new(&page.font).cursor_pointer(),
-                ),
-                setting(
-                    "Code font",
-                    "For code blocks.",
-                    Select::new(&page.mono_font).cursor_pointer(),
-                ),
-                setting(
-                    "Size of titles",
-                    "",
-                    crate::ui::segments().children(
-                        [(2, "Small", 11.), (4, "Normal", 13.), (8, "Large", 16.)]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(n, (extra, name, size))| {
-                                crate::ui::segment_with(
-                                    self,
-                                    ("heading-extra", n),
-                                    Some(title_preview(size)),
-                                    name,
-                                    config.font.heading_extra == extra,
-                                    cx,
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.set_config(|c| c.font.heading_extra = extra, cx);
-                                    },
-                                ))
-                            }),
+                setting_pair(
+                    setting_below(
+                        "Font",
+                        "Any font installed on this computer.",
+                        crate::ui::dropdown(&page.font, DropWidth::Wide).w_full(),
+                    ),
+                    setting_below(
+                        "Font size",
+                        &format!("{shown_px} px"),
+                        self.slider(page, SliderKind::FontSize),
                     ),
                 ),
-                setting(
-                    "Font size",
-                    &format!("{shown_px} px"),
-                    self.slider(page, SliderKind::FontSize),
+                self.more(
+                    "appearance-text",
+                    "More text options",
+                    |cx| {
+                        vec![
+                            setting_fit(
+                                "Code font",
+                                "For code blocks.",
+                                crate::ui::dropdown(&page.mono_font, DropWidth::Medium),
+                            ),
+                            setting_fit(
+                                "Size of titles",
+                                "",
+                                crate::ui::segmented(
+                                    self,
+                                    "heading-extra",
+                                    TITLE_SIZES
+                                        .iter()
+                                        .map(|(_, name, size)| {
+                                            Segment::with(title_preview(*size), *name)
+                                        })
+                                        .collect(),
+                                    TITLE_SIZES
+                                        .iter()
+                                        .position(|(e, _, _)| *e == config.font.heading_extra),
+                                    true,
+                                    |this, n, _, cx| {
+                                        let extra = TITLE_SIZES[n].0;
+                                        this.set_config(|c| c.font.heading_extra = extra, cx);
+                                    },
+                                    cx,
+                                ),
+                            ),
+                        ]
+                    },
+                    cx,
                 ),
             ],
         );
         let scale = self.ui_scale_draft.unwrap_or(config.font.ui_scale);
-        let presets = SCALE_PRESETS.iter().enumerate().map(|(n, value)| {
-            let value = *value;
-            let chosen =
-                (config.font.ui_scale - value).abs() < 0.001 && self.ui_scale_draft.is_none();
-            crate::ui::segment(
-                self,
-                ("scale-preset", n),
-                format!("{:.0}%", value * 100.),
-                chosen,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, window, cx| this.set_ui_scale(value, window, cx)))
-        });
-        let position_chips = [
-            (config::SidebarPosition::Left, "Left"),
-            (config::SidebarPosition::Right, "Right"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name))| {
-            crate::ui::segment_with(
-                self,
-                ("sidebar-position", n),
-                Some(layout_preview(value == config::SidebarPosition::Left)),
-                name,
-                config.sidebar.position == value,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
+        // The slider is the setting; the presets under it set it in one click.
+        let presets =
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(6.))
+                .children(SCALE_PRESETS.iter().enumerate().map(|(n, value)| {
+                    let chosen = (config.font.ui_scale - value).abs() < 0.001
+                        && self.ui_scale_draft.is_none();
+                    let value = *value;
+                    crate::ui::chip(
+                        self,
+                        SharedString::from(format!("scale-preset-{n}")),
+                        format!("{:.0}%", value * 100.),
+                        chosen,
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.set_ui_scale(value, window, cx);
+                    }))
+                }));
+        let position = crate::ui::segmented(
+            self,
+            "sidebar-position",
+            SIDEBAR_POSITIONS
+                .iter()
+                .map(|(value, name)| {
+                    Segment::with(
+                        layout_preview(*value == config::SidebarPosition::Left),
+                        *name,
+                    )
+                })
+                .collect(),
+            SIDEBAR_POSITIONS
+                .iter()
+                .position(|(v, _)| *v == config.sidebar.position),
+            true,
+            |this, n, _, cx| {
+                let value = SIDEBAR_POSITIONS[n].0;
                 this.set_config(|c| c.sidebar.position = value, cx);
-            }))
-        });
-        let shape_chips = [
-            (config::AvatarShape::Circle, "Circle"),
-            (config::AvatarShape::Squircle, "Squircle"),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(n, (value, name))| {
-            crate::ui::segment_with(
-                self,
-                ("avatar-shape", n),
-                Some(shape_preview(value)),
-                name,
-                config.general.avatar_shape == value,
-                cx,
-            )
-            .on_click(cx.listener(move |this, _, _, cx| {
+            },
+            cx,
+        );
+        let shape = crate::ui::segmented(
+            self,
+            "avatar-shape",
+            AVATAR_SHAPES
+                .iter()
+                .map(|(value, name)| Segment::with(shape_preview(*value), *name))
+                .collect(),
+            AVATAR_SHAPES
+                .iter()
+                .position(|(v, _)| *v == config.general.avatar_shape),
+            true,
+            |this, n, _, cx| {
+                let value = AVATAR_SHAPES[n].0;
                 this.set_config(|c| c.general.avatar_shape = value, cx);
-            }))
-        });
+            },
+            cx,
+        );
         let layout_group = group(
             "Layout",
             vec![
-                setting(
+                setting_below(
                     "UI scale",
                     &if self.ui_scale_draft.is_some() {
                         format!("{:.0} %, applied when you let go", scale * 100.)
@@ -183,39 +208,52 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .w_full()
-                        .gap(px(8.))
-                        .items_end()
-                        .child(crate::ui::segments().children(presets))
-                        .child(self.slider(page, SliderKind::UiScale)),
+                        .gap(px(10.))
+                        .child(self.slider(page, SliderKind::UiScale))
+                        .child(presets),
                 ),
-                setting(
-                    "Sidebar position",
-                    "",
-                    crate::ui::segments().children(position_chips),
-                ),
-                setting(
-                    "Avatar shape",
-                    "How people's pictures are cut, everywhere.",
-                    crate::ui::segments().children(shape_chips),
-                ),
-                setting(
-                    "Panel widths",
-                    &format!(
-                        "Sidebar {} px, member list {} px",
-                        config.sidebar.width, config.sidebar.member_list_width
+                setting_pair(
+                    setting_below(
+                        "Sidebar position",
+                        "Which side the servers and channels are on.",
+                        position,
                     ),
-                    Button::new("reset-widths")
-                        .cursor_pointer()
-                        .label("Reset")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_config(
-                                |c| {
-                                    c.sidebar.width = 240;
-                                    c.sidebar.member_list_width = 232;
+                    setting_below(
+                        "Avatar shape",
+                        "How people's pictures are cut, everywhere.",
+                        shape,
+                    ),
+                ),
+                self.more(
+                    "appearance-layout",
+                    "More layout options",
+                    |cx| {
+                        vec![setting_fit(
+                            "Panel widths",
+                            &format!(
+                                "Sidebar {} px, member list {} px",
+                                config.sidebar.width, config.sidebar.member_list_width
+                            ),
+                            crate::ui::button(
+                                self,
+                                "reset-widths",
+                                "Reset",
+                                ButtonKind::Secondary,
+                                true,
+                                |this, _, cx| {
+                                    this.set_config(
+                                        |c| {
+                                            c.sidebar.width = 240;
+                                            c.sidebar.member_list_width = 232;
+                                        },
+                                        cx,
+                                    );
                                 },
                                 cx,
-                            );
-                        })),
+                            ),
+                        )]
+                    },
+                    cx,
                 ),
             ],
         );
@@ -231,6 +269,18 @@ impl Shell {
         )
     }
 }
+
+/// The size of titles: extra px over the text, name, and the size of its "Aa".
+const TITLE_SIZES: [(i32, &str, f32); 3] =
+    [(2, "Small", 11.), (4, "Normal", 13.), (8, "Large", 16.)];
+const SIDEBAR_POSITIONS: [(config::SidebarPosition, &str); 2] = [
+    (config::SidebarPosition::Left, "Left"),
+    (config::SidebarPosition::Right, "Right"),
+];
+const AVATAR_SHAPES: [(config::AvatarShape, &str); 2] = [
+    (config::AvatarShape::Circle, "Circle"),
+    (config::AvatarShape::Squircle, "Squircle"),
+];
 
 /// "Aa" at `size`, for the size of titles.
 fn title_preview(size: f32) -> crate::ui::Preview {

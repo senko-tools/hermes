@@ -3,104 +3,92 @@
 use super::*;
 
 impl Shell {
-    /// Says so above the chat when messages are not getting through: at once when the
+    /// Says so over the chat when messages are not getting through: at once when the
     /// connection gave up, and after [`crate::sidebar::BANNER_AFTER`] while it is reconnecting
-    /// (a short blip only shows in the connection icon).
-    pub(super) fn render_connection_banner(
+    /// (a short blip only shows in the connection icon). It stays until the connection is back,
+    /// says "Reconnected" for [`RECONNECTED_FOR`], then goes.
+    pub fn connection_notice(
         &self,
         inst: &InstanceId,
         cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    ) -> Option<crate::notice::Notice> {
+        use crate::notice::{Notice, Severity};
         use hermes_client_core::gateway::ConnStatus;
-        let text = match self.core.status(inst) {
+        let (text, severity) = match self.core.status(inst) {
             ConnStatus::Reconnecting { attempt }
                 if self
                     .core
                     .down_for(inst)
                     .is_some_and(|d| d >= crate::sidebar::BANNER_AFTER) =>
             {
-                format!("Connection lost. Reconnecting (try {attempt})…")
+                (
+                    format!("Connection lost. Reconnecting (try {attempt})…"),
+                    Severity::Warning,
+                )
             }
-            ConnStatus::Failed { reason } => format!("Not connected: {reason}"),
-            // Back after the banner showed: it says so in green for a moment, then goes.
+            ConnStatus::Failed { reason } => {
+                (format!("Not connected: {reason}"), Severity::Critical)
+            }
+            // Back after the notice showed: it says so in green for a moment, then goes.
             status => {
                 let mut banners = self.reconnect_banner.borrow_mut();
-                match banners.get(inst) {
+                let back = match banners.get(inst) {
                     Some(None) if status == ConnStatus::Connected => {
                         let now = std::time::Instant::now();
                         banners.insert(inst.clone(), Some(now));
+                        // Once to start going, once to be gone.
+                        let going = RECONNECTED_FOR.saturating_sub(crate::modal::pop());
                         cx.spawn(async move |this, cx| {
-                            cx.background_executor().timer(RECONNECTED_FOR).await;
+                            cx.background_executor().timer(going).await;
+                            let _ = this.update(cx, |_, cx| cx.notify());
+                            cx.background_executor()
+                                .timer(RECONNECTED_FOR - going)
+                                .await;
                             let _ = this.update(cx, |_, cx| cx.notify());
                         })
                         .detach();
+                        now
                     }
-                    Some(Some(at)) if at.elapsed() < RECONNECTED_FOR => {}
+                    Some(Some(at)) if at.elapsed() < RECONNECTED_FOR => *at,
                     _ => {
                         banners.remove(inst);
                         return None;
                     }
-                }
+                };
+                let leaving = back.elapsed() + crate::modal::pop() >= RECONNECTED_FOR;
                 return Some(
-                    div()
-                        .flex()
-                        .flex_shrink_0()
-                        .items_center()
-                        .gap(px(8.))
-                        .mx(px(16.))
-                        .mb(px(6.))
-                        .p(px(8.))
-                        .rounded(theme::row_radius())
-                        .bg(theme::raised())
-                        .border_1()
-                        .border_color(theme::success())
-                        .text_size(theme::secondary_size())
-                        .text_color(theme::success())
-                        .child(icon(assets::LAN_CONNECT, 16., theme::success()))
-                        .child(div().flex_1().child("Reconnected"))
-                        .into_any_element(),
+                    Notice::new(
+                        format!("connection-back-{inst}"),
+                        Severity::Success,
+                        "Reconnected",
+                    )
+                    .icon(icon(assets::LAN_CONNECT, 16., theme::success()))
+                    .leaving(leaving),
                 );
             }
         };
         self.reconnect_banner
             .borrow_mut()
             .insert(inst.clone(), None);
-        let inst = inst.clone();
+        let color = severity.color();
+        let retry = inst.clone();
         Some(
-            div()
-                .flex()
-                .flex_shrink_0()
-                .items_center()
-                .gap(px(8.))
-                .mx(px(16.))
-                .mb(px(6.))
-                .p(px(8.))
-                .rounded(theme::row_radius())
-                .bg(theme::raised())
-                .border_1()
-                .border_color(theme::warning())
-                .text_size(theme::secondary_size())
-                .child(icon(assets::LAN_DISCONNECT, 16., theme::warning()))
-                .child(div().flex_1().min_w_0().truncate().child(text))
-                .child(
-                    Button::new("connection-retry")
-                        .cursor_pointer()
-                        .label("Reconnect")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Err(err) = this.core.set_online(&inst, true) {
-                                this.error(format!("could not reconnect: {err}"), cx);
-                            }
-                        })),
-                )
-                // It rises over the message box as it fades in.
-                .relative()
-                .with_animation(
-                    "connection-banner-in",
-                    gpui_kit::Animation::new(theme::fade() * 2)
-                        .with_easing(gpui_kit::ease_out_quint()),
-                    |d, t| d.opacity(t).top(px(6. * (1. - t))),
-                )
-                .into_any_element(),
+            Notice::new(
+                format!("connection-lost-{inst}"),
+                severity,
+                div().truncate().child(text),
+            )
+            .icon(icon(assets::LAN_DISCONNECT, 16., color))
+            .button(
+                Button::new("connection-retry")
+                    .cursor_pointer()
+                    .label("Reconnect")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Err(err) = this.core.set_online(&retry, true) {
+                            this.error(format!("could not reconnect: {err}"), cx);
+                        }
+                    })),
+            ),
         )
     }
 

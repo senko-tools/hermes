@@ -1,10 +1,9 @@
 //! A small dialog with a few fields (PLAN.md section 15.4): create space, create channel, edit
 //! channel, ban, nickname, invite, profile. What happens on submit depends on its [`Purpose`].
 
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, Entity, SharedString, Subscription, Window, div};
 use hermes_client_core::proto::api::{
@@ -19,6 +18,7 @@ use hermes_client_core::{CoreError, InstanceId};
 use crate::modal::{dialog, error_line, heading, paragraph};
 use crate::shell::Shell;
 use crate::theme::{self, px};
+use crate::ui::ButtonKind;
 
 /// Offered up to the server's longest slow mode.
 const SLOWMODE: [(&str, u32); 10] = [
@@ -1401,29 +1401,37 @@ impl Shell {
         if let Some(error) = &form.error {
             content.push(error_line(self, "form-error", error.clone(), cx).into_any_element());
         }
-        let cancel = Button::new("form-cancel")
-            .cursor_pointer()
-            .large()
-            .label("Cancel")
-            .on_click(cx.listener(|this, _, _, cx| {
+        let cancel = crate::ui::button(
+            self,
+            "form-cancel",
+            "Cancel",
+            ButtonKind::Secondary,
+            true,
+            |this, _, cx| {
                 this.close_later("form", |s| s.form = None, cx);
                 cx.notify();
-            }));
+            },
+            cx,
+        );
         let label = if form.busy {
             "Please wait…"
         } else {
             form.submit
         };
-        let submit = Button::new("form-submit")
-            .cursor_pointer()
-            .large()
-            .loading(form.busy)
-            .label(label)
-            .disabled(form.busy)
-            .when(form.busy, |b| b.cursor_default())
-            .when(form.danger, |b| b.danger())
-            .when(!form.danger, |b| b.primary())
-            .on_click(cx.listener(|this, _, window, cx| this.submit_form(window, cx)));
+        // While busy it says so and does nothing.
+        let submit = crate::ui::button(
+            self,
+            "form-submit",
+            label,
+            if form.danger {
+                ButtonKind::Danger
+            } else {
+                ButtonKind::Primary
+            },
+            !form.busy,
+            |this, window, cx| this.submit_form(window, cx),
+            cx,
+        );
         content.push(
             div()
                 .flex()
@@ -1469,27 +1477,48 @@ fn render_field(shell: &Shell, i: usize, field: &Field, cx: &mut Context<Shell>)
             options,
             selected,
         } => {
-            let chips = options.iter().enumerate().map(|(n, option)| {
-                let chosen = n == *selected;
-                crate::ui::chip(
-                    shell,
-                    SharedString::from(format!("form-{i}-{n}")),
-                    option.clone(),
-                    chosen,
-                    cx,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
+            let pick =
+                move |this: &mut Shell, n: usize, _: &mut Window, cx: &mut Context<Shell>| {
                     if let Some(Field::Choice { selected, .. }) =
                         this.form.as_mut().and_then(|f| f.fields.get_mut(i))
                     {
                         *selected = n;
                     }
                     cx.notify();
-                }))
-            });
+                };
+            // A few short ones side by side in a track; more stack as a radio list.
+            let id = SharedString::from(format!("form-{i}"));
+            let picker = if options.len() <= 4 {
+                crate::ui::segmented(
+                    shell,
+                    id,
+                    options
+                        .iter()
+                        .map(|o| crate::ui::Segment::new(o.clone()))
+                        .collect(),
+                    Some(*selected),
+                    true,
+                    pick,
+                    cx,
+                )
+                .into_any_element()
+            } else {
+                crate::ui::radio_list(
+                    shell,
+                    id,
+                    options
+                        .iter()
+                        .map(|o| (SharedString::from(o.clone()), None))
+                        .collect(),
+                    Some(*selected),
+                    pick,
+                    cx,
+                )
+                .into_any_element()
+            };
             column
                 .child(name_line(label))
-                .child(div().flex().flex_wrap().gap(px(6.)).children(chips))
+                .child(div().flex().child(picker))
                 .children(hint_line(hint))
                 .into_any_element()
         }

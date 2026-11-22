@@ -37,12 +37,10 @@ impl Shell {
         };
         let content = match shown {
             Img::Ready(picture) => {
-                let shown = picture.shown(self.animating());
+                let shown = picture.shown(self.viewer_animating());
                 // Its own width in window pixels, for the double-click's full size.
                 let natural = shown.size(0).width.0 as f32 / self.scale.max(0.5);
                 let fitted = layout.get().fitted;
-                // The id lets gpui step through an animation's frames; without one a GIF
-                // stays on its first frame.
                 let picture =
                     img(shown)
                         .object_fit(gpui_kit::ObjectFit::Contain)
@@ -316,7 +314,7 @@ impl Shell {
             attachments: Vec::new(),
         };
         match self.core.send_message(&inst, to, draft) {
-            Ok(_) => self.info("Forwarded", cx),
+            Ok(_) => self.success("Forwarded", cx),
             Err(err) => self.error(format!("could not forward: {err}"), cx),
         }
         if self.chats.contains_key(&(inst.clone(), to)) {

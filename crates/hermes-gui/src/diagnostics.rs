@@ -3,17 +3,16 @@
 //! and the test cannot be sure) or Not working. The server checks are
 //! `hermes_client_core::diagnostics`; the ones that need devices are here.
 
+use crate::ui::ButtonKind;
 use std::time::Duration;
 
-use gpui_kit::component::Disableable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, Context, FontWeight, SharedString, div};
 use hermes_client_core::audio::Sound;
 use hermes_client_core::diagnostics::{Check, Level, report};
 
 use crate::assets::{self, icon};
-use crate::settings::{group, page_body};
+use crate::settings::{group, page_body_with};
 use crate::shell::Shell;
 use crate::theme::{self, px};
 
@@ -186,58 +185,65 @@ impl Shell {
         let copy_label = self.copy_label("diagnostics-copy", "Copy report");
         let buttons = div()
             .flex()
-            .flex_wrap()
             .gap(px(8.))
-            .child(
-                Button::new("diagnostics-run")
-                    .cursor_pointer()
-                    .primary()
-                    .label(label)
-                    .disabled(running)
-                    .on_click(cx.listener(|this, _, _, cx| this.run_diagnostics(cx))),
-            )
-            .child(
-                Button::new("diagnostics-copy")
-                    .cursor_pointer()
-                    .label(copy_label)
-                    .disabled(!run.is_some_and(Run::finished))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        let Some(run) = &this.diagnostics else {
-                            return;
-                        };
-                        let groups: Vec<(String, Vec<Check>)> = run
-                            .groups
-                            .iter()
-                            .filter_map(|(h, c)| Some((h.clone(), c.clone()?)))
-                            .collect();
-                        this.copy_from("diagnostics-copy", report(&groups), "Report", cx);
-                    })),
-            )
-            .child(
-                Button::new("diagnostics-sound")
-                    .cursor_pointer()
-                    .label("Play test sound")
-                    .on_click(cx.listener(|this, _, _, _| this.core.play_sound(Sound::Join))),
-            )
+            .child(crate::ui::button(
+                self,
+                "diagnostics-run",
+                label,
+                ButtonKind::Primary,
+                !running,
+                |this, _, cx| this.run_diagnostics(cx),
+                cx,
+            ))
+            .child(crate::ui::button(
+                self,
+                "diagnostics-copy",
+                copy_label,
+                ButtonKind::Secondary,
+                run.is_some_and(Run::finished),
+                |this, _, cx| {
+                    let Some(run) = &this.diagnostics else {
+                        return;
+                    };
+                    let groups: Vec<(String, Vec<Check>)> = run
+                        .groups
+                        .iter()
+                        .filter_map(|(h, c)| Some((h.clone(), c.clone()?)))
+                        .collect();
+                    this.copy_from("diagnostics-copy", report(&groups), "Report", cx);
+                },
+                cx,
+            ))
+            .child(crate::ui::button(
+                self,
+                "diagnostics-sound",
+                "Play test sound",
+                ButtonKind::Secondary,
+                true,
+                |this, _, _| this.core.play_sound(Sound::Join),
+                cx,
+            ))
             .into_any_element();
         let developer = self.config.general.developer_mode;
-        let mut groups = vec![
-            group(
-                "Developer",
-                vec![crate::settings::setting(
-                    "Developer mode",
-                    "Menus also offer copying the IDs of servers, channels, messages and people.",
-                    gpui_kit::component::switch::Switch::new("developer-mode")
-                        .cursor_pointer()
-                        .checked(developer)
-                        .on_click(cx.listener(|this, on: &bool, _, cx| {
-                            let on = *on;
-                            this.set_config(|c| c.general.developer_mode = on, cx);
-                        })),
-                )],
-            ),
-            buttons,
-        ];
+        // The developer switch has nothing to do with the tests: it goes under them.
+        let developer_group = group(
+            "Developer",
+            vec![crate::settings::setting_fit(
+                "Developer mode",
+                "Menus also offer copying the IDs of servers, channels, messages and people.",
+                crate::ui::switch(
+                    self,
+                    "developer-mode",
+                    developer,
+                    true,
+                    move |this, _, cx| {
+                        this.set_config(|c| c.general.developer_mode = !developer, cx);
+                    },
+                    cx,
+                ),
+            )],
+        );
+        let mut groups = Vec::new();
         if let Some(run) = run {
             for (heading, checks) in &run.groups {
                 let rows = match checks {
@@ -247,8 +253,10 @@ impl Shell {
                 groups.push(group(heading, rows));
             }
         }
-        page_body(
+        groups.push(developer_group);
+        page_body_with(
             "Diagnostics",
+            Some(buttons),
             Some(
                 "Tests every server you are signed in to and this computer. Working: verified. \
                  Warning: might work, or works in a reduced way, and the test cannot be sure. \

@@ -113,7 +113,7 @@ impl Shell {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
                     this.set_pattern(Pattern::Date, value, true, window, cx);
-                    this.info("Date format saved", cx);
+                    this.success("Date format saved", cx);
                 }
             }),
             font_events,
@@ -122,7 +122,7 @@ impl Shell {
                 if matches!(event, InputEvent::PressEnter { .. }) {
                     let value = input.read(cx).value().to_string();
                     this.set_pattern(Pattern::Time, value, true, window, cx);
-                    this.info("Time format saved", cx);
+                    this.success("Time format saved", cx);
                 }
             }),
             cx.subscribe_in(&ptt_key, window, |this, input, event, _, cx| {
@@ -132,7 +132,7 @@ impl Shell {
                         this.error(format!("{text:?} is not a key Hermes knows"), cx);
                     } else {
                         this.set_config(|c| c.voice.ptt_key = text, cx);
-                        this.info("Push-to-talk key saved", cx);
+                        this.success("Push-to-talk key saved", cx);
                     }
                 }
             }),
@@ -259,13 +259,14 @@ impl Shell {
             admin_log: Remote::Idle,
             admin_settings: None,
             device_selects: None,
+            devices_listing: false,
+            device_poll: 0,
+            screen_select: None,
             mic_test: false,
             fine_timers: None,
             font: font_input,
             mono_font: mono_input,
             time_format,
-            custom_time: false,
-            custom_date: false,
             date_format,
             search,
             ptt_key,
@@ -311,7 +312,10 @@ impl Shell {
         match tab {
             Tab::Account => self.load_sessions(cx),
             Tab::Admin => self.load_admin(cx),
-            Tab::Voice => self.load_devices(cx),
+            Tab::Voice => {
+                self.load_devices(cx);
+                self.start_device_poll(cx);
+            }
             _ => {}
         }
         cx.notify();
@@ -381,6 +385,21 @@ impl Shell {
 
     /// Lists the audio devices and screens in the background (it can take a moment).
     pub(super) fn load_devices(&mut self, cx: &mut Context<Self>) {
+        self.list_audio_devices(cx);
+        self.load_screens(cx);
+    }
+
+    /// Lists the audio devices again and brings the dropdowns up to date, keeping what is chosen
+    /// (and an open menu open). Runs when the Voice tab opens, every [`DEVICE_POLL`] while it
+    /// shows, and when a device dropdown is pressed: there is no Refresh button.
+    pub(super) fn list_audio_devices(&mut self, cx: &mut Context<Self>) {
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        if page.devices_listing {
+            return;
+        }
+        page.devices_listing = true;
         let core = self.core.clone();
         self.run(
             cx,
@@ -390,13 +409,92 @@ impl Shell {
                     .unwrap_or_default()
             },
             |this, devices, window, cx| {
-                let selects = this.device_selects(&devices, window, cx);
-                if let Some(page) = &mut this.settings {
-                    page.device_selects = Some(selects);
+                let Some(page) = &mut this.settings else {
+                    return;
+                };
+                page.devices_listing = false;
+                let Some(selects) = &mut page.device_selects else {
+                    let selects = this.device_selects(&devices, window, cx);
+                    if let Some(page) = &mut this.settings {
+                        page.device_selects = Some(selects);
+                    }
+                    return;
+                };
+                if selects.listed == devices {
+                    return;
+                }
+                let voice = &this.config.voice;
+                for (state, names, current) in [
+                    (&selects.input, &devices.inputs, &voice.input_device),
+                    (&selects.output, &devices.outputs, &voice.output_device),
+                ] {
+                    let (choices, _) = device_choices(names, current);
+                    state.update(cx, |state, cx| state.set_items(choices, window, cx));
+                }
+                selects.listed = devices;
+            },
+        );
+    }
+
+    /// Lists the audio devices every [`DEVICE_POLL`] while the Voice tab shows. Started each
+    /// time the tab opens; an older timer stops by itself.
+    pub(super) fn start_device_poll(&mut self, cx: &mut Context<Self>) {
+        let Some(page) = &mut self.settings else {
+            return;
+        };
+        page.device_poll += 1;
+        let poll = page.device_poll;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(DEVICE_POLL).await;
+                let alive = this.update(cx, |this, cx| {
+                    let showing = this
+                        .settings
+                        .as_ref()
+                        .is_some_and(|page| page.tab == Tab::Voice && page.device_poll == poll);
+                    if showing {
+                        this.list_audio_devices(cx);
+                    }
+                    showing
+                });
+                if !matches!(alive, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The screen dropdown of the Screen sharing tab, from the listed screens; made again
+    /// whenever they have been listed.
+    pub(crate) fn refresh_screen_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.is_none() || self.screen_list.is_empty() {
+            return;
+        }
+        let current = self.config.voice.share_screen.clone();
+        let choices: Vec<DeviceChoice> = self
+            .screen_list
+            .iter()
+            .map(|s| DeviceChoice {
+                value: s.value.clone(),
+                name: s.label().into(),
+            })
+            .collect();
+        let selected = choices.iter().position(|c| c.value == current).unwrap_or(0);
+        let state =
+            cx.new(|cx| SelectState::new(choices, Some(IndexPath::new(selected)), window, cx));
+        let events = cx.subscribe(
+            &state,
+            |this, _, event: &SelectEvent<Vec<DeviceChoice>>, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    let value = value.clone();
+                    this.set_config(|c| c.voice.share_screen = value, cx);
                 }
             },
         );
-        self.load_screens(cx);
+        if let Some(page) = &mut self.settings {
+            page.screen_select = Some((state, events));
+        }
     }
 
     pub(super) fn device_selects(
@@ -433,6 +531,7 @@ impl Shell {
         DeviceSelects {
             input,
             output,
+            listed: devices.clone(),
             _events: [input_events, output_events],
         }
     }

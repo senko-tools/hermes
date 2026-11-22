@@ -305,6 +305,15 @@ impl Player {
         }
     }
 
+    /// How long until the next decoded picture is due, if one waits.
+    pub fn next_picture_in(&self) -> Option<std::time::Duration> {
+        let now = self.position_ms();
+        let pictures = self.pictures.lock().unwrap_or_else(|e| e.into_inner());
+        pictures
+            .front()
+            .map(|(at, _)| std::time::Duration::from_millis(at.saturating_sub(now)))
+    }
+
     /// Takes the picture due now. Returns the pictures it replaces, to be freed from the GPU.
     pub fn advance(&mut self) -> Vec<Arc<RenderImage>> {
         let now = self.position_ms();

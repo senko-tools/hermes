@@ -48,14 +48,14 @@ impl Shell {
                     })
                 };
                 if saved.is_some_and(|saved| self.core.set_saved(&inst, message, Some(saved))) {
-                    self.info("Saved. Find it under Saved messages.", cx);
+                    self.success("Saved. Find it under Saved messages.", cx);
                 } else {
                     self.error("could not save this message here", cx);
                 }
             }
             (Target::Message(inst, _, message), Action::Unsave) => {
                 self.core.set_saved(&inst, message, None);
-                self.info("Removed from saved messages", cx);
+                self.success("Removed from saved messages", cx);
             }
             (Target::Message(inst, channel, message), Action::Pin | Action::Unpin) => {
                 let pin = action == Action::Pin;
