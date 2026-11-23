@@ -364,9 +364,11 @@ fn key() -> Option<VerifyingKey> {
     public_key()
 }
 
-/// Whether this build can update itself (it has a release key, and knows its folder).
+/// Whether this build can update itself (it has a release key, and knows its folder). Only on
+/// Windows for now: releases publish one manifest, and it lists the Windows files, so elsewhere
+/// the app only says that a new version exists and links to it.
 pub fn available() -> bool {
-    key().is_some() && install_dir().is_some()
+    cfg!(windows) && key().is_some() && install_dir().is_some()
 }
 
 async fn get_all(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
@@ -379,6 +381,10 @@ async fn get_all(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
 
 /// Fetches and checks `version`'s manifest, and works out what this install needs.
 pub async fn prepare(version: &str) -> Result<Plan, String> {
+    // The manifest lists the Windows files (see `available`).
+    if !cfg!(windows) {
+        return Err("updating in place only works on Windows for now".into());
+    }
     let key = key().ok_or("this build has no release key")?;
     let dir = install_dir().ok_or("the app's folder is unknown")?;
     let http = http()?;
