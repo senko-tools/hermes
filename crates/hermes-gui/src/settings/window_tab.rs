@@ -39,7 +39,11 @@ impl Shell {
                     self,
                     cx,
                     "Start minimized to the tray",
-                    "",
+                    if crate::desktop::window::CAN_HIDE {
+                        ""
+                    } else {
+                        "Only on Windows for now: here, Hermes opens its window."
+                    },
                     general.start_minimized
                 ),
             ],
@@ -51,7 +55,11 @@ impl Shell {
                     self,
                     cx,
                     "Close to the tray",
-                    "Closing the window keeps Hermes running in the tray.",
+                    if crate::desktop::window::CAN_HIDE {
+                        "Closing the window keeps Hermes running in the tray."
+                    } else {
+                        "Only on Windows for now: here, closing the window quits Hermes."
+                    },
                     general.close_to_tray
                 ),
                 setting_fit(

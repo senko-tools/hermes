@@ -431,6 +431,16 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .child("Looking for screens and windows…")
                 .into_any_element()
+        } else if !cfg!(windows) {
+            // Capture is Windows-only for now (screen/capture.rs): say so instead of empty lists.
+            div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .text_color(theme::text_tertiary())
+                .child("Sharing your screen only works on Windows for now.")
+                .into_any_element()
         } else {
             div()
                 .id("share-picker-body")

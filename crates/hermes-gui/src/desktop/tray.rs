@@ -30,7 +30,15 @@ pub enum TrayAction {
     Quit,
 }
 
+/// The tray icon. On Linux it lives on a GTK thread of its own (tray-icon needs GTK's main loop
+/// running where the icon is, and gpui runs its own loop), and changes are sent there.
 pub struct Tray {
+    #[cfg(not(target_os = "linux"))]
+    icon: Icon,
+}
+
+/// The icon and its menu's check items, on the thread that made them.
+struct Icon {
     icon: TrayIcon,
     badge: bool,
     mute: CheckMenuItem,
@@ -48,12 +56,105 @@ static EVENTS: OnceLock<Mutex<Option<mpsc::UnboundedReceiver<TrayAction>>>> = On
 
 impl Tray {
     /// Creates the tray icon. Must run on the thread with the event loop (the main thread).
+    #[cfg(not(target_os = "linux"))]
     pub fn new() -> Result<Tray, String> {
+        Ok(Tray { icon: Icon::new()? })
+    }
+
+    /// Starts the tray's GTK thread and waits until the icon is there (or failed).
+    #[cfg(target_os = "linux")]
+    pub fn new() -> Result<Tray, String> {
+        gtk_thread::start()?;
+        Ok(Tray {})
+    }
+
+    /// The check marks of Mute and Deafen.
+    pub fn set_voice(&mut self, muted: bool, deafened: bool) {
+        self.with(move |icon| icon.set_voice(muted, deafened));
+    }
+
+    /// Shows or hides the badge dot (only touches the icon when it changes).
+    pub fn set_badge(&mut self, badge: bool) {
+        self.with(move |icon| icon.set_badge(badge));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn with(&mut self, change: impl FnOnce(&mut Icon)) {
+        change(&mut self.icon);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn with(&mut self, change: impl FnOnce(&mut Icon) + Send + 'static) {
+        gtk_thread::with(change);
+    }
+}
+
+/// The GTK thread that owns the tray icon on Linux.
+#[cfg(target_os = "linux")]
+mod gtk_thread {
+    use std::cell::RefCell;
+
+    use super::Icon;
+
+    thread_local! {
+        /// Set on the GTK thread only.
+        static ICON: RefCell<Option<Icon>> = const { RefCell::new(None) };
+    }
+
+    pub fn start() -> Result<(), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("hermes-tray".into())
+            .spawn(move || {
+                if let Err(err) = gtk::init() {
+                    let _ = tx.send(Err(format!("GTK did not start: {err}")));
+                    return;
+                }
+                match Icon::new() {
+                    Ok(icon) => {
+                        ICON.with(|slot| *slot.borrow_mut() = Some(icon));
+                        let _ = tx.send(Ok(()));
+                        // Runs for the rest of the app's life: the icon and its menu work here.
+                        gtk::main();
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Err(err));
+                    }
+                }
+            })
+            .map_err(|err| err.to_string())?;
+        rx.recv()
+            .map_err(|_| "the tray thread stopped".to_owned())?
+    }
+
+    /// Runs `change` on the GTK thread (its loop picks it up from the default main context).
+    pub fn with(change: impl FnOnce(&mut Icon) + Send + 'static) {
+        gtk::glib::MainContext::default().invoke(move || {
+            ICON.with(|slot| {
+                if let Some(icon) = slot.borrow_mut().as_mut() {
+                    change(icon);
+                }
+            });
+        });
+    }
+}
+
+impl Icon {
+    fn new() -> Result<Icon, String> {
         let menu = Menu::new();
         let mute = CheckMenuItem::with_id(MUTE, "Mute", true, false, None);
         let deafen = CheckMenuItem::with_id(DEAFEN, "Deafen", true, false, None);
         menu.append_items(&[
-            &MenuItem::with_id(SHOW, "Show / hide Hermes", true, None),
+            &MenuItem::with_id(
+                SHOW,
+                if super::window::CAN_HIDE {
+                    "Show / hide Hermes"
+                } else {
+                    "Show Hermes"
+                },
+                true,
+                None,
+            ),
             &PredefinedMenuItem::separator(),
             &mute,
             &deafen,
@@ -99,7 +200,7 @@ impl Tray {
             .with_icon(tray_icon(false)?)
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Tray {
+        Ok(Icon {
             icon,
             badge: false,
             mute,
@@ -107,14 +208,12 @@ impl Tray {
         })
     }
 
-    /// The check marks of Mute and Deafen.
-    pub fn set_voice(&mut self, muted: bool, deafened: bool) {
+    fn set_voice(&mut self, muted: bool, deafened: bool) {
         self.mute.set_checked(muted || deafened);
         self.deafen.set_checked(deafened);
     }
 
-    /// Shows or hides the badge dot (only touches the icon when it changes).
-    pub fn set_badge(&mut self, badge: bool) {
+    fn set_badge(&mut self, badge: bool) {
         if badge == self.badge {
             return;
         }

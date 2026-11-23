@@ -3,8 +3,12 @@
 
 use gpui_kit::Window;
 
-/// Hides or shows the window without closing it. Elsewhere windows stay shown: there is no tray
-/// to come back from everywhere, so closing quits there.
+/// Whether the window can be hidden (to the tray). Only on Windows: on Wayland only the app's own
+/// toolkit could unmap its window, and gpui has no way to; there, closing quits and the tray
+/// only brings the window back to the front.
+pub const CAN_HIDE: bool = cfg!(windows);
+
+/// Hides or shows the window without closing it. Elsewhere windows stay shown (see `CAN_HIDE`).
 #[cfg(windows)]
 pub fn set_visible(window: &Window, visible: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};

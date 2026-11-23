@@ -4439,6 +4439,7 @@ dependencies = [
  "global-hotkey",
  "gpui-kit",
  "gpui-pre",
+ "gtk",
  "hermes-audio",
  "hermes-client-core",
  "hermes-server",

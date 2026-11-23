@@ -18,12 +18,6 @@ const QUIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(1500);
 const SOUND_GAP: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn create_tray() -> Option<desktop::tray::Tray> {
-    // On Linux the tray needs GTK initialised and its main loop running on the tray's thread;
-    // gpui runs its own loop, so creating it here panics. Off until it gets a GTK thread.
-    if cfg!(target_os = "linux") {
-        tracing::info!("no tray icon on Linux yet");
-        return None;
-    }
     desktop::tray::Tray::new()
         .map_err(|err| tracing::warn!("no tray icon: {err}"))
         .ok()
@@ -156,7 +150,8 @@ impl Shell {
     /// `true` closes the window, which ends the app.
     fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.save_layout(cx);
-        match desktop::on_close(self.config.general.close_to_tray, self.tray.is_some()) {
+        let can_hide = self.tray.is_some() && native::CAN_HIDE;
+        match desktop::on_close(self.config.general.close_to_tray, can_hide) {
             CloseAction::Hide => {
                 self.hide_window(window, cx);
                 false
@@ -188,7 +183,8 @@ impl Shell {
             TrayAction::ToggleMute => self.toggle_mute(cx),
             TrayAction::ToggleDeafen => self.toggle_deafen(cx),
             TrayAction::ToggleWindow => {
-                if self.window_visible {
+                // Where windows cannot hide, the entry only brings the window to the front.
+                if self.window_visible && native::CAN_HIDE {
                     self.hide_window(window, cx);
                 } else {
                     self.show_window(window, cx);

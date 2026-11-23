@@ -68,6 +68,10 @@ windows = { workspace = true, features = [
 ] }
 xcap.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The tray icon runs on a GTK thread of its own (desktop/tray.rs).
+gtk.workspace = true
+
 [build-dependencies]
 embed-resource.workspace = true
 

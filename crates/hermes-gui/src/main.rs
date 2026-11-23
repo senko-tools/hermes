@@ -257,11 +257,12 @@ fn main() -> ExitCode {
                     appears_transparent: false,
                     ..Default::default()
                 }),
+                app_id: Some(desktop::APP_ID.into()),
                 ..Default::default()
             };
             // The tray and the global keys live on this (the event loop's) thread.
             let tray = start_minimized.then(desktop_shell::create_tray).flatten();
-            let start_hidden = start_minimized && tray.is_some();
+            let start_hidden = start_minimized && tray.is_some() && desktop::window::CAN_HIDE;
             let boot = Boot {
                 tray,
                 launched,

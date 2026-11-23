@@ -125,6 +125,7 @@ impl Shell {
                 appears_transparent: false,
                 ..Default::default()
             }),
+            app_id: Some(crate::desktop::APP_ID.into()),
             ..Default::default()
         };
         let popped = key.clone();
