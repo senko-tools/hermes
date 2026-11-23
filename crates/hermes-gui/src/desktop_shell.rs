@@ -18,6 +18,12 @@ const QUIT_FLUSH: std::time::Duration = std::time::Duration::from_millis(1500);
 const SOUND_GAP: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub fn create_tray() -> Option<desktop::tray::Tray> {
+    // On Linux the tray needs GTK initialised and its main loop running on the tray's thread;
+    // gpui runs its own loop, so creating it here panics. Off until it gets a GTK thread.
+    if cfg!(target_os = "linux") {
+        tracing::info!("no tray icon on Linux yet");
+        return None;
+    }
     desktop::tray::Tray::new()
         .map_err(|err| tracing::warn!("no tray icon: {err}"))
         .ok()
