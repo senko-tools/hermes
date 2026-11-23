@@ -1,7 +1,7 @@
 //! Log files (PLAN.md section 13: rolling client logs, 7 days). The running client writes
 //! `logs/latest.log`; at the next start, or when the day changes while it runs, that file moves
-//! to `logs/logs_old/<app>-YYYY-MM-DD.log`. Old logs are deleted after 7 days, crash and freeze
-//! reports in `logs/` after 30.
+//! to `logs/logs_old/<app>-YYYY-MM-DD.log`. Old logs are deleted after `log_days` (7 days unless
+//! set in Settings > Diagnostics), crash and freeze reports in `logs/` after 3 days.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -10,8 +10,10 @@ use std::time::{Duration, SystemTime};
 
 use crate::time;
 
-/// Rotated logs are kept this long.
-pub const KEEP_OLD: Duration = Duration::from_secs(7 * 86_400);
+/// Days rotated logs are kept unless the config says otherwise.
+pub const DEFAULT_LOG_DAYS: u32 = 7;
+/// The `log_days` a config may set.
+pub const LOG_DAYS: std::ops::RangeInclusive<u32> = 1..=90;
 /// Crash and freeze reports are kept this long.
 pub const KEEP_REPORTS: Duration = Duration::from_secs(3 * 86_400);
 /// The folder for rotated logs, inside the logs folder.
@@ -37,11 +39,24 @@ pub struct DailyLog {
 impl DailyLog {
     /// Moves the previous run's log (and a `hermes.log` from older versions) into `logs_old`,
     /// deletes expired logs and reports, and opens a new `latest.log`.
-    pub fn open(dir: &Path, app: &str) -> io::Result<DailyLog> {
-        Self::open_at(dir, app, crate::core::now_ms(), time::local_offset_secs())
+    /// Rotated logs older than `log_days` are deleted (see [`LOG_DAYS`]).
+    pub fn open(dir: &Path, app: &str, log_days: u32) -> io::Result<DailyLog> {
+        Self::open_at(
+            dir,
+            app,
+            crate::core::now_ms(),
+            time::local_offset_secs(),
+            log_days,
+        )
     }
 
-    fn open_at(dir: &Path, app: &str, now_ms: i64, offset_secs: i64) -> io::Result<DailyLog> {
+    fn open_at(
+        dir: &Path,
+        app: &str,
+        now_ms: i64,
+        offset_secs: i64,
+        log_days: u32,
+    ) -> io::Result<DailyLog> {
         fs::create_dir_all(dir.join(OLD_DIR))?;
         let latest = dir.join(latest_name(app));
         for previous in [latest.clone(), dir.join(format!("{app}.log"))] {
@@ -56,7 +71,7 @@ impl DailyLog {
                 )?;
             }
         }
-        clean(dir, SystemTime::now());
+        clean(dir, SystemTime::now(), keep_old(log_days));
         Ok(DailyLog {
             file: create(&latest)?,
             dir: dir.to_owned(),
@@ -133,9 +148,15 @@ fn archive(dir: &Path, app: &str, file: &Path, day: i64, offset_secs: i64) -> io
     fs::rename(file, target)
 }
 
-/// Deletes rotated logs older than [`KEEP_OLD`] and crash/freeze reports older than
+/// How long rotated logs are kept for a `log_days` setting, clamped to [`LOG_DAYS`].
+pub fn keep_old(log_days: u32) -> Duration {
+    let days = log_days.clamp(*LOG_DAYS.start(), *LOG_DAYS.end());
+    Duration::from_secs(u64::from(days) * 86_400)
+}
+
+/// Deletes rotated logs older than `keep_old` and crash/freeze reports older than
 /// [`KEEP_REPORTS`]. Best effort: a file that cannot be removed stays.
-fn clean(dir: &Path, now: SystemTime) {
+fn clean(dir: &Path, now: SystemTime, keep_old: Duration) {
     let expired = |path: &Path, keep: Duration| {
         fs::metadata(path)
             .and_then(|m| m.modified())
@@ -156,7 +177,7 @@ fn clean(dir: &Path, now: SystemTime) {
             }
         }
     };
-    remove(&dir.join(OLD_DIR), KEEP_OLD, &|name| name.ends_with(".log"));
+    remove(&dir.join(OLD_DIR), keep_old, &|name| name.ends_with(".log"));
     remove(dir, KEEP_REPORTS, &|name| {
         (name.starts_with("crash-") || name.starts_with("freeze-"))
             && (name.ends_with(".log") || name.ends_with(".dmp"))
@@ -212,7 +233,7 @@ mod tests {
         fs::write(dir.join("latest.log"), "run 1\n").unwrap();
         fs::write(dir.join("hermes.log"), "from an older version\n").unwrap();
         fs::write(dir.join("crash-1.log"), "kept: new").unwrap();
-        let mut log = DailyLog::open_at(&dir, "hermes", NOW, 0).unwrap();
+        let mut log = DailyLog::open_at(&dir, "hermes", NOW, 0, DEFAULT_LOG_DAYS).unwrap();
         writeln!(log, "run 2").unwrap();
         drop(log);
         assert_eq!(
@@ -231,7 +252,7 @@ mod tests {
         // An empty log is not kept.
         let dir2 = self::dir("empty");
         fs::write(dir2.join("latest.log"), "").unwrap();
-        drop(DailyLog::open_at(&dir2, "hermes", NOW, 0).unwrap());
+        drop(DailyLog::open_at(&dir2, "hermes", NOW, 0, DEFAULT_LOG_DAYS).unwrap());
         assert!(names(&dir2.join(OLD_DIR)).is_empty());
         let _ = fs::remove_dir_all(dir);
         let _ = fs::remove_dir_all(dir2);
@@ -244,7 +265,7 @@ mod tests {
         let now = crate::core::now_ms();
         let offset = 2 * 3600;
         let today = time::format(now, "%Y-%m-%d", offset);
-        let mut log = DailyLog::open_at(&dir, "hermes-tui", now, offset).unwrap();
+        let mut log = DailyLog::open_at(&dir, "hermes-tui", now, offset, DEFAULT_LOG_DAYS).unwrap();
         writeln!(log, "before midnight").unwrap();
         log.roll(now + DAY_MS).unwrap();
         log.file
@@ -276,18 +297,45 @@ mod tests {
         fs::write(dir.join(OLD_DIR).join("hermes-2026-01-01.log"), "x").unwrap();
         fs::write(dir.join("crash-2026-01-01-000000.log"), "x").unwrap();
         fs::write(dir.join("notes.txt"), "not ours").unwrap();
-        clean(&dir, SystemTime::now() + Duration::from_secs(2 * 86_400));
+        let week = keep_old(DEFAULT_LOG_DAYS);
+        clean(
+            &dir,
+            SystemTime::now() + Duration::from_secs(2 * 86_400),
+            week,
+        );
         assert!(dir.join("crash-2026-01-01-000000.log").exists());
         assert!(!names(&dir.join(OLD_DIR)).is_empty());
-        clean(&dir, SystemTime::now() + Duration::from_secs(4 * 86_400));
+        clean(
+            &dir,
+            SystemTime::now() + Duration::from_secs(4 * 86_400),
+            week,
+        );
         assert!(
             !dir.join("crash-2026-01-01-000000.log").exists(),
             "3 days for reports"
         );
-        clean(&dir, SystemTime::now() + Duration::from_secs(8 * 86_400));
+        // A longer setting keeps them.
+        clean(
+            &dir,
+            SystemTime::now() + Duration::from_secs(8 * 86_400),
+            keep_old(14),
+        );
+        assert!(!names(&dir.join(OLD_DIR)).is_empty(), "14 days set");
+        clean(
+            &dir,
+            SystemTime::now() + Duration::from_secs(8 * 86_400),
+            week,
+        );
         assert!(names(&dir.join(OLD_DIR)).is_empty(), "7 days for old logs");
         assert!(dir.join("notes.txt").exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn log_days_are_clamped() {
+        assert_eq!(keep_old(0), Duration::from_secs(86_400));
+        assert_eq!(keep_old(7), Duration::from_secs(7 * 86_400));
+        assert_eq!(keep_old(1000), Duration::from_secs(90 * 86_400));
     }
 
     #[test]

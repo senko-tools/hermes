@@ -297,9 +297,20 @@ pub struct General {
     /// instead of the system's credential store, so the folder works on another computer. Read
     /// on start.
     pub sign_ins_in_folder: bool,
+    /// Days old logs are kept in `logs/logs_old` (#36); clamped to 1-90. Read on start.
+    pub log_days: u32,
     /// How long the pointer rests on a settings description too long for its line before it
     /// starts scrolling, in milliseconds; 0 starts it at once.
     pub hint_scroll_delay_ms: u32,
+}
+
+impl General {
+    /// Whether animated pictures move while another window has the focus. "Animate in the
+    /// background" is a child of "Animate pictures" (#83): it keeps its own value while the
+    /// parent is off, but takes effect only with it on. Code reads this, never the raw field.
+    pub fn animate_in_background(&self) -> bool {
+        self.animate_pictures && self.animate_unfocused
+    }
 }
 
 impl Default for General {
@@ -326,6 +337,7 @@ impl Default for General {
             folded_settings: Vec::new(),
             developer_mode: false,
             sign_ins_in_folder: false,
+            log_days: crate::logs::DEFAULT_LOG_DAYS,
             hint_scroll_delay_ms: 500,
         }
     }
@@ -1050,6 +1062,29 @@ pub fn watch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #83: the child takes effect only with its parent on, and keeps its value meanwhile.
+    #[test]
+    fn animate_in_background_needs_animate_pictures() {
+        let mut g = General {
+            animate_unfocused: true,
+            ..General::default()
+        };
+        assert!(g.animate_in_background());
+        g.animate_pictures = false;
+        assert!(!g.animate_in_background());
+        assert!(g.animate_unfocused, "the child keeps its own value");
+        g.animate_pictures = true;
+        assert!(g.animate_in_background());
+        g.animate_unfocused = false;
+        assert!(!g.animate_in_background());
+    }
+
+    #[test]
+    fn log_days_default_to_a_week() {
+        let config: ClientConfig = toml::from_str("[general]\ntheme = \"x\"\n").unwrap();
+        assert_eq!(config.general.log_days, crate::logs::DEFAULT_LOG_DAYS);
+    }
 
     /// A setting changed in code is written exactly like the same setting typed as text, so
     /// moving the GUI to typed changes left `config.toml` as it was.

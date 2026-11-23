@@ -17,6 +17,15 @@ use hermes_proto::permissions::{self, Permissions};
 
 /// Messages kept per channel window.
 pub const WINDOW_MAX: usize = 500;
+
+/// Channels whose messages are read, and so can be unread: text channels and DMs. A voice
+/// channel never shows as unread (#86).
+fn reads_messages(kind: ChannelKind) -> bool {
+    matches!(
+        kind,
+        ChannelKind::Text | ChannelKind::Dm | ChannelKind::GroupDm
+    )
+}
 /// Messages per history page, and what an idle window is trimmed to.
 pub const PAGE: u32 = 50;
 /// How long a typing indicator stays without a new `typing_start`.
@@ -510,12 +519,23 @@ impl InstanceStore {
 
     /// Whether the channel has messages newer than my read marker.
     pub fn unread(&self, channel: Id) -> bool {
-        let Some(last) = self.channel(channel).and_then(|c| c.last_message_id) else {
+        let Some(c) = self.channel(channel) else {
             return false;
         };
-        self.read_states
+        let Some(last) = c.last_message_id.filter(|_| reads_messages(c.kind)) else {
+            return false;
+        };
+        // My own newest message (sent from another device) is read here too.
+        let mine = self
+            .windows
             .get(&channel)
-            .is_none_or(|r| r.last_read_id < last)
+            .and_then(|w| w.get(last))
+            .is_some_and(|m| Some(m.author.id) == self.me_id());
+        !mine
+            && self
+                .read_states
+                .get(&channel)
+                .is_none_or(|r| r.last_read_id < last)
     }
 
     /// Read marks the server may not know (not sent yet, or kept on this device): a channel is
@@ -539,6 +559,12 @@ impl InstanceStore {
     }
 
     pub fn mention_count(&self, channel: Id) -> u32 {
+        if self
+            .channel(channel)
+            .is_some_and(|c| !reads_messages(c.kind))
+        {
+            return 0;
+        }
         self.read_states
             .get(&channel)
             .map_or(0, |r| r.mention_count)
@@ -1255,6 +1281,61 @@ pub(crate) mod tests {
             !s.permissions(Id(10), None)
                 .contains(Permissions::MANAGE_SPACE)
         );
+    }
+
+    /// #86: voice channels are never unread, a channel whose last message went back (a delete)
+    /// follows the server, and my own newest message is read.
+    #[test]
+    fn unread_only_for_messages_i_can_read() {
+        let mut s = store();
+        let bob = user(2, "bob");
+        let mut voice = channel(12, Some(10), ChannelKind::Voice, "lounge");
+        voice.last_message_id = Some(Id(90));
+        s.apply(ServerEvent::ChannelCreate(voice), 0);
+        s.apply(
+            ServerEvent::ReadStateUpdate(ReadState {
+                channel_id: Id(12),
+                last_read_id: Id(0),
+                mention_count: 3,
+            }),
+            0,
+        );
+        assert!(!s.unread(Id(12)));
+        assert_eq!(s.mention_count(Id(12)), 0);
+
+        // Bob posts and deletes: the server moves the last message back to what I read.
+        s.apply(ServerEvent::MessageCreate(message(100, 11, &bob, "hi")), 0);
+        s.apply(
+            ServerEvent::ReadStateUpdate(ReadState {
+                channel_id: Id(11),
+                last_read_id: Id(100),
+                mention_count: 0,
+            }),
+            0,
+        );
+        s.apply(
+            ServerEvent::MessageCreate(message(101, 11, &bob, "oops")),
+            0,
+        );
+        assert!(s.unread(Id(11)));
+        let mut general = s.channel(Id(11)).unwrap().clone();
+        general.last_message_id = Some(Id(100));
+        s.apply(ServerEvent::ChannelUpdate(general), 0);
+        assert!(!s.unread(Id(11)));
+
+        // My own newest message never makes the channel unread, even behind an old read mark.
+        live_window(&mut s, 11);
+        let me = user(1, "me");
+        s.apply(ServerEvent::MessageCreate(message(102, 11, &me, "mine")), 0);
+        s.apply(
+            ServerEvent::ReadStateUpdate(ReadState {
+                channel_id: Id(11),
+                last_read_id: Id(100),
+                mention_count: 0,
+            }),
+            0,
+        );
+        assert!(!s.unread(Id(11)));
     }
 
     #[test]
