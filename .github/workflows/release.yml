@@ -8,7 +8,8 @@ name: release
 #     crates/hermes-gui/installer.iss), Hermes-<version>-portable.zip (GUI + TUI for Windows), both
 #     with an LGPL FFmpeg for sound and video files, and hermes-tui for Windows and Linux
 #   - Hermes-<version>-x86_64-linux.tar.gz (the GUI for Linux with crates/hermes-gui/linux/install.sh;
-#     FFmpeg comes from the system there)
+#     FFmpeg comes from the system there): built as a workflow artifact only, not yet attached to
+#     releases (the Linux client joins them in 1.5.0)
 #   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
 # macOS builds are left out for now.
 #
@@ -457,7 +458,7 @@ jobs:
             org.opencontainers.image.licenses=AGPL-3.0-or-later
 
   release:
-    needs: [version, server-linux, server-windows, windows, linux, tui-linux, docker]
+    needs: [version, server-linux, server-windows, windows, tui-linux, docker]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -474,10 +475,6 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: windows-server
-          path: dist
-      - uses: actions/download-artifact@v7
-        with:
-          name: linux
           path: dist
       - uses: actions/download-artifact@v7
         with:
