@@ -26,9 +26,18 @@ const INITIAL_DELAY_MS: i32 = 60;
 static ON: AtomicBool = AtomicBool::new(false);
 static PLAYED: Mutex<VecDeque<f32>> = Mutex::new(VecDeque::new());
 
+/// Tests run in parallel, and playback tests mix frames too: only the thread that made the
+/// canceller feeds it, so they cannot slip into the echo test's queue.
+#[cfg(test)]
+static OWNER: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
 /// Playback: one mixed mono frame, as it goes to the speakers.
 pub fn played(frame: &[f32]) {
     if !ON.load(Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(test)]
+    if *OWNER.lock().expect("owner") != Some(std::thread::current().id()) {
         return;
     }
     let mut played = PLAYED.lock().expect("played sound");
@@ -66,6 +75,10 @@ impl EchoCanceller {
             .ok()?;
         ON.store(true, Ordering::Relaxed);
         PLAYED.lock().expect("played sound").clear();
+        #[cfg(test)]
+        {
+            *OWNER.lock().expect("owner") = Some(std::thread::current().id());
+        }
         Some(EchoCanceller {
             pipeline,
             reference: [0.0; HALF],

@@ -189,6 +189,24 @@ jobs:
             echo "OpenH264 was built without NASM" >&2
             exit 1
           fi
+      - name: Smoke test
+        # The release exe starts, opens its window and quits by itself (#42), with a fresh config
+        # folder. Warn-only until it has passed on the runner a few times (a runner without a
+        # usable GPU could fail it for reasons that are not ours); then add `exit 1` after the warning.
+        timeout-minutes: 5
+        run: |
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          printf '[general]\ncheck_for_updates = false\n' > "$dir/config.toml"
+          ok=true
+          HERMES_SMOKE_TEST_SECONDS=10 timeout 120 target/release/hermes.exe --config-dir "$dir" || ok=false
+          grep -q "window opened" "$dir/logs/latest.log" || ok=false
+          grep -q "smoke test: quitting" "$dir/logs/latest.log" || ok=false
+          if ls "$dir"/logs/crash-*.log > /dev/null 2>&1; then ok=false; cat "$dir"/logs/crash-*.log; fi
+          cat "$dir/logs/latest.log" || true
+          if [ "$ok" != true ]; then
+            echo "::warning title=Smoke test failed::hermes.exe did not start, open its window and quit cleanly; see the Smoke test step."
+          fi
       - name: FFmpeg
         # Plays sound and video files in the chat; the installer and the portable zip carry it next
         # to hermes.exe. BtbN's LGPL build with shared libraries (ffmpeg.exe and ffprobe.exe share
