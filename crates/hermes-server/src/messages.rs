@@ -16,6 +16,50 @@ use crate::state::{AppState, Cache};
 use crate::time::SECOND_MS;
 use hermes_proto::e2ee::{Envelope, MessageLock};
 
+/// After deletions (see [`db::messages::refresh_last_message_ids`]): the cache takes the new
+/// `last_message_id`s, and the channels whose value changed go out as `ChannelUpdate`, so clients
+/// drop an unread mark left by a deleted message. A DM goes to each recipient who has it open,
+/// as they see it.
+pub fn publish_last_messages(state: &AppState, changes: &[(Id, Option<Id>)]) {
+    use crate::gateway::bus::Audience;
+    use hermes_proto::gateway::ServerEvent;
+
+    let mut events = Vec::new();
+    {
+        let mut cache = state.cache_mut();
+        for &(channel_id, last) in changes {
+            let Some(cached) = cache.channels.get_mut(&channel_id) else {
+                continue;
+            };
+            if cached.channel.last_message_id == last {
+                continue;
+            }
+            cached.channel.last_message_id = last;
+            if !cached.channel.kind.is_private() {
+                events.push((
+                    ServerEvent::ChannelUpdate(cached.channel.clone()),
+                    Audience::Channel(channel_id),
+                ));
+                continue;
+            }
+            let open: Vec<Id> = cached
+                .recipient_ids
+                .iter()
+                .copied()
+                .filter(|u| cached.closed.binary_search(u).is_err())
+                .collect();
+            for user in open {
+                if let Some(dm) = cache.dm_for(channel_id, user) {
+                    events.push((ServerEvent::ChannelUpdate(dm), Audience::User(user)));
+                }
+            }
+        }
+    }
+    for (event, audience) in events {
+        state.publish(event, audience);
+    }
+}
+
 /// Length of [`MessageRef::excerpt`].
 pub const EXCERPT_CHARS: usize = 100;
 
