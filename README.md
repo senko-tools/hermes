@@ -14,6 +14,12 @@ single-binary server, a [gpui](https://www.gpui.rs) desktop client and a
   [releases](https://github.com/senko-tools/hermes/releases), open an invite link from a friend
   or paste a server address. Windows SmartScreen warns about the unsigned installer: choose
   *More info → Run anyway*. The terminal client `hermes-tui` comes with it.
+- **On Linux (beta):** download `Hermes-<version>-x86_64-linux.tar.gz`, unpack it and run
+  `./install.sh`: it installs Hermes for your user (no root), with a menu entry and `hermes://`
+  links. It needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later), and
+  `ffmpeg` and `pipewire-alsa` from your package manager; the script says if one is missing.
+  Not on Linux yet: screen sharing, push-to-talk, hiding to the tray (closing quits) and updating
+  in place (the app says when a new version is out). `./install.sh --uninstall` removes it.
 - **Host it:** see [Hosting a server](#hosting-a-server) below.
 - **New to the app?** Right-click almost anything (channels, spaces, messages, people) for its
   actions, press `Ctrl+K` to jump anywhere, and `Ctrl+F` to search.

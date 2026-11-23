@@ -18,6 +18,10 @@ How to write it:
 - Settings > Appearance > Layout: choose how long the pointer rests on a long description before it scrolls, from 0 to 2 seconds
 - Settings > Diagnostics: choose how long old logs are kept, from 3 to 30 days
 - A user guide (docs/user-guide.md) that tours the app's features
+- Hermes for Linux (beta): unpack Hermes-<version>-x86_64-linux.tar.gz and run ./install.sh
+  - It gets a menu entry with its icon, opens hermes:// links, and can start when you sign in
+  - The tray icon has Show Hermes, Mute, Deafen and Quit, and clicking a notification opens its channel
+  - Not there yet: sharing your screen, push-to-talk, hiding to the tray (closing the window quits) and updating in place (Hermes says when a new version is out)
 
 ### Changed
 - Settings descriptions too long for their line no longer hide behind an (i): resting the pointer on one scrolls it to its end, and it goes round again while the pointer stays
@@ -30,6 +34,7 @@ How to write it:
 - Videos recorded with the phone held upright show and play upright, no longer squeezed into a wide box
 - A channel no longer stays unread after its newest message was deleted, and voice channels never show as unread
 - The screen share picker no longer cuts off the bottoms of window and program names at larger text sizes; hovering a name shows it in full
+- Notifications show mentions as @name and text without its formatting, instead of raw mention codes; spoilers stay hidden
 
 ## 1.4.2
 
