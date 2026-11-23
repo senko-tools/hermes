@@ -16,14 +16,20 @@ How to write it:
 ### New
 - A "Codes" link under the time and date patterns (Settings > Chat) lists every code with what it gives right now
 - Settings > Appearance > Layout: choose how long the pointer rests on a long description before it scrolls, from 0 to 2 seconds
+- Settings > Diagnostics: choose how long old logs are kept, from 3 to 30 days
+- A user guide (docs/user-guide.md) that tours the app's features
 
 ### Changed
 - Settings descriptions too long for their line no longer hide behind an (i): resting the pointer on one scrolls it to its end, and it goes round again while the pointer stays
 - Updates moved to Settings > About: "Check for updates" sits by the version number and says how the check went, with "Check for updates on start" and "Auto-update" under it
+- "Animate in the background" sits under "Animate pictures" in Settings > Chat, and can only be turned on while that is on
+- Voice channels no longer take text messages (servers from this version refuse them)
 
 ### Fixed
 - Videos show their real shape and a sharp first picture before they are played, also ones sent without a picture
 - Videos recorded with the phone held upright show and play upright, no longer squeezed into a wide box
+- A channel no longer stays unread after its newest message was deleted, and voice channels never show as unread
+- The screen share picker no longer cuts off the bottoms of window and program names at larger text sizes; hovering a name shows it in full
 
 ## 1.4.2
 

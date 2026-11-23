@@ -17,6 +17,7 @@ single-binary server, a [gpui](https://www.gpui.rs) desktop client and a
 - **Host it:** see [Hosting a server](#hosting-a-server) below.
 - **New to the app?** Right-click almost anything (channels, spaces, messages, people) for its
   actions, press `Ctrl+K` to jump anywhere, and `Ctrl+F` to search.
+  The [user guide](docs/user-guide.md) tours the rest.
 
 ## Hosting a server
 
