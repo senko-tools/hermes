@@ -1064,7 +1064,7 @@ impl Shell {
     /// Whether the picture in the viewer moves.
     pub fn viewer_animating(&self) -> bool {
         let general = &self.config.general;
-        general.animate_pictures && (self.focused || general.animate_unfocused)
+        general.animate_pictures && (self.focused || general.animate_in_background())
     }
 
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {

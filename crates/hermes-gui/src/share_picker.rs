@@ -36,6 +36,8 @@ const BODY_PAD: f32 = 20.;
 /// The space kept around the picker, and the widest it gets.
 const MARGIN: f32 = 40.;
 const MAX_W: f32 = 1400.;
+/// Line height of a tile's title and process name, relative to their text size.
+const LABEL_LINE: f32 = 1.4;
 /// The narrowest the panel gets.
 const MIN_W: f32 = 320.;
 
@@ -286,13 +288,30 @@ impl Shell {
             )
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "share-label-{n}-{}",
+                        source.value
+                    )))
                     .flex()
                     .flex_col()
                     .px(px(2.))
                     .min_w_0()
+                    // Long names end in "…"; the whole of both shows here.
+                    .tooltip({
+                        let full = SharedString::from(if source.detail.is_empty() {
+                            source.title.to_string()
+                        } else {
+                            format!("{} · {}", source.title, source.detail)
+                        });
+                        move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                                .build(window, cx)
+                        }
+                    })
                     .child(
                         div()
                             .truncate()
+                            .line_height(gpui_kit::relative(LABEL_LINE))
                             .text_size(theme::secondary_size())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(if selected {
@@ -303,9 +322,12 @@ impl Shell {
                             .child(source.title.clone()),
                     )
                     .child(
+                        // As tall as its line at any text size and scale, also when empty;
+                        // a fixed height cut off the bottoms of letters (#79).
                         div()
                             .truncate()
-                            .h(px(16.))
+                            .line_height(gpui_kit::relative(LABEL_LINE))
+                            .min_h(theme::caption_size() * LABEL_LINE)
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
                             .child(source.detail.clone()),
