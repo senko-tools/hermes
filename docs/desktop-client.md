@@ -266,6 +266,8 @@ Built on Ubuntu 22.04 (glibc 2.35), like the release. What differs from Windows,
     through the patched gpui-pre-linux (`vendor/README.md`).
 - **Title bar:** where the desktop draws none (GNOME on Wayland, Weston), `csd.rs` draws Hermes'
   own: the page title, window buttons, resize edges and a shadow.
+- **CI smoke test:** X11 only (Xvfb). Headless Weston has no input seat, and gpui panics without
+  a `wl_seat` ("Wayland compositor does not provide wl_seat"), so Wayland is checked by hand.
 - **Logs:** `$XDG_STATE_HOME/hermes/logs` for the default config dir. Freeze reports list every
   thread's state and kernel wait in place of a minidump.
 
