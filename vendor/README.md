@@ -8,7 +8,7 @@ leave them alone.
 |---|---|---|
 | `gpui-pre-windows` | 0.3.12 | `src/shaders.hlsl`, `polychrome_sprite_fragment`; `src/platform.rs`, `begin_vsync_thread` + `hermes_covered` |
 | `gpui-pre-wgpu` | 0.3.12 | `src/shaders.wgsl`, `fs_poly_sprite` |
-| `gpui-pre-linux` | 0.3.12 | `src/linux/wayland/window.rs`, `hermes_hideable` + `hermes_set_hidden`; `src/linux.rs`, `set_wayland_window_hidden` |
+| `gpui-pre-linux` | 0.3.12 | `src/linux/wayland/window.rs`, `hermes_hideable` + `hermes_set_hidden`; `src/linux.rs`, `set_wayland_window_hidden` and `activate_wayland_window` (a second launch's activation token) |
 
 **Why:** gpui draws every picture through one bilinear sampler, so a zoomed picture is blurred
 instead of showing its pixels. The patch makes the picture (polychrome sprite) shader read the
