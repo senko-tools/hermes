@@ -242,23 +242,42 @@ async fn rename_to_a_handle_only_the_database_has_is_a_conflict() {
     let (owner, _, space_id) = server.owner().await;
     let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
     let (_, bob_id) = server.member(&owner, &space_id, "bob").await;
-    let me = server.get("/users/@me", Some(&alice)).await.ok();
-    let tag = me["discriminator"].as_str().unwrap().to_owned();
-    server
-        .sql(&format!(
-            "UPDATE users SET username = 'newname#{tag}' WHERE id = {bob_id}"
-        ))
-        .await;
-    server
-        .post(
-            "/users/@me/username",
-            Some(&alice),
-            json!({ "username": "newname", "current_password": "correct horse" }),
-        )
-        .await
-        .err(409, "CONFLICT");
-    let me = server.get("/users/@me", Some(&alice)).await.ok();
-    assert_eq!(me["id"], json!(alice_id));
-    assert_eq!(me["username"], "alice");
-    assert_eq!(me["discriminator"], json!(tag));
+    // The server's own 10 second refresh can pick bob's new handle up between the database
+    // write and the rename. The cache then knows it, alice is given a free tag, and the rename
+    // rightly succeeds: that is not the case under test, so it goes again with another name.
+    for attempt in 0..5 {
+        let me = server.get("/users/@me", Some(&alice)).await.ok();
+        let (name, tag) = (
+            me["username"].as_str().unwrap().to_owned(),
+            me["discriminator"].as_str().unwrap().to_owned(),
+        );
+        let wanted = format!("newname{attempt}");
+        server
+            .sql(&format!(
+                "UPDATE users SET username = '{wanted}#{tag}' WHERE id = {bob_id}"
+            ))
+            .await;
+        let res = server
+            .post(
+                "/users/@me/username",
+                Some(&alice),
+                json!({ "username": wanted, "current_password": "correct horse" }),
+            )
+            .await;
+        if res.status.is_success() {
+            assert_ne!(
+                res.body["discriminator"],
+                json!(tag),
+                "the cache had bob's handle"
+            );
+            continue;
+        }
+        res.err(409, "CONFLICT");
+        let me = server.get("/users/@me", Some(&alice)).await.ok();
+        assert_eq!(me["id"], json!(alice_id));
+        assert_eq!(me["username"], json!(name));
+        assert_eq!(me["discriminator"], json!(tag));
+        return;
+    }
+    panic!("the refresh raced every attempt");
 }
