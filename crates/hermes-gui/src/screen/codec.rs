@@ -31,6 +31,19 @@ pub struct Frame {
     pub pixels: Vec<u8>,
 }
 
+/// The largest slice in bytes. OpenH264 spreads slices over its threads, so a frame of several
+/// slices encodes on several cores; one slice (the default) keeps it to one.
+const SLICE_BYTES: u32 = 64 * 1024;
+
+/// Threads for OpenH264: one for small pictures, up to 4 from 720p on, leaving a core to capture.
+fn encode_threads(width: u32, height: u32) -> u16 {
+    if u64::from(width) * u64::from(height) < 1280 * 720 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    cores.saturating_sub(1).clamp(1, 4) as u16
+}
+
 /// Encodes captured frames; rebuilt when the size changes.
 pub struct Encoder {
     inner: H264Encoder,
@@ -63,7 +76,9 @@ impl Encoder {
             .complexity(Complexity::Low)
             // Not supported for screen content (OpenH264 turns them off with a warning).
             .adaptive_quantization(false)
-            .background_detection(false);
+            .background_detection(false)
+            .num_threads(encode_threads(width, height))
+            .max_slice_len(SLICE_BYTES);
         let inner = H264Encoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|e| e.to_string())?;
         Ok(Encoder {
@@ -252,6 +267,53 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How fast software encoding and decoding are at 1080p, with a picture that changes all over
+    /// every frame (the hardest case): `cargo test --release -p hermes-gui
+    /// software_codec_speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn software_codec_speed() {
+        let (w, h) = (1920u32, 1080u32);
+        let frames = 60;
+        let mut encoder = Encoder::new(w, h, 60.0).unwrap();
+        let mut decoder = Decoder::software().unwrap();
+        let (mut encode, mut decode) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        for n in 0..frames {
+            let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let v = (x + y + n * 7) as u8;
+                    pixels.extend_from_slice(&[v, v.wrapping_mul(3), (x ^ y) as u8, 255]);
+                }
+            }
+            let frame = Frame {
+                width: w,
+                height: h,
+                bgra: true,
+                pixels,
+            };
+            let began = std::time::Instant::now();
+            let packet = encoder.encode(&frame, n == 0).unwrap();
+            encode += began.elapsed();
+            if let Some((data, _)) = packet {
+                let began = std::time::Instant::now();
+                let _ = decoder.decode(&data).unwrap();
+                decode += began.elapsed();
+            }
+        }
+        let big: Vec<u8> = vec![128; 2560 * 1440 * 4];
+        let began = std::time::Instant::now();
+        for _ in 0..10 {
+            let _ = super::super::scale::down(&big, 2560, 1440, 1920, 1080);
+        }
+        eprintln!(
+            "1080p: encode {:.1} ms, decode {:.1} ms per frame; 1440p->1080p scale {:.1} ms",
+            encode.as_secs_f64() * 1000.0 / f64::from(frames),
+            decode.as_secs_f64() * 1000.0 / f64::from(frames),
+            began.elapsed().as_secs_f64() * 100.0,
+        );
+    }
 
     #[test]
     fn frames_survive_a_round_trip() {
