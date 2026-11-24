@@ -1042,6 +1042,16 @@ impl WaylandWindowStatePtr {
         true
     }
 
+    /// Hermes patch: activates the window with a token from another process.
+    pub(crate) fn hermes_activate(&self, token: &str) -> bool {
+        let state = self.state.borrow();
+        let Some(activation) = state.globals.activation.as_ref() else {
+            return false;
+        };
+        activation.activate(token.to_owned(), &state.surface);
+        true
+    }
+
     /// Hermes patch: the app is usually busy (hiding from inside an update), so the window hears
     /// of its new visibility once that is done.
     fn hermes_report_later(&self, visibility: WindowVisibility) {

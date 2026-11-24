@@ -45,3 +45,8 @@ pub(super) fn to_shape(style: CursorStyle) -> Shape {
 pub(crate) fn hermes_set_hidden(surface: usize, hidden: bool) -> bool {
     window::hermes_hideable::find(surface).is_some_and(|window| window.hermes_set_hidden(hidden))
 }
+
+/// Hermes patch: see `crate::linux::activate_wayland_window`.
+pub(crate) fn hermes_activate(surface: usize, token: &str) -> bool {
+    window::hermes_hideable::find(surface).is_some_and(|window| window.hermes_activate(token))
+}

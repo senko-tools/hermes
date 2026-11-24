@@ -729,7 +729,9 @@ impl Shell {
         });
         let handle = self.window;
         cx.spawn(async move |this, cx| {
-            while let Some(link) = rx.recv().await {
+            while let Some(line) = rx.recv().await {
+                let (link, token) = single_instance::split(&line);
+                let (link, token) = (link.to_owned(), token.map(str::to_owned));
                 let _ = cx.update_window(handle, |_, window, cx| {
                     this.update(cx, |this, cx| {
                         tracing::info!(
@@ -738,6 +740,9 @@ impl Shell {
                         );
                         // Also out of the tray: a second launch means "show me".
                         this.show_window(window, cx);
+                        if let Some(token) = &token {
+                            crate::desktop::window::activate_with(window, token);
+                        }
                         if !link.is_empty() {
                             this.open_link(link, window, cx);
                         }

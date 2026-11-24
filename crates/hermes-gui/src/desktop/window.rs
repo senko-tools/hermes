@@ -78,6 +78,22 @@ pub fn set_visible(window: &Window, visible: bool) {
 #[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_visible(_window: &Window, _visible: bool) {}
 
+/// Brings the window to the front with an activation token another launch was given (Wayland;
+/// elsewhere raising needs none, and this does nothing).
+pub fn activate_with(window: &Window, token: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Wayland(h) = handle.as_raw()
+        {
+            gpui_linux::activate_wayland_window(h.surface.as_ptr(), token);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, token);
+}
+
 /// Colours the native title bar like the app: dark mode when `background` is dark, and the
 /// background itself where Windows allows it (Windows 11; Windows 10 only has dark and light).
 #[cfg(windows)]

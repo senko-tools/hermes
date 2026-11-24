@@ -68,3 +68,18 @@ pub fn set_wayland_window_hidden(surface: *mut std::ffi::c_void, hidden: bool) -
         false
     }
 }
+
+/// Hermes patch: brings a Wayland window to the front with an activation token another process
+/// was given (a second launch's `XDG_ACTIVATION_TOKEN`); without one, compositors only mark the
+/// window as wanting attention. `false` where it cannot.
+pub fn activate_wayland_window(surface: *mut std::ffi::c_void, token: &str) -> bool {
+    #[cfg(feature = "wayland")]
+    {
+        wayland::hermes_activate(surface as usize, token)
+    }
+    #[cfg(not(feature = "wayland"))]
+    {
+        let _ = (surface, token);
+        false
+    }
+}
