@@ -265,6 +265,10 @@ pub(crate) struct Hug {
 
 /// The space between a popup and what was clicked.
 const HUG_GAP: f32 = 12.;
+/// The space between a popup and what was clicked, in window pixels.
+pub(crate) fn hug_gap(scale: f32) -> Pixels {
+    px(HUG_GAP * scale)
+}
 /// How close a popup comes to the window's edge.
 const HUG_MARGIN: f32 = 8.;
 /// How far the click may be from the popup's near corner along the clicked thing.

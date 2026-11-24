@@ -127,7 +127,13 @@ impl Shell {
         let mut at = self.popup_from(position);
         // Clicked inside a bordered bar (my own user panel): the card goes beside the whole
         // bar, not over its other buttons.
-        if let Some(bar) = self.bar_around(at.trigger) {
+        if let Some(mut bar) = self.bar_around(at.trigger) {
+            // The bar sits on the window's bottom edge: the card's bottom keeps the same gap
+            // from that edge as its side keeps from the bar.
+            let gap = crate::modal::hug_gap(crate::theme::scale());
+            let below = (self.viewport.height - bar.bottom()).max(gpui_kit::px(0.));
+            let lift = (gap - below).max(gpui_kit::px(0.)).min(bar.size.height);
+            bar.size.height -= lift;
             at.trigger = bar;
         }
         self.show_profile(inst, space, user, at, cx);
