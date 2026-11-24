@@ -1,5 +1,6 @@
 //! The unread count on the app's taskbar button: a small red dot with the number over the icon
-//! (Windows' overlay icon). Elsewhere there is no such thing, and this does nothing.
+//! (Windows' overlay icon). On Linux the desktop draws the count itself from the Unity launcher
+//! signal; elsewhere this does nothing.
 
 /// The number on the dot: up to 9, then "9+".
 #[cfg_attr(not(windows), allow(dead_code))] // only Windows has a taskbar overlay
@@ -147,7 +148,64 @@ pub fn set_count(window: &gpui_kit::Window, count: u32) {
     });
 }
 
-#[cfg(not(windows))]
+/// Linux: the `com.canonical.Unity.LauncherEntry` signal, which KDE's task manager, Dash to
+/// Dock/Panel and Plank read for the app's desktop file (installed by `install.sh`).
+#[cfg(target_os = "linux")]
+pub fn set_count(_window: &gpui_kit::Window, count: u32) {
+    use std::sync::OnceLock;
+    use tokio::sync::watch;
+
+    static COUNT: OnceLock<watch::Sender<u32>> = OnceLock::new();
+    let sender = COUNT.get_or_init(|| {
+        let (tx, rx) = watch::channel(count);
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                runtime.spawn(launcher_entry(rx));
+            }
+            Err(err) => tracing::debug!("no unread count on the taskbar: {err}"),
+        }
+        tx
+    });
+    sender.send_replace(count);
+}
+
+#[cfg(target_os = "linux")]
+async fn launcher_entry(mut counts: tokio::sync::watch::Receiver<u32>) {
+    use ashpd::zbus::{self, Variant};
+    use std::collections::HashMap;
+
+    let conn = match zbus::Connection::session().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            tracing::debug!("no session bus: no unread count on the taskbar: {err}");
+            return;
+        }
+    };
+    let uri = format!("application://{}.desktop", super::APP_ID);
+    loop {
+        let count = *counts.borrow_and_update();
+        let mut props: HashMap<&str, Variant<'_>> = HashMap::new();
+        props.insert("count", Variant::from(i64::from(count)));
+        props.insert("count-visible", Variant::from(count > 0));
+        if let Err(err) = conn
+            .emit_signal(
+                None::<&str>,
+                "/tools/senko/Hermes",
+                "com.canonical.Unity.LauncherEntry",
+                "Update",
+                &(uri.as_str(), props),
+            )
+            .await
+        {
+            tracing::debug!("taskbar count: {err}");
+        }
+        if counts.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_count(_window: &gpui_kit::Window, _count: u32) {}
 
 #[cfg(test)]

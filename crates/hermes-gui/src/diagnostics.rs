@@ -171,14 +171,29 @@ impl Shell {
         Some(if key.is_empty() {
             Check::new(NAME, Level::NotWorking, "No key is set")
                 .hint("Set one in Voice & Audio: nothing goes through without it.")
-        } else if cfg!(windows) {
-            Check::new(NAME, Level::Working, format!("Key: {key}"))
         } else {
-            Check::new(
-                NAME,
-                Level::Warning,
-                format!("Key: {key}, only while Hermes is focused"),
-            )
+            match crate::ptt::reach() {
+                crate::ptt::Reach::Everywhere => {
+                    Check::new(NAME, Level::Working, format!("Key: {key}"))
+                }
+                crate::ptt::Reach::System => {
+                    let bound = crate::ptt::system_trigger().unwrap_or_else(|| key.to_owned());
+                    Check::new(
+                        NAME,
+                        Level::Working,
+                        format!("Key: {bound}, through the desktop"),
+                    )
+                }
+                crate::ptt::Reach::Focused => Check::new(
+                    NAME,
+                    Level::Warning,
+                    format!("Key: {key}, only while Hermes is focused"),
+                )
+                .hint(
+                    "This desktop does not let apps hear keys elsewhere. A desktop with the \
+                     GlobalShortcuts portal (KDE, Hyprland, GNOME 47+) can bind it.",
+                ),
+            }
         })
     }
 
@@ -300,8 +315,12 @@ impl Shell {
 fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
     const NAME: &str = "Microphone";
     if no_device {
-        return Check::new(NAME, Level::NotWorking, "No microphone found")
-            .hint("Plug one in, or check that Windows sees it.");
+        return Check::new(NAME, Level::NotWorking, "No microphone found").hint(if cfg!(windows) {
+            "Plug one in, or check that Windows sees it."
+        } else {
+            "Plug one in, or check that the sound settings see it. Hermes uses the sound server \
+             (PipeWire or PulseAudio); without one running it only finds raw ALSA devices."
+        });
     }
     if readings == 0 {
         return Check::new(
@@ -309,7 +328,12 @@ fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
             Level::NotWorking,
             "The microphone could not be opened",
         )
-        .hint("Another program may hold it, or Windows privacy settings may block it.");
+        .hint(if cfg!(windows) {
+            "Another program may hold it, or Windows privacy settings may block it."
+        } else {
+            "Another program may hold it (plain ALSA lets only one at a time), or a sandbox \
+             such as Flatpak may not allow the microphone."
+        });
     }
     if peak < SILENT_DB {
         return Check::new(
@@ -317,10 +341,13 @@ fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
             Level::Warning,
             format!("Only silence for {} s", LISTEN.as_secs()),
         )
-        .hint(
+        .hint(if cfg!(windows) {
             "Muted, a very quiet room, or blocked by Windows privacy settings (Microphone access \
-             for desktop apps). Say something and run again.",
-        );
+             for desktop apps). Say something and run again."
+        } else {
+            "Muted, a very quiet room, or muted in the system's sound settings (check the input \
+             in the desktop's audio settings or pavucontrol). Say something and run again."
+        });
     }
     Check::new(
         NAME,

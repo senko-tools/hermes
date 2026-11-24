@@ -359,6 +359,8 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # Built in, as on Windows: with it, installs made by install.sh update themselves.
+      HERMES_UPDATE_PUBLIC_KEY: ${{ vars.HERMES_UPDATE_PUBLIC_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -372,10 +374,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
             libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev \
+            libpipewire-0.3-dev libspa-0.2-dev clang \
             nasm xvfb mesa-vulkan-drivers dbus-x11
+      - name: PipeWire headers
+        # 22.04's PipeWire (0.3.48) is older than the pipewire crate's headers: Ubuntu 24.04's are
+        # used, and the next step proves the binary still runs with 22.04's library.
+        run: echo "PKG_CONFIG_PATH=$(bash crates/hermes-gui/linux/pipewire-headers.sh "$RUNNER_TEMP/pipewire")" >> "$GITHUB_ENV"
       - name: Build
-        # No update key: on Linux the app only says that a new version exists (updater::available).
-        run: cargo build --release --locked -p hermes-gui
+        # The app, and make-update for the update files.
+        run: cargo build --release --locked -p hermes-gui -p hermes-client-core --bin hermes --bin make-update
+      - name: PipeWire functions
+        run: bash crates/hermes-gui/linux/pipewire-headers.sh check target/release/hermes
       - name: Smoke test
         # As on Windows: starts, opens its window on a virtual X screen and quits by itself.
         # Warn-only until it has passed on the runner a few times.
@@ -403,6 +412,30 @@ jobs:
           cp crates/hermes-gui/assets/icons/icon-*.png "stage/$name/icons/"
           chmod 755 "stage/$name/hermes" "stage/$name/install.sh"
           tar -czf "dist/$name.tar.gz" -C stage "$name"
+      - name: Update files
+        # Linux's own signed manifest (update-manifest-linux.json, assets linux-*) beside
+        # Windows': the program is the one file install.sh puts in its folder, so it is the one
+        # file updated, with patches from the last three releases' Linux programs.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::notice::UPDATE_SIGNING_KEY is not set: no Linux update files"
+            exit 0
+          fi
+          mkdir -p update-src
+          cp target/release/hermes update-src/
+          previous=()
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --exclude-drafts               --json tagName -q '.[].tagName' | grep -v "^v$VERSION$" | head -3); do
+            mkdir -p "prev/$tag/files"
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY"                 --pattern 'Hermes-*-x86_64-linux.tar.gz' --dir "prev/$tag"; then
+              tar -xzf "prev/$tag"/*.tar.gz -C "prev/$tag" &&                 cp "prev/$tag"/Hermes-*/hermes "prev/$tag/files/" &&                 previous+=(--previous "prev/$tag/files")
+            fi
+          done
+          target/release/make-update build --platform linux --dir update-src --version "$VERSION"             --out update "${previous[@]}"
+          cp update/* dist/
+          ls -l update
       - uses: actions/upload-artifact@v7
         with:
           name: linux

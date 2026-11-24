@@ -23,6 +23,8 @@ mod mf_encode;
 pub mod popout;
 mod scale;
 pub mod sound;
+#[cfg(target_os = "linux")]
+mod x11;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -406,6 +408,11 @@ impl Shell {
         if self.capture.is_some() {
             return;
         }
+        #[cfg(target_os = "linux")]
+        if crate::desktop::wayland() {
+            self.start_portal_share(cx);
+            return;
+        }
         if let Err(err) = self.core.start_screen_share() {
             self.error(err.to_string(), cx);
             return;
@@ -425,6 +432,56 @@ impl Shell {
             }
         }
         cx.notify();
+    }
+
+    /// Wayland: the desktop's dialog picks what to share (or shares the last choice again,
+    /// with its token), then the share starts as elsewhere.
+    #[cfg(target_os = "linux")]
+    fn start_portal_share(&mut self, cx: &mut Context<Self>) {
+        if self.picking_share {
+            return;
+        }
+        self.picking_share = true;
+        let token = Some(self.config.voice.share_restore_token.clone()).filter(|t| !t.is_empty());
+        self.run(cx, capture::portal::pick(token), |this, picked, _, cx| {
+            this.picking_share = false;
+            let picked = match picked {
+                Ok(picked) => picked,
+                Err(capture::portal::PickError::Cancelled) => return,
+                Err(capture::portal::PickError::Failed(err)) => {
+                    // A token the desktop no longer knows asks again next time.
+                    this.set_config(|c| c.voice.share_restore_token.clear(), cx);
+                    this.error(format!("Could not share the screen: {err}"), cx);
+                    return;
+                }
+            };
+            let token = picked.token.clone().unwrap_or_default();
+            if token != this.config.voice.share_restore_token {
+                this.set_config(|c| c.voice.share_restore_token = token, cx);
+            }
+            // Started another way while the dialog was open, or left the call.
+            if this.capture.is_some() || this.core.voice_channel().is_none() {
+                return;
+            }
+            if let Err(err) = this.core.start_screen_share() {
+                this.error(err.to_string(), cx);
+                return;
+            }
+            let v = &this.config.voice;
+            let quality = capture::Quality::from_config(v.share_resolution, v.share_fps);
+            let preference = capture::Preference::from_config(v.share_preference);
+            match capture::Capture::start_portal(this.core.clone(), picked, quality, preference) {
+                Ok(capture) => {
+                    this.capture = Some(capture);
+                    this.start_share_sound(cx);
+                }
+                Err(err) => {
+                    this.core.stop_screen_share();
+                    this.error(format!("Could not share the screen: {err}"), cx);
+                }
+            }
+            cx.notify();
+        });
     }
 
     /// Sends what the computer plays along with the share, when that is wanted and the voice

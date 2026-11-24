@@ -1,6 +1,8 @@
 //! Desktop integration (PLAN.md section 15.7): notifications, the tray icon, taskbar flashing and
 //! closing to the tray.
 
+#[cfg(target_os = "linux")]
+mod idle;
 pub mod taskbar;
 pub mod tray;
 pub mod window;
@@ -18,6 +20,13 @@ const PREVIEW_CHARS: usize = 200;
 /// file and icons that `linux/install.sh` installs, through which the desktop finds the icon.
 /// Windows does not use it.
 pub const APP_ID: &str = "tools.senko.Hermes";
+
+/// Linux: the windows are Wayland ones (gpui picks Wayland whenever `WAYLAND_DISPLAY` is set),
+/// else X11. Decides how keys, screens and idle time are read.
+#[cfg(target_os = "linux")]
+pub fn wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
+}
 
 /// Title and body of a toast: `Alice in #general` / the message, or just `Alice` for a DM.
 pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String) {
@@ -44,23 +53,28 @@ pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String
     (title, body)
 }
 
-/// A number that changes whenever the user touches the mouse or keyboard; `None` where the system
-/// does not say.
+/// How long the user has not touched the mouse or keyboard; `None` where the system does not say.
 #[cfg(windows)]
-pub fn last_input() -> Option<u32> {
+pub fn idle_time() -> Option<std::time::Duration> {
+    use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     let mut info = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
     };
-    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in.
+    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in; GetTickCount has no
+    // preconditions.
     #[allow(unsafe_code)]
-    let ok = unsafe { GetLastInputInfo(&mut info) }.as_bool();
-    ok.then_some(info.dwTime)
+    let (ok, now) = unsafe { (GetLastInputInfo(&mut info).as_bool(), GetTickCount()) };
+    // Both are the same 32-bit millisecond tick, which wraps after 49.7 days.
+    ok.then(|| std::time::Duration::from_millis(u64::from(now.wrapping_sub(info.dwTime))))
 }
 
-#[cfg(not(windows))]
-pub fn last_input() -> Option<u32> {
+#[cfg(target_os = "linux")]
+pub use idle::idle_time;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn idle_time() -> Option<std::time::Duration> {
     None
 }
 

@@ -118,6 +118,17 @@ tray-icon = "=0.26.1"
 # Linux only: the tray's own GTK thread (tray-icon needs GTK's loop running where the icon lives;
 # the version tray-icon already uses, approved 2026-11-23).
 gtk = "=0.18.2"
+# Linux only (approved 2026-11-24, round 45; the versions xcap and gpui already pull in):
+# XInput2 raw keys for push-to-talk and the X11 idle time, and the desktop portals (global
+# shortcuts, screen casts) for Wayland.
+x11rb = { version = "=0.13.2", features = ["xinput", "screensaver", "shm", "composite", "randr", "xfixes"] }
+memmap2 = "=0.9.12"
+# Wayland screen casts arrive over PipeWire (the version xcap pulls in; `links` allows only one).
+# Built against newer headers (ci/pipewire-headers.sh) but only calls what PipeWire 0.3.48 has.
+pipewire = "=0.10.1"
+wayland-client = "=0.31.15"
+wayland-protocols = { version = "=0.32.13", features = ["client", "staging"] }
+ashpd = { version = "=0.14.0", default-features = false, features = ["tokio", "global_shortcuts", "screencast"] }
 global-hotkey = "=0.10.0"
 keyring = "=4.2.0"
 directories = "=6.0.0"

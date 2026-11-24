@@ -198,6 +198,58 @@ impl Shell {
         self.start_share(cx);
     }
 
+    /// Wayland: the desktop's own dialog picks what to share, not our cards.
+    fn share_by_desktop(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            crate::desktop::wayland()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// In place of the cards on Wayland: what happens when Share is pressed.
+    fn render_desktop_share_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let remembered = !self.config.voice.share_restore_token.is_empty();
+        let text = if remembered {
+            "Share shows what you chose last time again, without asking."
+        } else {
+            "Share opens your desktop's dialog, where you choose a screen or a window."
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .px(px(BODY_PAD))
+            .child(icon(assets::MONITOR_SHARE, 40., theme::text_tertiary()))
+            .child(
+                div()
+                    .max_w(px(420.))
+                    .text_center()
+                    .text_size(theme::body_size())
+                    .text_color(theme::text_secondary())
+                    .child(text),
+            )
+            .when(remembered, |d| {
+                d.child(
+                    Button::new("share-choose-again")
+                        .cursor_pointer()
+                        .ghost()
+                        .label("Choose something else")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.set_config(|c| c.voice.share_restore_token.clear(), cx);
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
     /// One card: its picture (or a plain face for a minimized window), its name and what it is.
     fn share_card(
         &self,
@@ -431,15 +483,17 @@ impl Shell {
                 .text_color(theme::text_tertiary())
                 .child("Looking for screens and windows…")
                 .into_any_element()
-        } else if !cfg!(windows) {
-            // Capture is Windows-only for now (screen/capture.rs): say so instead of empty lists.
+        } else if self.share_by_desktop() {
+            self.render_desktop_share_body(cx)
+        } else if !cfg!(any(windows, target_os = "linux")) {
+            // No capture here (screen/capture.rs): say so instead of empty lists.
             div()
                 .flex()
                 .flex_1()
                 .items_center()
                 .justify_center()
                 .text_color(theme::text_tertiary())
-                .child("Sharing your screen only works on Windows for now.")
+                .child("Sharing your screen does not work on this system yet.")
                 .into_any_element()
         } else {
             div()

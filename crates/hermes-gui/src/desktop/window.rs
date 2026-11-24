@@ -1,14 +1,23 @@
 //! Hiding the window to the tray and bringing it back. gpui has no way to hide a window, so this
-//! calls Windows directly with the window's own handle.
+//! calls the system directly with the window's own handle: Windows, or X11 (unmapping it).
 
 use gpui_kit::Window;
 
-/// Whether the window can be hidden (to the tray). Only on Windows: on Wayland only the app's own
-/// toolkit could unmap its window, and gpui has no way to; there, closing quits and the tray
+/// Whether the window can be hidden (to the tray): on Windows and X11. On Wayland only the app's
+/// own toolkit could unmap its window, and gpui has no way to; there, closing quits and the tray
 /// only brings the window back to the front.
-pub const CAN_HIDE: bool = cfg!(windows);
+pub fn can_hide() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !crate::desktop::wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cfg!(windows)
+    }
+}
 
-/// Hides or shows the window without closing it. Elsewhere windows stay shown (see `CAN_HIDE`).
+/// Hides or shows the window without closing it. Elsewhere windows stay shown (see `can_hide`).
 #[cfg(windows)]
 pub fn set_visible(window: &Window, visible: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -26,7 +35,45 @@ pub fn set_visible(window: &Window, visible: bool) {
     }
 }
 
-#[cfg(not(windows))]
+/// X11: unmaps the window (it leaves the screen and the taskbar) or maps it again.
+#[cfg(target_os = "linux")]
+pub fn set_visible(window: &Window, visible: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::{Mutex, OnceLock};
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    static CONN: OnceLock<Option<Mutex<x11rb::rust_connection::RustConnection>>> = OnceLock::new();
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let id = match handle.as_raw() {
+        RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
+        RawWindowHandle::Xcb(h) => Some(h.window.get()),
+        _ => None,
+    };
+    let Some(id) = id else {
+        return;
+    };
+    let conn = CONN.get_or_init(|| x11rb::connect(None).ok().map(|(c, _)| Mutex::new(c)));
+    let Some(conn) = conn else {
+        return;
+    };
+    let conn = conn.lock().expect("x11 connection");
+    let sent = if visible {
+        conn.map_window(id).map(drop)
+    } else {
+        conn.unmap_window(id).map(drop)
+    };
+    if let Err(err) = sent.and_then(|()| conn.flush()) {
+        tracing::warn!(
+            "could not {} the window: {err}",
+            if visible { "show" } else { "hide" }
+        );
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_visible(_window: &Window, _visible: bool) {}
 
 /// Colours the native title bar like the app: dark mode when `background` is dark, and the
@@ -98,8 +145,12 @@ pub fn flash(window: &Window) {
     }
 }
 
+/// Elsewhere: the window asks for attention (X11 sets the urgency hint, which taskbars show by
+/// highlighting the button; Wayland compositors do the same where gpui can ask).
 #[cfg(not(windows))]
-pub fn flash(_window: &Window) {}
+pub fn flash(window: &Window) {
+    window.request_attention();
+}
 
 /// Asks Windows for 1 ms timers while it lives. By default they fire every 15.6 ms, which makes a
 /// 60 fps animation stutter (frames 31 and 47 ms apart); the level meter holds one while it shows.

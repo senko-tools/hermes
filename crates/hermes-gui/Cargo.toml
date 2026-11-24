@@ -59,6 +59,7 @@ windows = { workspace = true, features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
     "Win32_System_Memory",
+    "Win32_System_SystemInformation",
     "Win32_System_Ole",
     "Win32_System_Threading",
     "Win32_System_Variant",
@@ -71,6 +72,16 @@ xcap.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # The tray icon runs on a GTK thread of its own (desktop/tray.rs).
 gtk.workspace = true
+# Push-to-talk and idle time on X11; global shortcuts and screen casts through the portals.
+x11rb.workspace = true
+# The shared memory X11 screen capture writes into.
+memmap2.workspace = true
+ashpd.workspace = true
+# Wayland screen casts (frames) and a share's sound.
+pipewire.workspace = true
+# Idle time on Wayland (ext-idle-notify-v1), on a connection of our own.
+wayland-client.workspace = true
+wayland-protocols.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true

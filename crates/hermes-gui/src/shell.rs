@@ -355,6 +355,10 @@ pub struct Shell {
     pub ptt_down: bool,
     /// What the push-to-talk thread watches.
     pub ptt_keys: Arc<Mutex<Vec<u16>>>,
+    /// Keys held in the focused window, for push-to-talk where it cannot be heard globally.
+    pub ptt_held: crate::ptt::Held,
+    /// Focused when nothing else is, so the window's key events always pass the root.
+    pub root_focus: gpui_kit::FocusHandle,
     /// A ringing incoming call (the banner).
     pub call: Option<Call>,
     pub volume_menu: Option<VolumeMenu>,
@@ -380,6 +384,9 @@ pub struct Shell {
     pub screen_list: Vec<crate::screen::capture::ScreenInfo>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
+    /// The desktop's share dialog (Wayland) is open.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub picking_share: bool,
     /// My share's sound, while it is sent.
     pub share_sound: Option<crate::screen::sound::ShareSound>,
     /// The latest picture of each screen share I watch.
@@ -557,6 +564,8 @@ impl Shell {
             meter_drawn: Instant::now(),
             ptt_down: false,
             ptt_keys: Arc::default(),
+            ptt_held: crate::ptt::Held::default(),
+            root_focus: cx.focus_handle(),
             call: None,
             volume_menu: None,
             net: NetHistory::default(),
@@ -570,6 +579,7 @@ impl Shell {
             share_generation: 0,
             screen_list: Vec::new(),
             capture: None,
+            picking_share: false,
             share_sound: None,
             screens: HashMap::new(),
             enlarged_share: None,
@@ -870,6 +880,9 @@ impl Shell {
     fn window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
         self.focused = active;
         self.core.set_app_focused(active);
+        if !active {
+            self.ptt_focus_lost(cx);
+        }
         if active {
             self.mark_open_read(cx);
         } else {
@@ -2007,13 +2020,41 @@ impl Render for Shell {
                 .into_any_element()
         };
         let resizing = self.resizing.is_some();
-        div()
+        // Linux: key events pass the root only when something in it has focus, and the focused
+        // push-to-talk needs every key (see `ptt_focused`).
+        if cfg!(target_os = "linux") && window.focused(cx).is_none() {
+            self.root_focus.focus(window, cx);
+        }
+        let root = div()
             .flex()
             .size_full()
             .font_family(crate::theme::font())
             .bg(theme::background())
             .text_color(theme::text())
             .text_size(crate::theme::body_size())
+            .when(cfg!(target_os = "linux"), |d| {
+                d.track_focus(&self.root_focus)
+            })
+            // Push-to-talk while focused, where it cannot be heard globally.
+            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                this.ptt_focused(crate::ptt::focused_key(&event.keystroke.key), true, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui_kit::KeyUpEvent, _, cx| {
+                this.ptt_focused(crate::ptt::focused_key(&event.keystroke.key), false, cx);
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                    this.ptt_focused_modifiers(&event.modifiers, cx);
+                },
+            ))
+            .capture_any_mouse_down(
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.ptt_focused(crate::ptt::mouse_vk(event.button), true, cx);
+                }),
+            )
+            .capture_any_mouse_up(cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                this.ptt_focused(crate::ptt::mouse_vk(event.button), false, cx);
+            }))
             // Each press starts with nothing closed by it. Captured here, before the popups' own
             // "pressed outside" listeners and before any element could stop it. A popup closed
             // some other way (Escape, an entry chosen) is forgotten at the next press too.
@@ -2069,7 +2110,18 @@ impl Render for Shell {
             .children(self.render_modals(cx))
             .children(self.render_menu())
             .child(self.redraw_waker(cx))
-            .children(first_frame.then(|| self.first_paint_marker()))
+            .children(first_frame.then(|| self.first_paint_marker()));
+        // Desktops that leave the title bar to the app (GNOME on Wayland) get Hermes' own.
+        let shell = cx.entity().downgrade();
+        let on_close = move |window: &mut Window, cx: &mut gpui_kit::App| {
+            let close = shell
+                .update(cx, |this, cx| this.close_requested(window, cx))
+                .unwrap_or(true);
+            if close {
+                window.remove_window();
+            }
+        };
+        crate::csd::frame(root.into_any_element(), &self.title, on_close, window)
     }
 }
 

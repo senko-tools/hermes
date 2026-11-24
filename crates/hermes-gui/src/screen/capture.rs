@@ -1,12 +1,19 @@
 //! Capturing and encoding my screen while I share it, on two threads that work in parallel
-//! (capturing and scaling; encoding and sending). Windows only for now: elsewhere
+//! (capturing and scaling; encoding and sending). Windows (Desktop Duplication, GDI, xcap for
+//! windows) and Linux (`linux`: X11 directly, Wayland through the ScreenCast portal); elsewhere
 //! [`Capture::start`] fails with a message (watching works everywhere).
 
-// Capturing is Windows-only for now; the sizing rules are tested everywhere.
+// Capturing is Windows and Linux only, and the hardware path (adapting steps) Windows only; the
+// sizing rules are tested everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub mod portal;
+
 use std::sync::Arc;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -14,7 +21,7 @@ use std::time::{Duration, Instant};
 use hermes_client_core::Core;
 use hermes_client_core::proto::voice::{MAX_VIDEO_DIMENSION, MAX_VIDEO_FPS};
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 use super::codec::Frame;
 
 /// How large and how often a share is sent (`voice.share_resolution`, `voice.share_fps`).
@@ -252,21 +259,21 @@ struct Tuning {
 }
 
 /// A keyframe at least this often, so a watcher who lost one recovers on their own.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const KEYFRAME_EVERY: Duration = Duration::from_secs(5);
 
 /// How often the share's numbers are logged.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const STATS_EVERY: Duration = Duration::from_secs(10);
 
 /// After the connection refused a frame, the watchers wait for a keyframe; one is made at most
 /// this often, so a congested connection does not get a keyframe (the largest frames) after
 /// every refused frame.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const RESYNC_GAP: Duration = Duration::from_millis(500);
 
 /// While nobody watches, how often the capture thread looks whether someone started to.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const IDLE_POLL: Duration = Duration::from_millis(100);
 
 /// A running capture; dropping it stops the threads.
@@ -305,6 +312,28 @@ impl Capture {
             keyframe.clone(),
             tuning.clone(),
         )?;
+        Ok(Capture {
+            stop,
+            keyframe,
+            tuning,
+        })
+    }
+
+    /// Linux (Wayland): streams what the desktop's dialog picked ([`portal::pick`]).
+    #[cfg(target_os = "linux")]
+    pub fn start_portal(
+        core: Core,
+        picked: portal::Picked,
+        quality: Quality,
+        preference: Preference,
+    ) -> Result<Capture, String> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let keyframe = Arc::new(AtomicBool::new(true));
+        let tuning = Arc::new(Tuning::default());
+        tuning
+            .preference
+            .store(preference.to_u8(), Ordering::Relaxed);
+        portal::start(picked, core, quality, stop.clone(), keyframe.clone())?;
         Ok(Capture {
             stop,
             keyframe,
@@ -420,7 +449,11 @@ pub fn sources(pictures: bool) -> Vec<Shareable> {
         }
         out
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::sources(pictures)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = pictures;
         Vec::new()
@@ -432,8 +465,14 @@ pub fn sources(pictures: bool) -> Vec<Shareable> {
 /// filtering every pixel of a 4K screen, and smooth enough for a picture this small.
 #[cfg(windows)]
 fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
-    const SAMPLES: u32 = 4;
     let (w, h) = picture.dimensions();
+    thumbnail_of(picture.as_raw(), w, h, false)
+}
+
+/// [`thumbnail`] of RGBA or BGRA(X) pixels; the result is opaque BGRA either way.
+#[cfg(any(windows, target_os = "linux"))]
+fn thumbnail_of(src: &[u8], w: u32, h: u32, bgra: bool) -> image::RgbaImage {
+    const SAMPLES: u32 = 4;
     let scale = (THUMB_WIDTH as f32 / w.max(1) as f32)
         .min(THUMB_WIDTH as f32 * 0.75 / h.max(1) as f32)
         .min(1.);
@@ -441,7 +480,6 @@ fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
         ((w as f32 * scale).round() as u32).max(1),
         ((h as f32 * scale).round() as u32).max(1),
     );
-    let src = picture.as_raw();
     let mut out = image::RgbaImage::new(tw, th);
     for (x, y, pixel) in out.enumerate_pixels_mut() {
         let mut sum = [0u32; 4];
@@ -458,13 +496,13 @@ fn thumbnail(picture: image::RgbaImage) -> image::RgbaImage {
             }
         }
         let n = SAMPLES * SAMPLES;
-        // BGRA for gpui.
-        *pixel = image::Rgba([
-            (sum[2] / n) as u8,
-            (sum[1] / n) as u8,
-            (sum[0] / n) as u8,
-            (sum[3] / n) as u8,
-        ]);
+        let avg = |c: usize| (sum[c] / n) as u8;
+        // BGRA for gpui. X11's fourth byte is undefined: such pictures are opaque.
+        *pixel = if bgra {
+            image::Rgba([avg(0), avg(1), avg(2), 255])
+        } else {
+            image::Rgba([avg(2), avg(1), avg(0), avg(3)])
+        };
     }
     out
 }
@@ -553,11 +591,18 @@ pub fn screens() -> Vec<ScreenInfo> {
             .map(|(info, _)| info)
             .collect()
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::screens()
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     Vec::new()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+use linux::start_thread;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn start_thread(
     _core: Core,
     _screen: &str,
@@ -712,7 +757,7 @@ fn run_window(
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn start_window_thread(
     _core: Core,
     _id: u32,
@@ -744,7 +789,7 @@ fn pick_monitor(screen: &str) -> Result<xcap::Monitor, String> {
 }
 
 /// What the last [`STATS_EVERY`] of a share looked like (logged, to see where time goes).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 #[derive(Default)]
 struct Stats {
     captured: AtomicU32,
@@ -1196,13 +1241,13 @@ pub fn hardware_bitrate(width: u32, height: u32, fps: u32) -> u32 {
     bits.clamp(2_000_000.0, 40_000_000.0) as u32
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Scales a picture down to the quality's size (BGRA or RGBA alike).
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn scale(frame: Frame, quality: Quality) -> Frame {
     let (w, h) = fit(frame.width, frame.height, quality);
     if (frame.width, frame.height) == (w, h) {
@@ -1217,7 +1262,7 @@ fn scale(frame: Frame, quality: Quality) -> Frame {
 }
 
 /// The encoder thread: encodes and sends what the capture thread hands over, until it stops.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn encode_loop(
     core: &Core,
     quality: Quality,
@@ -1291,7 +1336,7 @@ fn encode_loop(
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), fps: u32, what: &str) {
     let captured = stats.captured.swap(0, Ordering::Relaxed);
     let dropped = stats.dropped.swap(0, Ordering::Relaxed);
@@ -1305,7 +1350,8 @@ fn log_stats(stats: &Stats, over: Duration, (w, h): (u32, u32), fps: u32, what: 
     let per = |us: u64, n: u32| us as f64 / 1000.0 / f64::from(n.max(1));
     tracing::info!(
         "screen share ({}, {w}x{h}, target {} fps): captured {:.1} fps ({:.1} ms each), sent \
-         {:.1} fps ({:.1} ms to encode, {keyframes} keyframes), {dropped} dropped by a busy          encoder, {refused} refused by a full connection queue, {:.0} kbit/s",
+         {:.1} fps ({:.1} ms to encode, {keyframes} keyframes), {dropped} dropped by a busy \
+         encoder, {refused} refused by a full connection queue, {:.0} kbit/s",
         what,
         fps,
         f64::from(captured) / secs,

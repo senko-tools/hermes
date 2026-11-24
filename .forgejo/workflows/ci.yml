@@ -79,8 +79,17 @@ jobs:
           $apt install -y --no-install-recommends \
             build-essential cmake pkg-config git curl ca-certificates \
             libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
-            libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev
+            libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev \
+            libpipewire-0.3-dev libspa-0.2-dev clang dpkg
       - uses: https://code.forgejo.org/actions/checkout@v7
+      - name: PipeWire headers (older systems)
+        # The pipewire crate needs PipeWire 1.0's headers; older systems get Ubuntu 24.04's, while
+        # the binary still links the system's library (crates/hermes-gui/linux/pipewire-headers.sh).
+        shell: bash
+        run: |
+          if ! pkg-config --atleast-version=1.0 libpipewire-0.3; then
+            echo "PKG_CONFIG_PATH=$(bash crates/hermes-gui/linux/pipewire-headers.sh "$RUNNER_TEMP/pipewire")" >> "$GITHUB_ENV"
+          fi
       - uses: https://github.com/dtolnay/rust-toolchain@stable
         with:
           components: clippy

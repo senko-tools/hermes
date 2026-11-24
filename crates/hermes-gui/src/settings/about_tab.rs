@@ -187,7 +187,7 @@ impl Shell {
                 true,
                 |this, _, cx| {
                     if let Some(paths) = this.core.paths() {
-                        let dir = paths.dir.join("logs");
+                        let dir = paths.logs();
                         let _ = std::fs::create_dir_all(&dir);
                         if let Err(err) = crate::open::path(&dir) {
                             this.error(format!("could not open {}: {err}", dir.display()), cx);

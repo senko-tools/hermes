@@ -80,17 +80,21 @@ refresh
 echo "Hermes is installed in $app_dir and is in your app menu."
 
 # What Hermes needs from the system, said once here rather than found out later.
+# Libraries the system lacks stop Hermes from starting at all (libpipewire-0.3 on systems
+# without PipeWire, for example).
+if command -v ldd >/dev/null 2>&1; then
+    libs=$(ldd "$app_dir/hermes" 2>/dev/null | awk '/not found/ {print $1}' | tr '\n' ' ')
+    if [ -n "$libs" ]; then
+        echo
+        echo "Hermes cannot start yet: the system lacks $libs"
+        echo "  Install the packages that provide them (for libpipewire-0.3.so.0: libpipewire-0.3-0"
+        echo "  on Debian and Ubuntu, pipewire-libs on Fedora, libpipewire on Arch)."
+    fi
+fi
 missing=""
 command -v ffmpeg >/dev/null 2>&1 || missing="$missing ffmpeg"
-# pipewire-alsa's config makes ALSA's "default" device go through PipeWire.
-if command -v pipewire >/dev/null 2>&1 \
-    && [ ! -e /etc/alsa/conf.d/99-pipewire-default.conf ] \
-    && [ ! -e /usr/share/alsa/alsa.conf.d/99-pipewire-default.conf ]; then
-    missing="$missing pipewire-alsa"
-fi
 if [ -n "$missing" ]; then
     echo
     echo "Also install these for everything to work:$missing"
-    echo "  ffmpeg plays videos and sound files in the chat; pipewire-alsa routes voice through"
-    echo "  your desktop's sound system (without it, Hermes takes the sound card for itself)."
+    echo "  ffmpeg plays videos and sound files in the chat."
 fi

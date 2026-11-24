@@ -39,10 +39,10 @@ impl Shell {
                     self,
                     cx,
                     "Start minimized to the tray",
-                    if crate::desktop::window::CAN_HIDE {
+                    if crate::desktop::window::can_hide() {
                         ""
                     } else {
-                        "Only on Windows for now: here, Hermes opens its window."
+                        "Not on Wayland yet: here, Hermes opens its window."
                     },
                     general.start_minimized
                 ),
@@ -55,10 +55,10 @@ impl Shell {
                     self,
                     cx,
                     "Close to the tray",
-                    if crate::desktop::window::CAN_HIDE {
+                    if crate::desktop::window::can_hide() {
                         "Closing the window keeps Hermes running in the tray."
                     } else {
-                        "Only on Windows for now: here, closing the window quits Hermes."
+                        "Not on Wayland yet: here, closing the window quits Hermes."
                     },
                     general.close_to_tray
                 ),
@@ -93,10 +93,17 @@ impl Shell {
                     self,
                     cx,
                     "Keep sign-ins in this folder",
-                    "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
-                     Windows Credential Manager, so this folder works on another computer. Anyone \
-                     who copies the folder is signed in as you, and on a USB stick the file has no \
-                     protection at all. From the next start.",
+                    if cfg!(windows) {
+                        "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
+                         Windows Credential Manager, so this folder works on another computer. \
+                         Anyone who copies the folder is signed in as you, and on a USB stick the \
+                         file has no protection at all. From the next start."
+                    } else {
+                        "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
+                         the system keyring, so this folder works on another computer. Anyone who \
+                         copies the folder is signed in as you, and on a USB stick the file has no \
+                         protection at all. From the next start."
+                    },
                     general.sign_ins_in_folder
                 )],
             ));
@@ -182,8 +189,13 @@ impl Shell {
                 ),
                 setting_fit(
                     "Share sound",
-                    "Others hear what your computer plays, but not this call. From your next \
-                    share; needs Windows 10 version 2004 or later.",
+                    if cfg!(windows) {
+                        "Others hear what your computer plays, but not this call. From your next \
+                         share; needs Windows 10 version 2004 or later."
+                    } else {
+                        "Others hear what your computer plays, but not this call. From your next \
+                         share; needs PipeWire."
+                    },
                     {
                         let on = !v.share_sound;
                         crate::ui::switch(

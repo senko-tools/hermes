@@ -17,7 +17,16 @@ How to write it:
 - Hermes for Linux (beta): unpack Hermes-<version>-x86_64-linux.tar.gz and run ./install.sh
   - It gets a menu entry with its icon, opens hermes:// links, and can start when you sign in
   - The tray icon has Show Hermes, Mute, Deafen and Quit, and clicking a notification opens its channel
-  - Not there yet: sharing your screen, push-to-talk, hiding to the tray (closing the window quits) and updating in place (Hermes says when a new version is out)
+  - Sharing your screen: on X11 the share picker lists your screens and windows; on Wayland your desktop's own dialog asks what to share, and the next share reuses that choice until you pick "Choose something else"
+  - Push-to-talk and the global mute key work in every app on X11; on Wayland they go through the desktop's shortcut settings (KDE, Hyprland, GNOME 47 and later), elsewhere they work while Hermes is focused, and Settings says which
+  - The taskbar icon shows the unread count (KDE, Dash to Dock), the window asks for attention on new DMs and mentions, and "Go idle after" works
+  - Sharing sends what your apps play too (through PipeWire), never the call itself, and the pointer shows in shares on X11
+  - Voice goes straight to your sound server (PipeWire or PulseAudio), so pipewire-alsa is no longer needed
+  - On desktops that leave the title bar to the app (GNOME on Wayland and others), Hermes draws its own, with minimize, maximize and close, and the window can be moved and resized
+  - Close to the tray and Start minimized work on X11
+  - Installs made with install.sh update themselves like on Windows (from the first Linux release on)
+  - Logs are kept in ~/.local/state/hermes/logs
+  - Not there yet: hiding to the tray on Wayland (closing the window quits there)
 
 ## 1.4.3
 

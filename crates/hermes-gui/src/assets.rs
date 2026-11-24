@@ -26,6 +26,11 @@ pub const USERS: &str = "account-multiple";
 pub const REPLY: &str = "reply";
 pub const PENCIL: &str = "pencil";
 pub const CLOSE: &str = "close";
+/// Hermes' own title bar (`csd`), where the desktop draws none.
+pub const WINDOW_MINIMIZE: &str = "window-minimize";
+pub const WINDOW_MAXIMIZE: &str = "window-maximize";
+pub const WINDOW_RESTORE: &str = "window-restore";
+pub const WINDOW_CLOSE: &str = "window-close";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 /// The handle on a row being dragged.
 pub const DRAG: &str = "dots-vertical";

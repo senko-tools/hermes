@@ -14,6 +14,7 @@ mod channel;
 mod collapsed;
 mod command_bar;
 mod crop;
+mod csd;
 mod desktop;
 mod desktop_shell;
 mod diagnostics;
@@ -195,7 +196,7 @@ fn main() -> ExitCode {
         Err(err) => return fail(&format!("Invalid config: {err}")),
     };
     init_logging(&paths, loaded.config.general.log_days);
-    watchdog::start(paths.dir.join("logs"));
+    watchdog::start(paths.logs());
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }
@@ -262,7 +263,7 @@ fn main() -> ExitCode {
             };
             // The tray and the global keys live on this (the event loop's) thread.
             let tray = start_minimized.then(desktop_shell::create_tray).flatten();
-            let start_hidden = start_minimized && tray.is_some() && desktop::window::CAN_HIDE;
+            let start_hidden = start_minimized && tray.is_some() && desktop::window::can_hide();
             let boot = Boot {
                 tray,
                 launched,
@@ -330,10 +331,11 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Logs go to `<config dir>/logs/latest.log`, older ones to `logs/logs_old/` (see
+/// Logs go to `<logs dir>/latest.log` (`ConfigPaths::logs`), older ones to `logs_old/` (see
 /// `hermes_client_core::logs`; `HERMES_LOG` sets the filter).
 fn init_logging(paths: &ConfigPaths, log_days: u32) {
-    let dir = paths.dir.join("logs");
+    paths.move_old_logs();
+    let dir = paths.logs();
     hermes_client_core::crash::install(dir.clone(), "hermes");
     let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes", log_days) else {
         return;

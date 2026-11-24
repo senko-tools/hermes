@@ -147,7 +147,7 @@ impl Icon {
         menu.append_items(&[
             &MenuItem::with_id(
                 SHOW,
-                if super::window::CAN_HIDE {
+                if super::window::can_hide() {
                     "Show / hide Hermes"
                 } else {
                     "Show Hermes"
