@@ -18,6 +18,8 @@ pub struct PopOut {
     /// The picture drawn last: freed from this window's GPU memory once a newer one shows.
     shown: Option<Arc<RenderImage>>,
     focus: FocusHandle,
+    /// Shown in Hermes' own title bar where the desktop draws none (`csd`).
+    title: String,
 }
 
 impl PopOut {
@@ -68,7 +70,7 @@ impl Render for PopOut {
                 (area.height.as_f32() * scale) as u32,
             );
         }
-        div()
+        let content = div()
             .id("popout")
             .track_focus(&self.focus)
             .size_full()
@@ -97,7 +99,16 @@ impl Render for PopOut {
                     .into_any_element(),
                 None => "Waiting for a picture…".into_any_element(),
             })
-            .into_any_element()
+            .into_any_element();
+        if window.is_fullscreen() {
+            return content;
+        }
+        crate::csd::frame(
+            content,
+            &self.title,
+            |window, _| window.remove_window(),
+            window,
+        )
     }
 }
 
@@ -109,6 +120,7 @@ impl Shell {
         }
         self.watch_share(key.clone(), true);
         let shell = cx.entity().downgrade();
+        let bar_title = title.clone();
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
@@ -155,6 +167,7 @@ impl Shell {
                     key: popped,
                     shown: None,
                     focus,
+                    title: bar_title,
                 }
             })
         });

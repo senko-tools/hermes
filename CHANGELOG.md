@@ -27,6 +27,9 @@ How to write it:
   - Installs made with install.sh update themselves like on Windows (from the first Linux release on)
   - Logs are kept in ~/.local/state/hermes/logs
 
+### Changed
+- Sharing your screen without a hardware video encoder uses several processor cores: about twice the frame rate at 1080p
+
 ## 1.4.3
 
 ### New
