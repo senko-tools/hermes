@@ -5,8 +5,10 @@
 //!     prints a new signing key (keep it secret: the UPDATE_SIGNING_KEY secret of the release
 //!     workflow) and its public half (HERMES_UPDATE_PUBLIC_KEY, built into the app)
 //! make-update build --dir <app folder> --version <1.3.0> --out <folder> [--previous <folder>]...
+//!                   [--platform windows|linux]
 //!     with UPDATE_SIGNING_KEY set: every file of the app compressed, patches from the same files
-//!     in each previous release's folder, and the signed update-manifest.json
+//!     in each previous release's folder, and the signed update-manifest.json (Linux:
+//!     update-manifest-linux.json, its assets named linux-*, beside Windows' in one release)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -17,8 +19,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use hermes_client_core::updater::{
-    FileEntry, MANIFEST, Manifest, PatchEntry, SIGNATURE, compress_full, make_patch, sha256_hex,
+    FileEntry, MANIFEST, MANIFEST_LINUX, Manifest, PatchEntry, SIGNATURE, SIGNATURE_LINUX,
+    compress_full, make_patch, sha256_hex,
 };
+
+/// What every asset name starts with: `linux-` for Linux's update files.
+static PREFIX: OnceLock<&'static str> = OnceLock::new();
 
 const LEVEL: i32 = 19;
 
@@ -79,7 +85,7 @@ fn files(dir: &Path) -> Result<Vec<String>, String> {
 
 /// A release asset's name for a file path (assets are one flat list).
 fn asset_name(path: &str) -> String {
-    path.replace('/', "__")
+    format!("{}{}", PREFIX.get().unwrap_or(&""), path.replace('/', "__"))
 }
 
 fn build(args: &[String]) -> Result<(), String> {
@@ -87,6 +93,7 @@ fn build(args: &[String]) -> Result<(), String> {
     let mut version = None;
     let mut out = None;
     let mut previous: Vec<PathBuf> = Vec::new();
+    let mut linux = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let mut value = || it.next().cloned().ok_or(format!("{arg} needs a value"));
@@ -95,6 +102,11 @@ fn build(args: &[String]) -> Result<(), String> {
             "--version" => version = Some(value()?.trim_start_matches('v').to_owned()),
             "--out" => out = Some(PathBuf::from(value()?)),
             "--previous" => previous.push(PathBuf::from(value()?)),
+            "--platform" => match value()?.as_str() {
+                "windows" => linux = false,
+                "linux" => linux = true,
+                other => return Err(format!("unknown platform {other}")),
+            },
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -112,11 +124,19 @@ fn build(args: &[String]) -> Result<(), String> {
     let key = SigningKey::from_bytes(&seed);
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
 
+    if linux {
+        let _ = PREFIX.set("linux-");
+    }
+    let (manifest_name, signature_name) = if linux {
+        (MANIFEST_LINUX, SIGNATURE_LINUX)
+    } else {
+        (MANIFEST, SIGNATURE)
+    };
     let manifest = make_manifest(&dir, version, &previous, &out)?;
     let json = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     let signature = base64::engine::general_purpose::STANDARD.encode(key.sign(&json).to_bytes());
-    std::fs::write(out.join(MANIFEST), &json).map_err(|e| e.to_string())?;
-    std::fs::write(out.join(SIGNATURE), signature).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(manifest_name), &json).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(signature_name), signature).map_err(|e| e.to_string())?;
     eprintln!(
         "{} files, {} patches",
         manifest.files.len(),

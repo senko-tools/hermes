@@ -76,6 +76,40 @@ impl ConfigPaths {
     pub fn read_marks(&self) -> PathBuf {
         self.dir.join(crate::read_marks::READ_MARKS_FILE)
     }
+
+    /// Logs, crash and freeze reports: `logs` in the config directory, except on Linux with the
+    /// default directory, where they are state (`$XDG_STATE_HOME/hermes/logs`, usually
+    /// `~/.local/state/hermes/logs`). A portable or custom directory keeps its own.
+    pub fn logs(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(state) = self.linux_state_logs() {
+            return state;
+        }
+        self.dir.join("logs")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_state_logs(&self) -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        if self.portable || self.dir != base.config_dir().join("hermes") {
+            return None;
+        }
+        Some(base.state_dir()?.join("hermes").join("logs"))
+    }
+
+    /// Moves the logs of older versions (in the config directory) to `logs()` once.
+    pub fn move_old_logs(&self) {
+        let old = self.dir.join("logs");
+        let new = self.logs();
+        if old == new || !old.is_dir() || new.exists() {
+            return;
+        }
+        if let Some(parent) = new.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // A rename fails across file systems; the old logs then simply stay where they were.
+        let _ = std::fs::rename(&old, &new);
+    }
 }
 
 /// A setting with a few named values, written as text in `config.toml` (`motion_speed =
@@ -488,6 +522,9 @@ pub struct Voice {
     pub media_muted: bool,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
+    /// Linux (Wayland): the desktop's token for what was shared last, so the next share skips
+    /// its dialog. Empty asks again.
+    pub share_restore_token: String,
     /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
     pub share_resolution: ShareResolution,
     /// Frames per second a share is sent at (at most 60).
@@ -527,6 +564,7 @@ impl Default for Voice {
             media_volume: 1.0,
             media_muted: false,
             share_screen: String::new(),
+            share_restore_token: String::new(),
             share_resolution: ShareResolution::P1080,
             share_fps: 60,
             share_preference: SharePreference::Smoothness,

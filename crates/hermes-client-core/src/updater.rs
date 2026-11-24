@@ -21,9 +21,21 @@ use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-/// The manifest's name in a release, and its signature's.
+/// The manifest's name in a release, and its signature's: Windows'.
 pub const MANIFEST: &str = "update-manifest.json";
 pub const SIGNATURE: &str = "update-manifest.json.sig";
+/// Linux's, beside Windows' in the same release (its assets start with `linux-`).
+pub const MANIFEST_LINUX: &str = "update-manifest-linux.json";
+pub const SIGNATURE_LINUX: &str = "update-manifest-linux.json.sig";
+
+/// This system's manifest and signature names.
+fn manifest_names() -> (&'static str, &'static str) {
+    if cfg!(target_os = "linux") {
+        (MANIFEST_LINUX, SIGNATURE_LINUX)
+    } else {
+        (MANIFEST, SIGNATURE)
+    }
+}
 
 /// Where a release's files are downloaded from: `{base}/v{version}/{asset}`.
 pub const DOWNLOADS: &str = "https://github.com/senko-tools/hermes/releases/download";
@@ -326,8 +338,9 @@ pub async fn test_check(current: &str) -> Option<Result<Option<crate::update::Up
         async {
             let key = key().ok_or("HERMES_UPDATE_KEY is not a base64 public key")?;
             let http = http()?;
-            let json = get_all(&http, &format!("{base}/{MANIFEST}")).await?;
-            let signature = get_all(&http, &format!("{base}/{SIGNATURE}")).await?;
+            let (manifest_name, signature_name) = manifest_names();
+            let json = get_all(&http, &format!("{base}/{manifest_name}")).await?;
+            let signature = get_all(&http, &format!("{base}/{signature_name}")).await?;
             let manifest = verify(&json, &signature, &key)?;
             let newer = match (
                 crate::update::Version::parse(&manifest.version),
@@ -364,11 +377,46 @@ fn key() -> Option<VerifyingKey> {
     public_key()
 }
 
-/// Whether this build can update itself (it has a release key, and knows its folder). Only on
-/// Windows for now: releases publish one manifest, and it lists the Windows files, so elsewhere
-/// the app only says that a new version exists and links to it.
+/// Whether this build can update itself: it has a release key and knows its folder, on Windows,
+/// or on Linux in a folder of its own (`install.sh`'s or a portable one) rather than one a
+/// package manager or a sandbox owns. Elsewhere the app only says that a new version exists and
+/// links to it.
 pub fn available() -> bool {
-    cfg!(windows) && key().is_some() && install_dir().is_some()
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(check_available)
+}
+
+fn check_available() -> bool {
+    let Some(dir) = install_dir() else {
+        return false;
+    };
+    let platform = if cfg!(windows) {
+        true
+    } else if cfg!(target_os = "linux") {
+        self_managed(&dir)
+    } else {
+        false
+    };
+    platform && key().is_some()
+}
+
+/// Linux: the app's folder is its own to change. Not under the system's folders, not in a
+/// Flatpak, Snap or AppImage, not turned off with `HERMES_NO_UPDATE`, and writable.
+fn self_managed(dir: &Path) -> bool {
+    const SYSTEM: [&str; 6] = ["/usr", "/opt", "/nix", "/gnu", "/snap", "/var/lib/flatpak"];
+    if SYSTEM.iter().any(|s| dir.starts_with(s)) {
+        return false;
+    }
+    if ["FLATPAK_ID", "SNAP", "APPIMAGE", "HERMES_NO_UPDATE"]
+        .iter()
+        .any(|v| std::env::var_os(v).is_some())
+    {
+        return false;
+    }
+    let probe = dir.join(".hermes-update-probe");
+    let writable = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    writable
 }
 
 async fn get_all(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
@@ -381,16 +429,16 @@ async fn get_all(http: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
 
 /// Fetches and checks `version`'s manifest, and works out what this install needs.
 pub async fn prepare(version: &str) -> Result<Plan, String> {
-    // The manifest lists the Windows files (see `available`).
-    if !cfg!(windows) {
-        return Err("updating in place only works on Windows for now".into());
+    if !available() {
+        return Err("this copy of Hermes cannot update itself".into());
     }
     let key = key().ok_or("this build has no release key")?;
     let dir = install_dir().ok_or("the app's folder is unknown")?;
     let http = http()?;
     let base = base_url(version);
-    let json = get_all(&http, &format!("{base}/{MANIFEST}")).await?;
-    let signature = get_all(&http, &format!("{base}/{SIGNATURE}")).await?;
+    let (manifest_name, signature_name) = manifest_names();
+    let json = get_all(&http, &format!("{base}/{manifest_name}")).await?;
+    let signature = get_all(&http, &format!("{base}/{signature_name}")).await?;
     let manifest = verify(&json, &signature, &key)?;
     tokio::task::spawn_blocking(move || plan(&manifest, |path| file_sha256(&dir.join(path))))
         .await
@@ -478,6 +526,7 @@ pub async fn download(
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         std::fs::write(&target, built.unwrap_or_default()).map_err(|e| e.to_string())?;
+        keep_permissions(&install.join(&file.path), &target);
     }
     progress(Stage::Verifying);
     for (file, _) in &plan.steps {
@@ -487,6 +536,22 @@ pub async fn download(
     }
     Ok(staging)
 }
+
+/// Unix: the new file gets the old one's permissions (above all, a program stays runnable); a
+/// new file without an extension is taken for a program.
+#[cfg(unix)]
+fn keep_permissions(old: &Path, new: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = match std::fs::metadata(old) {
+        Ok(meta) => meta.permissions().mode(),
+        Err(_) if new.extension().is_none() => 0o755,
+        Err(_) => return,
+    };
+    let _ = std::fs::set_permissions(new, std::fs::Permissions::from_mode(mode));
+}
+
+#[cfg(not(unix))]
+fn keep_permissions(_old: &Path, _new: &Path) {}
 
 /// The marker the new version deletes once it is up.
 const STARTED_MARKER: &str = ".update-pending";

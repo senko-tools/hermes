@@ -125,13 +125,25 @@ fn launch(target: &OsStr) -> std::io::Result<()> {
     } else {
         "xdg-open"
     };
-    std::process::Command::new(opener)
+    let mut child = std::process::Command::new(opener)
         .arg(target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .spawn()?;
+    // Waited for elsewhere, so it does not linger as a zombie until Hermes quits. `xdg-open` can
+    // stay as long as the app it started (its generic fallback runs the browser in the
+    // foreground), so not on the caller's thread.
+    let _ = std::thread::Builder::new()
+        .name("open-wait".into())
+        .spawn(move || {
+            if let Ok(status) = child.wait()
+                && !status.success()
+            {
+                tracing::warn!("{opener} failed: {status}");
+            }
+        });
+    Ok(())
 }
 
 #[cfg(test)]

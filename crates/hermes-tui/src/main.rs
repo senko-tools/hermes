@@ -94,7 +94,7 @@ fn main() -> ExitCode {
         // runs that first.
         let mut terminal = ratatui::init();
         if let Some(paths) = app.core.paths() {
-            hermes_client_core::crash::install(paths.dir.join("logs"), "hermes-tui");
+            hermes_client_core::crash::install(paths.logs(), "hermes-tui");
         }
         let _ = execute!(
             std::io::stdout(),
@@ -129,7 +129,8 @@ fn main() -> ExitCode {
 /// Logs go to `<config dir>/logs/latest-tui.log`, older ones to `logs/logs_old/`; the terminal
 /// is busy with the UI.
 fn init_logging(paths: &ConfigPaths, log_days: u32) {
-    let dir = paths.dir.join("logs");
+    paths.move_old_logs();
+    let dir = paths.logs();
     let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes-tui", log_days) else {
         return;
     };
