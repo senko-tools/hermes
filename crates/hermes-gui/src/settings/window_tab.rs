@@ -42,7 +42,7 @@ impl Shell {
                     if crate::desktop::window::can_hide() {
                         ""
                     } else {
-                        "Not on Wayland yet: here, Hermes opens its window."
+                        "Not on this system: here, Hermes opens its window."
                     },
                     general.start_minimized
                 ),
@@ -58,7 +58,7 @@ impl Shell {
                     if crate::desktop::window::can_hide() {
                         "Closing the window keeps Hermes running in the tray."
                     } else {
-                        "Not on Wayland yet: here, closing the window quits Hermes."
+                        "Not on this system: here, closing the window quits Hermes."
                     },
                     general.close_to_tray
                 ),

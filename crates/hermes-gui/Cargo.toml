@@ -74,6 +74,8 @@ xcap.workspace = true
 gtk.workspace = true
 # Push-to-talk and idle time on X11; global shortcuts and screen casts through the portals.
 x11rb.workspace = true
+# gpui's Linux platform (patched in vendor/), for hiding a Wayland window to the tray.
+gpui-pre-linux = "=0.3.12"
 # The shared memory X11 screen capture writes into.
 memmap2.workspace = true
 ashpd.workspace = true

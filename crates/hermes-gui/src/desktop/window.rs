@@ -1,20 +1,12 @@
 //! Hiding the window to the tray and bringing it back. gpui has no way to hide a window, so this
-//! calls the system directly with the window's own handle: Windows, or X11 (unmapping it).
+//! calls the system directly with the window's own handle: Windows, X11 (unmapping it), or
+//! Wayland (through the patched gpui-pre-linux, which takes the toplevel away and back).
 
 use gpui_kit::Window;
 
-/// Whether the window can be hidden (to the tray): on Windows and X11. On Wayland only the app's
-/// own toolkit could unmap its window, and gpui has no way to; there, closing quits and the tray
-/// only brings the window back to the front.
+/// Whether the window can be hidden (to the tray): on Windows and Linux (X11 and Wayland).
 pub fn can_hide() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        !crate::desktop::wayland()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        cfg!(windows)
-    }
+    cfg!(any(windows, target_os = "linux"))
 }
 
 /// Hides or shows the window without closing it. Elsewhere windows stay shown (see `can_hide`).
@@ -35,7 +27,8 @@ pub fn set_visible(window: &Window, visible: bool) {
     }
 }
 
-/// X11: unmaps the window (it leaves the screen and the taskbar) or maps it again.
+/// Linux: X11 unmaps the window (it leaves the screen and the taskbar) or maps it again; Wayland
+/// takes the toplevel away and makes it again (`gpui_linux::set_wayland_window_hidden`).
 #[cfg(target_os = "linux")]
 pub fn set_visible(window: &Window, visible: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -48,6 +41,15 @@ pub fn set_visible(window: &Window, visible: bool) {
         return;
     };
     let id = match handle.as_raw() {
+        RawWindowHandle::Wayland(h) => {
+            if !gpui_linux::set_wayland_window_hidden(h.surface.as_ptr(), !visible) {
+                tracing::warn!(
+                    "could not {} the window",
+                    if visible { "show" } else { "hide" }
+                );
+            }
+            return;
+        }
         RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
         RawWindowHandle::Xcb(h) => Some(h.window.get()),
         _ => None,

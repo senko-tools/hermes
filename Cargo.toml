@@ -176,3 +176,4 @@ strip = true
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+gpui-pre-linux = { path = "vendor/gpui-pre-linux" }

@@ -262,7 +262,8 @@ Built on Ubuntu 22.04 (glibc 2.35), like the release. What differs from Windows,
   - Idle time: XScreenSaver, else XInput2 raw events; ext-idle-notify-v1 on Wayland, else
     Mutter's IdleMonitor.
   - Tray: its own GTK thread.
-  - Close to the tray: X11 only (the window is unmapped). Wayland needs a gpui patch.
+  - Close to the tray: X11 unmaps the window; Wayland takes the toplevel away and back
+    through the patched gpui-pre-linux (`vendor/README.md`).
 - **Title bar:** where the desktop draws none (GNOME on Wayland, Weston), `csd.rs` draws Hermes'
   own: the page title, window buttons, resize edges and a shadow.
 - **Logs:** `$XDG_STATE_HOME/hermes/logs` for the default config dir. Freeze reports list every

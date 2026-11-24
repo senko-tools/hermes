@@ -23,10 +23,9 @@ How to write it:
   - Sharing sends what your apps play too (through PipeWire), never the call itself, and the pointer shows in shares on X11
   - Voice goes straight to your sound server (PipeWire or PulseAudio), so pipewire-alsa is no longer needed
   - On desktops that leave the title bar to the app (GNOME on Wayland and others), Hermes draws its own, with minimize, maximize and close, and the window can be moved and resized
-  - Close to the tray and Start minimized work on X11
+  - Close to the tray and Start minimized work as on Windows, on X11 and Wayland
   - Installs made with install.sh update themselves like on Windows (from the first Linux release on)
   - Logs are kept in ~/.local/state/hermes/logs
-  - Not there yet: hiding to the tray on Wayland (closing the window quits there)
 
 ## 1.4.3
 
