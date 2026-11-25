@@ -538,6 +538,24 @@ impl InstanceStore {
                 .is_none_or(|r| r.last_read_id < last)
     }
 
+    /// What to mark read up to while the channel is open at its newest messages: the newest one
+    /// loaded, or the channel's last message when that is newer. The server's last message can be
+    /// one the window never gets (or the window is empty), and marking only what was loaded left
+    /// the channel unread for good. `None` until the newest messages are loaded, or when nothing
+    /// is left to mark.
+    pub fn read_up_to(&self, channel: Id) -> Option<Id> {
+        let window = self.window(channel).filter(|w| w.reached_end)?;
+        let loaded = window
+            .messages
+            .iter()
+            .rev()
+            .find(|m| !m.deleted)
+            .map(|m| m.id);
+        let last = loaded.max(self.channel(channel).and_then(|c| c.last_message_id))?;
+        let read = self.read_states.get(&channel).map(|r| r.last_read_id);
+        (read < Some(last)).then_some(last)
+    }
+
     /// Read marks the server may not know (not sent yet, or kept on this device): a channel is
     /// read up to the newer of the two.
     pub fn merge_read_marks(&mut self, marks: &[(Id, Id)]) {
@@ -1335,6 +1353,36 @@ pub(crate) mod tests {
             }),
             0,
         );
+        assert!(!s.unread(Id(11)));
+    }
+
+    /// The ghost dot: the server's last message is one the open channel never shows (here the
+    /// window is empty). Reading the channel still clears it.
+    #[test]
+    fn an_open_channel_is_read_up_to_its_last_message() {
+        let mut s = store();
+        let bob = user(2, "bob");
+        let mut general = s.channel(Id(11)).unwrap().clone();
+        general.last_message_id = Some(Id(100));
+        s.apply(ServerEvent::ChannelUpdate(general), 0);
+        assert!(s.unread(Id(11)));
+        // Not loaded yet: nothing to mark.
+        assert_eq!(s.read_up_to(Id(11)), None);
+        live_window(&mut s, 11);
+        assert_eq!(s.read_up_to(Id(11)), Some(Id(100)));
+
+        // A newer message loaded wins over the channel's last one, and once read nothing is left.
+        s.apply(ServerEvent::MessageCreate(message(101, 11, &bob, "hi")), 0);
+        assert_eq!(s.read_up_to(Id(11)), Some(Id(101)));
+        s.apply(
+            ServerEvent::ReadStateUpdate(ReadState {
+                channel_id: Id(11),
+                last_read_id: Id(101),
+                mention_count: 0,
+            }),
+            0,
+        );
+        assert_eq!(s.read_up_to(Id(11)), None);
         assert!(!s.unread(Id(11)));
     }
 
