@@ -44,9 +44,11 @@ mod markup_render;
 mod message_actions;
 mod message_render;
 mod open;
+mod scramble;
 mod viewer;
 
 pub use code_block::CodeBlocks;
+pub use scramble::TICK as SCRAMBLE_TICK;
 
 const MAX_IMAGE_WIDTH: f32 = 400.0;
 const MAX_IMAGE_HEIGHT: f32 = 300.0;

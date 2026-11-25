@@ -209,6 +209,8 @@ pub struct Shell {
     pub closing_serial: u64,
     /// Messages and reaction chips drawn before (`channel.rs`).
     pub reactions_seen: std::cell::RefCell<crate::channel::ReactionsSeen>,
+    /// A stand-in for an unreadable message was drawn since the last tick: its characters change.
+    pub scramble_drawn: std::cell::Cell<bool>,
     /// Instances whose connection banner showed: `None` while it does, then when the
     /// connection came back (the banner says so for a moment).
     pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
@@ -486,6 +488,7 @@ impl Shell {
             closing_serials: HashMap::new(),
             closing_serial: 0,
             reactions_seen: Default::default(),
+            scramble_drawn: Default::default(),
             reconnect_banner: Default::default(),
             notice_height: Default::default(),
             sidebar_order: Default::default(),
@@ -625,6 +628,7 @@ impl Shell {
         this.start_meter_timer(cx);
         this.start_call_clock(cx);
         this.start_media_sweep(cx);
+        this.start_scramble_clock(cx);
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);
@@ -768,6 +772,27 @@ impl Shell {
                         })
                     });
                     if this.core.voice_channel().is_some() || just_lost {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Redraws a few times a second while a stand-in for an unreadable message is on screen, so
+    /// its characters change; not in the background or with reduced motion.
+    fn start_scramble_clock(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(crate::channel::SCRAMBLE_TICK)
+                    .await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.scramble_drawn.take() && this.focused && !cx.reduce_motion() {
                         cx.notify();
                     }
                 });
