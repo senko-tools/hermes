@@ -26,11 +26,19 @@ How to write it:
   - Close to the tray and Start minimized work as on Windows, on X11 and Wayland
   - Installs made with install.sh update themselves like on Windows (from the first Linux release on)
   - Logs are kept in ~/.local/state/hermes/logs
+- Screen sharing has an upload limit (Settings, Screen sharing), 8 Mbit/s by default, so a share leaves room for games on both ends
 
 ### Changed
-- Screen shares are sharper while scrolling, with less smeared text, and small share tiles shimmer less
+- The hardware encoder favours quality, for sharper shares at the same upload, and small share tiles shimmer less
+- People without a profile picture show a silhouette in your theme's colours
+- Messages this device cannot read yet show as a placeholder whose characters slowly change, with no name or picture; the lock beside it says why
+- A share opened in its own window shows only there; its tile in the call says so, and clicking the tile brings the share back
 - Sharing your screen without a hardware video encoder uses several processor cores: about twice the frame rate at 1080p
 - Your profile card, opened from your name at the bottom of the sidebar, sits as far from the window's bottom as from the sidebar
+
+### Fixed
+- A screen share shown larger than it was sent no longer looks blocky or broken up
+- A channel no longer keeps its unread dot when there is nothing new in it
 
 ## 1.4.3
 
