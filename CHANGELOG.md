@@ -28,6 +28,7 @@ How to write it:
   - Logs are kept in ~/.local/state/hermes/logs
 
 ### Changed
+- Screen shares are sharper while scrolling, with less smeared text, and small share tiles shimmer less
 - Sharing your screen without a hardware video encoder uses several processor cores: about twice the frame rate at 1080p
 - Your profile card, opened from your name at the bottom of the sidebar, sits as far from the window's bottom as from the sidebar
 
