@@ -15,10 +15,10 @@ use openh264::formats::{BgraSliceU8, RgbaSliceU8, YUVBuffer, YUVSource};
 use hermes_client_core::proto::voice::MAX_VIDEO_DIMENSION;
 
 /// Target bitrate of a share (bits per second): about 0.1 bit per pixel per frame, at least
-/// 1.5 Mbit/s and at most 8 Mbit/s (which keeps keyframes well under the 512 KiB frame limit).
+/// 1.5 Mbit/s and at most 16 Mbit/s (which keeps keyframes well under the 2 MiB frame limit).
 pub fn bitrate(width: u32, height: u32, fps: f32) -> u32 {
     let bits = f64::from(width) * f64::from(height) * f64::from(fps) * 0.1;
-    bits.clamp(1_500_000.0, 8_000_000.0) as u32
+    bits.clamp(1_500_000.0, 16_000_000.0) as u32
 }
 
 /// A captured picture: four bytes per pixel, in the order the capture gave them.
@@ -72,8 +72,9 @@ impl Encoder {
             .bitrate(BitRate::from_bps(bitrate(width, height, fps)))
             .max_frame_rate(FrameRate::from_hz(fps))
             .skip_frames(false)
-            // The fastest mode: screens are mostly still, and smooth matters more here.
-            .complexity(Complexity::Low)
+            // The middle mode: the fastest one breaks up text while scrolling. A CPU that cannot
+            // keep up drops pictures (the share log counts them as dropped by a busy encoder).
+            .complexity(Complexity::Medium)
             // Not supported for screen content (OpenH264 turns them off with a warning).
             .adaptive_quantization(false)
             .background_detection(false)
@@ -359,7 +360,7 @@ mod tests {
 
         assert_eq!(bitrate(1280, 720, 10.0), 1_500_000);
         assert_eq!(bitrate(1920, 1080, 15.0), 3_110_400);
-        assert_eq!(bitrate(3840, 2160, 30.0), 8_000_000);
+        assert_eq!(bitrate(3840, 2160, 30.0), 16_000_000);
 
         // Odd sizes are refused instead of panicking.
         assert!(Encoder::new(63, 32, 10.0).is_err());
