@@ -168,7 +168,7 @@ fn chroma(u: u8, v: u8) -> (i32, i32, i32) {
     (104597 * v, -25675 * u - 53279 * v, 132201 * u)
 }
 
-/// A picture to BGRA. `skip` takes every n-th pixel.
+/// A picture to BGRA. `skip` shrinks it n times, averaging each n x n block.
 fn to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
     if skip <= 1 {
         full_size_to_bgra(p)
@@ -239,33 +239,59 @@ fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
     (p.width, p.height, out)
 }
 
-/// Every `skip`-th pixel, for tiles much smaller than the picture.
+/// Each `skip` x `skip` block of the picture as one pixel (its average), for tiles much smaller
+/// than the picture: taking one pixel of each block would make thin text shimmer as it moves.
 fn skipping_to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
     let (w, h) = (p.width as usize, p.height as usize);
     let step = skip.max(1) as usize;
     let (out_w, out_h) = (w.div_ceil(step), h.div_ceil(step));
     let mut out = vec![255u8; out_w * out_h * 4];
     let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
-    let cw = (p.width / 2) as usize;
-    let last_c_row = ((p.height / 2) as usize).saturating_sub(1);
+    let (cw, ch) = ((p.width / 2) as usize, (p.height / 2) as usize);
+    let average = |sum: u32, n: usize| {
+        let n = n.max(1) as u32;
+        ((sum + n / 2) / n) as u8
+    };
     for (row, line) in out.chunks_exact_mut(out_w * 4).enumerate() {
-        let sy = row * step;
-        let y_row = &y_plane[sy * w..sy * w + w];
-        let c_row = (sy / 2).min(last_c_row);
+        let rows = row * step..((row + 1) * step).min(h);
+        let c_rows = chroma_span(&rows, ch);
         for (col, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let sx = col * step;
-            let cx = (sx / 2).min(cw.saturating_sub(1));
-            let terms = if p.nv12 {
-                let at = c_row * cw * 2 + cx * 2;
-                chroma(u_plane[at], u_plane[at + 1])
-            } else {
-                let at = c_row * cw + cx;
-                chroma(u_plane[at], v_plane[at])
-            };
-            put_pixel(px, luma(y_row[sx]), terms);
+            let cols = col * step..((col + 1) * step).min(w);
+            let c_cols = chroma_span(&cols, cw);
+            let y_sum: u32 = rows
+                .clone()
+                .flat_map(|y| &y_plane[y * w + cols.start..y * w + cols.end])
+                .map(|&v| u32::from(v))
+                .sum();
+            let (mut u_sum, mut v_sum) = (0u32, 0u32);
+            for cy in c_rows.clone() {
+                for cx in c_cols.clone() {
+                    let (u, v) = if p.nv12 {
+                        let at = cy * cw * 2 + cx * 2;
+                        (u_plane[at], u_plane[at + 1])
+                    } else {
+                        let at = cy * cw + cx;
+                        (u_plane[at], v_plane[at])
+                    };
+                    u_sum += u32::from(u);
+                    v_sum += u32::from(v);
+                }
+            }
+            let c_n = c_rows.len() * c_cols.len();
+            let terms = chroma(average(u_sum, c_n), average(v_sum, c_n));
+            put_pixel(px, luma(average(y_sum, rows.len() * cols.len())), terms);
         }
     }
     (out_w as u32, out_h as u32, out)
+}
+
+/// The chroma samples (one per two pixels, `len` of them) that cover `pixels`; an odd last pixel
+/// takes the last sample.
+fn chroma_span(pixels: &std::ops::Range<usize>, len: usize) -> std::ops::Range<usize> {
+    let last = len.saturating_sub(1);
+    let start = (pixels.start / 2).min(last);
+    let end = (pixels.end.saturating_sub(1) / 2).min(last) + 1;
+    start..end
 }
 
 fn to_image(p: &codec::Picture, skip: u32) -> Option<Arc<RenderImage>> {
@@ -704,6 +730,36 @@ mod tests {
                 let plain = skipping_to_bgra(&picture, 1);
                 assert_eq!(full_size_to_bgra(&picture), plain, "{w}x{h} nv12={nv12}");
             }
+        }
+    }
+
+    #[test]
+    fn small_tiles_average_each_block() {
+        // One-pixel stripes of black and white, like thin text, at any skip become an even grey
+        // instead of whichever stripe the skip lands on.
+        for nv12 in [false, true] {
+            let (w, h) = (8u32, 4u32);
+            let mut planes: Vec<u8> = (0..w * h)
+                .map(|i| if i % 2 == 0 { 16 } else { 235 })
+                .collect();
+            planes.extend(std::iter::repeat_n(128, (w / 2 * h / 2 * 2) as usize));
+            let picture = codec::Picture {
+                width: w,
+                height: h,
+                nv12,
+                planes,
+            };
+            let (out_w, out_h, out) = skipping_to_bgra(&picture, 2);
+            assert_eq!((out_w, out_h), (4, 2));
+            for px in out.as_chunks::<4>().0 {
+                assert!(px[..3].iter().all(|c| (120..=136).contains(c)), "{px:?}");
+            }
+        }
+        // Sizes that do not divide by the skip keep their partial last blocks.
+        for (w, h, skip) in [(7, 5, 3), (8, 6, 4), (16, 2, 5)] {
+            let (out_w, out_h, out) = skipping_to_bgra(&gradient(w, h, true), skip);
+            assert_eq!((out_w, out_h), (w.div_ceil(skip), h.div_ceil(skip)));
+            assert_eq!(out.len(), (out_w * out_h * 4) as usize);
         }
     }
 
