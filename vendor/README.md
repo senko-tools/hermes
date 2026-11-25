@@ -11,9 +11,12 @@ leave them alone.
 | `gpui-pre-linux` | 0.3.12 | `src/linux/wayland/window.rs`, `hermes_hideable` + `hermes_set_hidden`; `src/linux.rs`, `set_wayland_window_hidden` and `activate_wayland_window` (a second launch's activation token) |
 
 **Why:** gpui draws every picture through one bilinear sampler, so a zoomed picture is blurred
-instead of showing its pixels. The patch makes the picture (polychrome sprite) shader read the
-texel under each pixel, clamped to the sprite's own atlas tile, whenever one texel covers more
-than one screen pixel. Pictures drawn at their size or smaller sample as before. Text and icons
+instead of showing its pixels. The patch makes the picture (polychrome sprite) shader sample
+"sharp bilinear" whenever one texel covers more than one screen pixel: each texel is flat and only
+the one screen pixel where two meet blends them, clamped to the sprite's own atlas tile. (Taking
+the nearest texel instead drew uneven texels at zooms like 1.33x, which broke up the text of a
+screen share drawn a little larger than it was sent.) Pictures drawn at their size or smaller
+sample as before. Text and icons
 (monochrome sprites) are untouched. Search for `Hermes patch` to find the change.
 
 **Covered windows (#66):** Hermes opens its windows with `inactive_frame_interval: None`, so a
