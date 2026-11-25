@@ -488,7 +488,7 @@ fn configure(
             .ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)
             .map_err(failed("giving the encoder the GPU"))?;
 
-        // Low latency, constant bitrate, no B-frames (each would delay the picture), keyframes
+        // Low latency, constant bitrate, quality over speed, no B-frames (each would delay the picture), keyframes
         // only when asked for. Encoders that do not know a setting keep their own. These go
         // before the formats: NVIDIA's ignores the buffer and keyframe interval set after them.
         let codec = transform.cast::<ICodecAPI>().ok();
@@ -503,6 +503,11 @@ fn configure(
                 "rate control",
                 &CODECAPI_AVEncCommonRateControlMode,
                 VARIANT::from(eAVEncCommonRateControlMode_CBR.0 as u32),
+            );
+            set(
+                "quality",
+                &CODECAPI_AVEncCommonQualityVsSpeed,
+                VARIANT::from(QUALITY_VS_SPEED),
             );
             set(
                 "bitrate",
@@ -645,6 +650,11 @@ fn media_type(
         Ok(t)
     }
 }
+
+/// How hard the encoder works on each picture, 0 (fastest) to 100 (best). Drivers left alone
+/// may pick a fast setting that smears text while scrolling; this leans towards sharper pictures
+/// while leaving some headroom for the frame rate.
+const QUALITY_VS_SPEED: u32 = 80;
 
 /// The rate control buffer: half a second, but small enough that a keyframe stays well under
 /// the protocol's frame limit.
