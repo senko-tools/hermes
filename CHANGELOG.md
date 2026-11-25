@@ -39,6 +39,7 @@ How to write it:
 ### Fixed
 - A screen share shown larger than it was sent no longer looks blocky or broken up
 - A channel no longer keeps its unread dot when there is nothing new in it
+- Opening a screen share in its own window no longer crashes Hermes
 
 ## 1.4.3
 
