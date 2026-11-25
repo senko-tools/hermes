@@ -272,9 +272,8 @@ impl Shell {
             if compact {
                 // Time, small picture, name and text on one line.
                 if self.config.buffer.show_avatars {
-                    let name = s.display_name(space, msg.author.id);
                     let user = s.user(msg.author.id).unwrap_or(&msg.author);
-                    let avatar = self.avatar(inst, Some(user), &name, COMPACT_AVATAR);
+                    let avatar = self.avatar(inst, Some(user), COMPACT_AVATAR);
                     head_line.push(
                         self.author_menu(
                             div()
@@ -459,9 +458,8 @@ impl Shell {
             compact_time_slot(&time_text, compact_time)
         } else if !m.grouped && self.config.buffer.show_avatars {
             // The user's current picture (the message keeps the one from when it was sent).
-            let name = s.display_name(space, msg.author.id);
             let user = s.user(msg.author.id).unwrap_or(&msg.author);
-            let avatar = self.avatar(inst, Some(user), &name, theme::AVATAR);
+            let avatar = self.avatar(inst, Some(user), theme::AVATAR);
             self.author_menu(
                 div()
                     .id(SharedString::from(format!("avatar-{id}")))

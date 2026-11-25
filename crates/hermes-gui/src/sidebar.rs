@@ -1391,7 +1391,7 @@ impl Shell {
                 ..
             } => {
                 let target = Target::Channel(inst.clone(), id);
-                let avatar = self.dm_avatar(&inst, peer, &name);
+                let avatar = self.dm_avatar(&inst, peer);
                 let (open_inst, accept_inst) = (inst.clone(), inst);
                 let element = crate::ui::list_row(self, format!("request-{id}"), selected, 44., cx)
                     .child(avatar)
@@ -1432,7 +1432,7 @@ impl Shell {
                 ..
             } => {
                 let target = Target::Channel(inst.clone(), id);
-                let avatar = self.dm_avatar(&inst, peer, &name);
+                let avatar = self.dm_avatar(&inst, peer);
                 let typing =
                     self.config.buffer.show_typing
                         && self.core.store().instance(&inst).is_some_and(|s| {
@@ -1602,15 +1602,15 @@ impl Shell {
         Some(elapsed_text(hermes_client_core::now_ms() - joined))
     }
 
-    fn dm_avatar(&self, inst: &str, peer: Option<Id>, name: &str) -> AnyElement {
+    fn dm_avatar(&self, inst: &str, peer: Option<Id>) -> AnyElement {
         let store = self.core.store();
         let s = store.instance(inst);
         let user = peer.and_then(|p| s.and_then(|s| s.user(p)));
         match (peer, s) {
             (Some(peer), Some(s)) => {
-                self.avatar_with_status(inst, user, name, theme::AVATAR_SMALL, s.status(peer))
+                self.avatar_with_status(inst, user, theme::AVATAR_SMALL, s.status(peer))
             }
-            _ => self.avatar(inst, None, name, theme::AVATAR_SMALL),
+            _ => self.avatar(inst, None, theme::AVATAR_SMALL),
         }
     }
 
@@ -1858,7 +1858,6 @@ impl Shell {
             let avatar = self.avatar_with_status_on(
                 inst.as_deref().unwrap_or(""),
                 me.as_ref(),
-                &name,
                 theme::AVATAR_SMALL,
                 presence,
                 theme::footer(),

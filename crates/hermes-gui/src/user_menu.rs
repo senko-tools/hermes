@@ -638,9 +638,9 @@ impl Shell {
         });
         // My own picture carries a presence dot of its own, which opens the status menu.
         let avatar = if mine {
-            self.avatar(&inst, found, &name, CARD_AVATAR)
+            self.avatar(&inst, found, CARD_AVATAR)
         } else {
-            self.avatar_with_status(&inst, found, &name, CARD_AVATAR, presence)
+            self.avatar_with_status(&inst, found, CARD_AVATAR, presence)
         };
         let banner_marker = found.and_then(|u| u.banner.as_ref()).and_then(|file| {
             self.images

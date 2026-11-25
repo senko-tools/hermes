@@ -84,13 +84,8 @@ impl Shell {
                     )));
                     for member in group.members {
                         let user = s.user(member.user_id);
-                        let avatar = self.avatar_with_status(
-                            inst,
-                            user,
-                            &member.name,
-                            theme::AVATAR_SMALL,
-                            member.status,
-                        );
+                        let avatar =
+                            self.avatar_with_status(inst, user, theme::AVATAR_SMALL, member.status);
                         let color = member.color.map_or(theme::text_secondary(), theme::rgb_u32);
                         let line = MemberLine {
                             space: Some(space),
@@ -111,7 +106,6 @@ impl Shell {
                     let avatar = self.avatar_with_status(
                         inst,
                         Some(&user),
-                        user.name(),
                         theme::AVATAR_SMALL,
                         s.status(user.id),
                     );

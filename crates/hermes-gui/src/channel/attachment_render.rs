@@ -211,7 +211,7 @@ impl Shell {
             if !p.grouped {
                 if self.config.buffer.show_avatars {
                     let user = me.and_then(|id| s.user(id));
-                    head.push(self.avatar(inst, user, &name, COMPACT_AVATAR));
+                    head.push(self.avatar(inst, user, COMPACT_AVATAR));
                 }
                 head.push(
                     div()
@@ -300,7 +300,7 @@ impl Shell {
             compact_time_slot(&time_text, shown)
         } else if !p.grouped && self.config.buffer.show_avatars {
             let user = me.and_then(|id| s.user(id));
-            self.avatar(inst, user, &name, theme::AVATAR)
+            self.avatar(inst, user, theme::AVATAR)
         } else {
             div().into_any_element()
         };

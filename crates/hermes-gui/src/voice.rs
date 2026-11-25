@@ -1053,7 +1053,7 @@ impl Shell {
             let s = store.instance(&inst);
             let found = s.and_then(|s| s.user(user));
             (
-                self.avatar(&inst, found, &name, 22.),
+                self.avatar(&inst, found, 22.),
                 s.and_then(|s| s.space_of(channel)),
             )
         };
@@ -1420,7 +1420,7 @@ impl Shell {
                 let avatar = {
                     let store = self.core.store();
                     let user = store.instance(inst).and_then(|s| s.user(p.user));
-                    self.avatar(inst, user, &p.name, side)
+                    self.avatar(inst, user, side)
                 };
                 let note = if sharing && own {
                     Some(match self.core.share_watchers() {

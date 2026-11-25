@@ -2302,7 +2302,7 @@ impl Shell {
                     .collect();
                 list_row(self, format!("settings-member-{user}"), false, cx)
                     .h(px(52.))
-                    .child(self.avatar(&page.inst, Some(&m.user), &name, 28.))
+                    .child(self.avatar(&page.inst, Some(&m.user), 28.))
                     .child(
                         div()
                             .flex()
@@ -2396,12 +2396,7 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(10.))
-            .child(self.avatar(
-                &inst,
-                Some(&m.user),
-                &s.display_name(Some(space), user),
-                36.,
-            ))
+            .child(self.avatar(&inst, Some(&m.user), 36.))
             .child(heading(s.display_name(Some(space), user)))
             .into_any_element();
         let mut col: Vec<AnyElement> = vec![
