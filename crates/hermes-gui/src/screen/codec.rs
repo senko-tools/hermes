@@ -49,6 +49,8 @@ pub struct Encoder {
     inner: H264Encoder,
     size: (u32, u32),
     fps: f32,
+    /// The upload limit (bits per second).
+    max_bitrate: Option<u32>,
     /// Reused for every frame.
     yuv: YUVBuffer,
 }
@@ -59,7 +61,14 @@ impl Encoder {
         self.size
     }
 
-    pub fn new(width: u32, height: u32, fps: f32) -> Result<Encoder, String> {
+    /// `max_bitrate` caps [`bitrate`] (the upload limit).
+    pub fn new(
+        width: u32,
+        height: u32,
+        fps: f32,
+        max_bitrate: Option<u32>,
+    ) -> Result<Encoder, String> {
+        let bits = bitrate(width, height, fps).min(max_bitrate.unwrap_or(u32::MAX));
         // H.264 4:2:0 needs even sizes (the YUV buffer would panic on odd ones).
         if width < 2 || height < 2 || width % 2 + height % 2 != 0 {
             return Err(format!(
@@ -69,7 +78,7 @@ impl Encoder {
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
-            .bitrate(BitRate::from_bps(bitrate(width, height, fps)))
+            .bitrate(BitRate::from_bps(bits))
             .max_frame_rate(FrameRate::from_hz(fps))
             .skip_frames(false)
             // The middle mode: the fastest one breaks up text while scrolling. A CPU that cannot
@@ -86,6 +95,7 @@ impl Encoder {
             inner,
             size: (width, height),
             fps,
+            max_bitrate,
             yuv: YUVBuffer::new(width as usize, height as usize),
         })
     }
@@ -99,7 +109,7 @@ impl Encoder {
     ) -> Result<Option<(Vec<u8>, bool)>, String> {
         let size = (frame.width, frame.height);
         if size != self.size {
-            *self = Encoder::new(size.0, size.1, self.fps)?;
+            *self = Encoder::new(size.0, size.1, self.fps, self.max_bitrate)?;
             keyframe = true;
         }
         if keyframe {
@@ -277,7 +287,7 @@ mod tests {
     fn software_codec_speed() {
         let (w, h) = (1920u32, 1080u32);
         let frames = 60;
-        let mut encoder = Encoder::new(w, h, 60.0).unwrap();
+        let mut encoder = Encoder::new(w, h, 60.0, None).unwrap();
         let mut decoder = Decoder::software().unwrap();
         let (mut encode, mut decode) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
         for n in 0..frames {
@@ -331,7 +341,7 @@ mod tests {
             bgra: false,
             pixels: pixels.clone(),
         };
-        let mut encoder = Encoder::new(w, h, 10.0).unwrap();
+        let mut encoder = Encoder::new(w, h, 10.0, None).unwrap();
         let (data, key) = encoder.encode(&rgba, true).unwrap().unwrap();
         assert!(key, "the first frame is a keyframe");
         let mut decoder = Decoder::software().unwrap();
@@ -363,8 +373,8 @@ mod tests {
         assert_eq!(bitrate(3840, 2160, 30.0), 16_000_000);
 
         // Odd sizes are refused instead of panicking.
-        assert!(Encoder::new(63, 32, 10.0).is_err());
-        assert!(Encoder::new(0, 0, 10.0).is_err());
+        assert!(Encoder::new(63, 32, 10.0, None).is_err());
+        assert!(Encoder::new(0, 0, 10.0, None).is_err());
 
         // Garbage never panics.
         for decoder in [Decoder::software(), Decoder::new()] {
@@ -391,7 +401,7 @@ mod tests {
             bgra: false,
             pixels,
         };
-        let mut encoder = Encoder::new(w, h, 30.0).unwrap();
+        let mut encoder = Encoder::new(w, h, 30.0, None).unwrap();
         let (data, _) = encoder.encode(&frame, true).unwrap().unwrap();
         let reference = Decoder::software().unwrap().decode(&data).unwrap().unwrap();
         let mut best = Decoder::new().unwrap();

@@ -31,15 +31,20 @@ pub struct Quality {
     pub max_width: u32,
     pub max_height: u32,
     pub fps: u32,
+    /// The most a share sends (bits per second), whatever the size and preference.
+    pub max_bitrate: Option<u32>,
 }
 
 /// The resolutions offered.
 pub use hermes_client_core::config::ShareResolution;
 /// The frame rates offered.
 pub const FRAME_RATES: [u32; 3] = [15, 30, 60];
+/// The upload limits offered, in Mbit/s (0: no limit).
+pub const UPLOAD_LIMITS: [u32; 4] = [4, 8, 16, 0];
 
 impl Quality {
-    pub fn from_config(resolution: ShareResolution, fps: u32) -> Quality {
+    /// `max_mbps` 0 is no limit.
+    pub fn from_config(resolution: ShareResolution, fps: u32, max_mbps: u32) -> Quality {
         let max = u32::from(MAX_VIDEO_DIMENSION);
         let (max_width, max_height) = match resolution {
             ShareResolution::P720 => (1280, 720),
@@ -52,6 +57,7 @@ impl Quality {
             max_width,
             max_height,
             fps: fps.clamp(1, MAX_VIDEO_FPS),
+            max_bitrate: (max_mbps > 0).then(|| max_mbps.saturating_mul(1_000_000)),
         }
     }
 }
@@ -174,6 +180,7 @@ pub struct Target {
 
 /// The target for a `screen`-sized picture at `quality` with `preference`, `level` steps
 /// down. The bitrate follows the configured frame rate, so fewer frames get more bits each.
+/// The upload limit caps the full-quality bitrate, so each step down still sends less.
 pub fn target(
     quality: Quality,
     preference: Preference,
@@ -189,8 +196,11 @@ pub fn target(
         even(f64::from(h) * step.size),
     );
     let fps = ((f64::from(quality.fps) * step.fps).round() as u32).clamp(1, quality.fps);
-    let bits =
-        f64::from(hardware_bitrate(size.0, size.1, quality.fps)) * preference.bits() * step.bits;
+    let full = f64::from(hardware_bitrate(size.0, size.1, quality.fps)) * preference.bits();
+    let full = quality
+        .max_bitrate
+        .map_or(full, |max| full.min(f64::from(max)));
+    let bits = full * step.bits;
     Target {
         fps,
         size,
@@ -1297,7 +1307,13 @@ fn encode_loop(
         }
         let key = key || resized;
         if encoder.is_none() {
-            match super::codec::Encoder::new(frame.width, frame.height, quality.fps as f32) {
+            let created = super::codec::Encoder::new(
+                frame.width,
+                frame.height,
+                quality.fps as f32,
+                quality.max_bitrate,
+            );
+            match created {
                 Ok(e) => encoder = Some(e),
                 Err(err) => {
                     tracing::warn!("screen share encoder: {err}");
@@ -1388,7 +1404,7 @@ mod tests {
 
     #[test]
     fn shares_fit_their_resolution_and_stay_even() {
-        let hd = Quality::from_config(ShareResolution::P720, 10);
+        let hd = Quality::from_config(ShareResolution::P720, 10, 0);
         assert_eq!(fit(2560, 1440, hd), (1280, 720));
         assert_eq!(fit(1920, 1080, hd), (1280, 720));
         assert_eq!(fit(1280, 720, hd), (1280, 720));
@@ -1396,10 +1412,10 @@ mod tests {
         assert_eq!(fit(3440, 1440, hd), (1280, 534));
         assert_eq!(fit(801, 601, hd), (800, 600));
         assert_eq!(fit(1, 1, hd), (2, 2));
-        let full = Quality::from_config(ShareResolution::P1080, 30);
+        let full = Quality::from_config(ShareResolution::P1080, 30, 0);
         assert_eq!(fit(2560, 1440, full), (1920, 1080));
         assert_eq!(fit(1280, 720, full), (1280, 720), "never scaled up");
-        let native = Quality::from_config(ShareResolution::Native, 60);
+        let native = Quality::from_config(ShareResolution::Native, 60, 0);
         assert_eq!(
             fit(5120, 1440, native),
             (3840, 1080),
@@ -1407,7 +1423,7 @@ mod tests {
         );
         assert_eq!(native.fps, 60);
         assert_eq!(
-            Quality::from_config(ShareResolution::Native, 120).fps,
+            Quality::from_config(ShareResolution::Native, 120, 0).fps,
             60,
             "the protocol's limit"
         );
@@ -1415,7 +1431,7 @@ mod tests {
 
     #[test]
     fn preferences_give_way_differently() {
-        let q = Quality::from_config(ShareResolution::P1440, 60);
+        let q = Quality::from_config(ShareResolution::P1440, 60, 0);
         let screen = (2560, 1440);
         let full = |p| target(q, p, 0, screen);
         // At full quality all keep size and frame rate; clearer pictures cost more bits.
@@ -1441,6 +1457,16 @@ mod tests {
             target(q, Preference::Clarity, 1, screen).bitrate,
             full(Preference::Clarity).bitrate
         );
+        // The upload limit caps every preference at every step, and smoothness stepping down
+        // still sends less (clarity keeps its bits for fewer frames).
+        let capped = Quality::from_config(ShareResolution::P1440, 60, 8);
+        for p in PREFERENCES {
+            for level in 0..4 {
+                assert!(target(capped, p, level, screen).bitrate <= 8_000_000);
+            }
+            assert_eq!(target(capped, p, 0, screen).bitrate, 8_000_000);
+        }
+        assert!(target(capped, Preference::Smoothness, 3, screen).bitrate < 8_000_000);
         // Levels past the last count as the last.
         assert_eq!(
             target(q, Preference::Mixed, 9, screen),
@@ -1452,7 +1478,7 @@ mod tests {
             assert_eq!(Preference::from_u8(p.to_u8()), p);
         }
         assert_eq!(
-            Quality::from_config(ShareResolution::P2160, 60).max_height,
+            Quality::from_config(ShareResolution::P2160, 60, 0).max_height,
             2160
         );
     }
@@ -1492,7 +1518,7 @@ mod tests {
     fn real_screen_is_captured_and_encoded() {
         let monitor = pick_monitor("").unwrap();
         let name = monitor.name().unwrap();
-        let quality = Quality::from_config(ShareResolution::P1080, 30);
+        let quality = Quality::from_config(ShareResolution::P1080, 30, 0);
         let mut duplicator = super::super::dxgi::Duplicator::open(&name).unwrap();
         // The first call returns the current desktop; later ones only on change.
         let begin = Instant::now();
@@ -1532,7 +1558,7 @@ mod tests {
         ));
         println!("dxgi to YUV in {:?}", begin.elapsed());
         let mut encoder =
-            super::super::codec::Encoder::new(frame.width, frame.height, 30.0).unwrap();
+            super::super::codec::Encoder::new(frame.width, frame.height, 30.0, None).unwrap();
         let begin = Instant::now();
         let (key, _) = encoder.encode(&frame, true).unwrap().unwrap();
         println!("dxgi keyframe {} bytes in {:?}", key.len(), begin.elapsed());

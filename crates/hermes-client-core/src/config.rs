@@ -532,6 +532,9 @@ pub struct Voice {
     /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
     /// `clarity` (sharp, full-size pictures).
     pub share_preference: SharePreference,
+    /// The most a share sends, in Mbit/s (0: no limit). Everyone watching downloads that much,
+    /// so a lower limit keeps room on both ends for games and calls.
+    pub share_max_mbps: u32,
     /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
     pub share_sound: bool,
 }
@@ -568,6 +571,7 @@ impl Default for Voice {
             share_resolution: ShareResolution::P1080,
             share_fps: 60,
             share_preference: SharePreference::Smoothness,
+            share_max_mbps: 8,
             share_sound: true,
         }
     }

@@ -445,7 +445,8 @@ impl Shell {
         }
         let v = &self.config.voice;
         let screen = v.share_screen.clone();
-        let quality = capture::Quality::from_config(v.share_resolution, v.share_fps);
+        let quality =
+            capture::Quality::from_config(v.share_resolution, v.share_fps, v.share_max_mbps);
         let preference = capture::Preference::from_config(v.share_preference);
         match capture::Capture::start(self.core.clone(), &screen, quality, preference) {
             Ok(capture) => {
@@ -494,7 +495,8 @@ impl Shell {
                 return;
             }
             let v = &this.config.voice;
-            let quality = capture::Quality::from_config(v.share_resolution, v.share_fps);
+            let quality =
+                capture::Quality::from_config(v.share_resolution, v.share_fps, v.share_max_mbps);
             let preference = capture::Preference::from_config(v.share_preference);
             match capture::Capture::start_portal(this.core.clone(), picked, quality, preference) {
                 Ok(capture) => {

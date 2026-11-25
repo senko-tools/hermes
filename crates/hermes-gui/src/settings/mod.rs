@@ -21,7 +21,9 @@ use hermes_client_core::{InstanceId, time};
 use crate::assets::{self, icon};
 use crate::keybinds::{ACTIONS, KeyAction, Keybinds};
 use crate::results::Remote;
-use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, ShareResolution};
+use crate::screen::capture::{
+    FRAME_RATES, PREFERENCES, Preference, ShareResolution, UPLOAD_LIMITS,
+};
 use crate::shell::Shell;
 use crate::theme::{self, Theme, px};
 

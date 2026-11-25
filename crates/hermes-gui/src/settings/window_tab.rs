@@ -178,6 +178,21 @@ impl Shell {
             },
             cx,
         );
+        let limit = crate::ui::segmented(
+            self,
+            "settings-share-limit",
+            UPLOAD_LIMITS
+                .iter()
+                .map(|&mbps| Segment::new(upload_limit_label(mbps)))
+                .collect(),
+            UPLOAD_LIMITS.iter().position(|m| *m == v.share_max_mbps),
+            true,
+            |this, n, _, cx| {
+                let mbps = UPLOAD_LIMITS[n];
+                this.set_config(|c| c.voice.share_max_mbps = mbps, cx);
+            },
+            cx,
+        );
         let sharing = group(
             "What you share",
             vec![
@@ -213,6 +228,12 @@ impl Shell {
                     "What your share keeps when it falls behind.",
                     preference,
                 ),
+                setting_fit(
+                    "Upload limit",
+                    "The most your share sends; everyone watching downloads as much. Lower \
+                     leaves room for games. From your next share.",
+                    limit,
+                ),
             ],
         );
         page_body(
@@ -220,5 +241,14 @@ impl Shell {
             Some("These are also chosen in the share picker each time you share."),
             vec![sharing],
         )
+    }
+}
+
+/// An upload limit's segment: `8 Mbit/s`, or `No limit` for 0.
+fn upload_limit_label(mbps: u32) -> String {
+    if mbps == 0 {
+        "No limit".to_owned()
+    } else {
+        format!("{mbps} Mbit/s")
     }
 }
