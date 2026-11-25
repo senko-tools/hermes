@@ -1154,7 +1154,11 @@ impl Shell {
                     .and_then(|file| self.images.profile_marker(inst, file, AVATAR_PIXELS)),
             )
             .child(crate::assets::icon(
-                crate::assets::SILHOUETTE,
+                if theme::avatar_radius(size) < size / 2. {
+                    crate::assets::SILHOUETTE_SQUIRCLE
+                } else {
+                    crate::assets::SILHOUETTE
+                },
                 size,
                 theme::text_tertiary(),
             ))

@@ -55,6 +55,8 @@ pub const LOCK: &str = "lock";
 pub const LOCK_OPEN: &str = "lock-open";
 /// The default avatar: a head and shoulders, drawn in the theme's colours.
 pub const SILHOUETTE: &str = "avatar-silhouette";
+/// The same inside the squircle shape (gpui clips only to rectangles, so each SVG cuts its own).
+pub const SILHOUETTE_SQUIRCLE: &str = "avatar-silhouette-squircle";
 pub const KEYBOARD: &str = "keyboard";
 pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";

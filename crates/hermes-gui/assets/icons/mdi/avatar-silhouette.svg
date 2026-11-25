@@ -1,1 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="8.8" r="4.4"/><path d="M2.5,24C2.5,18.6 6.7,15.2 12,15.2C17.3,15.2 21.5,18.6 21.5,24Z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><defs><clipPath id="shape"><circle cx="12" cy="12" r="12"/></clipPath></defs><g clip-path="url(#shape)"><circle cx="12" cy="8.8" r="4.4"/><path d="M2.5,24C2.5,18.6 6.7,15.2 12,15.2C17.3,15.2 21.5,18.6 21.5,24Z"/></g></svg>
