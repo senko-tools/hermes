@@ -179,5 +179,15 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Closes the pop-out window: its share shows in this window again, still watched.
+    pub fn pop_in_share(&mut self, cx: &mut Context<Self>) {
+        if let Some((_, handle)) = self.popped_out.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        cx.notify();
+    }
+}
+
 /// The pop-out window of a share, if open.
 pub type PoppedOut = Option<(ChannelKey, AnyWindowHandle)>;
