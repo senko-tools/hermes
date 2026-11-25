@@ -1234,10 +1234,11 @@ fn run_software(
     }
 }
 
-/// Bitrate of a hardware-encoded share (bits per second): about 0.07 bit per pixel per frame,
-/// 2 to 40 Mbit/s (1440p at 60 fps: 15 Mbit/s; 4K at 60 fps: 35 Mbit/s).
+/// Bitrate of a hardware-encoded share (bits per second): about 0.1 bit per pixel per frame,
+/// 2 to 40 Mbit/s (1440p at 60 fps: 22 Mbit/s; 4K at 60 fps: the 40 Mbit/s cap). Less than
+/// this smears text while scrolling.
 pub fn hardware_bitrate(width: u32, height: u32, fps: u32) -> u32 {
-    let bits = f64::from(width) * f64::from(height) * f64::from(fps) * 0.07;
+    let bits = f64::from(width) * f64::from(height) * f64::from(fps) * 0.1;
     bits.clamp(2_000_000.0, 40_000_000.0) as u32
 }
 

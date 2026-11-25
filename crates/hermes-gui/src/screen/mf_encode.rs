@@ -656,10 +656,11 @@ fn media_type(
 /// while leaving some headroom for the frame rate.
 const QUALITY_VS_SPEED: u32 = 80;
 
-/// The rate control buffer: half a second, but small enough that a keyframe stays well under
-/// the protocol's frame limit.
+/// The rate control buffer: a second, so a burst of motion (scrolling) can borrow bits from the
+/// quiet pictures around it, but small enough that a keyframe stays well under the protocol's
+/// frame limit.
 fn buffer_size(bitrate: u32) -> u32 {
-    (bitrate / 2).min(12_000_000)
+    bitrate.min(12_000_000)
 }
 
 /// The encoder's display name, or "hardware encoder".
@@ -725,6 +726,6 @@ mod tests {
         assert!(!has_idr(&[0, 0, 0, 1, 0x41, 9, 9]));
         assert!(!has_idr(&[]));
         assert_eq!(buffer_size(40_000_000), 12_000_000);
-        assert_eq!(buffer_size(8_000_000), 4_000_000);
+        assert_eq!(buffer_size(8_000_000), 8_000_000);
     }
 }
