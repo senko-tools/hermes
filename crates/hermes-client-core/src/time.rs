@@ -104,6 +104,26 @@ pub fn day(unix_ms: i64, offset_secs: i64) -> i64 {
     (unix_ms.div_euclid(1000) + offset_secs).div_euclid(86_400)
 }
 
+/// Every code [`format`] knows, with what it stands for; the settings' "Codes" popup lists
+/// these, so the two cannot disagree.
+pub const CODES: [(&str, &str); 15] = [
+    ("%H", "Hour, 00-23"),
+    ("%I", "Hour, 01-12"),
+    ("%p", "AM or PM"),
+    ("%M", "Minute"),
+    ("%S", "Second"),
+    ("%e", "Day of the month"),
+    ("%d", "Day of the month, 2 digits"),
+    ("%m", "Month number, 2 digits"),
+    ("%B", "Month name"),
+    ("%b", "Short month name"),
+    ("%A", "Weekday"),
+    ("%a", "Short weekday"),
+    ("%Y", "Year"),
+    ("%y", "Year, 2 digits"),
+    ("%%", "A % sign"),
+];
+
 pub fn format(unix_ms: i64, pattern: &str, offset_secs: i64) -> String {
     let secs = unix_ms.div_euclid(1000) + offset_secs;
     let (y, mo, d) = civil(secs.div_euclid(86_400));
@@ -185,6 +205,17 @@ pub fn long(unix_ms: i64, offset_secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_listed_code_is_known() {
+        for (code, _) in super::CODES {
+            let out = super::format(1_700_000_000_000, code, 0);
+            assert!(!out.is_empty(), "{code}");
+            if code != "%%" {
+                assert!(!out.contains('%'), "{code} gave {out}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

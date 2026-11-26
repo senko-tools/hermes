@@ -1,6 +1,7 @@
 //! A screen share's sound: everything the computer plays except Hermes itself, so the call is
 //! not sent back to the people in it. On Windows this is the system's process loopback
-//! (Windows 10 version 2004 and later); elsewhere there is no share sound yet.
+//! (Windows 10 version 2004 and later), on Linux PipeWire (`linux`); elsewhere there is no share
+//! sound yet.
 
 use hermes_client_core::audio::mixer::STEREO_FRAME;
 
@@ -8,13 +9,13 @@ use hermes_client_core::audio::mixer::STEREO_FRAME;
 pub type Send = Box<dyn FnMut(&[u8], f32) + std::marker::Send + 'static>;
 
 /// Cuts interleaved stereo samples into 20 ms frames.
-#[cfg_attr(not(windows), allow(dead_code))] // only Windows has share sound
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 #[derive(Default)]
 pub struct Framer {
     pending: Vec<f32>,
 }
 
-#[cfg_attr(not(windows), allow(dead_code))] // only Windows has share sound
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 impl Framer {
     /// Adds samples; `each` gets every whole frame that is ready.
     pub fn push(&mut self, samples: &[f32], mut each: impl FnMut(&[f32; STEREO_FRAME])) {
@@ -30,13 +31,18 @@ impl Framer {
 #[cfg(windows)]
 pub use imp::ShareSound;
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::ShareSound;
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub struct ShareSound;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 impl ShareSound {
     pub fn start(_send: Send) -> Result<ShareSound, String> {
-        Err("Sharing sound needs Windows".into())
+        Err("Sharing sound needs Windows or Linux".into())
     }
 }
 

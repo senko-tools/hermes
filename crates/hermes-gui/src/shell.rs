@@ -149,6 +149,19 @@ type MemberGroupsCache = std::cell::RefCell<
     HashMap<(InstanceId, Id), std::rc::Rc<Vec<hermes_client_core::view::MemberGroup>>>,
 >;
 
+/// Where a "Check for updates" asked by hand is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCheck {
+    Idle,
+    Checking,
+    /// Nothing newer: said for [`UP_TO_DATE_FOR`], then back to `Idle`.
+    UpToDate,
+    Failed,
+}
+
+/// How long "Up to date" shows on the About page.
+const UP_TO_DATE_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub struct Shell {
     pub core: Core,
     pub runtime: Handle,
@@ -196,6 +209,8 @@ pub struct Shell {
     pub closing_serial: u64,
     /// Messages and reaction chips drawn before (`channel.rs`).
     pub reactions_seen: std::cell::RefCell<crate::channel::ReactionsSeen>,
+    /// A stand-in for an unreadable message was drawn since the last tick: its characters change.
+    pub scramble_drawn: std::cell::Cell<bool>,
     /// Instances whose connection banner showed: `None` while it does, then when the
     /// connection came back (the banner says so for a moment).
     pub reconnect_banner: std::cell::RefCell<HashMap<InstanceId, Option<Instant>>>,
@@ -273,6 +288,10 @@ pub struct Shell {
     pub update: Option<hermes_client_core::update::Update>,
     /// The "what's new" popup of [`Shell::update`] is open.
     pub update_notes_open: bool,
+    /// Where "Check for updates" on the About page is.
+    pub update_check: UpdateCheck,
+    /// The time and date codes popup is open (`time_codes`).
+    pub time_codes_open: bool,
     /// The updater's window, while it is open.
     pub updater: Option<crate::updater_window::Updater>,
     /// "Not now" on the newer-server banner, for this run.
@@ -338,6 +357,10 @@ pub struct Shell {
     pub ptt_down: bool,
     /// What the push-to-talk thread watches.
     pub ptt_keys: Arc<Mutex<Vec<u16>>>,
+    /// Keys held in the focused window, for push-to-talk where it cannot be heard globally.
+    pub ptt_held: crate::ptt::Held,
+    /// Focused when nothing else is, so the window's key events always pass the root.
+    pub root_focus: gpui_kit::FocusHandle,
     /// A ringing incoming call (the banner).
     pub call: Option<Call>,
     pub volume_menu: Option<VolumeMenu>,
@@ -363,6 +386,9 @@ pub struct Shell {
     pub screen_list: Vec<crate::screen::capture::ScreenInfo>,
     /// My running screen share capture.
     pub capture: Option<Capture>,
+    /// The desktop's share dialog (Wayland) is open.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub picking_share: bool,
     /// My share's sound, while it is sent.
     pub share_sound: Option<crate::screen::sound::ShareSound>,
     /// The latest picture of each screen share I watch.
@@ -462,6 +488,7 @@ impl Shell {
             closing_serials: HashMap::new(),
             closing_serial: 0,
             reactions_seen: Default::default(),
+            scramble_drawn: Default::default(),
             reconnect_banner: Default::default(),
             notice_height: Default::default(),
             sidebar_order: Default::default(),
@@ -506,6 +533,8 @@ impl Shell {
             system_reduce_motion: false,
             update: None,
             update_notes_open: false,
+            update_check: UpdateCheck::Idle,
+            time_codes_open: false,
             newer_server_dismissed: false,
             updater: None,
             new_dm: None,
@@ -538,6 +567,8 @@ impl Shell {
             meter_drawn: Instant::now(),
             ptt_down: false,
             ptt_keys: Arc::default(),
+            ptt_held: crate::ptt::Held::default(),
+            root_focus: cx.focus_handle(),
             call: None,
             volume_menu: None,
             net: NetHistory::default(),
@@ -551,6 +582,7 @@ impl Shell {
             share_generation: 0,
             screen_list: Vec::new(),
             capture: None,
+            picking_share: false,
             share_sound: None,
             screens: HashMap::new(),
             enlarged_share: None,
@@ -596,6 +628,7 @@ impl Shell {
         this.start_meter_timer(cx);
         this.start_call_clock(cx);
         this.start_media_sweep(cx);
+        this.start_scramble_clock(cx);
         this.start_net_sampler(cx);
         this.start_screen_decoder(cx);
         this.start_desktop(start_hidden, window, cx);
@@ -700,7 +733,9 @@ impl Shell {
         });
         let handle = self.window;
         cx.spawn(async move |this, cx| {
-            while let Some(link) = rx.recv().await {
+            while let Some(line) = rx.recv().await {
+                let (link, token) = single_instance::split(&line);
+                let (link, token) = (link.to_owned(), token.map(str::to_owned));
                 let _ = cx.update_window(handle, |_, window, cx| {
                     this.update(cx, |this, cx| {
                         tracing::info!(
@@ -709,6 +744,9 @@ impl Shell {
                         );
                         // Also out of the tray: a second launch means "show me".
                         this.show_window(window, cx);
+                        if let Some(token) = &token {
+                            crate::desktop::window::activate_with(window, token);
+                        }
                         if !link.is_empty() {
                             this.open_link(link, window, cx);
                         }
@@ -734,6 +772,27 @@ impl Shell {
                         })
                     });
                     if this.core.voice_channel().is_some() || just_lost {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Redraws a few times a second while a stand-in for an unreadable message is on screen, so
+    /// its characters change; not in the background or with reduced motion.
+    fn start_scramble_clock(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(crate::channel::SCRAMBLE_TICK)
+                    .await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.scramble_drawn.take() && this.focused && !cx.reduce_motion() {
                         cx.notify();
                     }
                 });
@@ -851,6 +910,9 @@ impl Shell {
     fn window_activation(&mut self, active: bool, cx: &mut Context<Self>) {
         self.focused = active;
         self.core.set_app_focused(active);
+        if !active {
+            self.ptt_focus_lost(cx);
+        }
         if active {
             self.mark_open_read(cx);
         } else {
@@ -1045,7 +1107,7 @@ impl Shell {
     /// Whether the picture in the viewer moves.
     pub fn viewer_animating(&self) -> bool {
         let general = &self.config.general;
-        general.animate_pictures && (self.focused || general.animate_unfocused)
+        general.animate_pictures && (self.focused || general.animate_in_background())
     }
 
     pub fn toggle_members(&mut self, cx: &mut Context<Self>) {
@@ -1514,18 +1576,53 @@ impl Shell {
     /// Asks GitHub for a newer release (`general.check_for_updates`).
     /// Asks now, and says what came of it.
     pub fn check_for_update_now(&mut self, cx: &mut Context<Self>) {
+        if self.update_check == UpdateCheck::Checking {
+            return;
+        }
+        self.update_check = UpdateCheck::Checking;
+        cx.notify();
         self.run(
             cx,
             hermes_client_core::update::check(env!("CARGO_PKG_VERSION")),
-            |this, result, _, cx| match result {
-                Ok(Some(update)) => {
-                    this.update = Some(update);
-                    cx.notify();
+            |this, result, _, cx| {
+                match result {
+                    Ok(Some(update)) => {
+                        this.update_check = UpdateCheck::Idle;
+                        this.update = Some(update);
+                    }
+                    Ok(None) => {
+                        this.update_check = UpdateCheck::UpToDate;
+                        // The About page says it by the version; elsewhere (the newer-server
+                        // notice) the status line does.
+                        if !this.about_open() {
+                            this.success("Hermes is up to date", cx);
+                        }
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor().timer(UP_TO_DATE_FOR).await;
+                            let _ = this.update(cx, |this, cx| {
+                                if this.update_check == UpdateCheck::UpToDate {
+                                    this.update_check = UpdateCheck::Idle;
+                                    cx.notify();
+                                }
+                            });
+                        })
+                        .detach();
+                    }
+                    Err(err) => {
+                        this.update_check = UpdateCheck::Failed;
+                        this.error(format!("could not check for updates: {err}"), cx);
+                    }
                 }
-                Ok(None) => this.success("Hermes is up to date", cx),
-                Err(err) => this.error(format!("could not check for updates: {err}"), cx),
+                cx.notify();
             },
         );
+    }
+
+    /// Whether the settings show the About page.
+    fn about_open(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(|page| page.tab == crate::settings::Tab::About)
     }
 
     fn check_for_update(&mut self, cx: &mut Context<Self>) {
@@ -1953,13 +2050,41 @@ impl Render for Shell {
                 .into_any_element()
         };
         let resizing = self.resizing.is_some();
-        div()
+        // Linux: key events pass the root only when something in it has focus, and the focused
+        // push-to-talk needs every key (see `ptt_focused`).
+        if cfg!(target_os = "linux") && window.focused(cx).is_none() {
+            self.root_focus.focus(window, cx);
+        }
+        let root = div()
             .flex()
             .size_full()
             .font_family(crate::theme::font())
             .bg(theme::background())
             .text_color(theme::text())
             .text_size(crate::theme::body_size())
+            .when(cfg!(target_os = "linux"), |d| {
+                d.track_focus(&self.root_focus)
+            })
+            // Push-to-talk while focused, where it cannot be heard globally.
+            .capture_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
+                this.ptt_focused(crate::ptt::focused_key(&event.keystroke.key), true, cx);
+            }))
+            .capture_key_up(cx.listener(|this, event: &gpui_kit::KeyUpEvent, _, cx| {
+                this.ptt_focused(crate::ptt::focused_key(&event.keystroke.key), false, cx);
+            }))
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
+                    this.ptt_focused_modifiers(&event.modifiers, cx);
+                },
+            ))
+            .capture_any_mouse_down(
+                cx.listener(|this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                    this.ptt_focused(crate::ptt::mouse_vk(event.button), true, cx);
+                }),
+            )
+            .capture_any_mouse_up(cx.listener(|this, event: &gpui_kit::MouseUpEvent, _, cx| {
+                this.ptt_focused(crate::ptt::mouse_vk(event.button), false, cx);
+            }))
             // Each press starts with nothing closed by it. Captured here, before the popups' own
             // "pressed outside" listeners and before any element could stop it. A popup closed
             // some other way (Escape, an entry chosen) is forgotten at the next press too.
@@ -2015,7 +2140,18 @@ impl Render for Shell {
             .children(self.render_modals(cx))
             .children(self.render_menu())
             .child(self.redraw_waker(cx))
-            .children(first_frame.then(|| self.first_paint_marker()))
+            .children(first_frame.then(|| self.first_paint_marker()));
+        // Desktops that leave the title bar to the app (GNOME on Wayland) get Hermes' own.
+        let shell = cx.entity().downgrade();
+        let on_close = move |window: &mut Window, cx: &mut gpui_kit::App| {
+            let close = shell
+                .update(cx, |this, cx| this.close_requested(window, cx))
+                .unwrap_or(true);
+            if close {
+                window.remove_window();
+            }
+        };
+        crate::csd::frame(root.into_any_element(), &self.title, on_close, window)
     }
 }
 

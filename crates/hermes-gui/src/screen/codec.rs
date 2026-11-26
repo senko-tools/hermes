@@ -15,10 +15,10 @@ use openh264::formats::{BgraSliceU8, RgbaSliceU8, YUVBuffer, YUVSource};
 use hermes_client_core::proto::voice::MAX_VIDEO_DIMENSION;
 
 /// Target bitrate of a share (bits per second): about 0.1 bit per pixel per frame, at least
-/// 1.5 Mbit/s and at most 8 Mbit/s (which keeps keyframes well under the 512 KiB frame limit).
+/// 1.5 Mbit/s and at most 16 Mbit/s (which keeps keyframes well under the 2 MiB frame limit).
 pub fn bitrate(width: u32, height: u32, fps: f32) -> u32 {
     let bits = f64::from(width) * f64::from(height) * f64::from(fps) * 0.1;
-    bits.clamp(1_500_000.0, 8_000_000.0) as u32
+    bits.clamp(1_500_000.0, 16_000_000.0) as u32
 }
 
 /// A captured picture: four bytes per pixel, in the order the capture gave them.
@@ -31,11 +31,26 @@ pub struct Frame {
     pub pixels: Vec<u8>,
 }
 
+/// The largest slice in bytes. OpenH264 spreads slices over its threads, so a frame of several
+/// slices encodes on several cores; one slice (the default) keeps it to one.
+const SLICE_BYTES: u32 = 64 * 1024;
+
+/// Threads for OpenH264: one for small pictures, up to 4 from 720p on, leaving a core to capture.
+fn encode_threads(width: u32, height: u32) -> u16 {
+    if u64::from(width) * u64::from(height) < 1280 * 720 {
+        return 1;
+    }
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    cores.saturating_sub(1).clamp(1, 4) as u16
+}
+
 /// Encodes captured frames; rebuilt when the size changes.
 pub struct Encoder {
     inner: H264Encoder,
     size: (u32, u32),
     fps: f32,
+    /// The upload limit (bits per second).
+    max_bitrate: Option<u32>,
     /// Reused for every frame.
     yuv: YUVBuffer,
 }
@@ -46,7 +61,14 @@ impl Encoder {
         self.size
     }
 
-    pub fn new(width: u32, height: u32, fps: f32) -> Result<Encoder, String> {
+    /// `max_bitrate` caps [`bitrate`] (the upload limit).
+    pub fn new(
+        width: u32,
+        height: u32,
+        fps: f32,
+        max_bitrate: Option<u32>,
+    ) -> Result<Encoder, String> {
+        let bits = bitrate(width, height, fps).min(max_bitrate.unwrap_or(u32::MAX));
         // H.264 4:2:0 needs even sizes (the YUV buffer would panic on odd ones).
         if width < 2 || height < 2 || width % 2 + height % 2 != 0 {
             return Err(format!(
@@ -56,20 +78,24 @@ impl Encoder {
         let config = EncoderConfig::new()
             .usage_type(UsageType::ScreenContentRealTime)
             .rate_control_mode(RateControlMode::Bitrate)
-            .bitrate(BitRate::from_bps(bitrate(width, height, fps)))
+            .bitrate(BitRate::from_bps(bits))
             .max_frame_rate(FrameRate::from_hz(fps))
             .skip_frames(false)
-            // The fastest mode: screens are mostly still, and smooth matters more here.
-            .complexity(Complexity::Low)
+            // The middle mode: the fastest one breaks up text while scrolling. A CPU that cannot
+            // keep up drops pictures (the share log counts them as dropped by a busy encoder).
+            .complexity(Complexity::Medium)
             // Not supported for screen content (OpenH264 turns them off with a warning).
             .adaptive_quantization(false)
-            .background_detection(false);
+            .background_detection(false)
+            .num_threads(encode_threads(width, height))
+            .max_slice_len(SLICE_BYTES);
         let inner = H264Encoder::with_api_config(OpenH264API::from_source(), config)
             .map_err(|e| e.to_string())?;
         Ok(Encoder {
             inner,
             size: (width, height),
             fps,
+            max_bitrate,
             yuv: YUVBuffer::new(width as usize, height as usize),
         })
     }
@@ -83,7 +109,7 @@ impl Encoder {
     ) -> Result<Option<(Vec<u8>, bool)>, String> {
         let size = (frame.width, frame.height);
         if size != self.size {
-            *self = Encoder::new(size.0, size.1, self.fps)?;
+            *self = Encoder::new(size.0, size.1, self.fps, self.max_bitrate)?;
             keyframe = true;
         }
         if keyframe {
@@ -253,6 +279,53 @@ impl Decoder {
 mod tests {
     use super::*;
 
+    /// How fast software encoding and decoding are at 1080p, with a picture that changes all over
+    /// every frame (the hardest case): `cargo test --release -p hermes-gui
+    /// software_codec_speed -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn software_codec_speed() {
+        let (w, h) = (1920u32, 1080u32);
+        let frames = 60;
+        let mut encoder = Encoder::new(w, h, 60.0, None).unwrap();
+        let mut decoder = Decoder::software().unwrap();
+        let (mut encode, mut decode) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+        for n in 0..frames {
+            let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                for x in 0..w {
+                    let v = (x + y + n * 7) as u8;
+                    pixels.extend_from_slice(&[v, v.wrapping_mul(3), (x ^ y) as u8, 255]);
+                }
+            }
+            let frame = Frame {
+                width: w,
+                height: h,
+                bgra: true,
+                pixels,
+            };
+            let began = std::time::Instant::now();
+            let packet = encoder.encode(&frame, n == 0).unwrap();
+            encode += began.elapsed();
+            if let Some((data, _)) = packet {
+                let began = std::time::Instant::now();
+                let _ = decoder.decode(&data).unwrap();
+                decode += began.elapsed();
+            }
+        }
+        let big: Vec<u8> = vec![128; 2560 * 1440 * 4];
+        let began = std::time::Instant::now();
+        for _ in 0..10 {
+            let _ = super::super::scale::down(&big, 2560, 1440, 1920, 1080);
+        }
+        eprintln!(
+            "1080p: encode {:.1} ms, decode {:.1} ms per frame; 1440p->1080p scale {:.1} ms",
+            encode.as_secs_f64() * 1000.0 / f64::from(frames),
+            decode.as_secs_f64() * 1000.0 / f64::from(frames),
+            began.elapsed().as_secs_f64() * 100.0,
+        );
+    }
+
     #[test]
     fn frames_survive_a_round_trip() {
         let (w, h) = (64u32, 32u32);
@@ -268,7 +341,7 @@ mod tests {
             bgra: false,
             pixels: pixels.clone(),
         };
-        let mut encoder = Encoder::new(w, h, 10.0).unwrap();
+        let mut encoder = Encoder::new(w, h, 10.0, None).unwrap();
         let (data, key) = encoder.encode(&rgba, true).unwrap().unwrap();
         assert!(key, "the first frame is a keyframe");
         let mut decoder = Decoder::software().unwrap();
@@ -297,11 +370,11 @@ mod tests {
 
         assert_eq!(bitrate(1280, 720, 10.0), 1_500_000);
         assert_eq!(bitrate(1920, 1080, 15.0), 3_110_400);
-        assert_eq!(bitrate(3840, 2160, 30.0), 8_000_000);
+        assert_eq!(bitrate(3840, 2160, 30.0), 16_000_000);
 
         // Odd sizes are refused instead of panicking.
-        assert!(Encoder::new(63, 32, 10.0).is_err());
-        assert!(Encoder::new(0, 0, 10.0).is_err());
+        assert!(Encoder::new(63, 32, 10.0, None).is_err());
+        assert!(Encoder::new(0, 0, 10.0, None).is_err());
 
         // Garbage never panics.
         for decoder in [Decoder::software(), Decoder::new()] {
@@ -328,7 +401,7 @@ mod tests {
             bgra: false,
             pixels,
         };
-        let mut encoder = Encoder::new(w, h, 30.0).unwrap();
+        let mut encoder = Encoder::new(w, h, 30.0, None).unwrap();
         let (data, _) = encoder.encode(&frame, true).unwrap().unwrap();
         let reference = Decoder::software().unwrap().decode(&data).unwrap().unwrap();
         let mut best = Decoder::new().unwrap();

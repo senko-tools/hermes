@@ -1294,8 +1294,10 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
     var sample = textureSample(t_sprite, s_sprite, input.tile_position);
-    // Hermes patch: a picture drawn larger than its pixels shows them as they are (each texel
-    // under the pixel, kept inside its own tile), not blended into each other.
+    // Hermes patch: a picture drawn larger than its pixels shows them as they are, not blurred
+    // into each other ("sharp bilinear"): each texel is flat, and only the one screen pixel
+    // where two meet blends them, so texels stay even at any zoom (1.33x as well as 4x) where
+    // taking the nearest texel would draw some twice as wide as others. Kept inside its tile.
     let atlas_size = vec2<f32>(textureDimensions(t_sprite, 0));
     let texel = input.tile_position * atlas_size;
     let texel_step = fwidth(texel);
@@ -1306,10 +1308,15 @@ fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
 
     let sprite = load_poly_sprite(input.sprite_id);
     if (max(texel_step.x, texel_step.y) < 0.999) {
-        let lowest = vec2<f32>(sprite.tile.bounds.origin);
-        let highest = lowest + vec2<f32>(sprite.tile.bounds.size) - vec2<f32>(1.0);
-        let at = vec2<i32>(clamp(floor(texel), lowest, highest));
-        sample = textureLoad(t_sprite, at, 0);
+        let per_pixel = vec2<f32>(1.0) / max(texel_step, vec2<f32>(0.0001));
+        let between = texel - vec2<f32>(0.5);
+        let whole = floor(between);
+        let part = saturate((between - whole - vec2<f32>(0.5)) * per_pixel + vec2<f32>(0.5));
+        let lowest = vec2<f32>(sprite.tile.bounds.origin) + vec2<f32>(0.5);
+        let highest = vec2<f32>(sprite.tile.bounds.origin) + vec2<f32>(sprite.tile.bounds.size)
+            - vec2<f32>(0.5);
+        let at = clamp(whole + part + vec2<f32>(0.5), lowest, highest);
+        sample = textureSampleLevel(t_sprite, s_sprite, at / atlas_size, 0.0);
     }
     let distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 

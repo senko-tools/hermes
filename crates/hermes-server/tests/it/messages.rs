@@ -682,8 +682,16 @@ async fn slowmode_and_typing() {
     res.err(429, "RATE_LIMITED");
     let wait = res.body["error"]["retry_after_ms"].as_u64().unwrap();
     assert!((1..=60_000).contains(&wait), "{wait}");
-    // Other channels (voice channels have a text chat too) and BYPASS_SLOWMODE are unaffected.
-    server.send_message(&alice, &voice, "elsewhere").await;
+    // Voice channels have no text chat (#85): sending and editing there is refused.
+    server
+        .post(
+            &format!("/channels/{voice}/messages"),
+            Some(&alice),
+            json!({ "content": "elsewhere", "nonce": common::nonce() }),
+        )
+        .await
+        .err(400, "BAD_REQUEST");
+    // BYPASS_SLOWMODE is unaffected.
     server.send_message(&owner, &general, "owner 1").await;
     server.send_message(&owner, &general, "owner 2").await;
 

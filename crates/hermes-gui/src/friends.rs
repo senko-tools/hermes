@@ -349,14 +349,7 @@ impl Shell {
         let avatar = {
             let store = self.core.store();
             let user = store.instance(&inst).and_then(|s| s.user(id));
-            self.avatar_with_status_on(
-                &inst,
-                user,
-                &name,
-                theme::AVATAR,
-                status,
-                theme::background(),
-            )
+            self.avatar_with_status_on(&inst, user, theme::AVATAR, status, theme::background())
         };
         let element_id = SharedString::from(format!("person-{inst}-{id}-{}", kind_key(kind)));
         let target = Target::Member(inst.clone(), None, id);

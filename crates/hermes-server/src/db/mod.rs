@@ -350,6 +350,38 @@ pub(crate) mod tests {
         db.close().await;
     }
 
+    /// #86: retention and the 0021 migration move a channel's last message off deleted or gone
+    /// messages; channels that are fine are left alone.
+    #[tokio::test]
+    async fn stale_last_messages_move_back() {
+        let dir = TempDir::new("last-message");
+        let db = Db::open(dir.path()).await.unwrap();
+        let w = &db.write;
+        for sql in [
+            "INSERT INTO users (id, username, password_hash, created_at) VALUES (1, 'a', 'x', 0)",
+            "INSERT INTO channels (id, kind, created_at, last_message_id) VALUES (20, 'dm', 0, 32)",
+            "INSERT INTO channels (id, kind, created_at, last_message_id) VALUES (21, 'dm', 0, 40)",
+            "INSERT INTO channels (id, kind, created_at, last_message_id) VALUES (22, 'dm', 0, 50)",
+            "INSERT INTO messages (id, channel_id, author_id, content) VALUES (30, 20, 1, 'a')",
+            "INSERT INTO messages (id, channel_id, author_id, content, deleted) VALUES (31, 20, 1, '', 1)",
+            "INSERT INTO messages (id, channel_id, author_id, content, deleted) VALUES (32, 20, 1, '', 1)",
+            "INSERT INTO messages (id, channel_id, author_id, content) VALUES (50, 22, 1, 'c')",
+        ] {
+            sqlx::query(sql).execute(w).await.unwrap();
+        }
+        // 20: newest is deleted -> 30. 21: its message is gone -> none. 22: fine.
+        let mut changed = messages::refresh_stale_last_message_ids(w).await.unwrap();
+        changed.sort();
+        assert_eq!(changed, [(Id(20), Some(Id(30))), (Id(21), None)]);
+        assert!(
+            messages::refresh_stale_last_message_ids(w)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        db.close().await;
+    }
+
     #[test]
     fn int_rejects_out_of_range() {
         assert_eq!(int::<u32>(5, "x").unwrap(), 5);

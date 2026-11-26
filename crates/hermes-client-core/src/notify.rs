@@ -119,7 +119,8 @@ pub fn check_with(
             None => channel.name.clone().unwrap_or_else(|| "Group DM".into()),
         },
     };
-    let mut preview: String = message.content.chars().take(140).collect();
+    // Plain text: names for mentions, no markup, spoilers stay hidden.
+    let mut preview = crate::view::plain_text(store, space, &message.content, 140);
     if preview.is_empty() && !message.attachments.is_empty() {
         preview = format!("[{} attachment(s)]", message.attachments.len());
     }
@@ -175,6 +176,22 @@ mod tests {
         dm.recipients = vec![user(1, "me"), user(2, "bob")];
         s.apply(ServerEvent::DmCreate(dm), 0);
         s
+    }
+
+    #[test]
+    fn previews_are_plain_text_with_names() {
+        let s = store();
+        let bob = user(2, "bob");
+        let text = "hey <@1>, **look**: ||secret||";
+        let n = check(
+            &s,
+            &message(71, 50, &bob, text),
+            false,
+            PresenceStatus::Online,
+            0,
+        )
+        .unwrap();
+        assert_eq!(n.preview, "hey @me, look: ▒▒▒");
     }
 
     #[test]

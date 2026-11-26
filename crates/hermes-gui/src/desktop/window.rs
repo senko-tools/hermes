@@ -1,10 +1,15 @@
 //! Hiding the window to the tray and bringing it back. gpui has no way to hide a window, so this
-//! calls Windows directly with the window's own handle.
+//! calls the system directly with the window's own handle: Windows, X11 (unmapping it), or
+//! Wayland (through the patched gpui-pre-linux, which takes the toplevel away and back).
 
 use gpui_kit::Window;
 
-/// Hides or shows the window without closing it. Elsewhere windows stay shown: there is no tray
-/// to come back from everywhere, so closing quits there.
+/// Whether the window can be hidden (to the tray): on Windows and Linux (X11 and Wayland).
+pub fn can_hide() -> bool {
+    cfg!(any(windows, target_os = "linux"))
+}
+
+/// Hides or shows the window without closing it. Elsewhere windows stay shown (see `can_hide`).
 #[cfg(windows)]
 pub fn set_visible(window: &Window, visible: bool) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -22,8 +27,72 @@ pub fn set_visible(window: &Window, visible: bool) {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: X11 unmaps the window (it leaves the screen and the taskbar) or maps it again; Wayland
+/// takes the toplevel away and makes it again (`gpui_linux::set_wayland_window_hidden`).
+#[cfg(target_os = "linux")]
+pub fn set_visible(window: &Window, visible: bool) {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::{Mutex, OnceLock};
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    static CONN: OnceLock<Option<Mutex<x11rb::rust_connection::RustConnection>>> = OnceLock::new();
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let id = match handle.as_raw() {
+        RawWindowHandle::Wayland(h) => {
+            if !gpui_linux::set_wayland_window_hidden(h.surface.as_ptr(), !visible) {
+                tracing::warn!(
+                    "could not {} the window",
+                    if visible { "show" } else { "hide" }
+                );
+            }
+            return;
+        }
+        RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
+        RawWindowHandle::Xcb(h) => Some(h.window.get()),
+        _ => None,
+    };
+    let Some(id) = id else {
+        return;
+    };
+    let conn = CONN.get_or_init(|| x11rb::connect(None).ok().map(|(c, _)| Mutex::new(c)));
+    let Some(conn) = conn else {
+        return;
+    };
+    let conn = conn.lock().expect("x11 connection");
+    let sent = if visible {
+        conn.map_window(id).map(drop)
+    } else {
+        conn.unmap_window(id).map(drop)
+    };
+    if let Err(err) = sent.and_then(|()| conn.flush()) {
+        tracing::warn!(
+            "could not {} the window: {err}",
+            if visible { "show" } else { "hide" }
+        );
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_visible(_window: &Window, _visible: bool) {}
+
+/// Brings the window to the front with an activation token another launch was given (Wayland;
+/// elsewhere raising needs none, and this does nothing).
+pub fn activate_with(window: &Window, token: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Wayland(h) = handle.as_raw()
+        {
+            gpui_linux::activate_wayland_window(h.surface.as_ptr(), token);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (window, token);
+}
 
 /// Colours the native title bar like the app: dark mode when `background` is dark, and the
 /// background itself where Windows allows it (Windows 11; Windows 10 only has dark and light).
@@ -94,8 +163,12 @@ pub fn flash(window: &Window) {
     }
 }
 
+/// Elsewhere: the window asks for attention (X11 sets the urgency hint, which taskbars show by
+/// highlighting the button; Wayland compositors do the same where gpui can ask).
 #[cfg(not(windows))]
-pub fn flash(_window: &Window) {}
+pub fn flash(window: &Window) {
+    window.request_attention();
+}
 
 /// Asks Windows for 1 ms timers while it lives. By default they fire every 15.6 ms, which makes a
 /// 60 fps animation stutter (frames 31 and 47 ms apart); the level meter holds one while it shows.

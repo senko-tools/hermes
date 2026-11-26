@@ -7,6 +7,9 @@ name: release
 #   - Hermes-Setup-<version>.exe (Inno Setup installer with hermes:// links, from
 #     crates/hermes-gui/installer.iss), Hermes-<version>-portable.zip (GUI + TUI for Windows), both
 #     with an LGPL FFmpeg for sound and video files, and hermes-tui for Windows and Linux
+#   - Hermes-<version>-x86_64-linux.tar.gz (the GUI for Linux with crates/hermes-gui/linux/install.sh;
+#     FFmpeg comes from the system there): built as a workflow artifact only, not yet attached to
+#     releases (the Linux client joins them in 1.5.0)
 #   - install.sh, hermes.service, egg-hermes.json and SHA256SUMS
 # macOS builds are left out for now.
 #
@@ -189,6 +192,24 @@ jobs:
             echo "OpenH264 was built without NASM" >&2
             exit 1
           fi
+      - name: Smoke test
+        # The release exe starts, opens its window and quits by itself (#42), with a fresh config
+        # folder. Warn-only until it has passed on the runner a few times (a runner without a
+        # usable GPU could fail it for reasons that are not ours); then add `exit 1` after the warning.
+        timeout-minutes: 5
+        run: |
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          printf '[general]\ncheck_for_updates = false\n' > "$dir/config.toml"
+          ok=true
+          HERMES_SMOKE_TEST_SECONDS=10 timeout 120 target/release/hermes.exe --config-dir "$dir" || ok=false
+          grep -q "window opened" "$dir/logs/latest.log" || ok=false
+          grep -q "smoke test: quitting" "$dir/logs/latest.log" || ok=false
+          if ls "$dir"/logs/crash-*.log > /dev/null 2>&1; then ok=false; cat "$dir"/logs/crash-*.log; fi
+          cat "$dir/logs/latest.log" || true
+          if [ "$ok" != true ]; then
+            echo "::warning title=Smoke test failed::hermes.exe did not start, open its window and quit cleanly; see the Smoke test step."
+          fi
       - name: FFmpeg
         # Plays sound and video files in the chat; the installer and the portable zip carry it next
         # to hermes.exe. BtbN's LGPL build with shared libraries (ffmpeg.exe and ffprobe.exe share
@@ -328,6 +349,96 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: tui-linux
+          path: dist/
+          if-no-files-found: error
+
+  linux:
+    name: linux (GUI)
+    needs: version
+    # The oldest supported runner, so the binary runs on older glibc versions too (2.35 and newer).
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Built in, as on Windows: with it, installs made by install.sh update themselves.
+      HERMES_UPDATE_PUBLIC_KEY: ${{ vars.HERMES_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-gui
+      - name: System libraries
+        # The same as CI's Linux job, plus NASM (OpenH264's assembly) and, for the smoke test, a
+        # virtual screen and Mesa's software Vulkan.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libgtk-3-dev libxdo-dev libayatana-appindicator3-dev \
+            libxkbcommon-x11-dev libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev \
+            libpipewire-0.3-dev libspa-0.2-dev clang \
+            nasm xvfb mesa-vulkan-drivers dbus-x11
+      - name: PipeWire headers
+        # 22.04's PipeWire (0.3.48) is older than the pipewire crate's headers: Ubuntu 24.04's are
+        # used, and the next step proves the binary still runs with 22.04's library.
+        run: echo "PKG_CONFIG_PATH=$(bash crates/hermes-gui/linux/pipewire-headers.sh "$RUNNER_TEMP/pipewire")" >> "$GITHUB_ENV"
+      - name: Build
+        # The app, and make-update for the update files.
+        run: cargo build --release --locked -p hermes-gui -p hermes-client-core --bin hermes --bin make-update
+      - name: PipeWire functions
+        run: bash crates/hermes-gui/linux/pipewire-headers.sh check target/release/hermes
+      - name: Smoke test
+        # As on Windows: starts, opens its window on a virtual X screen and quits by itself.
+        # Warn-only until it has passed on the runner a few times.
+        timeout-minutes: 5
+        run: |
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          printf '[general]\ncheck_for_updates = false\n' > "$dir/config.toml"
+          ok=true
+          HERMES_SMOKE_TEST_SECONDS=10 timeout 120 xvfb-run -a -s "-screen 0 1920x1080x24" \
+            dbus-run-session -- target/release/hermes --config-dir "$dir" || ok=false
+          grep -q "window opened" "$dir/logs/latest.log" || ok=false
+          grep -q "smoke test: quitting" "$dir/logs/latest.log" || ok=false
+          if ls "$dir"/logs/crash-*.log > /dev/null 2>&1; then ok=false; cat "$dir"/logs/crash-*.log; fi
+          cat "$dir/logs/latest.log" || true
+          if [ "$ok" != true ]; then
+            echo "::warning title=Linux smoke test failed::hermes did not start, open its window and quit cleanly; see the Smoke test step."
+          fi
+      - name: Package
+        # Unpack, then ./install.sh: installs for the user, with a menu entry and hermes:// links.
+        run: |
+          name="Hermes-$VERSION-x86_64-linux"
+          mkdir -p dist "stage/$name/icons"
+          cp target/release/hermes crates/hermes-gui/linux/install.sh LICENSE-GPL-3.0 "stage/$name/"
+          cp crates/hermes-gui/assets/icons/icon-*.png "stage/$name/icons/"
+          chmod 755 "stage/$name/hermes" "stage/$name/install.sh"
+          tar -czf "dist/$name.tar.gz" -C stage "$name"
+      - name: Update files
+        # Linux's own signed manifest (update-manifest-linux.json, assets linux-*) beside
+        # Windows': the program is the one file install.sh puts in its folder, so it is the one
+        # file updated, with patches from the last three releases' Linux programs.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::notice::UPDATE_SIGNING_KEY is not set: no Linux update files"
+            exit 0
+          fi
+          mkdir -p update-src
+          cp target/release/hermes update-src/
+          previous=()
+          for tag in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --exclude-drafts               --json tagName -q '.[].tagName' | grep -v "^v$VERSION$" | head -3); do
+            mkdir -p "prev/$tag/files"
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY"                 --pattern 'Hermes-*-x86_64-linux.tar.gz' --dir "prev/$tag"; then
+              tar -xzf "prev/$tag"/*.tar.gz -C "prev/$tag" &&                 cp "prev/$tag"/Hermes-*/hermes "prev/$tag/files/" &&                 previous+=(--previous "prev/$tag/files")
+            fi
+          done
+          target/release/make-update build --platform linux --dir update-src --version "$VERSION"             --out update "${previous[@]}"
+          cp update/* dist/
+          ls -l update
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
           path: dist/
           if-no-files-found: error
 

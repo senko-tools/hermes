@@ -26,6 +26,8 @@ pub struct TempDir(PathBuf);
 
 impl TempDir {
     pub fn new(name: &str) -> Self {
+        static SWEEP: std::sync::Once = std::sync::Once::new();
+        SWEEP.call_once(sweep_old);
         let path =
             std::env::temp_dir().join(format!("hermes-server-it-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
@@ -41,6 +43,30 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Removes what earlier runs left behind. On Windows a directory whose database the server still
+/// holds open cannot be removed on drop, and tens of thousands of them once filled the system
+/// drive. Anything over an hour old belongs to a run that has ended.
+fn sweep_old() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t < hour_ago);
+        if old
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("hermes-server-it-")
+        {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 

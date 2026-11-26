@@ -36,6 +36,8 @@ const BODY_PAD: f32 = 20.;
 /// The space kept around the picker, and the widest it gets.
 const MARGIN: f32 = 40.;
 const MAX_W: f32 = 1400.;
+/// Line height of a tile's title and process name, relative to their text size.
+const LABEL_LINE: f32 = 1.4;
 /// The narrowest the panel gets.
 const MIN_W: f32 = 320.;
 
@@ -196,6 +198,58 @@ impl Shell {
         self.start_share(cx);
     }
 
+    /// Wayland: the desktop's own dialog picks what to share, not our cards.
+    fn share_by_desktop(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            crate::desktop::wayland()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    /// In place of the cards on Wayland: what happens when Share is pressed.
+    fn render_desktop_share_body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let remembered = !self.config.voice.share_restore_token.is_empty();
+        let text = if remembered {
+            "Share shows what you chose last time again, without asking."
+        } else {
+            "Share opens your desktop's dialog, where you choose a screen or a window."
+        };
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .gap(px(12.))
+            .px(px(BODY_PAD))
+            .child(icon(assets::MONITOR_SHARE, 40., theme::text_tertiary()))
+            .child(
+                div()
+                    .max_w(px(420.))
+                    .text_center()
+                    .text_size(theme::body_size())
+                    .text_color(theme::text_secondary())
+                    .child(text),
+            )
+            .when(remembered, |d| {
+                d.child(
+                    Button::new("share-choose-again")
+                        .cursor_pointer()
+                        .ghost()
+                        .label("Choose something else")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.set_config(|c| c.voice.share_restore_token.clear(), cx);
+                        })),
+                )
+            })
+            .into_any_element()
+    }
+
     /// One card: its picture (or a plain face for a minimized window), its name and what it is.
     fn share_card(
         &self,
@@ -286,13 +340,30 @@ impl Shell {
             )
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "share-label-{n}-{}",
+                        source.value
+                    )))
                     .flex()
                     .flex_col()
                     .px(px(2.))
                     .min_w_0()
+                    // Long names end in "…"; the whole of both shows here.
+                    .tooltip({
+                        let full = SharedString::from(if source.detail.is_empty() {
+                            source.title.to_string()
+                        } else {
+                            format!("{} · {}", source.title, source.detail)
+                        });
+                        move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(full.clone())
+                                .build(window, cx)
+                        }
+                    })
                     .child(
                         div()
                             .truncate()
+                            .line_height(gpui_kit::relative(LABEL_LINE))
                             .text_size(theme::secondary_size())
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(if selected {
@@ -303,9 +374,12 @@ impl Shell {
                             .child(source.title.clone()),
                     )
                     .child(
+                        // As tall as its line at any text size and scale, also when empty;
+                        // a fixed height cut off the bottoms of letters (#79).
                         div()
                             .truncate()
-                            .h(px(16.))
+                            .line_height(gpui_kit::relative(LABEL_LINE))
+                            .min_h(theme::caption_size() * LABEL_LINE)
                             .text_size(theme::caption_size())
                             .text_color(theme::text_tertiary())
                             .child(source.detail.clone()),
@@ -408,6 +482,18 @@ impl Shell {
                 .justify_center()
                 .text_color(theme::text_tertiary())
                 .child("Looking for screens and windows…")
+                .into_any_element()
+        } else if self.share_by_desktop() {
+            self.render_desktop_share_body(cx)
+        } else if !cfg!(any(windows, target_os = "linux")) {
+            // No capture here (screen/capture.rs): say so instead of empty lists.
+            div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .text_color(theme::text_tertiary())
+                .child("Sharing your screen does not work on this system yet.")
                 .into_any_element()
         } else {
             div()

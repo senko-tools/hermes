@@ -465,6 +465,51 @@ pub async fn set_last_message_id(
     Ok(())
 }
 
+/// After deletions: each channel's `last_message_id` becomes its newest message that is not
+/// deleted (or NULL), so a deleted message never leaves a channel unread. Returns the new value
+/// of each channel.
+pub async fn refresh_last_message_ids(
+    conn: &mut SqliteConnection,
+    channel_ids: &[Id],
+) -> Result<Vec<(Id, Option<Id>)>, sqlx::Error> {
+    let mut out = Vec::with_capacity(channel_ids.len());
+    for &channel_id in channel_ids {
+        let last: Option<i64> = sqlx::query_scalar(
+            "UPDATE channels SET last_message_id =
+               (SELECT MAX(id) FROM messages WHERE channel_id = ?1 AND deleted = 0)
+             WHERE id = ?1 RETURNING last_message_id",
+        )
+        .bind(channel_id.to_i64())
+        .fetch_optional(&mut *conn)
+        .await?
+        .flatten();
+        out.push((channel_id, last.map(Id::from_i64)));
+    }
+    Ok(out)
+}
+
+/// [`refresh_last_message_ids`] for every channel whose `last_message_id` points at a message
+/// that is deleted or gone (after retention). Returns the channels it changed.
+pub async fn refresh_stale_last_message_ids(
+    e: impl SqliteExecutor<'_>,
+) -> Result<Vec<(Id, Option<Id>)>, sqlx::Error> {
+    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+        "UPDATE channels SET last_message_id =
+           (SELECT MAX(m.id) FROM messages m WHERE m.channel_id = channels.id AND m.deleted = 0)
+         WHERE last_message_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM messages m WHERE m.id = channels.last_message_id AND m.deleted = 0
+           )
+         RETURNING id, last_message_id",
+    )
+    .fetch_all(e)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, last)| (Id::from_i64(id), last.map(Id::from_i64)))
+        .collect())
+}
+
 pub async fn edit_content(
     conn: &mut SqliteConnection,
     message_id: Id,

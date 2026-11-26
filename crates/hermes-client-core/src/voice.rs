@@ -603,6 +603,7 @@ impl Core {
 
     /// Push-to-talk key state (only used in push-to-talk mode).
     pub fn set_ptt(&self, pressed: bool) {
+        tracing::debug!(pressed, "push-to-talk");
         self.voice().engine.set_ptt(pressed);
     }
 

@@ -429,6 +429,21 @@ impl Images {
         }
     }
 
+    /// Puts a picture made here in place of a thumbnail (a video's sharper poster, #76); it
+    /// fades in as one that just arrived.
+    pub fn put_thumbnail(&mut self, key: ImageKey, picture: Picture) {
+        match self.thumbs.remove(&key) {
+            Some(old) => self.retire(old),
+            None => {
+                self.evict_thumbnails();
+                self.thumb_order.push_back(key.clone());
+            }
+        }
+        self.thumb_arrived
+            .insert(key.clone(), std::time::Instant::now());
+        self.thumbs.insert(key, Img::Ready(picture));
+    }
+
     /// Makes room for one more thumbnail.
     fn evict_thumbnails(&mut self) {
         while self.thumb_order.len() >= MAX_THUMBNAILS {
@@ -809,6 +824,7 @@ impl Shell {
                 self.load_thumbnail(host, attachment, cx);
             }
         }
+        self.start_video_fills(cx);
         // Originals that are themselves needed to draw a preview go first; the rest are fetched
         // ahead of a click once each, within the memory budget.
         for need_preview in [true, false] {
@@ -1105,9 +1121,9 @@ impl Shell {
         }
     }
 
-    /// An avatar in the chosen shape (round or a squircle): the user's picture, else the first
-    /// letter of their name.
-    pub fn avatar(&self, inst: &str, user: Option<&User>, name: &str, size: f32) -> AnyElement {
+    /// An avatar in the chosen shape (round or a squircle): the user's picture, else a silhouette
+    /// in the theme's colours (also while the picture loads).
+    pub fn avatar(&self, inst: &str, user: Option<&User>, size: f32) -> AnyElement {
         let picture = user
             .and_then(|u| u.avatar.as_ref())
             .and_then(|a| self.images.avatars.get(&(inst.to_owned(), a.id)));
@@ -1130,15 +1146,22 @@ impl Shell {
             .justify_center()
             .size(px(size))
             .rounded(px(theme::avatar_radius(size)))
+            .overflow_hidden()
             .bg(theme::selected())
-            .text_color(theme::text())
-            .text_size(px((size * 0.45).max(12.)))
             .relative()
             .children(
                 user.and_then(|u| u.avatar.as_ref())
                     .and_then(|file| self.images.profile_marker(inst, file, AVATAR_PIXELS)),
             )
-            .child(initial(name))
+            .child(crate::assets::icon(
+                if theme::avatar_radius(size) < size / 2. {
+                    crate::assets::SILHOUETTE_SQUIRCLE
+                } else {
+                    crate::assets::SILHOUETTE
+                },
+                size,
+                theme::text_tertiary(),
+            ))
             .into_any_element()
     }
 
@@ -1147,11 +1170,10 @@ impl Shell {
         &self,
         inst: &str,
         user: Option<&User>,
-        name: &str,
         size: f32,
         status: Status,
     ) -> AnyElement {
-        self.avatar_with_status_on(inst, user, name, size, status, theme::sidebar())
+        self.avatar_with_status_on(inst, user, size, status, theme::sidebar())
     }
 
     /// The same on another surface: `ground` is the colour around the avatar, which the dot's
@@ -1160,7 +1182,6 @@ impl Shell {
         &self,
         inst: &str,
         user: Option<&User>,
-        name: &str,
         size: f32,
         status: Status,
         ground: gpui_kit::Rgba,
@@ -1170,7 +1191,7 @@ impl Shell {
             .relative()
             .flex_shrink_0()
             .size(px(size))
-            .child(self.avatar(inst, user, name, size))
+            .child(self.avatar(inst, user, size))
             .child(
                 div()
                     .absolute()
@@ -1227,14 +1248,6 @@ fn presence_shape(status: Status, dot: f32, ground: gpui_kit::Rgba) -> Option<gp
                 .rounded(px(inner * 0.35)),
         ),
     }
-}
-
-fn initial(name: &str) -> SharedString {
-    name.chars()
-        .next()
-        .map(|c| c.to_uppercase().collect::<String>())
-        .unwrap_or_default()
-        .into()
 }
 
 #[cfg(test)]

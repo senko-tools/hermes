@@ -227,8 +227,58 @@ its version is newer. Steps:
    (the test server has no notes), and Update there patches, installs and restarts into the new
    version (Settings > About shows it). The log says `update installed`.
 
+Linux: releases also carry `update-manifest-linux.json` (+ `.sig`), made by `make-update build
+--platform linux` from the program alone (assets `linux-*`). `updater::available` allows it only
+where the folder is the app's own: `install.sh`'s or a portable one, not under `/usr`, `/opt`,
+`/nix` or `/snap`, not in a Flatpak, Snap or AppImage, and not with `HERMES_NO_UPDATE` set.
+
+## Linux
+Built on Ubuntu 22.04 (glibc 2.35), like the release. What differs from Windows, and where:
+- **Push-to-talk and the mute key** (`ptt/`):
+  - X11: XInput2 raw events (2.2, so releases arrive during other apps' grabs).
+  - Wayland: the GlobalShortcuts portal, which binds the keys through the desktop's shortcut
+    settings. A PTT key is only bound while push-to-talk is the input mode, since the desktop
+    takes it from other apps.
+  - Elsewhere, and for mouse buttons on Wayland: only while a Hermes window is focused (the root
+    keeps focus, `Shell::root_focus`). Settings and Diagnostics say which.
+- **Screen sharing** (`screen/capture/linux.rs`, `screen/x11.rs`, `screen/capture/portal.rs`):
+  - X11: our picker. Screens are RandR monitors and windows are the EWMH client list. Pictures
+    come through MIT-SHM, windows through Composite where a compositor runs, and the pointer
+    through XFixes.
+  - Wayland: the ScreenCast portal's dialog, then PipeWire. The restore token is kept in
+    `voice.share_restore_token`, so the next share skips the dialog until "Choose something else".
+- **A share's sound** (`screen/sound/linux.rs`): a PipeWire capture stream that Hermes links to
+  every app's playback, except its own (matched by its client's process id and cpal's
+  `cpal-pulseaudio-<pid>` name).
+- **Voice** goes through cpal's pure-Rust PulseAudio host (PipeWire's pulse server or PulseAudio),
+  with 10 ms periods, else ALSA. Hermes writes `~/.config/pulse/cookie` when it is missing, as
+  libpulse would; without one the server refuses the connection.
+- **PipeWire headers:** the pipewire crate (0.10, the version xcap pins, and `links` allows only
+  one) needs PipeWire 1.0's headers. On 22.04 `linux/pipewire-headers.sh` provides Ubuntu 24.04's,
+  and its `check` proves that the binary calls nothing 0.3.48 lacks.
+- **Desktop:**
+  - Taskbar count: the Unity LauncherEntry signal.
+  - Attention: X11 urgency.
+  - Idle time: XScreenSaver, else XInput2 raw events; ext-idle-notify-v1 on Wayland, else
+    Mutter's IdleMonitor.
+  - Tray: its own GTK thread.
+  - Close to the tray: X11 unmaps the window; Wayland takes the toplevel away and back
+    through the patched gpui-pre-linux (`vendor/README.md`).
+- **Title bar:** where the desktop draws none (GNOME on Wayland, Weston), `csd.rs` draws Hermes'
+  own: the page title, window buttons, resize edges and a shadow.
+- **CI smoke test:** X11 only (Xvfb). Headless Weston has no input seat, and gpui panics without
+  a `wl_seat` ("Wayland compositor does not provide wl_seat"), so Wayland is checked by hand.
+- **Logs:** `$XDG_STATE_HOME/hermes/logs` for the default config dir. Freeze reports list every
+  thread's state and kernel wait in place of a minidump.
+
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.
+2. **Full-colour shares (4:4:4):** H.264 sends colour at half size (one sample per 2x2 pixels), so ClearType
+   text's colour fringes come out as small colour artifacts at any bitrate. Measured 2026-11-26 on a Hermes UI
+   screenshot through GPU convert + NVIDIA encoder: 38.25 dB at 8 Mbit/s, 38.28 dB at 40 Mbit/s, the same as
+   halving the colour alone. The viewer blends the colour between samples, which hides the blockiness. The real
+   fix is 4:4:4, which neither the Windows hardware H.264 decoders nor OpenH264 decode, so it needs another
+   codec or profile on both ends (e.g. HEVC 4:4:4 through NVENC/NVDEC, or VP9 profile 1 in software).
 
 ## Known risks
 - **Share smearing:** a frame lost after the server (full decoder queue, timed-out stream) holds that share

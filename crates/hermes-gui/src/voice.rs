@@ -1053,7 +1053,7 @@ impl Shell {
             let s = store.instance(&inst);
             let found = s.and_then(|s| s.user(user));
             (
-                self.avatar(&inst, found, &name, 22.),
+                self.avatar(&inst, found, 22.),
                 s.and_then(|s| s.space_of(channel)),
             )
         };
@@ -1313,31 +1313,64 @@ impl Shell {
                 d.child(icon(assets::MONITOR_SHARE, 14., theme::accent()))
             });
         let own = p.volume.is_none();
+        // In its own window: drawn there only (one window at a time draws a share); the button
+        // that popped it out brings it back.
+        let popped_out = self
+            .popped_out
+            .as_ref()
+            .is_some_and(|(key, _)| *key == share_key);
         let content: AnyElement = match picture {
             // Their screen fills the tile; the name stays readable on a dark badge.
             Some(frame) => {
                 let stop = share_key.clone();
                 let tile_hovered = self.is_hovered(&format!("tile-{}", p.user));
+                // gpui clips to rectangles only: the backgrounds round their own corners.
+                let screen: AnyElement = if popped_out {
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(6.))
+                        .rounded(radius)
+                        .bg(theme::mix(theme::sidebar(), theme::background(), 0.5))
+                        .text_color(theme::text_secondary())
+                        .child(icon(
+                            assets::media_icons::FULLSCREEN,
+                            20.,
+                            theme::text_tertiary(),
+                        ))
+                        .child("Watching in its own window")
+                        .into_any_element()
+                } else {
+                    // The first picture fades in over the black.
+                    div()
+                        .size_full()
+                        .rounded(radius)
+                        .bg(gpui_kit::rgb(0))
+                        .child(
+                            div()
+                                .size_full()
+                                .child(
+                                    img(frame.image.clone())
+                                        .size_full()
+                                        .rounded(radius)
+                                        .object_fit(gpui_kit::ObjectFit::Contain),
+                                )
+                                .with_animation(
+                                    SharedString::from(format!("share-in-{}", p.user)),
+                                    gpui_kit::Animation::new(theme::fade() * 2)
+                                        .with_easing(gpui_kit::ease_out_quint()),
+                                    |d, t| d.opacity(t),
+                                ),
+                        )
+                        .into_any_element()
+                };
                 div()
                     .relative()
                     .size_full()
-                    .bg(gpui_kit::rgb(0))
-                    // The first picture fades in over the black.
-                    .child(
-                        div()
-                            .size_full()
-                            .child(
-                                img(frame.image.clone())
-                                    .size_full()
-                                    .object_fit(gpui_kit::ObjectFit::Contain),
-                            )
-                            .with_animation(
-                                SharedString::from(format!("share-in-{}", p.user)),
-                                gpui_kit::Animation::new(theme::fade() * 2)
-                                    .with_easing(gpui_kit::ease_out_quint()),
-                                |d, t| d.opacity(t),
-                            ),
-                    )
+                    .child(screen)
                     .child(
                         div()
                             .absolute()
@@ -1370,18 +1403,30 @@ impl Shell {
                             .child({
                                 let key = share_key.clone();
                                 let title = format!("{}'s screen", p.name);
+                                let (glyph, tip) = if popped_out {
+                                    (
+                                        assets::media_icons::FULLSCREEN_EXIT,
+                                        "Bring back to this window",
+                                    )
+                                } else {
+                                    (assets::media_icons::FULLSCREEN, "Open in its own window")
+                                };
                                 crate::ui::tip_button(
                                     self,
                                     SharedString::from(format!("pop-out-{}", p.user)),
-                                    assets::media_icons::FULLSCREEN,
-                                    "Open in its own window",
+                                    glyph,
+                                    tip,
                                     cx,
                                 )
                                 .bg(theme::scrim())
                                 .on_click(cx.listener(
                                     move |this, _, _, cx| {
                                         cx.stop_propagation();
-                                        this.pop_out_share(key.clone(), title.clone(), cx);
+                                        if popped_out {
+                                            this.pop_in_share(cx);
+                                        } else {
+                                            this.pop_out_share(key.clone(), title.clone(), cx);
+                                        }
                                     },
                                 ))
                             })
@@ -1420,7 +1465,7 @@ impl Shell {
                 let avatar = {
                     let store = self.core.store();
                     let user = store.instance(inst).and_then(|s| s.user(p.user));
-                    self.avatar(inst, user, &p.name, side)
+                    self.avatar(inst, user, side)
                 };
                 let note = if sharing && own {
                     Some(match self.core.share_watchers() {

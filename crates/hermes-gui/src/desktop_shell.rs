@@ -124,6 +124,62 @@ impl Shell {
     pub fn update_ptt_keys(&self) {
         let keys = ptt::virtual_keys(&self.config.voice.ptt_key).unwrap_or_default();
         *self.ptt_keys.lock().expect("ptt keys") = keys;
+        // A key bound through the system is taken from other apps: only while it is in use.
+        let in_use = self.config.voice.mode == hermes_client_core::config::VoiceMode::PushToTalk;
+        ptt::ptt_key_changed(if in_use {
+            &self.config.voice.ptt_key
+        } else {
+            ""
+        });
+    }
+
+    /// A key or mouse button pressed or let go in a Hermes window: push-to-talk where it cannot
+    /// be heard globally (Wayland without the shortcuts portal, mouse buttons there).
+    pub(crate) fn ptt_focused(&mut self, vk: Option<u16>, down: bool, cx: &mut Context<Self>) {
+        if ptt::reach() != ptt::Reach::Focused {
+            return;
+        }
+        if let Some(vk) = vk
+            && self.ptt_held.set(vk, down)
+        {
+            self.ptt_check_held(cx);
+        }
+    }
+
+    /// The modifier keys of the focused window, which come without key events of their own.
+    pub(crate) fn ptt_focused_modifiers(
+        &mut self,
+        modifiers: &gpui_kit::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if ptt::reach() != ptt::Reach::Focused {
+            return;
+        }
+        let ctrl = self.ptt_held.set(ptt::CTRL, modifiers.control);
+        let shift = self.ptt_held.set(ptt::SHIFT, modifiers.shift);
+        let alt = self.ptt_held.set(ptt::ALT, modifiers.alt);
+        if ctrl || shift || alt {
+            self.ptt_check_held(cx);
+        }
+    }
+
+    /// The window lost focus: whatever it saw held is let go.
+    pub(crate) fn ptt_focus_lost(&mut self, cx: &mut Context<Self>) {
+        self.ptt_held.clear();
+        if ptt::reach() == ptt::Reach::Focused {
+            self.ptt_check_held(cx);
+        }
+    }
+
+    fn ptt_check_held(&mut self, cx: &mut Context<Self>) {
+        let down = self
+            .ptt_held
+            .holds(&self.ptt_keys.lock().expect("ptt keys"));
+        if down != self.ptt_down {
+            self.ptt_down = down;
+            self.core.set_ptt(down);
+            cx.notify();
+        }
     }
 
     pub fn register_global_keys(&mut self, cx: &mut Context<Self>) {
@@ -148,9 +204,10 @@ impl Shell {
     }
 
     /// `true` closes the window, which ends the app.
-    fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn close_requested(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.save_layout(cx);
-        match desktop::on_close(self.config.general.close_to_tray, self.tray.is_some()) {
+        let can_hide = self.tray.is_some() && native::can_hide();
+        match desktop::on_close(self.config.general.close_to_tray, can_hide) {
             CloseAction::Hide => {
                 self.hide_window(window, cx);
                 false
@@ -182,7 +239,8 @@ impl Shell {
             TrayAction::ToggleMute => self.toggle_mute(cx),
             TrayAction::ToggleDeafen => self.toggle_deafen(cx),
             TrayAction::ToggleWindow => {
-                if self.window_visible {
+                // Where windows cannot hide, the entry only brings the window to the front.
+                if self.window_visible && native::can_hide() {
                     self.hide_window(window, cx);
                 } else {
                     self.show_window(window, cx);
@@ -215,23 +273,12 @@ impl Shell {
     /// Turns the status idle after a while without input, and back when input returns.
     pub fn start_idle_watch(&self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
-            let mut seen = None;
-            let mut active = std::time::Instant::now();
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_secs(15))
                     .await;
-                let input = desktop::last_input();
-                if input != seen {
-                    seen = input;
-                    active = std::time::Instant::now();
-                }
                 // Where the system cannot say, nobody counts as idle.
-                let idle = if input.is_some() {
-                    active.elapsed()
-                } else {
-                    std::time::Duration::ZERO
-                };
+                let idle = desktop::idle_time().unwrap_or_default();
                 if this.update(cx, |this, _| this.idle_for(idle)).is_err() {
                     return;
                 }

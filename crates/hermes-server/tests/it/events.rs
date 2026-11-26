@@ -166,6 +166,11 @@ async fn message_changes_reactions_pins_and_acks() {
     let deleted = aws.next_event().await;
     assert_eq!(deleted["op"], "message_delete");
     assert_eq!(deleted["d"], json!({ "id": mid, "channel_id": general }));
+    // It was the channel's only message: the channel has no last message any more (#86).
+    let channel = aws.next_event().await;
+    assert_eq!(channel["op"], "channel_update");
+    assert_eq!(channel["d"]["id"], json!(general));
+    assert!(channel["d"]["last_message_id"].is_null(), "{channel}");
 
     // Read states go to the user's own sessions only.
     server
@@ -189,6 +194,7 @@ async fn message_changes_reactions_pins_and_acks() {
         "message_update",
         "message_update",
         "message_delete",
+        "channel_update",
     ] {
         assert_eq!(ows.next_event().await["op"], op);
     }
@@ -201,7 +207,6 @@ async fn permission_changes_show_and_hide_channels() {
     let (owner, _, space_id) = server.owner().await;
     let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
     let general = server.channel_id(&space_id, "general");
-    let voice = server.channel_id(&space_id, "General");
     let (mut ows, _) = server.identify(&owner).await;
     let (mut aws, _) = server.identify(&alice).await;
 
@@ -259,7 +264,7 @@ async fn permission_changes_show_and_hide_channels() {
         .await
         .ok();
     assert_eq!(aws.next_event().await["op"], "channel_create");
-    expect_marker(&server, &owner, &voice, &mut aws).await;
+    expect_marker(&server, &owner, &general, &mut aws).await;
 }
 
 #[tokio::test]
@@ -466,4 +471,87 @@ async fn kicks_and_leaving() {
     assert_eq!(removed["d"]["user_id"], alice_id);
     let removed = ows.recv_op("member_remove").await;
     assert_eq!(removed["d"]["user_id"], bob_id);
+}
+
+/// #86: deleting a channel's newest message moves its last message back to the newest one left
+/// (or none), for single, bulk and DM deletes, so a deleted message never leaves it unread.
+#[tokio::test]
+async fn deleting_the_newest_message_moves_the_last_message_back() {
+    let server = start("ev-last-message", RegistrationMode::InviteOnly).await;
+    let (owner, _, space_id) = server.owner().await;
+    let (alice, alice_id) = server.member(&owner, &space_id, "alice").await;
+    let general = server.channel_id(&space_id, "general");
+    let (mut aws, _) = server.identify(&alice).await;
+    let first = send_message(&server, &owner, &general, "first").await;
+    let second = send_message(&server, &owner, &general, "second").await;
+    let (first, second) = (first["id"].clone(), second["id"].clone());
+    aws.recv_op("message_create").await;
+    aws.recv_op("message_create").await;
+
+    server
+        .delete(
+            &format!("/channels/{general}/messages/{}", second.as_str().unwrap()),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(aws.next_event().await["op"], "message_delete");
+    let update = aws.next_event().await;
+    assert_eq!(update["op"], "channel_update");
+    assert_eq!(update["d"]["last_message_id"], first);
+
+    // Deleting an older message changes nothing: no channel update.
+    let third = send_message(&server, &owner, &general, "third").await;
+    aws.recv_op("message_create").await;
+    server
+        .delete(
+            &format!("/channels/{general}/messages/{}", first.as_str().unwrap()),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(aws.next_event().await["op"], "message_delete");
+    let fourth = send_message(&server, &owner, &general, "fourth").await;
+    assert_eq!(aws.next_event().await["op"], "message_create");
+
+    // A bulk delete of everything leaves the channel with no last message.
+    server
+        .post(
+            &format!("/channels/{general}/messages/bulk-delete"),
+            Some(&owner),
+            json!({ "ids": [third["id"], fourth["id"]] }),
+        )
+        .await
+        .ok();
+    assert_eq!(aws.next_event().await["op"], "message_delete_bulk");
+    let update = aws.next_event().await;
+    assert_eq!(update["op"], "channel_update");
+    assert!(update["d"]["last_message_id"].is_null(), "{update}");
+
+    // In a DM, each recipient gets the DM as they see it.
+    let dm = server
+        .post("/dms", Some(&owner), json!({ "recipient_ids": [alice_id] }))
+        .await
+        .ok();
+    let dm_id = dm["id"].as_str().unwrap().to_owned();
+    let only = send_message(&server, &owner, &dm_id, "dm").await;
+    aws.recv_op("message_create").await;
+    server
+        .delete(
+            &format!(
+                "/channels/{dm_id}/messages/{}",
+                only["id"].as_str().unwrap()
+            ),
+            Some(&owner),
+        )
+        .await
+        .ok();
+    assert_eq!(
+        aws.recv_op("message_delete").await["d"]["channel_id"],
+        json!(dm_id)
+    );
+    let update = aws.next_event().await;
+    assert_eq!(update["op"], "channel_update");
+    assert_eq!(update["d"]["id"], json!(dm_id));
+    assert!(update["d"]["last_message_id"].is_null(), "{update}");
 }

@@ -61,8 +61,19 @@ pub fn lock(dir: &Path) -> io::Result<Option<InstanceLock>> {
 }
 
 /// Sends `link` (or an empty line) to a running client. An error means none is running.
+///
+/// On Wayland the desktop gives a launch an activation token (`XDG_ACTIVATION_TOKEN`), which only
+/// lets the launching process raise a window: it goes along after a tab, so the running client
+/// can come to the front with it ([`split`]).
 pub async fn forward(endpoint: &Endpoint, link: Option<&str>) -> io::Result<()> {
-    let line = format!("{}\n", link.unwrap_or("").replace(['\r', '\n'], ""));
+    let clean = |s: &str| s.replace(['\r', '\n', '\t'], "");
+    let token = std::env::var("XDG_ACTIVATION_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    let line = match token {
+        Some(token) => format!("{}\t{}\n", clean(link.unwrap_or("")), clean(&token)),
+        None => format!("{}\n", clean(link.unwrap_or(""))),
+    };
     tokio::time::timeout(Duration::from_secs(2), async {
         // Busy: the running client just took another launch's connection and has not created
         // the next pipe instance yet. Retrying (within the timeout) keeps two quick launches
@@ -86,6 +97,14 @@ pub async fn forward(endpoint: &Endpoint, link: Option<&str>) -> io::Result<()> 
     })
     .await
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no answer"))?
+}
+
+/// A forwarded line: the link (empty for none) and the launch's activation token, if any.
+pub fn split(line: &str) -> (&str, Option<&str>) {
+    match line.split_once('\t') {
+        Some((link, token)) => (link.trim(), Some(token.trim()).filter(|t| !t.is_empty())),
+        None => (line.trim(), None),
+    }
 }
 
 /// Accepts forwarded messages until `tx` is closed. Fails if another client already listens.
@@ -142,7 +161,10 @@ async fn read_one(
     let read = tokio::time::timeout(Duration::from_secs(2), reader.read_line(&mut line)).await;
     match read {
         // `0`: closed without a line (a probe from `serve`), not a request.
-        Ok(Ok(n)) if n > 0 => tx.send(line.trim().to_owned()).is_ok(),
+        // Only the line's end: a leading tab means "no link, a token" (`split`).
+        Ok(Ok(n)) if n > 0 => tx
+            .send(line.trim_end_matches(['\r', '\n']).to_owned())
+            .is_ok(),
         _ => !tx.is_closed(),
     }
 }
@@ -160,6 +182,15 @@ impl Drop for RemoveOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarded_lines_carry_an_optional_token() {
+        assert_eq!(split("hermes://h/invite/x"), ("hermes://h/invite/x", None));
+        assert_eq!(split(""), ("", None));
+        assert_eq!(split("hermes://h\tabc"), ("hermes://h", Some("abc")));
+        assert_eq!(split("\tabc"), ("", Some("abc")));
+        assert_eq!(split("link\t"), ("link", None));
+    }
 
     #[test]
     fn only_one_client_holds_the_lock() {

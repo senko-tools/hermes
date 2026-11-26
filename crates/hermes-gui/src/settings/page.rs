@@ -223,6 +223,13 @@ impl Shell {
                 0.05,
                 self.config.general.scroll_speed as f32,
             ),
+            (
+                SliderKind::HintDelay,
+                0.,
+                2000.,
+                50.,
+                (self.config.general.hint_scroll_delay_ms as f32).clamp(0., 2000.),
+            ),
         ];
         let mut sliders = Vec::new();
         for (kind, min, max, step, value) in table {
@@ -553,6 +560,7 @@ impl Shell {
             SliderKind::SoundsVolume => voice.sounds_volume = rounded(value) as _,
             SliderKind::MediaVolume => voice.media_volume = rounded(value) as _,
             SliderKind::ScrollSpeed => self.config.general.scroll_speed = rounded(value) as _,
+            SliderKind::HintDelay => self.config.general.hint_scroll_delay_ms = value as u32,
         }
         cx.notify();
     }
@@ -582,6 +590,10 @@ impl Shell {
             SliderKind::MediaVolume => {
                 let volume = (self.config.voice.media_volume * 1000.0).round() / 1000.0;
                 self.set_config(|c| c.voice.media_volume = volume, cx);
+            }
+            SliderKind::HintDelay => {
+                let ms = self.config.general.hint_scroll_delay_ms;
+                self.set_config(|c| c.general.hint_scroll_delay_ms = ms, cx);
             }
             SliderKind::ScrollSpeed => {
                 let speed = (self.config.general.scroll_speed * 100.0).round() / 100.0;

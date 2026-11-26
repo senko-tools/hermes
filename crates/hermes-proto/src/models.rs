@@ -133,6 +133,8 @@ pub struct Member {
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
     Text,
+    /// A voice room. It has no text chat: servers refuse new messages and edits in it (messages
+    /// written there before stay stored).
     Voice,
     Category,
     Dm,
@@ -144,7 +146,8 @@ pub enum ChannelKind {
 }
 
 impl ChannelKind {
-    /// Whether the channel holds messages (voice channels have a text chat too).
+    /// Whether the channel can hold messages. Voice channels are included because older servers
+    /// stored messages in them; only text channels and DMs take new ones.
     pub const fn has_messages(self) -> bool {
         !matches!(self, ChannelKind::Category | ChannelKind::Unknown)
     }

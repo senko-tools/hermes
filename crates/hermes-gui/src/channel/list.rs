@@ -287,33 +287,13 @@ impl Shell {
         if view.list.is_scrolled_to_end() == Some(false) {
             return;
         }
+        // The store's lock goes before marking, which takes it again.
         let last = {
             let store = self.core.store();
-            let Some(s) = store.instance(&inst) else {
-                return;
-            };
-            let Some(window) = s.window(channel) else {
-                return;
-            };
-            if !window.reached_end {
-                return;
-            }
-            let Some(last) = window
-                .messages
-                .iter()
-                .rev()
-                .find(|m| !m.deleted)
-                .map(|m| m.id)
-            else {
-                return;
-            };
-            if s.read_states
-                .get(&channel)
-                .is_some_and(|r| r.last_read_id >= last)
-            {
-                return;
-            }
-            last
+            store.instance(&inst).and_then(|s| s.read_up_to(channel))
+        };
+        let Some(last) = last else {
+            return;
         };
         self.core.mark_read(&inst, channel, last);
     }

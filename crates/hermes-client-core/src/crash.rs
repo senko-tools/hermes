@@ -1,7 +1,7 @@
 //! Crash logs (PLAN.md section 20, Phase 8): a panic writes `crash-YYYY-MM-DD-HHMMSS.log` (local
 //! time) with the message, where it happened and a backtrace into the logs folder, so users can
 //! attach it to a bug report. The previous panic hook still runs (it restores the terminal in
-//! the TUI). They are deleted after 30 days (see [`crate::logs`]).
+//! the TUI). They are deleted after 3 days (see [`crate::logs`]).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

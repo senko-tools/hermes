@@ -176,7 +176,7 @@ impl Shell {
             .items_center()
             .gap(px(16.))
             .py(px(14.))
-            .child(self.avatar(inst, Some(&me.user), &name, 64.))
+            .child(self.avatar(inst, Some(&me.user), 64.))
             .child(
                 div()
                     .flex()

@@ -1,6 +1,8 @@
 //! Desktop integration (PLAN.md section 15.7): notifications, the tray icon, taskbar flashing and
 //! closing to the tray.
 
+#[cfg(target_os = "linux")]
+mod idle;
 pub mod taskbar;
 pub mod tray;
 pub mod window;
@@ -13,6 +15,18 @@ use hermes_client_core::{InstanceId, Store};
 
 /// Longest preview shown in a toast.
 const PREVIEW_CHARS: usize = 200;
+
+/// The app's id on Linux: the windows' Wayland app id and X11 class, and the name of the desktop
+/// file and icons that `linux/install.sh` installs, through which the desktop finds the icon.
+/// Windows does not use it.
+pub const APP_ID: &str = "tools.senko.Hermes";
+
+/// Linux: the windows are Wayland ones (gpui picks Wayland whenever `WAYLAND_DISPLAY` is set),
+/// else X11. Decides how keys, screens and idle time are read.
+#[cfg(target_os = "linux")]
+pub fn wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
+}
 
 /// Title and body of a toast: `Alice in #general` / the message, or just `Alice` for a DM.
 pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String) {
@@ -39,23 +53,28 @@ pub fn toast_text(n: &Notification, settings: &Notifications) -> (String, String
     (title, body)
 }
 
-/// A number that changes whenever the user touches the mouse or keyboard; `None` where the system
-/// does not say.
+/// How long the user has not touched the mouse or keyboard; `None` where the system does not say.
 #[cfg(windows)]
-pub fn last_input() -> Option<u32> {
+pub fn idle_time() -> Option<std::time::Duration> {
+    use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
     let mut info = LASTINPUTINFO {
         cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
         dwTime: 0,
     };
-    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in.
+    // SAFETY: `info` is a valid LASTINPUTINFO with its size filled in; GetTickCount has no
+    // preconditions.
     #[allow(unsafe_code)]
-    let ok = unsafe { GetLastInputInfo(&mut info) }.as_bool();
-    ok.then_some(info.dwTime)
+    let (ok, now) = unsafe { (GetLastInputInfo(&mut info).as_bool(), GetTickCount()) };
+    // Both are the same 32-bit millisecond tick, which wraps after 49.7 days.
+    ok.then(|| std::time::Duration::from_millis(u64::from(now.wrapping_sub(info.dwTime))))
 }
 
-#[cfg(not(windows))]
-pub fn last_input() -> Option<u32> {
+#[cfg(target_os = "linux")]
+pub use idle::idle_time;
+
+#[cfg(not(any(windows, target_os = "linux")))]
+pub fn idle_time() -> Option<std::time::Duration> {
     None
 }
 
@@ -88,9 +107,72 @@ pub fn set_start_on_login(on: bool) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+/// Starts Hermes when the user signs in, or stops doing so: a desktop file in
+/// `~/.config/autostart`, which every freedesktop desktop (KDE, GNOME, Xfce, …) reads.
+#[cfg(target_os = "linux")]
+pub fn set_start_on_login(on: bool) -> Result<(), String> {
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|d| !d.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config")))
+        .ok_or("the home folder is unknown")?
+        .join("autostart");
+    let file = dir.join(format!("{APP_ID}.desktop"));
+    if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(&file, autostart_entry(&exe)).map_err(|e| e.to_string())
+    } else {
+        match std::fs::remove_file(&file) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.to_string()),
+            _ => Ok(()),
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn set_start_on_login(_on: bool) -> Result<(), String> {
-    Err("starting at sign-in is only available on Windows for now".to_owned())
+    Err("starting at sign-in is only available on Windows and Linux for now".to_owned())
+}
+
+/// `text` with `&`, `<` and `>` escaped, for a freedesktop notification's body.
+#[cfg(any(all(unix, not(target_os = "macos")), test))]
+fn markup_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// The autostart desktop file that runs `exe`.
+#[cfg(any(target_os = "linux", test))]
+fn autostart_entry(exe: &std::path::Path) -> String {
+    format!(
+        "[Desktop Entry]\nType=Application\nName=Hermes\nExec={}\nIcon={APP_ID}\n\
+         X-GNOME-Autostart-enabled=true\n",
+        exec_quote(&exe.to_string_lossy())
+    )
+}
+
+/// `arg` quoted for a desktop file's `Exec` key (desktop entry spec, "The Exec key"): inside
+/// double quotes, `"`, `` ` ``, `$` and `\` get a backslash, and since the file's own string
+/// escapes are undone first, that backslash is itself written twice (`$` is `\\$`, `\` is
+/// `\\\\`). `%` is doubled: it starts a field code.
+#[cfg(any(target_os = "linux", test))]
+fn exec_quote(arg: &str) -> String {
+    let mut out = String::from("\"");
+    for c in arg.chars() {
+        match c {
+            '"' | '`' | '$' => {
+                out.push_str("\\\\");
+                out.push(c);
+            }
+            '\\' => out.push_str("\\\\\\\\"),
+            '%' => out.push_str("%%"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Whether a notification flashes the taskbar: DMs and mentions only.
@@ -139,11 +221,21 @@ pub async fn show_toast(
     settings: Notifications,
 ) -> Option<(InstanceId, Id)> {
     let (title, body) = toast_text(&n, &settings);
+    // Freedesktop servers read the body as simple markup: `a < b` or `R&D` would be cut or lost.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let body = markup_escape(&body);
     let channel = n.channel_id;
     tokio::task::spawn_blocking(move || {
         let mut toast = notify_rust::Notification::new();
         // No sound name: the toast stays silent, and the app plays its own soft ping instead.
         toast.summary(&title).body(&body).appname("Hermes");
+        // Freedesktop servers report a click on the toast as its "default" action, and find the
+        // icon through the desktop file.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        toast
+            .action("default", "Open")
+            .icon(APP_ID)
+            .hint(notify_rust::Hint::DesktopEntry(APP_ID.to_owned()));
         let handle = match toast.show() {
             Ok(handle) => handle,
             Err(err) => {
@@ -151,7 +243,7 @@ pub async fn show_toast(
                 return None;
             }
         };
-        // Clicks come back while the app runs on Windows; elsewhere the toast only shows.
+        // Clicks come back while the app runs on Windows and Linux; elsewhere the toast only shows.
         #[cfg(windows)]
         {
             let mut clicked = false;
@@ -160,7 +252,14 @@ pub async fn show_toast(
             });
             clicked.then_some((inst, channel))
         }
-        #[cfg(not(windows))]
+        // Returns when the toast is clicked, dismissed or expires.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let mut clicked = false;
+            handle.wait_for_action(|action| clicked = action == "default");
+            clicked.then_some((inst, channel))
+        }
+        #[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
         {
             drop(handle);
             let _ = (inst, channel);
@@ -192,6 +291,28 @@ pub fn on_close(close_to_tray: bool, tray_available: bool) -> CloseAction {
 mod tests {
     use super::*;
     use hermes_client_core::testing::fixtures;
+
+    #[test]
+    fn autostart_runs_the_program_with_its_path_quoted() {
+        let entry = autostart_entry(std::path::Path::new("/home/me/My Apps/hermes"));
+        assert!(entry.starts_with("[Desktop Entry]\n"), "{entry}");
+        assert!(
+            entry.contains("\nExec=\"/home/me/My Apps/hermes\"\n"),
+            "{entry}"
+        );
+        assert!(entry.contains("\nIcon=tools.senko.Hermes\n"), "{entry}");
+        assert_eq!(exec_quote("a$b\"c`d"), r#""a\\$b\\"c\\`d""#);
+        assert_eq!(exec_quote(r"a\b"), r#""a\\\\b""#);
+        assert_eq!(exec_quote("100%"), "\"100%%\"");
+    }
+
+    #[test]
+    fn toast_bodies_keep_angle_brackets_and_ampersands() {
+        assert_eq!(
+            markup_escape("a < b & <b>c</b>"),
+            "a &lt; b &amp; &lt;b&gt;c&lt;/b&gt;"
+        );
+    }
 
     fn notification(space: Option<u64>, title: &str, preview: &str, mention: bool) -> Notification {
         Notification {

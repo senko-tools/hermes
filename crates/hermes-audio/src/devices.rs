@@ -28,9 +28,55 @@ pub fn device_name(d: &Device) -> String {
         .unwrap_or_else(|_| "<unknown>".to_string())
 }
 
+/// The audio system: on Linux PulseAudio's protocol (PulseAudio itself, or PipeWire's server)
+/// when one listens, else ALSA; elsewhere the platform's own.
+fn host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    {
+        static COOKIE: std::sync::Once = std::sync::Once::new();
+        COOKIE.call_once(pulse_cookie);
+    }
+    cpal::default_host()
+}
+
+/// PulseAudio clients authenticate with a 256-byte cookie, which libpulse makes on first use
+/// (`~/.config/pulse/cookie`). The pure-Rust client cpal uses sends an empty one when the file is
+/// missing, which the server refuses: make the file as libpulse would.
+#[cfg(target_os = "linux")]
+fn pulse_cookie() {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    if std::env::var_os("PULSE_COOKIE").is_some() {
+        return;
+    }
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        return;
+    };
+    let path = home.join(".config/pulse/cookie");
+    if path.exists() || home.join(".pulse-cookie").exists() {
+        return;
+    }
+    let mut cookie = [0u8; 256];
+    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut cookie));
+    if random.is_err() {
+        return;
+    }
+    let _ = path.parent().map(std::fs::create_dir_all);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &cookie));
+    if written.is_ok() {
+        tracing::info!("made the PulseAudio cookie {}", path.display());
+    }
+}
+
 /// Every input and output device of the default host.
 pub fn list() -> AudioDevices {
-    let host = cpal::default_host();
+    let host = host();
     let names = |devices: Result<_, _>| -> Vec<String> {
         match devices {
             Ok(devices) => {
@@ -51,7 +97,7 @@ pub fn list() -> AudioDevices {
 /// `name` (`None` or `"default"` = the default device) for input or output. `Err` if there is
 /// no such device.
 pub fn find(name: Option<&str>, input: bool) -> Result<Device, String> {
-    let host = cpal::default_host();
+    let host = host();
     let kind = if input { "input" } else { "output" };
     let wanted = name.filter(|n| !n.is_empty() && *n != "default");
     let Some(wanted) = wanted else {
@@ -152,11 +198,29 @@ macro_rules! dispatch {
     };
 }
 
+/// PulseAudio (on Linux, also PipeWire's PulseAudio server) buffers about two seconds when left
+/// to choose, far too much for a call: ask for 10 ms periods instead. Other hosts keep their
+/// default, which is already short.
+fn low_latency(device: &Device, config: StreamConfig) -> StreamConfig {
+    #[cfg(target_os = "linux")]
+    if matches!(
+        device.as_inner(),
+        cpal::platform::DeviceInner::PulseAudio(_)
+    ) {
+        return StreamConfig {
+            buffer_size: cpal::BufferSize::Fixed(config.sample_rate / 100),
+            ..config
+        };
+    }
+    let _ = device;
+    config
+}
+
 pub fn open_input(device: &Device) -> Result<Input, String> {
     let supported = device
         .default_input_config()
         .map_err(|e| format!("input device has no usable format: {e}"))?;
-    let config: StreamConfig = supported.config();
+    let config = low_latency(device, supported.config());
     let rate = supported.sample_rate();
     let channels = usize::from(supported.channels());
     // Half a second of headroom between the callback and the worker.
@@ -201,7 +265,7 @@ pub fn open_output(device: &Device) -> Result<Output, String> {
     let supported = device
         .default_output_config()
         .map_err(|e| format!("output device has no usable format: {e}"))?;
-    let config: StreamConfig = supported.config();
+    let config = low_latency(device, supported.config());
     let rate = supported.sample_rate();
     // Stereo, interleaved: half a second.
     let (mut ring, cons) = HeapRb::<f32>::new(rate as usize).split();

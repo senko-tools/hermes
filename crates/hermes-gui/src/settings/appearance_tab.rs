@@ -224,6 +224,14 @@ impl Shell {
                         shape,
                     ),
                 ),
+                setting_fit(
+                    "Description scroll delay",
+                    &format!(
+                        "{} ms before a long description moves",
+                        config.general.hint_scroll_delay_ms
+                    ),
+                    sized(220., self.slider(page, SliderKind::HintDelay)),
+                ),
                 self.more(
                     "appearance-layout",
                     "More layout options",

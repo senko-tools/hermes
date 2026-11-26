@@ -26,6 +26,11 @@ pub const USERS: &str = "account-multiple";
 pub const REPLY: &str = "reply";
 pub const PENCIL: &str = "pencil";
 pub const CLOSE: &str = "close";
+/// Hermes' own title bar (`csd`), where the desktop draws none.
+pub const WINDOW_MINIMIZE: &str = "window-minimize";
+pub const WINDOW_MAXIMIZE: &str = "window-maximize";
+pub const WINDOW_RESTORE: &str = "window-restore";
+pub const WINDOW_CLOSE: &str = "window-close";
 pub const CHEVRON_DOWN: &str = "chevron-down";
 /// The handle on a row being dragged.
 pub const DRAG: &str = "dots-vertical";
@@ -48,6 +53,10 @@ pub const ACCOUNT: &str = "account-circle";
 pub const INFO: &str = "information-outline";
 pub const LOCK: &str = "lock";
 pub const LOCK_OPEN: &str = "lock-open";
+/// The default avatar: a head and shoulders, drawn in the theme's colours.
+pub const SILHOUETTE: &str = "avatar-silhouette";
+/// The same inside the squircle shape (gpui clips only to rectangles, so each SVG cuts its own).
+pub const SILHOUETTE_SQUIRCLE: &str = "avatar-silhouette-squircle";
 pub const KEYBOARD: &str = "keyboard";
 pub const PALETTE: &str = "palette";
 pub const SERVER: &str = "server";

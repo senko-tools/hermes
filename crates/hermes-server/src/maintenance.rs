@@ -80,6 +80,10 @@ async fn retention(state: &AppState, now: i64) -> Result<(), sqlx::Error> {
         )
         .await?;
     }
+    if privacy.message_retention_days > 0 || privacy.deleted_message_retention_days > 0 {
+        let changed = crate::db::messages::refresh_stale_last_message_ids(&state.db.write).await?;
+        crate::messages::publish_last_messages(state, &changed);
+    }
     if privacy.audit_retention_days > 0 {
         batched(
             "DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log WHERE id < ? LIMIT ?)",

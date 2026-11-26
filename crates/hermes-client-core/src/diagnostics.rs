@@ -365,11 +365,7 @@ impl Core {
             return Check::new(NAME, Level::Warning, "Settings are kept in memory only");
         };
         let mut failed = Vec::new();
-        for dir in [
-            paths.dir.clone(),
-            paths.dir.join("e2ee"),
-            paths.dir.join("logs"),
-        ] {
+        for dir in [paths.dir.clone(), paths.dir.join("e2ee"), paths.logs()] {
             if dir.exists()
                 && let Err(e) = writable(&dir)
             {

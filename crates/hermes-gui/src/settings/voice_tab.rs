@@ -143,11 +143,7 @@ impl Shell {
         if ptt_mode {
             rows.push(setting_fit(
                 "Push-to-talk key",
-                if cfg!(windows) {
-                    "e.g. Mouse4, F13, Ctrl+Space. Enter saves."
-                } else {
-                    "Only while Hermes is focused. Enter saves."
-                },
+                &crate::ptt::hint(&v.ptt_key),
                 sized(SLIDER_W, Input::new(&page.ptt_key)),
             ));
             rows.push(setting_fit(

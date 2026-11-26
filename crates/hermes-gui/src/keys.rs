@@ -62,7 +62,10 @@ impl Shell {
             return;
         }
         // Typing goes to a focused text field; only combos with Ctrl, Alt or Super count there.
-        let typing = window.focused(cx).is_some();
+        // The root's own focus (Linux, `Shell::root_focus`) is not a text field.
+        let typing = window
+            .focused(cx)
+            .is_some_and(|focus| focus != self.root_focus);
         if typing && !(m.control || m.alt || m.platform) {
             return;
         }

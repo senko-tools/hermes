@@ -1,5 +1,8 @@
 //! Drawing a message: its row, author, reactions and the reaction palette.
 
+use hermes_client_core::proto::e2ee::MessageLock;
+
+use super::scramble;
 use super::*;
 
 impl Shell {
@@ -168,13 +171,28 @@ impl Shell {
             self.utc_offset,
         );
         let compact = self.config.buffer.compact;
+        // Not readable on this device (yet): a stand-in that says nothing about who wrote what.
+        let hidden = msg.lock == MessageLock::NotForThisDevice;
+        let (now, still) = (now_ms().max(0) as u64, cx.reduce_motion());
+        if hidden {
+            self.scramble_drawn.set(true);
+        }
         let mut body: Vec<AnyElement> = Vec::new();
         // Compact: what goes before the text on its first line, and the time in front of it.
         let mut head_line: Vec<AnyElement> = Vec::new();
         let mut compact_time: Option<AnyElement> = None;
         if let Some(reply) = &m.reply {
             let loaded = s.window(channel).and_then(|w| w.get(reply.id));
-            let excerpt = reply_text(loaded, &reply.excerpt);
+            let reply_hidden =
+                hidden || loaded.is_some_and(|l| l.lock == MessageLock::NotForThisDevice);
+            let (reply_author, excerpt) = if reply_hidden {
+                (
+                    scramble::name(reply.id.0, now, still),
+                    scramble::text(reply.id.0, now, still),
+                )
+            } else {
+                (reply.author.clone(), reply_text(loaded, &reply.excerpt))
+            };
             let (jump_inst, reply_id) = (inst.clone(), reply.id);
             body.push(
                 div()
@@ -192,7 +210,8 @@ impl Shell {
                         div()
                             .text_color(theme::text_secondary())
                             .font_weight(FontWeight::MEDIUM)
-                            .child(reply.author.clone()),
+                            .when(reply_hidden, |d| d.font_family(theme::mono_font()))
+                            .child(reply_author),
                     )
                     .child({
                         let part = Part {
@@ -232,22 +251,33 @@ impl Shell {
                 time_text.clone(),
                 vec![],
             );
-            let author = self.author_menu(
+            let author = if hidden {
                 div()
-                    .id(SharedString::from(format!("author-{id}")))
-                    .relative()
-                    .cursor_pointer()
                     .text_size(theme::body_size())
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(color)
-                    .hover(|d| d.underline())
-                    .child(name)
-                    .child(name_record),
-                inst,
-                space,
-                msg.author.id,
-                cx,
-            );
+                    .font_family(theme::mono_font())
+                    .text_color(theme::text_secondary())
+                    .child(scramble::name(id.0, now, still))
+                    .into_any_element()
+            } else {
+                self.author_menu(
+                    div()
+                        .id(SharedString::from(format!("author-{id}")))
+                        .relative()
+                        .cursor_pointer()
+                        .text_size(theme::body_size())
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(color)
+                        .hover(|d| d.underline())
+                        .child(name)
+                        .child(name_record),
+                    inst,
+                    space,
+                    msg.author.id,
+                    cx,
+                )
+                .into_any_element()
+            };
             // Under the pointer its time says the whole date, and when it was edited. An edited
             // message says so beside it (compact rows: after the text, see `edited_after_text`).
             let time_tip = time_tip(msg, self.utc_offset);
@@ -268,14 +298,29 @@ impl Shell {
                 msg.lock,
                 s.channel_encrypted(channel)
                     && msg.kind == hermes_client_core::proto::models::MessageKind::Default,
-            );
+            )
+            .map(|mark| {
+                if hidden {
+                    // Why it cannot be read, under the pointer.
+                    let why = SharedString::from(msg.content.clone());
+                    mark.id(SharedString::from(format!("lock-{id}")))
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(why.clone())
+                                .build(window, cx)
+                        })
+                        .into_any_element()
+                } else {
+                    mark.into_any_element()
+                }
+            });
             if compact {
                 // Time, small picture, name and text on one line.
                 if self.config.buffer.show_avatars {
-                    let name = s.display_name(space, msg.author.id);
-                    let user = s.user(msg.author.id).unwrap_or(&msg.author);
-                    let avatar = self.avatar(inst, Some(user), &name, COMPACT_AVATAR);
-                    head_line.push(
+                    head_line.push(if hidden {
+                        self.avatar(inst, None, COMPACT_AVATAR)
+                    } else {
+                        let user = s.user(msg.author.id).unwrap_or(&msg.author);
+                        let avatar = self.avatar(inst, Some(user), COMPACT_AVATAR);
                         self.author_menu(
                             div()
                                 .id(SharedString::from(format!("avatar-{id}")))
@@ -286,11 +331,11 @@ impl Shell {
                             msg.author.id,
                             cx,
                         )
-                        .into_any_element(),
-                    );
+                        .into_any_element()
+                    });
                 }
-                head_line.push(author.into_any_element());
-                head_line.extend(lock.map(IntoElement::into_any_element));
+                head_line.push(author);
+                head_line.extend(lock);
                 compact_time = Some(time.into_any_element());
             } else {
                 body.push(
@@ -319,7 +364,16 @@ impl Shell {
         let system = m.system;
         let mark_after_text = edited_after_text(msg, m, compact);
         let mut texts: Vec<AnyElement> = Vec::new();
-        for (i, block) in blocks.iter().cloned().enumerate() {
+        if hidden {
+            texts.push(
+                div()
+                    .font_family(theme::mono_font())
+                    .text_color(theme::text_tertiary())
+                    .child(scramble::text(id.0, now, still))
+                    .into_any_element(),
+            );
+        }
+        for (i, block) in blocks.iter().cloned().enumerate().filter(|_| !hidden) {
             let edited = i == last && mark_after_text;
             texts
                 .push(self.render_block(block, inst, channel, id, i, system, revealed, edited, cx));
@@ -359,6 +413,7 @@ impl Shell {
             );
         }
         if !s.blocked.contains(&msg.author.id)
+            && !hidden
             && let Some(card) = self.render_link_card(&msg.content, cx)
         {
             body.push(
@@ -380,7 +435,8 @@ impl Shell {
             }
             !seen.messages.insert(id)
         };
-        if !msg.reactions.is_empty() {
+        // An unreadable message's reactions are sealed with its key: none to show.
+        if !msg.reactions.is_empty() && !hidden {
             let chips = msg.reactions.iter().enumerate().map(|(n, r)| {
                 let fresh_chip = self
                     .reactions_seen
@@ -457,11 +513,12 @@ impl Shell {
 
         let gutter: AnyElement = if compact {
             compact_time_slot(&time_text, compact_time)
+        } else if !m.grouped && self.config.buffer.show_avatars && hidden {
+            self.avatar(inst, None, theme::AVATAR)
         } else if !m.grouped && self.config.buffer.show_avatars {
             // The user's current picture (the message keeps the one from when it was sent).
-            let name = s.display_name(space, msg.author.id);
             let user = s.user(msg.author.id).unwrap_or(&msg.author);
-            let avatar = self.avatar(inst, Some(user), &name, theme::AVATAR);
+            let avatar = self.avatar(inst, Some(user), theme::AVATAR);
             self.author_menu(
                 div()
                     .id(SharedString::from(format!("avatar-{id}")))

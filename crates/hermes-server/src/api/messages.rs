@@ -62,6 +62,15 @@ fn target(cache: &Cache, channel_id: Id, user_id: Id, perm: Permissions) -> ApiR
     })
 }
 
+/// Voice channels have no text chat (#85): new messages and edits there are refused, so
+/// older clients cannot keep posting. Messages written before stay in the database.
+fn no_voice_text(kind: ChannelKind) -> ApiResult<()> {
+    if kind == ChannelKind::Voice {
+        return Err(Error::bad_request("Voice channels have no text chat"));
+    }
+    Ok(())
+}
+
 /// A message of the channel that is not deleted; `NOT_FOUND` otherwise. Handlers that change the
 /// message check it with their write transaction, so a concurrent delete cannot slip in between
 /// (the write pool has a single connection): otherwise an edit could restore a deleted message's
@@ -306,6 +315,7 @@ pub async fn send(
     let (resolved, slowmode, kind) = {
         let cache = state.cache();
         let t = target(&cache, channel_id, auth.user_id, Permissions::SEND_MESSAGES)?;
+        no_voice_text(t.kind)?;
         check_encryption(&state, t.kind, e2ee.as_ref())?;
         if !attachment_ids.is_empty() {
             t.require(Permissions::ATTACH_FILES)?;
@@ -446,6 +456,7 @@ pub async fn edit(
         auth.user_id,
         Permissions::SEND_MESSAGES,
     )?;
+    no_voice_text(t.kind)?;
     check_encryption(&state, t.kind, e2ee.as_ref())?;
     check_epoch(&state, channel_id, t.kind, req.e2ee.as_ref()).await?;
     let mut tx = checking_tx(&state).await?;
@@ -498,6 +509,7 @@ pub async fn delete(
     }
     let stored = db::attachments::stored_of_message(&mut *tx, message_id).await?;
     db::messages::soft_delete(&mut tx, message_id).await?;
+    let last = db::messages::refresh_last_message_ids(&mut tx, &[channel_id]).await?;
     if let Some(space_id) = t.space_id.filter(|_| !own) {
         audit::record(
             &mut tx,
@@ -519,6 +531,7 @@ pub async fn delete(
         },
         Audience::Channel(channel_id),
     );
+    messages::publish_last_messages(&state, &last);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -552,8 +565,10 @@ pub async fn remove_attachment(
     // An encrypted message is marked edited only by a new envelope from its author: one marked
     // edited here would read as an old envelope replayed.
     let now = now_ms();
+    let mut last = Vec::new();
     if empty {
         db::messages::soft_delete(&mut tx, message_id).await?;
+        last = db::messages::refresh_last_message_ids(&mut tx, &[channel_id]).await?;
     } else if row.e2ee.is_none() {
         db::messages::touch_edited(&mut tx, message_id, now).await?;
         row.edited_at = Some(now);
@@ -584,6 +599,7 @@ pub async fn remove_attachment(
             },
             Audience::Channel(channel_id),
         );
+        messages::publish_last_messages(&state, &last);
         return Ok(Json(RemoveAttachmentResponse { message: None }));
     }
     let message = one_to_wire(&state, row, auth.user_id).await?;
@@ -636,6 +652,11 @@ pub async fn bulk_delete(
     let author = (!moderator).then_some(auth.user_id);
     let mut tx = state.db.write.begin().await?;
     let mut ids = db::messages::soft_delete_many(&mut tx, channel_id, &req.ids, author).await?;
+    let last = if ids.is_empty() {
+        Vec::new()
+    } else {
+        db::messages::refresh_last_message_ids(&mut tx, &[channel_id]).await?
+    };
     if let (Some(space_id), true) = (t.space_id, moderator && !ids.is_empty()) {
         audit::record(
             &mut tx,
@@ -657,6 +678,7 @@ pub async fn bulk_delete(
             Audience::Channel(channel_id),
         );
     }
+    messages::publish_last_messages(&state, &last);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -128,6 +128,9 @@ fn write_report(
 
     let dump_line = match dump {
         Ok(Some(path)) => format!("minidump: {}", path.display()),
+        Ok(None) if cfg!(target_os = "linux") => {
+            "minidump: none on Linux; the threads are listed below".to_owned()
+        }
         Ok(None) => "minidump: not available on this system".to_owned(),
         Err(err) => format!("minidump: could not be written: {err}"),
     };
@@ -141,7 +144,7 @@ fn write_report(
         std::env::consts::OS,
         std::env::consts::ARCH,
         time::format(now, "%Y-%m-%d %H:%M:%S", offset),
-    );
+    ) + &threads();
     let path = logs::report_path(dir, "freeze", "log", now, offset);
     match std::fs::write(&path, text) {
         Ok(()) => tracing::error!(
@@ -190,6 +193,49 @@ fn write_dump(path: &Path) -> std::io::Result<Option<PathBuf>> {
 #[cfg(not(windows))]
 fn write_dump(_path: &Path) -> std::io::Result<Option<PathBuf>> {
     Ok(None)
+}
+
+/// Linux, in place of a minidump: every thread's name, state and the kernel function it waits
+/// in (`wchan`), which shows a UI thread stuck on a lock, a pipe or the GPU.
+#[cfg(target_os = "linux")]
+fn threads() -> String {
+    let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        return String::new();
+    };
+    let mut lines: Vec<String> = tasks
+        .flatten()
+        .map(|task| {
+            let dir = task.path();
+            let read = |name: &str| {
+                std::fs::read_to_string(dir.join(name))
+                    .map(|s| s.trim().to_owned())
+                    .unwrap_or_default()
+            };
+            // `stat` is "tid (name) S ...": the state follows the name's closing parenthesis.
+            let stat = read("stat");
+            let state = stat
+                .rfind(')')
+                .and_then(|i| stat[i + 1..].split_whitespace().next())
+                .unwrap_or("?")
+                .to_owned();
+            format!(
+                "{:>7} {:<24} {state} {}",
+                task.file_name().to_string_lossy(),
+                read("comm"),
+                read("wchan")
+            )
+        })
+        .collect();
+    lines.sort();
+    format!(
+        "\nthreads (id, name, state, waiting in):\n{}\n",
+        lines.join("\n")
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn threads() -> String {
+    String::new()
 }
 
 #[cfg(test)]

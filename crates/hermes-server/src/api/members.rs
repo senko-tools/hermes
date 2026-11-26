@@ -389,6 +389,10 @@ pub async fn ban(
     } else {
         Vec::new()
     };
+    let mut touched: Vec<Id> = deleted.iter().map(|&(_, channel)| channel).collect();
+    touched.sort();
+    touched.dedup();
+    let last = db::messages::refresh_last_message_ids(&mut tx, &touched).await?;
     audit::record(
         &mut tx,
         &state,
@@ -419,6 +423,7 @@ pub async fn ban(
             Audience::Channel(channel_id),
         );
     }
+    crate::messages::publish_last_messages(&state, &last);
     Ok(StatusCode::NO_CONTENT)
 }
 

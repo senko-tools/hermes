@@ -335,6 +335,8 @@ pub async fn delete(
         }
         db::messages::clear_deleted_extras_of(&mut tx, &all).await?;
     }
+    let touched: Vec<Id> = by_channel.keys().copied().collect();
+    let last = db::messages::refresh_last_message_ids(&mut tx, &touched).await?;
     tx.commit().await?;
 
     let user = {
@@ -374,6 +376,7 @@ pub async fn delete(
             Audience::Channel(channel_id),
         );
     }
+    crate::messages::publish_last_messages(&state, &last);
     if let Some(user) = user {
         let audience = state.cache().profile_audience(auth.user_id);
         state.publish(

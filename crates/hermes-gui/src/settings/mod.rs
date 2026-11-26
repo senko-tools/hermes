@@ -21,7 +21,9 @@ use hermes_client_core::{InstanceId, time};
 use crate::assets::{self, icon};
 use crate::keybinds::{ACTIONS, KeyAction, Keybinds};
 use crate::results::Remote;
-use crate::screen::capture::{FRAME_RATES, PREFERENCES, Preference, ShareResolution};
+use crate::screen::capture::{
+    FRAME_RATES, PREFERENCES, Preference, ShareResolution, UPLOAD_LIMITS,
+};
 use crate::shell::Shell;
 use crate::theme::{self, Theme, px};
 
@@ -139,6 +141,7 @@ enum SliderKind {
     SoundsVolume,
     MediaVolume,
     ScrollSpeed,
+    HintDelay,
 }
 
 /// How often the level meter can redraw the window at most. Every frame redraws the whole window,
@@ -197,6 +200,7 @@ mod about_tab;
 mod account_tab;
 mod appearance_tab;
 mod chat_tab;
+mod hint;
 mod notifications_tab;
 mod page;
 mod privacy_tab;
@@ -343,13 +347,13 @@ impl Shell {
                 "Time",
                 &b.timestamp_format,
                 &page.time_format,
-                "%H hours, %M minutes, %I and %p for 12 hours. Enter saves.",
+                "%H hours, %M minutes, %I and %p for 12 hours.",
             ),
             Pattern::Date => (
                 "Date on day lines",
                 &b.date_format,
                 &page.date_format,
-                "%e day, %B month, %A weekday, %Y year. Enter saves.",
+                "%e day, %B month, %A weekday, %Y year.",
             ),
         };
         let presets: Vec<(String, String)> = match which {
@@ -390,7 +394,23 @@ impl Shell {
                 .gap(px(8.))
                 .child(Input::new(input))
                 .child(chips)
-                .child(muted(help)),
+                .child(
+                    // The text wraps in its column; "Codes" stays after its last line.
+                    div()
+                        .flex()
+                        .items_end()
+                        .gap_x(px(6.))
+                        .text_size(theme::secondary_size())
+                        .text_color(theme::text_tertiary())
+                        .child(div().min_w_0().child(format!("{help} Enter saves.")))
+                        .child(
+                            crate::ui::text_link(
+                                SharedString::from(format!("{name}-codes")),
+                                "Codes",
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.open_time_codes(cx))),
+                        ),
+                ),
         )
     }
 
@@ -793,10 +813,6 @@ fn group_column(header: gpui_kit::Div, card: Option<AnyElement>) -> AnyElement {
         .into_any_element()
 }
 
-/// How long a hint may be and still show in full under its setting; a longer one shows its
-/// start and the rest in the (i) next to the name.
-const HINT_CHARS: usize = 72;
-
 /// Where a row's control goes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
@@ -808,7 +824,7 @@ enum Place {
 
 /// A row: the name and a one-line hint on the left, the control on the right at its own width:
 /// a switch, a few choices, or a dropdown or slider given a width that fits what it holds
-/// ([`sized`]). A hint too long for one line puts all of it in the (i) beside the name.
+/// ([`sized`]). A hint too long for its line scrolls while the pointer rests on it ([`hint`]).
 pub fn setting_fit(name: &str, hint: &str, control: impl IntoElement) -> AnyElement {
     setting_at(Place::Fit, name, hint, control)
 }
@@ -933,24 +949,6 @@ fn setting_at_with(
             r.row(name, hint, None);
         }
     });
-    // Just found by the search: it glows and fades back.
-    let lit = LIT.with(|l| {
-        l.borrow()
-            .as_ref()
-            .is_some_and(|(found, at)| found == name && at.elapsed() < LIT_FOR)
-    });
-    let long = hint.chars().count() > HINT_CHARS;
-    let full_hint = SharedString::from(hint.to_owned());
-    let info = long.then(|| {
-        let tip = full_hint.clone();
-        div()
-            .id(SharedString::from(format!("hint-{name}")))
-            .flex_shrink_0()
-            .child(icon(assets::INFO, 14., theme::text_tertiary()))
-            .tooltip(move |window, cx| {
-                gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
-            })
-    });
     let text = div()
         .flex()
         .flex_col()
@@ -961,17 +959,10 @@ fn setting_at_with(
                 .items_center()
                 .gap(px(6.))
                 .text_size(theme::body_size())
-                .child(SharedString::from(name.to_owned()))
-                .children(info),
+                .child(SharedString::from(name.to_owned())),
         )
         .when(!hint.is_empty(), |d| {
-            d.child(
-                div()
-                    .text_size(theme::secondary_size())
-                    .text_color(theme::text_tertiary())
-                    .truncate()
-                    .child(full_hint),
-            )
+            d.child(hint::hint_line(name, SharedString::from(hint.to_owned())))
         });
     let row = match place {
         Place::Below => div()
@@ -1017,6 +1008,36 @@ fn setting_at_with(
             .child(div().w_full().child(below)),
         None => row,
     };
+    glow_if_found(name, row)
+}
+
+/// Notes a setting drawn without a row of its own (the switches under About's version) for
+/// the search, in the group named `group`; draws nothing. Call it before that group's
+/// [`group`] would be, or on its own for a group that has no card.
+pub fn note_setting(name: &str, hint: &str) {
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.row(name, hint, None);
+        }
+    });
+}
+
+/// Ends a group noted with [`note_setting`] that is drawn without [`group`]'s title and card.
+pub fn note_group(title: &str) {
+    RECORDING.with(|r| {
+        if let Some(r) = r.borrow_mut().as_mut() {
+            r.group(title);
+        }
+    });
+}
+
+/// `row`, glowing and fading back when the search just went to the setting `name`.
+pub fn glow_if_found(name: &str, row: gpui_kit::Div) -> AnyElement {
+    let lit = LIT.with(|l| {
+        l.borrow()
+            .as_ref()
+            .is_some_and(|(found, at)| found == name && at.elapsed() < LIT_FOR)
+    });
     if !lit {
         return row.into_any_element();
     }

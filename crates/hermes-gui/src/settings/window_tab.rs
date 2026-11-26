@@ -1,7 +1,7 @@
 //! Window and startup, and screen sharing.
 
 use super::*;
-use crate::ui::{ButtonKind, DropWidth, Segment};
+use crate::ui::{DropWidth, Segment};
 
 const IDLE_AFTER: [(u32, &str); 4] = [(0, "Never"), (5, "5 min"), (10, "10 min"), (30, "30 min")];
 
@@ -39,7 +39,11 @@ impl Shell {
                     self,
                     cx,
                     "Start minimized to the tray",
-                    "",
+                    if crate::desktop::window::can_hide() {
+                        ""
+                    } else {
+                        "Not on this system: here, Hermes opens its window."
+                    },
                     general.start_minimized
                 ),
             ],
@@ -51,7 +55,11 @@ impl Shell {
                     self,
                     cx,
                     "Close to the tray",
-                    "Closing the window keeps Hermes running in the tray.",
+                    if crate::desktop::window::can_hide() {
+                        "Closing the window keeps Hermes running in the tray."
+                    } else {
+                        "Not on this system: here, closing the window quits Hermes."
+                    },
                     general.close_to_tray
                 ),
                 setting_fit(
@@ -77,38 +85,7 @@ impl Shell {
                 ),
             ],
         );
-        note_part("Check for updates now", "", "Check for updates on start");
-        let updates = group_with(
-            "Updates",
-            crate::ui::button(
-                self,
-                "update-now",
-                "Check now",
-                ButtonKind::Secondary,
-                true,
-                |this, _, cx| this.check_for_update_now(cx),
-                cx,
-            )
-            .into_any_element(),
-            vec![
-                flag!(
-                    self,
-                    cx,
-                    "Check for updates on start",
-                    "",
-                    general.check_for_updates
-                ),
-                flag!(
-                    self,
-                    cx,
-                    "Install updates by themselves",
-                    "A newer version found on start is downloaded (only what changed) \
-                     and Hermes restarts into it.",
-                    general.auto_update
-                ),
-            ],
-        );
-        let mut groups = vec![startup, window, updates];
+        let mut groups = vec![startup, window];
         if portable {
             groups.push(group(
                 "Portable",
@@ -116,10 +93,17 @@ impl Shell {
                     self,
                     cx,
                     "Keep sign-ins in this folder",
-                    "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
-                     Windows Credential Manager, so this folder works on another computer. Anyone \
-                     who copies the folder is signed in as you, and on a USB stick the file has no \
-                     protection at all. From the next start.",
+                    if cfg!(windows) {
+                        "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
+                         Windows Credential Manager, so this folder works on another computer. \
+                         Anyone who copies the folder is signed in as you, and on a USB stick the \
+                         file has no protection at all. From the next start."
+                    } else {
+                        "Sign-ins and encryption keys go in tokens.toml next to Hermes instead of \
+                         the system keyring, so this folder works on another computer. Anyone who \
+                         copies the folder is signed in as you, and on a USB stick the file has no \
+                         protection at all. From the next start."
+                    },
                     general.sign_ins_in_folder
                 )],
             ));
@@ -194,6 +178,21 @@ impl Shell {
             },
             cx,
         );
+        let limit = crate::ui::segmented(
+            self,
+            "settings-share-limit",
+            UPLOAD_LIMITS
+                .iter()
+                .map(|&mbps| Segment::new(upload_limit_label(mbps)))
+                .collect(),
+            UPLOAD_LIMITS.iter().position(|m| *m == v.share_max_mbps),
+            true,
+            |this, n, _, cx| {
+                let mbps = UPLOAD_LIMITS[n];
+                this.set_config(|c| c.voice.share_max_mbps = mbps, cx);
+            },
+            cx,
+        );
         let sharing = group(
             "What you share",
             vec![
@@ -205,8 +204,13 @@ impl Shell {
                 ),
                 setting_fit(
                     "Share sound",
-                    "Others hear what your computer plays, but not this call. From your next \
-                    share; needs Windows 10 version 2004 or later.",
+                    if cfg!(windows) {
+                        "Others hear what your computer plays, but not this call. From your next \
+                         share; needs Windows 10 version 2004 or later."
+                    } else {
+                        "Others hear what your computer plays, but not this call. From your next \
+                         share; needs PipeWire."
+                    },
                     {
                         let on = !v.share_sound;
                         crate::ui::switch(
@@ -224,6 +228,12 @@ impl Shell {
                     "What your share keeps when it falls behind.",
                     preference,
                 ),
+                setting_fit(
+                    "Upload limit",
+                    "The most your share sends; everyone watching downloads as much. Lower \
+                     leaves room for games. From your next share.",
+                    limit,
+                ),
             ],
         );
         page_body(
@@ -231,5 +241,14 @@ impl Shell {
             Some("These are also chosen in the share picker each time you share."),
             vec![sharing],
         )
+    }
+}
+
+/// An upload limit's segment: `8 Mbit/s`, or `No limit` for 0.
+fn upload_limit_label(mbps: u32) -> String {
+    if mbps == 0 {
+        "No limit".to_owned()
+    } else {
+        format!("{mbps} Mbit/s")
     }
 }

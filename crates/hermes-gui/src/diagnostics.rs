@@ -3,7 +3,7 @@
 //! and the test cannot be sure) or Not working. The server checks are
 //! `hermes_client_core::diagnostics`; the ones that need devices are here.
 
-use crate::ui::ButtonKind;
+use crate::ui::{ButtonKind, Segment};
 use std::time::Duration;
 
 use gpui_kit::prelude::*;
@@ -15,6 +15,14 @@ use crate::assets::{self, icon};
 use crate::settings::{group, page_body_with};
 use crate::shell::Shell;
 use crate::theme::{self, px};
+
+/// The choices for how long old logs are kept (days, label); see `logs::LOG_DAYS`.
+const LOG_DAYS: [(u32, &str); 4] = [
+    (3, "3 days"),
+    (7, "1 week"),
+    (14, "2 weeks"),
+    (30, "30 days"),
+];
 
 /// How long the microphone is listened to.
 const LISTEN: Duration = Duration::from_secs(3);
@@ -163,14 +171,29 @@ impl Shell {
         Some(if key.is_empty() {
             Check::new(NAME, Level::NotWorking, "No key is set")
                 .hint("Set one in Voice & Audio: nothing goes through without it.")
-        } else if cfg!(windows) {
-            Check::new(NAME, Level::Working, format!("Key: {key}"))
         } else {
-            Check::new(
-                NAME,
-                Level::Warning,
-                format!("Key: {key}, only while Hermes is focused"),
-            )
+            match crate::ptt::reach() {
+                crate::ptt::Reach::Everywhere => {
+                    Check::new(NAME, Level::Working, format!("Key: {key}"))
+                }
+                crate::ptt::Reach::System => {
+                    let bound = crate::ptt::system_trigger().unwrap_or_else(|| key.to_owned());
+                    Check::new(
+                        NAME,
+                        Level::Working,
+                        format!("Key: {bound}, through the desktop"),
+                    )
+                }
+                crate::ptt::Reach::Focused => Check::new(
+                    NAME,
+                    Level::Warning,
+                    format!("Key: {key}, only while Hermes is focused"),
+                )
+                .hint(
+                    "This desktop does not let apps hear keys elsewhere. A desktop with the \
+                     GlobalShortcuts portal (KDE, Hyprland, GNOME 47+) can bind it.",
+                ),
+            }
         })
     }
 
@@ -225,23 +248,45 @@ impl Shell {
             ))
             .into_any_element();
         let developer = self.config.general.developer_mode;
+        let log_days = self.config.general.log_days;
         // The developer switch has nothing to do with the tests: it goes under them.
         let developer_group = group(
             "Developer",
-            vec![crate::settings::setting_fit(
-                "Developer mode",
-                "Menus also offer copying the IDs of servers, channels, messages and people.",
-                crate::ui::switch(
-                    self,
-                    "developer-mode",
-                    developer,
-                    true,
-                    move |this, _, cx| {
-                        this.set_config(|c| c.general.developer_mode = !developer, cx);
-                    },
-                    cx,
+            vec![
+                crate::settings::setting_fit(
+                    "Keep old logs for",
+                    "Logs from earlier days, in the logs folder. From the next start.",
+                    crate::ui::segmented(
+                        self,
+                        "log-days",
+                        LOG_DAYS
+                            .iter()
+                            .map(|(_, name)| Segment::new(*name))
+                            .collect(),
+                        LOG_DAYS.iter().position(|(d, _)| *d == log_days),
+                        true,
+                        |this, n, _, cx| {
+                            let days = LOG_DAYS[n].0;
+                            this.set_config(|c| c.general.log_days = days, cx);
+                        },
+                        cx,
+                    ),
                 ),
-            )],
+                crate::settings::setting_fit(
+                    "Developer mode",
+                    "Menus also offer copying the IDs of servers, channels, messages and people.",
+                    crate::ui::switch(
+                        self,
+                        "developer-mode",
+                        developer,
+                        true,
+                        move |this, _, cx| {
+                            this.set_config(|c| c.general.developer_mode = !developer, cx);
+                        },
+                        cx,
+                    ),
+                ),
+            ],
         );
         let mut groups = Vec::new();
         if let Some(run) = run {
@@ -270,8 +315,12 @@ impl Shell {
 fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
     const NAME: &str = "Microphone";
     if no_device {
-        return Check::new(NAME, Level::NotWorking, "No microphone found")
-            .hint("Plug one in, or check that Windows sees it.");
+        return Check::new(NAME, Level::NotWorking, "No microphone found").hint(if cfg!(windows) {
+            "Plug one in, or check that Windows sees it."
+        } else {
+            "Plug one in, or check that the sound settings see it. Hermes uses the sound server \
+             (PipeWire or PulseAudio); without one running it only finds raw ALSA devices."
+        });
     }
     if readings == 0 {
         return Check::new(
@@ -279,7 +328,12 @@ fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
             Level::NotWorking,
             "The microphone could not be opened",
         )
-        .hint("Another program may hold it, or Windows privacy settings may block it.");
+        .hint(if cfg!(windows) {
+            "Another program may hold it, or Windows privacy settings may block it."
+        } else {
+            "Another program may hold it (plain ALSA lets only one at a time), or a sandbox \
+             such as Flatpak may not allow the microphone."
+        });
     }
     if peak < SILENT_DB {
         return Check::new(
@@ -287,10 +341,13 @@ fn mic_check(no_device: bool, peak: f32, readings: u32) -> Check {
             Level::Warning,
             format!("Only silence for {} s", LISTEN.as_secs()),
         )
-        .hint(
+        .hint(if cfg!(windows) {
             "Muted, a very quiet room, or blocked by Windows privacy settings (Microphone access \
-             for desktop apps). Say something and run again.",
-        );
+             for desktop apps). Say something and run again."
+        } else {
+            "Muted, a very quiet room, or muted in the system's sound settings (check the input \
+             in the desktop's audio settings or pavucontrol). Say something and run again."
+        });
     }
     Check::new(
         NAME,

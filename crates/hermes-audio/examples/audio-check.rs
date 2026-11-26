@@ -29,6 +29,23 @@ fn main() {
         ..AudioSettings::default()
     };
     match args.first().map(String::as_str) {
+        // Which audio systems cpal can reach here, and why not (Linux: PulseAudio or ALSA).
+        Some("hosts") => {
+            use cpal::traits::{DeviceTrait as _, HostTrait as _};
+            for id in cpal::available_hosts() {
+                match cpal::host_from_id(id) {
+                    Ok(host) => {
+                        let output = host.default_output_device();
+                        let config = output.as_ref().map(|d| d.default_output_config());
+                        println!(
+                            "{id:?}: default output {:?}",
+                            config.map(|c| c.map(|c| c.config()))
+                        );
+                    }
+                    Err(err) => println!("{id:?}: {err}"),
+                }
+            }
+        }
         Some("list") | None => {
             let d = devices::list();
             println!("inputs (default {:?}):", d.default_input);

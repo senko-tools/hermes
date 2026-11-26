@@ -483,6 +483,7 @@ dependencies = [
  "pipewire",
  "serde",
  "serde_repr",
+ "tokio",
  "zbus 6.3.0",
 ]
 
@@ -1900,6 +1901,7 @@ dependencies = [
  "block2 0.6.2",
  "coreaudio-rs",
  "dasp_sample",
+ "futures",
  "jni",
  "js-sys",
  "libc",
@@ -1915,6 +1917,8 @@ dependencies = [
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "portable-atomic",
+ "pulseaudio",
  "web-sys",
  "windows 0.62.2",
  "windows-core 0.62.2",
@@ -2616,6 +2620,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "685adfa4d6f3d765a26bc5dbc936577de9abf756c1feeb3089b01dd395034842"
 dependencies = [
  "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "enum-primitive-derive"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba7795da175654fe16979af73f81f26a8ea27638d8d9823d317016888a63dc4c"
+dependencies = [
+ "num-traits",
  "quote",
  "syn 2.0.119",
 ]
@@ -3882,8 +3897,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54bab418d0b7c027af9495f278619b46887362b3bd6446e246c87c5b0fa167df"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -4379,7 +4392,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hermes-audio"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "aec3",
  "cpal",
@@ -4393,7 +4406,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-client-core"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -4429,9 +4442,10 @@ dependencies = [
 
 [[package]]
 name = "hermes-gui"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "arboard",
+ "ashpd 0.14.0",
  "clap",
  "directories",
  "embed-resource",
@@ -4439,14 +4453,18 @@ dependencies = [
  "global-hotkey",
  "gpui-kit",
  "gpui-pre",
+ "gpui-pre-linux",
+ "gtk",
  "hermes-audio",
  "hermes-client-core",
  "hermes-server",
  "image",
  "libwebp-sys",
+ "memmap2",
  "notify",
  "notify-rust",
  "openh264",
+ "pipewire",
  "png 0.18.1",
  "raw-window-handle",
  "resvg 0.45.1",
@@ -4458,13 +4476,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tray-icon",
+ "wayland-client",
+ "wayland-protocols",
  "windows 0.62.2",
+ "x11rb",
  "xcap",
 ]
 
 [[package]]
 name = "hermes-proto"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
@@ -4473,7 +4494,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-server"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -4510,7 +4531,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-tui"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "clap",
  "crossterm",
@@ -4526,7 +4547,7 @@ dependencies = [
 
 [[package]]
 name = "hermes-voicebot"
-version = "1.4.2"
+version = "1.4.4"
 dependencies = [
  "clap",
  "hermes-client-core",
@@ -7682,6 +7703,22 @@ checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
  "ar_archive_writer",
  "cc",
+]
+
+[[package]]
+name = "pulseaudio"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ba79a4c6904c987cc31fa50e9b750539404511c2dbd9ce95e5e58444177a21e"
+dependencies = [
+ "bitflags 2.13.2",
+ "byteorder",
+ "enum-primitive-derive",
+ "futures",
+ "log",
+ "mio",
+ "num-traits",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -12457,6 +12494,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "socket2",
+ "tokio",
  "uds_windows",
  "uuid",
  "windows-sys 0.61.2",

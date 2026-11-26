@@ -14,6 +14,7 @@ mod channel;
 mod collapsed;
 mod command_bar;
 mod crop;
+mod csd;
 mod desktop;
 mod desktop_shell;
 mod diagnostics;
@@ -54,6 +55,7 @@ mod syntax;
 #[cfg(test)]
 mod tests;
 mod theme;
+mod time_codes;
 mod tree;
 mod ui;
 mod unencrypted;
@@ -120,6 +122,11 @@ impl Cli {
 /// Hidden: deletes every secret Hermes keeps in the credential store, then exits (the uninstaller's
 /// "delete my data").
 const FORGET_SECRETS_FLAG: &str = "--forget-secrets";
+
+/// CI's smoke test of a release build (#42): with this set to a number of seconds, the app starts
+/// as usual, opens its window and quits by itself that long after. An environment variable, not
+/// an argument, so no link or shortcut can start it.
+const SMOKE_TEST_ENV: &str = "HERMES_SMOKE_TEST_SECONDS";
 
 fn main() -> ExitCode {
     let launched = std::time::Instant::now();
@@ -188,8 +195,8 @@ fn main() -> ExitCode {
         Ok(loaded) => loaded,
         Err(err) => return fail(&format!("Invalid config: {err}")),
     };
-    init_logging(&paths);
-    watchdog::start(paths.dir.join("logs"));
+    init_logging(&paths, loaded.config.general.log_days);
+    watchdog::start(paths.logs());
     for warning in &loaded.warnings {
         tracing::warn!("{warning}");
     }
@@ -221,6 +228,9 @@ fn main() -> ExitCode {
     let link_ready =
         core.start_desktop_accounts(link.as_deref().and_then(add_instance::launch_instance));
     let start_minimized = loaded_start_minimized;
+    let smoke_test = std::env::var(SMOKE_TEST_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
     gpui_kit::application()
         .with_assets(assets::Assets)
         .run(move |cx| {
@@ -248,11 +258,12 @@ fn main() -> ExitCode {
                     appears_transparent: false,
                     ..Default::default()
                 }),
+                app_id: Some(desktop::APP_ID.into()),
                 ..Default::default()
             };
             // The tray and the global keys live on this (the event loop's) thread.
             let tray = start_minimized.then(desktop_shell::create_tray).flatten();
-            let start_hidden = start_minimized && tray.is_some();
+            let start_hidden = start_minimized && tray.is_some() && desktop::window::can_hide();
             let boot = Boot {
                 tray,
                 launched,
@@ -283,6 +294,16 @@ fn main() -> ExitCode {
             })
             .detach();
             cx.activate(true);
+            if let Some(seconds) = smoke_test {
+                cx.spawn(async move |cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_secs(seconds))
+                        .await;
+                    tracing::info!("smoke test: quitting after {seconds} s");
+                    cx.update(|cx| cx.quit());
+                })
+                .detach();
+            }
         });
     // A portable folder leaves nothing in the computer's temp folder (also cleared on start).
     if portable {
@@ -310,12 +331,13 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Logs go to `<config dir>/logs/latest.log`, older ones to `logs/logs_old/` (see
+/// Logs go to `<logs dir>/latest.log` (`ConfigPaths::logs`), older ones to `logs_old/` (see
 /// `hermes_client_core::logs`; `HERMES_LOG` sets the filter).
-fn init_logging(paths: &ConfigPaths) {
-    let dir = paths.dir.join("logs");
+fn init_logging(paths: &ConfigPaths, log_days: u32) {
+    paths.move_old_logs();
+    let dir = paths.logs();
     hermes_client_core::crash::install(dir.clone(), "hermes");
-    let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes") else {
+    let Ok(file) = hermes_client_core::logs::DailyLog::open(&dir, "hermes", log_days) else {
         return;
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("HERMES_LOG")

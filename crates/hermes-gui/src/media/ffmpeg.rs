@@ -45,7 +45,9 @@ pub fn version() -> Result<String, String> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Probe {
     pub duration_ms: u64,
-    /// Width, height and frames per second of the first video stream.
+    /// Width, height and frames per second of the first video stream, as it is shown: turned
+    /// as its rotation says (a phone video held upright) and with square pixels. FFmpeg turns
+    /// the frames it decodes the same way before scaling them.
     pub video: Option<(u32, u32, f32)>,
     pub audio: bool,
 }
@@ -57,7 +59,8 @@ pub fn probe(url: &str) -> Result<Probe, String> {
             "-v",
             "error",
             "-show_entries",
-            "format=duration:stream=codec_type,width,height,avg_frame_rate:stream_disposition=attached_pic",
+            "format=duration:stream=codec_type,width,height,avg_frame_rate,sample_aspect_ratio:\
+             stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation",
             "-of",
             "default=noprint_wrappers=1",
             url,
@@ -74,11 +77,12 @@ pub fn probe(url: &str) -> Result<Probe, String> {
 fn parse_probe(text: &str) -> Probe {
     let mut probe = Probe::default();
     let mut kind = "";
-    let (mut width, mut height, mut fps, mut cover) = (0u32, 0u32, 0f32, false);
-    let finish = |kind: &str, width: u32, height: u32, fps: f32, cover: bool, probe: &mut Probe| {
+    let mut stream = Stream::default();
+    let finish = |kind: &str, s: &Stream, probe: &mut Probe| {
         // An album cover in a sound file is a still "video" stream: not a video.
-        if kind == "video" && !cover && width > 0 && height > 0 && probe.video.is_none() {
-            probe.video = Some((width, height, if fps > 0. { fps } else { 30. }));
+        if kind == "video" && !s.cover && s.width > 0 && s.height > 0 && probe.video.is_none() {
+            let (w, h) = s.shown();
+            probe.video = Some((w, h, if s.fps > 0. { s.fps } else { 30. }));
         }
     };
     for line in text.lines() {
@@ -87,8 +91,8 @@ fn parse_probe(text: &str) -> Probe {
         };
         match key {
             "codec_type" => {
-                finish(kind, width, height, fps, cover, &mut probe);
-                (width, height, fps, cover) = (0, 0, 0., false);
+                finish(kind, &stream, &mut probe);
+                stream = Stream::default();
                 kind = match value {
                     "video" => "video",
                     "audio" => {
@@ -98,10 +102,17 @@ fn parse_probe(text: &str) -> Probe {
                     _ => "",
                 };
             }
-            "width" => width = value.parse().unwrap_or(0),
-            "height" => height = value.parse().unwrap_or(0),
-            "avg_frame_rate" => fps = rate(value),
-            "DISPOSITION:attached_pic" => cover = value == "1",
+            "width" => stream.width = value.parse().unwrap_or(0),
+            "height" => stream.height = value.parse().unwrap_or(0),
+            "avg_frame_rate" => stream.fps = rate(value),
+            "sample_aspect_ratio" => stream.pixel = pixel_shape(value),
+            // The display matrix (newer files) or the older tag; either turns it.
+            "rotation" | "TAG:rotate" => {
+                if let Ok(degrees) = value.trim().parse::<f64>() {
+                    stream.quarter_turned = (degrees.round() as i64).rem_euclid(180) == 90;
+                }
+            }
+            "DISPOSITION:attached_pic" => stream.cover = value == "1",
             "duration" => {
                 if let Ok(seconds) = value.parse::<f64>() {
                     probe.duration_ms = (seconds * 1000.).round() as u64;
@@ -110,8 +121,44 @@ fn parse_probe(text: &str) -> Probe {
             _ => {}
         }
     }
-    finish(kind, width, height, fps, cover, &mut probe);
+    finish(kind, &stream, &mut probe);
     probe
+}
+
+/// What `ffprobe` says about one stream.
+#[derive(Default)]
+struct Stream {
+    width: u32,
+    height: u32,
+    fps: f32,
+    cover: bool,
+    /// A pixel's width over its height, when not square.
+    pixel: Option<f64>,
+    /// Turned a quarter (90 or 270 degrees): shown as tall as it is stored wide.
+    quarter_turned: bool,
+}
+
+impl Stream {
+    /// Its size as it is shown: pixels made square (wider, as players do), then turned.
+    fn shown(&self) -> (u32, u32) {
+        let width = match self.pixel {
+            Some(ratio) => ((f64::from(self.width) * ratio).round() as u32).max(1),
+            None => self.width,
+        };
+        if self.quarter_turned {
+            (self.height, width)
+        } else {
+            (width, self.height)
+        }
+    }
+}
+
+/// `sample_aspect_ratio=4:3` as 4/3; `None` for square pixels or an unknown shape (`0:1`).
+fn pixel_shape(value: &str) -> Option<f64> {
+    let (a, b) = value.split_once(':')?;
+    let (a, b) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
+    let ratio = a / b;
+    (a > 0. && b > 0. && (ratio - 1.).abs() > 1e-3 && (0.1..=10.).contains(&ratio)).then_some(ratio)
 }
 
 /// `30000/1001` as 29.97.
@@ -247,6 +294,31 @@ mod tests {
         let (w, h, fps) = probe.video.unwrap();
         assert_eq!((w, h), (1920, 1080));
         assert!((fps - 29.97).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_rotated_video_is_shown_upright() {
+        // What ffprobe 9 prints for a 320x180 file with a 90 degree display matrix.
+        let text = "codec_type=video\nwidth=320\nheight=180\nsample_aspect_ratio=1:1\n\
+                    avg_frame_rate=10/1\nDISPOSITION:attached_pic=0\nrotation=90\n\
+                    duration=2.000000\n";
+        let (w, h, _) = parse_probe(text).video.unwrap();
+        assert_eq!((w, h), (180, 320));
+        let old_tag = "codec_type=video\nwidth=1920\nheight=1080\nTAG:rotate=-270\n";
+        let (w, h, _) = parse_probe(old_tag).video.unwrap();
+        assert_eq!((w, h), (1080, 1920));
+        let upside_down = "codec_type=video\nwidth=1920\nheight=1080\nrotation=-180\n";
+        let (w, h, _) = parse_probe(upside_down).video.unwrap();
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    fn wide_pixels_widen_the_picture() {
+        let text = "codec_type=video\nwidth=320\nheight=180\nsample_aspect_ratio=2:1\n";
+        let (w, h, _) = parse_probe(text).video.unwrap();
+        assert_eq!((w, h), (640, 180));
+        let unknown = "codec_type=video\nwidth=320\nheight=180\nsample_aspect_ratio=0:1\n";
+        assert_eq!(parse_probe(unknown).video.unwrap().0, 320);
     }
 
     #[test]

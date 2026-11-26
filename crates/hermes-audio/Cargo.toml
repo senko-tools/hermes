@@ -18,5 +18,11 @@ ringbuf.workspace = true
 rubato.workspace = true
 tracing.workspace = true
 
+# Linux: PulseAudio's own protocol (pure Rust), also served by PipeWire on today's desktops, so
+# Hermes reaches the sound server even where ALSA has no PulseAudio/PipeWire plugin. Without a
+# server, ALSA as before (approved 2026-11-24, round 45).
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pulseaudio"] }
+
 [lints]
 workspace = true

@@ -1256,17 +1256,23 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
-    // Hermes patch: a picture drawn larger than its pixels shows them as they are (each texel
-    // under the pixel, kept inside its own tile), not blended into each other.
+    // Hermes patch: a picture drawn larger than its pixels shows them as they are, not blurred
+    // into each other ("sharp bilinear"): each texel is flat, and only the one screen pixel
+    // where two meet blends them, so texels stay even at any zoom (1.33x as well as 4x) where
+    // taking the nearest texel would draw some twice as wide as others. Kept inside its tile.
     float2 atlas_size;
     t_sprite.GetDimensions(atlas_size.x, atlas_size.y);
     float2 texel = input.tile_position * atlas_size;
     float2 texel_step = fwidth(texel);
     if (max(texel_step.x, texel_step.y) < 0.999) {
-        float2 lowest = float2(sprite.tile.bounds.origin);
-        float2 highest = lowest + float2(sprite.tile.bounds.size) - 1.0;
-        int2 at = int2(clamp(floor(texel), lowest, highest));
-        sample = t_sprite.Load(int3(at, 0));
+        float2 per_pixel = 1.0 / max(texel_step, 0.0001);
+        float2 between = texel - 0.5;
+        float2 whole = floor(between);
+        float2 part = saturate((between - whole - 0.5) * per_pixel + 0.5);
+        float2 lowest = float2(sprite.tile.bounds.origin) + 0.5;
+        float2 highest = float2(sprite.tile.bounds.origin) + float2(sprite.tile.bounds.size) - 0.5;
+        float2 at = clamp(whole + part + 0.5, lowest, highest);
+        sample = t_sprite.SampleLevel(s_sprite, at / atlas_size, 0);
     }
     float distance = quad_sdf(input.position.xy, sprite.bounds, sprite.corner_radii);
 

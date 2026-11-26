@@ -76,6 +76,40 @@ impl ConfigPaths {
     pub fn read_marks(&self) -> PathBuf {
         self.dir.join(crate::read_marks::READ_MARKS_FILE)
     }
+
+    /// Logs, crash and freeze reports: `logs` in the config directory, except on Linux with the
+    /// default directory, where they are state (`$XDG_STATE_HOME/hermes/logs`, usually
+    /// `~/.local/state/hermes/logs`). A portable or custom directory keeps its own.
+    pub fn logs(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        if let Some(state) = self.linux_state_logs() {
+            return state;
+        }
+        self.dir.join("logs")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn linux_state_logs(&self) -> Option<PathBuf> {
+        let base = directories::BaseDirs::new()?;
+        if self.portable || self.dir != base.config_dir().join("hermes") {
+            return None;
+        }
+        Some(base.state_dir()?.join("hermes").join("logs"))
+    }
+
+    /// Moves the logs of older versions (in the config directory) to `logs()` once.
+    pub fn move_old_logs(&self) {
+        let old = self.dir.join("logs");
+        let new = self.logs();
+        if old == new || !old.is_dir() || new.exists() {
+            return;
+        }
+        if let Some(parent) = new.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // A rename fails across file systems; the old logs then simply stay where they were.
+        let _ = std::fs::rename(&old, &new);
+    }
 }
 
 /// A setting with a few named values, written as text in `config.toml` (`motion_speed =
@@ -297,6 +331,20 @@ pub struct General {
     /// instead of the system's credential store, so the folder works on another computer. Read
     /// on start.
     pub sign_ins_in_folder: bool,
+    /// Days old logs are kept in `logs/logs_old` (#36); clamped to 1-90. Read on start.
+    pub log_days: u32,
+    /// How long the pointer rests on a settings description too long for its line before it
+    /// starts scrolling, in milliseconds; 0 starts it at once.
+    pub hint_scroll_delay_ms: u32,
+}
+
+impl General {
+    /// Whether animated pictures move while another window has the focus. "Animate in the
+    /// background" is a child of "Animate pictures" (#83): it keeps its own value while the
+    /// parent is off, but takes effect only with it on. Code reads this, never the raw field.
+    pub fn animate_in_background(&self) -> bool {
+        self.animate_pictures && self.animate_unfocused
+    }
 }
 
 impl Default for General {
@@ -323,6 +371,8 @@ impl Default for General {
             folded_settings: Vec::new(),
             developer_mode: false,
             sign_ins_in_folder: false,
+            log_days: crate::logs::DEFAULT_LOG_DAYS,
+            hint_scroll_delay_ms: 500,
         }
     }
 }
@@ -472,6 +522,9 @@ pub struct Voice {
     pub media_muted: bool,
     /// The screen to share (its system name); empty = the primary one.
     pub share_screen: String,
+    /// Linux (Wayland): the desktop's token for what was shared last, so the next share skips
+    /// its dialog. Empty asks again.
+    pub share_restore_token: String,
     /// The largest size a share is sent at: `720p`, `1080p`, `1440p`, `2160p` or `native`.
     pub share_resolution: ShareResolution,
     /// Frames per second a share is sent at (at most 60).
@@ -479,6 +532,9 @@ pub struct Voice {
     /// What a share keeps when it cannot keep up: `smoothness` (the frame rate), `mixed` or
     /// `clarity` (sharp, full-size pictures).
     pub share_preference: SharePreference,
+    /// The most a share sends, in Mbit/s (0: no limit). Everyone watching downloads that much,
+    /// so a lower limit keeps room on both ends for games and calls.
+    pub share_max_mbps: u32,
     /// A share sends what the computer plays too (not Hermes itself; Windows 10 2004+).
     pub share_sound: bool,
 }
@@ -511,9 +567,11 @@ impl Default for Voice {
             media_volume: 1.0,
             media_muted: false,
             share_screen: String::new(),
+            share_restore_token: String::new(),
             share_resolution: ShareResolution::P1080,
             share_fps: 60,
             share_preference: SharePreference::Smoothness,
+            share_max_mbps: 8,
             share_sound: true,
         }
     }
@@ -1047,6 +1105,29 @@ pub fn watch(
 mod tests {
     use super::*;
 
+    /// #83: the child takes effect only with its parent on, and keeps its value meanwhile.
+    #[test]
+    fn animate_in_background_needs_animate_pictures() {
+        let mut g = General {
+            animate_unfocused: true,
+            ..General::default()
+        };
+        assert!(g.animate_in_background());
+        g.animate_pictures = false;
+        assert!(!g.animate_in_background());
+        assert!(g.animate_unfocused, "the child keeps its own value");
+        g.animate_pictures = true;
+        assert!(g.animate_in_background());
+        g.animate_unfocused = false;
+        assert!(!g.animate_in_background());
+    }
+
+    #[test]
+    fn log_days_default_to_a_week() {
+        let config: ClientConfig = toml::from_str("[general]\ntheme = \"x\"\n").unwrap();
+        assert_eq!(config.general.log_days, crate::logs::DEFAULT_LOG_DAYS);
+    }
+
     /// A setting changed in code is written exactly like the same setting typed as text, so
     /// moving the GUI to typed changes left `config.toml` as it was.
     #[test]
@@ -1147,6 +1228,16 @@ mode = \"push_to_talk\"
                 "unknown key `instances[].token` (ignored)",
             ]
         );
+    }
+
+    #[test]
+    fn hint_scroll_delay_defaults_for_older_files() {
+        let config: ClientConfig = toml::from_str(
+            "[general]
+theme = \"dark\"",
+        )
+        .unwrap();
+        assert_eq!(config.general.hint_scroll_delay_ms, 500);
     }
 
     #[test]

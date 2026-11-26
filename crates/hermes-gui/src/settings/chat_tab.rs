@@ -7,6 +7,8 @@ const STATUS_SECONDS: [u32; 3] = [3, 5, 10];
 const MEDIA_SCALES: [(u32, &str); 3] = [(75, "Small"), (100, "Normal"), (150, "Large")];
 /// How wide a slider on the right of its row is.
 const SLIDER_W: f32 = 240.;
+/// How far a child setting (#83) sits in from its parent, on each side of its guide line.
+const CHILD_INDENT: f32 = 8.;
 
 impl Shell {
     /// A switch row for a `bool` in the config; use [`flag!`], which names the field once.
@@ -31,6 +33,49 @@ impl Shell {
                 cx,
             ),
         )
+    }
+
+    /// A switch that depends on a parent switch (#83): indented under it with a thin guide
+    /// line. While the parent is off it stays visible but dimmed and cannot be changed, and says
+    /// what to turn on; it keeps its own value meanwhile. Only pairs the developer confirmed
+    /// are children.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn child_flag(
+        &self,
+        parent_on: bool,
+        parent_name: &'static str,
+        name: &'static str,
+        hint: &'static str,
+        on: bool,
+        id: &'static str,
+        set: fn(&mut ClientConfig, bool),
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hint = if parent_on {
+            hint.to_owned()
+        } else {
+            format!("Turn on {parent_name} first.")
+        };
+        let row = setting_fit(
+            name,
+            &hint,
+            crate::ui::switch(
+                self,
+                id,
+                on,
+                parent_on,
+                move |this, _, cx| this.set_config(|c| set(c, !on), cx),
+                cx,
+            ),
+        );
+        div()
+            .ml(px(CHILD_INDENT))
+            .pl(px(CHILD_INDENT))
+            .border_l_1()
+            .border_color(theme::border())
+            .when(!parent_on, |d| d.opacity(0.55))
+            .child(row)
+            .into_any_element()
     }
 
     pub(super) fn tab_chat(&self, page: &SettingsPage, cx: &mut Context<Self>) -> AnyElement {
@@ -197,24 +242,25 @@ impl Shell {
                     "GIFs move while the window has the focus.",
                     general.animate_pictures
                 ),
+                self.child_flag(
+                    g.animate_pictures,
+                    "Animate pictures",
+                    "Animate in the background",
+                    "GIFs keep moving while another window has the focus.",
+                    g.animate_unfocused,
+                    "general.animate_unfocused",
+                    |c: &mut ClientConfig, on: bool| c.general.animate_unfocused = on,
+                    cx,
+                ),
                 self.more(
                     "motion",
                     "More motion options",
-                    |cx| {
-                        vec![
-                            setting_fit(
-                                "Scroll speed",
-                                &format!("{scroll_speed:.2} x"),
-                                sized(220., self.slider(page, SliderKind::ScrollSpeed)),
-                            ),
-                            flag!(
-                                self,
-                                cx,
-                                "Animate in the background",
-                                "GIFs keep moving while another window has the focus.",
-                                general.animate_unfocused
-                            ),
-                        ]
+                    |_| {
+                        vec![setting_fit(
+                            "Scroll speed",
+                            &format!("{scroll_speed:.2} x"),
+                            sized(220., self.slider(page, SliderKind::ScrollSpeed)),
+                        )]
                     },
                     cx,
                 ),
