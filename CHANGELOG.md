@@ -32,7 +32,7 @@ How to write it:
 - The hardware encoder favours quality, for sharper shares at the same upload, and small share tiles shimmer less
 - People without a profile picture show a silhouette in your theme's colours
 - Messages this device cannot read yet show as a placeholder whose characters slowly change, with no name or picture; the lock beside it says why
-- A share opened in its own window shows only there; its tile in the call says so, and clicking the tile brings the share back
+- A share opened in its own window shows only there; its tile in the call says so, and the same button brings the share back
 - Sharing your screen without a hardware video encoder uses several processor cores: about twice the frame rate at 1080p
 - Your profile card, opened from your name at the bottom of the sidebar, sits as far from the window's bottom as from the sidebar
 
@@ -40,6 +40,7 @@ How to write it:
 - A screen share shown larger than it was sent no longer looks blocky or broken up
 - A channel no longer keeps its unread dot when there is nothing new in it
 - Opening a screen share in its own window no longer crashes Hermes
+- Watching a 1080p or larger share at 60 fps no longer drops many of its pictures while the screen moves
 
 ## 1.4.3
 
