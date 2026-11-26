@@ -41,6 +41,7 @@ How to write it:
 - A channel no longer keeps its unread dot when there is nothing new in it
 - Opening a screen share in its own window no longer crashes Hermes
 - Watching a 1080p or larger share at 60 fps no longer drops many of its pictures while the screen moves
+- Coloured text and edges in shares you watch no longer get blocky colour fringes
 
 ## 1.4.3
 
