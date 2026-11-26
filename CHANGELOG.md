@@ -11,7 +11,7 @@ How to write it:
 - Before a release, rename `## Unreleased` to `## <version>` (e.g. `## 1.4.2`). The release
   workflow stops if that section is missing.
 
-## Unreleased
+## 1.4.4
 
 ### New
 - Hermes for Linux (beta): unpack Hermes-<version>-x86_64-linux.tar.gz and run ./install.sh
