@@ -155,6 +155,7 @@ fn put_pixel(px: &mut [u8], y: i32, (r, g, b): (i32, i32, i32)) {
     px[0] = ((y + b) >> 16).clamp(0, 255) as u8;
     px[1] = ((y + g) >> 16).clamp(0, 255) as u8;
     px[2] = ((y + r) >> 16).clamp(0, 255) as u8;
+    px[3] = 255;
 }
 
 #[inline(always)]
@@ -177,20 +178,66 @@ fn to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
     }
 }
 
+/// Threads that convert one picture together: a 1080p picture took about 10 ms on one, most of
+/// the 16.7 ms a picture has at 60 fps, so pictures that came in a burst were dropped.
+fn convert_threads(rows: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    cores
+        .saturating_sub(1)
+        .clamp(1, 4)
+        .min(rows.div_ceil(64))
+        .max(1)
+}
+
+/// Fills `out` (rows of `row_bytes`) in bands on several threads: `fill(first_row, band)`.
+fn in_bands(out: &mut [u8], row_bytes: usize, fill: impl Fn(usize, &mut [u8]) + Sync) {
+    let rows = out.len() / row_bytes.max(1);
+    let threads = convert_threads(rows);
+    if threads <= 1 {
+        fill(0, out);
+        return;
+    }
+    let band_rows = rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut bands = out.chunks_mut(band_rows * row_bytes).enumerate();
+        // The calling thread does the first band itself.
+        let first = bands.next();
+        for (n, band) in bands {
+            let fill = &fill;
+            scope.spawn(move || fill(n * band_rows, band));
+        }
+        if let Some((_, band)) = first {
+            fill(0, band);
+        }
+    });
+}
+
 /// Every pixel, the case that has to be fast: a window-sized share at 60 fps. Colour is worked out
 /// once per two pixels, and walking the planes with iterators leaves no bounds checks.
 fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
     let (w, h) = (p.width as usize, p.height as usize);
-    let mut out = vec![255u8; w * h * 4];
+    // Zeroed memory comes from the system as it is first written, by the threads in parallel;
+    // filling it first took longer than converting. Every byte is written below.
+    let mut out = vec![0u8; w * h * 4];
+    in_bands(&mut out, w * 4, |first, band| {
+        full_size_rows(p, first, band)
+    });
+    (p.width, p.height, out)
+}
+
+/// Rows `first..` of [`full_size_to_bgra`] into `band`.
+fn full_size_rows(p: &codec::Picture, first: usize, band: &mut [u8]) {
+    let w = p.width as usize;
     let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
     let cw = (p.width / 2) as usize;
     let last_c_row = ((p.height / 2) as usize).saturating_sub(1);
     // The pairs of luma samples a row of chroma covers; an odd last column is drawn by itself.
     let even = w & !1;
-    for (row, (line, y_row)) in out
+    for (row, (line, y_row)) in band
         .chunks_exact_mut(w * 4)
-        .zip(y_plane.chunks_exact(w))
+        .zip(y_plane[first * w..].chunks_exact(w))
         .enumerate()
+        .map(|(n, rows)| (first + n, rows))
     {
         let c_row = (row / 2).min(last_c_row);
         let (pairs, rest) = line.split_at_mut(even * 4);
@@ -236,7 +283,6 @@ fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
             put_pixel(rest, luma(y_row[even]), terms);
         }
     }
-    (p.width, p.height, out)
 }
 
 /// Each `skip` x `skip` block of the picture as one pixel (its average), for tiles much smaller
@@ -245,14 +291,27 @@ fn skipping_to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
     let (w, h) = (p.width as usize, p.height as usize);
     let step = skip.max(1) as usize;
     let (out_w, out_h) = (w.div_ceil(step), h.div_ceil(step));
-    let mut out = vec![255u8; out_w * out_h * 4];
+    let mut out = vec![0u8; out_w * out_h * 4];
+    in_bands(&mut out, out_w * 4, |first, band| {
+        averaged_rows(p, step, out_w, first, band);
+    });
+    (out_w as u32, out_h as u32, out)
+}
+
+/// Output rows `first..` of [`skipping_to_bgra`] into `band`.
+fn averaged_rows(p: &codec::Picture, step: usize, out_w: usize, first: usize, band: &mut [u8]) {
+    let (w, h) = (p.width as usize, p.height as usize);
     let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
     let (cw, ch) = ((p.width / 2) as usize, (p.height / 2) as usize);
     let average = |sum: u32, n: usize| {
         let n = n.max(1) as u32;
         ((sum + n / 2) / n) as u8
     };
-    for (row, line) in out.chunks_exact_mut(out_w * 4).enumerate() {
+    for (row, line) in band
+        .chunks_exact_mut(out_w * 4)
+        .enumerate()
+        .map(|(n, line)| (first + n, line))
+    {
         let rows = row * step..((row + 1) * step).min(h);
         let c_rows = chroma_span(&rows, ch);
         for (col, px) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -282,7 +341,6 @@ fn skipping_to_bgra(p: &codec::Picture, skip: u32) -> (u32, u32, Vec<u8>) {
             put_pixel(px, luma(average(y_sum, rows.len() * cols.len())), terms);
         }
     }
-    (out_w as u32, out_h as u32, out)
 }
 
 /// The chroma samples (one per two pixels, `len` of them) that cover `pixels`; an odd last pixel
@@ -601,8 +659,9 @@ fn decode_loop(core: &Core, mut frames: tokio::sync::mpsc::Receiver<RemoteFrame>
         s.slowest_decode_us = s.slowest_decode_us.max(took);
         match decoded {
             // Every frame is decoded, for the frames after it, but colours are worked out only
-            // for the newest: falling behind then costs pictures, never frames.
-            Ok(Some(_)) if !frames.is_empty() => {
+            // for the newest: falling behind then costs pictures, never frames. One frame
+            // waiting is normal (frames arrive in bursts) and is not falling behind.
+            Ok(Some(_)) if frames.len() >= 2 => {
                 s.pictures += 1;
                 s.unshown += 1;
             }
@@ -733,6 +792,57 @@ mod tests {
                 assert_eq!(full_size_to_bgra(&picture), plain, "{w}x{h} nv12={nv12}");
             }
         }
+    }
+
+    #[test]
+    fn pictures_converted_in_bands_match_one_pass() {
+        // Tall enough for several bands (where the machine has the cores), with an odd height.
+        for nv12 in [false, true] {
+            let picture = gradient(64, 302, nv12);
+            let mut whole = vec![255u8; 64 * 302 * 4];
+            full_size_rows(&picture, 0, &mut whole);
+            assert_eq!(full_size_to_bgra(&picture).2, whole, "nv12={nv12}");
+
+            let (out_w, out_h) = (32usize, 151usize);
+            let mut averaged = vec![255u8; out_w * out_h * 4];
+            averaged_rows(&picture, 2, out_w, 0, &mut averaged);
+            assert_eq!(skipping_to_bgra(&picture, 2).2, averaged, "nv12={nv12}");
+        }
+    }
+
+    /// How long a 1080p picture takes in one pass and in bands (run with `--release`).
+    #[test]
+    #[ignore = "a timing, not a check"]
+    fn conversion_timing() {
+        let picture = gradient(1920, 1080, true);
+        let time = |f: &dyn Fn()| {
+            let start = std::time::Instant::now();
+            for _ in 0..50 {
+                f();
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / 50.0
+        };
+        let one = time(&|| {
+            let mut out = vec![255u8; 1920 * 1080 * 4];
+            full_size_rows(&picture, 0, &mut out);
+            std::hint::black_box(out);
+        });
+        let banded = time(&|| {
+            std::hint::black_box(full_size_to_bgra(&picture));
+        });
+        let alloc = time(&|| {
+            std::hint::black_box(vec![0u8; 1920 * 1080 * 4]);
+        });
+        let mut reused = vec![255u8; 1920 * 1080 * 4];
+        let start = std::time::Instant::now();
+        for _ in 0..50 {
+            in_bands(&mut reused, 1920 * 4, |first, band| {
+                full_size_rows(&picture, first, band);
+            });
+        }
+        let warm = start.elapsed().as_secs_f64() * 1000.0 / 50.0;
+        eprintln!("1080p: {one:.2} ms in one pass, {banded:.2} ms in bands");
+        eprintln!("allocating {alloc:.2} ms, bands into a reused buffer {warm:.2} ms");
     }
 
     #[test]
