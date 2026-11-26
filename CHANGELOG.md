@@ -11,7 +11,7 @@ How to write it:
 - Before a release, rename `## Unreleased` to `## <version>` (e.g. `## 1.4.2`). The release
   workflow stops if that section is missing.
 
-## 1.4.4
+## Unreleased
 
 ### New
 - Hermes for Linux (beta): unpack Hermes-<version>-x86_64-linux.tar.gz and run ./install.sh
@@ -26,6 +26,10 @@ How to write it:
   - Close to the tray and Start minimized work as on Windows, on X11 and Wayland
   - Installs made with install.sh update themselves like on Windows (from the first Linux release on)
   - Logs are kept in ~/.local/state/hermes/logs
+
+## 1.4.4
+
+### New
 - Screen sharing has an upload limit (Settings, Screen sharing), 8 Mbit/s by default, so a share leaves room for games on both ends
 
 ### Changed
