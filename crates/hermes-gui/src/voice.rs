@@ -1355,6 +1355,7 @@ impl Shell {
                                 .child(
                                     img(frame.image.clone())
                                         .size_full()
+                                        .rounded(radius)
                                         .object_fit(gpui_kit::ObjectFit::Contain),
                                 )
                                 .with_animation(
