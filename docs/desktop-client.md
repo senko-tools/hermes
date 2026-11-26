@@ -273,6 +273,12 @@ Built on Ubuntu 22.04 (glibc 2.35), like the release. What differs from Windows,
 
 ## Not done yet, on purpose
 1. **Split panes:** after everything else. Their keybinds stay valid config but do nothing.
+2. **Full-colour shares (4:4:4):** H.264 sends colour at half size (one sample per 2x2 pixels), so ClearType
+   text's colour fringes come out as small colour artifacts at any bitrate. Measured 2026-11-26 on a Hermes UI
+   screenshot through GPU convert + NVIDIA encoder: 38.25 dB at 8 Mbit/s, 38.28 dB at 40 Mbit/s, the same as
+   halving the colour alone. The viewer blends the colour between samples, which hides the blockiness. The real
+   fix is 4:4:4, which neither the Windows hardware H.264 decoders nor OpenH264 decode, so it needs another
+   codec or profile on both ends (e.g. HEVC 4:4:4 through NVENC/NVDEC, or VP9 profile 1 in software).
 
 ## Known risks
 - **Share smearing:** a frame lost after the server (full decoder queue, timed-out stream) holds that share
