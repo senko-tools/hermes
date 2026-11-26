@@ -165,7 +165,12 @@ fn luma(y: u8) -> i32 {
 
 #[inline(always)]
 fn chroma(u: u8, v: u8) -> (i32, i32, i32) {
-    let (u, v) = (i32::from(u) - 128, i32::from(v) - 128);
+    chroma_terms(i32::from(u), i32::from(v))
+}
+
+#[inline(always)]
+fn chroma_terms(u: i32, v: i32) -> (i32, i32, i32) {
+    let (u, v) = (u - 128, v - 128);
     (104597 * v, -25675 * u - 53279 * v, 132201 * u)
 }
 
@@ -212,8 +217,8 @@ fn in_bands(out: &mut [u8], row_bytes: usize, fill: impl Fn(usize, &mut [u8]) + 
     });
 }
 
-/// Every pixel, the case that has to be fast: a window-sized share at 60 fps. Colour is worked out
-/// once per two pixels, and walking the planes with iterators leaves no bounds checks.
+/// Every pixel, the case that has to be fast: a window-sized share at 60 fps, converted in bands
+/// on several threads.
 fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
     let (w, h) = (p.width as usize, p.height as usize);
     // Zeroed memory comes from the system as it is first written, by the threads in parallel;
@@ -225,62 +230,63 @@ fn full_size_to_bgra(p: &codec::Picture) -> (u32, u32, Vec<u8>) {
     (p.width, p.height, out)
 }
 
-/// Rows `first..` of [`full_size_to_bgra`] into `band`.
+/// Rows `first..` of [`full_size_to_bgra`] into `band`. Colour comes at half the size (one
+/// sample per 2x2 pixels) and is blended between neighbouring samples instead of repeated over
+/// each 2x2 block, which drew coloured text and edges with blocky fringes. Each sample is taken
+/// as the middle of its block (what averaging senders make), so a pixel takes 3/4 of its own
+/// sample and 1/4 of the next one towards it, across and down.
 fn full_size_rows(p: &codec::Picture, first: usize, band: &mut [u8]) {
     let w = p.width as usize;
     let (y_plane, u_plane, v_plane) = (p.y(), p.u(), p.v());
-    let cw = (p.width / 2) as usize;
+    let cw = ((p.width / 2) as usize).max(1);
     let last_c_row = ((p.height / 2) as usize).saturating_sub(1);
-    // The pairs of luma samples a row of chroma covers; an odd last column is drawn by itself.
-    let even = w & !1;
-    for (row, (line, y_row)) in band
-        .chunks_exact_mut(w * 4)
-        .zip(y_plane[first * w..].chunks_exact(w))
-        .enumerate()
-        .map(|(n, rows)| (first + n, rows))
-    {
-        let c_row = (row / 2).min(last_c_row);
-        let (pairs, rest) = line.split_at_mut(even * 4);
-        let y_pairs = y_row[..even].as_chunks::<2>().0.iter();
+    let sample = |row: usize, i: usize| -> (i32, i32) {
         if p.nv12 {
-            let uv = &u_plane[c_row * cw * 2..(c_row + 1) * cw * 2];
-            for ((px, ys), c) in pairs
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip(y_pairs)
-                .zip(uv.as_chunks::<2>().0.iter())
-            {
-                let terms = chroma(c[0], c[1]);
-                put_pixel(&mut px[..4], luma(ys[0]), terms);
-                put_pixel(&mut px[4..], luma(ys[1]), terms);
-            }
+            let at = row * cw * 2 + i * 2;
+            (i32::from(u_plane[at]), i32::from(u_plane[at + 1]))
         } else {
-            let us = &u_plane[c_row * cw..(c_row + 1) * cw];
-            let vs = &v_plane[c_row * cw..(c_row + 1) * cw];
-            for (((px, ys), u), v) in pairs
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip(y_pairs)
-                .zip(us.iter())
-                .zip(vs.iter())
-            {
-                let terms = chroma(*u, *v);
-                put_pixel(&mut px[..4], luma(ys[0]), terms);
-                put_pixel(&mut px[4..], luma(ys[1]), terms);
-            }
+            let at = row * cw + i;
+            (i32::from(u_plane[at]), i32::from(v_plane[at]))
         }
-        if !rest.is_empty() {
-            let last = cw.saturating_sub(1);
-            let terms = if p.nv12 {
-                let at = c_row * cw * 2 + last * 2;
-                chroma(u_plane[at], u_plane[at + 1])
+    };
+    // The colour terms of this row's samples, blended down from the two nearest sample rows.
+    let mut terms = vec![(0, 0, 0); cw];
+    for (row, line) in band
+        .chunks_exact_mut(w * 4)
+        .enumerate()
+        .map(|(n, line)| (first + n, line))
+    {
+        let y_row = &y_plane[row * w..row * w + w];
+        let near = (row / 2).min(last_c_row);
+        let far = if row % 2 == 0 {
+            near.saturating_sub(1)
+        } else {
+            (near + 1).min(last_c_row)
+        };
+        for (i, term) in terms.iter_mut().enumerate() {
+            let ((u0, v0), (u1, v1)) = (sample(near, i), sample(far, i));
+            *term = chroma_terms((3 * u0 + u1 + 2) >> 2, (3 * v0 + v1 + 2) >> 2);
+        }
+        for (x, (px, y)) in line
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(y_row)
+            .enumerate()
+        {
+            let i = (x / 2).min(cw - 1);
+            let other = if x % 2 == 0 {
+                i.saturating_sub(1)
             } else {
-                let at = c_row * cw + last;
-                chroma(u_plane[at], v_plane[at])
+                (i + 1).min(cw - 1)
             };
-            put_pixel(rest, luma(y_row[even]), terms);
+            let (a, b) = (terms[i], terms[other]);
+            let term = (
+                (3 * a.0 + b.0) >> 2,
+                (3 * a.1 + b.1) >> 2,
+                (3 * a.2 + b.2) >> 2,
+            );
+            put_pixel(px, luma(*y), term);
         }
     }
 }
@@ -783,15 +789,49 @@ mod tests {
 
     #[test]
     fn the_fast_path_draws_what_the_plain_one_does() {
-        // Sizes that fit a chroma sample per two pixels exactly, and an odd one that does not.
+        // With even colour the blending changes nothing: the same pixels as the plain path,
+        // for sizes that fit a sample per two pixels exactly and an odd one that does not.
         for (w, h) in [(8, 6), (16, 2), (7, 5)] {
             for nv12 in [false, true] {
-                let picture = gradient(w, h, nv12);
+                let mut picture = gradient(w, h, nv12);
+                let luma = (w * h) as usize;
+                let (cw, ch) = picture.chroma_size();
+                let samples = (cw * ch) as usize;
+                for (n, c) in picture.planes[luma..].iter_mut().enumerate() {
+                    let is_v = if nv12 { n % 2 == 1 } else { n >= samples };
+                    *c = if is_v { 90 } else { 170 };
+                }
                 // The skipping path visits every pixel with a step of one.
                 let plain = skipping_to_bgra(&picture, 1);
                 assert_eq!(full_size_to_bgra(&picture), plain, "{w}x{h} nv12={nv12}");
             }
         }
+    }
+
+    #[test]
+    fn colour_is_blended_between_samples() {
+        // Grey luma; colour samples alternate red-ish and blue-ish across.
+        let (w, h) = (8u32, 4u32);
+        let mut planes = vec![128u8; (w * h) as usize];
+        for _ in 0..h / 2 {
+            for i in 0..w / 2 {
+                let (u, v) = if i % 2 == 0 { (100, 200) } else { (200, 100) };
+                planes.extend([u, v]);
+            }
+        }
+        let picture = codec::Picture {
+            width: w,
+            height: h,
+            nv12: true,
+            planes,
+        };
+        let (_, _, out) = full_size_to_bgra(&picture);
+        let red = |x: usize| i32::from(out[x * 4 + 2]);
+        // Pixel 0 has no sample to its left: its own. Pixels 1 and 2 lie between the first two
+        // samples, each a quarter of the way towards the other.
+        let (r0, r1, r2) = (red(0), red(1), red(2));
+        assert!(r0 > r1 && r1 > r2, "{r0} {r1} {r2}");
+        assert!(((r0 - r1) * 2 - (r1 - r2)).abs() <= 2, "{r0} {r1} {r2}");
     }
 
     #[test]
